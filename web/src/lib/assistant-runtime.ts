@@ -494,8 +494,10 @@ function getSourceMessageIdsForBlock(block: VisibleChatBlock, includeToolIdentit
         return [block.id]
     }
 
-    if (includeToolIdentities && block.kind === 'tool-call') return [block.id]
-    if (includeToolIdentities && block.kind === 'tool-group') return block.tools.map(tool => tool.id)
+    if (includeToolIdentities && block.kind === 'tool-call') return [block.id, ...(block.sourceMessageIds ?? [])]
+    if (includeToolIdentities && block.kind === 'tool-group') {
+        return block.tools.flatMap(tool => [tool.id, ...(tool.sourceMessageIds ?? [])])
+    }
 
     return []
 }

@@ -255,6 +255,20 @@ test('finds the turn input in concise mode across pages with no rendered overlap
     if (screenshots) await page.screenshot({ path: `${screenshots}/reply-navigation-concise-long-turn.png` })
 })
 
+test('finds the input of a tool-only plan visible in concise mode', async ({ page }) => {
+    await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&conciseLongTurn=1&conciseToolReply=1')
+    const plan = page.locator('[data-hapi-message-role="assistant"]')
+    const prompt = page.locator('[data-hapi-turn-input="true"]').filter({ hasText: 'Prompt before the hidden tool output' })
+    await expect(plan).toHaveCount(1)
+    await expect(prompt).toHaveCount(0)
+    await plan.getByRole('button', { name: 'Jump to turn input' }).press('Enter')
+    await expect(prompt).toBeFocused()
+    await expect(prompt).toBeInViewport()
+    await expect(plan).toHaveCount(0)
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/reply-navigation-concise-tool-plan.png` })
+})
+
 test('does not cross a system wake while scanning concise history', async ({ page }) => {
     await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&conciseLongTurn=1&conciseJobWake=1')
     const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Concise reply after a long turn' })

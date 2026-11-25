@@ -3026,6 +3026,29 @@ describe('gap recovery', () => {
         expect(cursors).toEqual([20])
     })
 
+    it('does not confirm stale history when a jump interrupts gap recovery', async () => {
+        const id = sessionId('jump-interrupts-gap-after-rewind')
+        const cached = makeAgentMessage({ id: 'before-rewind', seq: 1, at: 100 })
+        const current = makeAgentMessage({ id: 'after-rewind', seq: 2, at: 200 })
+        const gapResponse = deferred<MessagesResponse>()
+        const epochResponse = deferred<MessagesResponse>()
+        const getMessages = vi.fn(async (_id: string, query: { afterAt?: number }) =>
+            query.afterAt !== undefined ? gapResponse.promise : epochResponse.promise)
+        getMessages.mockResolvedValueOnce(latestResponse([cached], { epoch: 1 }))
+        const api = createApi(getMessages)
+        await syncTailMessages(api, id)
+        const reconnect = recoverWindowAfterGapResume(api, id)
+        expect(getMessageWindowState(id).hasMore).toBe(false)
+        const held = holdHistoryNavigationWindow(id, api)!
+        const verifying = held.verifyStart()
+        const rewound = latestResponse([current], { epoch: 2 })
+        epochResponse.resolve(rewound)
+        gapResponse.resolve(rewound)
+        expect(await verifying).toBe(false)
+        await reconnect
+        expect(getMessageWindowState(id).messages).toEqual([current])
+    })
+
     it('transfers an in-flight gap cursor to a navigation before cancelling the request', async () => {
         const id = sessionId('gap-hold-inflight-cursor')
         const initial = makeAgentMessage({ id: '20', seq: 20, at: 2_000 })
@@ -3057,6 +3080,7 @@ describe('gap recovery', () => {
         pending.resolve(afterResponse([missed, live], { epoch: 1, nextAfterAt: 2_200, nextAfterSeq: 22,
             snapshotHeadAt: 2_200, snapshotHeadSeq: 22 }))
         await reconnect
+        expect(await held.verify()).toBe(true)
         held.finish(true)
         await syncTailMessages(api, id)
         expect(cursors).toEqual([20, 20])

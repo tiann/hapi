@@ -218,6 +218,7 @@ function areAgentEventBlocksEqual(left: AgentEventBlock, right: AgentEventBlock)
 function areToolCallsEqual(left: ToolCallBlock, right: ToolCallBlock, childrenSame: boolean): boolean {
     if (!childrenSame) return false
     return left.localId === right.localId
+        && areStringArraysEqual(left.sourceMessageIds, right.sourceMessageIds)
         && left.createdAt === right.createdAt
         && left.meta === right.meta
         && left.tool.id === right.tool.id

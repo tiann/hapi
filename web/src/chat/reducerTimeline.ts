@@ -1058,6 +1058,7 @@ export function reduceTimeline(
                     const permission = permissionEntry?.permission
 
                     const block = ensureToolBlock(blocks, toolBlocksById, c.id, {
+                        sourceMessageId: msg.id,
                         createdAt: msg.createdAt,
                         invokedAt: msg.invokedAt,
                         usage: msg.usage,
@@ -1148,6 +1149,7 @@ export function reduceTimeline(
 
                     const existing = toolBlocksById.get(c.tool_use_id)
                     const block = ensureToolBlock(blocks, toolBlocksById, c.tool_use_id, {
+                        sourceMessageId: msg.id,
                         createdAt: msg.createdAt,
                         invokedAt: msg.invokedAt,
                         usage: msg.usage,

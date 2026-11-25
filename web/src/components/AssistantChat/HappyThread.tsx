@@ -3172,7 +3172,8 @@ export function HappyThread(props: {
         const wasTailFollowing = autoScrollEnabledRef.current && atBottomRef.current
         // A short, fully loaded conversation is already at both ends. There
         // is no scroll event to restore tail follow if we enter history mode.
-        if (!isSyncingTailRef.current && !getMessageWindowState(props.sessionId).preferLatestOnActivation
+        const { preferLatestOnActivation, pendingGapRecovery } = getMessageWindowState(props.sessionId)
+        if (!isSyncingTailRef.current && !preferLatestOnActivation && !pendingGapRecovery
             && !hasMoreMessagesRef.current && currentViewport
             && currentViewport.scrollTop <= 1
             && currentViewport.scrollHeight - currentViewport.clientHeight <= 1) {

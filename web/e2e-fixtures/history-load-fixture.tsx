@@ -286,6 +286,11 @@ const allMessages: DecryptedMessage[] = conciseLongTurn ? Array.from({ length: T
         })
     }
     if (seq === TOTAL_MESSAGES) {
+        if (fixtureParams.has('conciseToolReply')) {
+            return createFixtureMessage(seq, {
+                role: 'agent', content: { type: 'codex', data: { type: 'tool-call', callId: 'native-plan-id', name: 'ExitPlanMode', input: { plan: 'Plan after a long turn' } } }
+            })
+        }
         return createFixtureMessage(seq, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Concise reply after a long turn' } } })
     }
     return createFixtureMessage(seq, {

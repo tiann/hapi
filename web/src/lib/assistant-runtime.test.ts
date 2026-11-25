@@ -142,14 +142,14 @@ describe('assignThreadMessageIds', () => {
 
 describe('buildSourceMessageIdsByBlock', () => {
     it('keeps stable tool identities for boundary recovery', () => {
-        const single = toolCall('tool-single')
-        const grouped = toolGroup('tools', [toolCall('tool-a'), toolCall('tool-b')])
+        const single = { ...toolCall('tool-single'), sourceMessageIds: ['stored-single'] }
+        const grouped = toolGroup('tools', [toolCall('tool-a'), { ...toolCall('tool-b'), sourceMessageIds: ['stored-b'] }])
         const sourceIdsByBlock = buildSourceMessageIdsByBlock([single, grouped])
         const replyIdsByBlock = buildSourceMessageIdsByBlock([single, grouped], true)
         expect(sourceIdsByBlock.get(single)).toEqual([])
         expect(sourceIdsByBlock.get(grouped)).toEqual([])
-        expect(replyIdsByBlock.get(single)).toEqual(['tool-single', 'tool-a', 'tool-b'])
-        expect(replyIdsByBlock.get(grouped)).toEqual(['tool-single', 'tool-a', 'tool-b'])
+        expect(replyIdsByBlock.get(single)).toEqual(['tool-single', 'stored-single', 'tool-a', 'tool-b', 'stored-b'])
+        expect(replyIdsByBlock.get(grouped)).toEqual(['tool-single', 'stored-single', 'tool-a', 'tool-b', 'stored-b'])
     })
 
     it('keeps a raw search-hit id on the first card of a joined assistant group', () => {

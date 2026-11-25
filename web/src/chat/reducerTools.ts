@@ -55,6 +55,7 @@ export function ensureToolBlock(
     toolBlocksById: Map<string, ToolCallBlock>,
     id: string,
     seed: {
+        sourceMessageId?: string
         createdAt: number
         invokedAt?: number | null
         durationMs?: number
@@ -75,6 +76,9 @@ export function ensureToolBlock(
 ): ToolCallBlock {
     const existing = toolBlocksById.get(id)
     if (existing) {
+        if (seed.sourceMessageId && !existing.sourceMessageIds?.includes(seed.sourceMessageId)) {
+            (existing.sourceMessageIds ??= []).push(seed.sourceMessageId)
+        }
         const isPlaceholderToolName = (name: string): boolean => {
             const normalized = name.trim().toLowerCase()
             // 'generic' is agy's non-specific result wrapper (e.g. manage_subagents
@@ -163,6 +167,7 @@ export function ensureToolBlock(
     const block: ToolCallBlock = {
         kind: 'tool-call',
         id,
+        ...(seed.sourceMessageId ? { sourceMessageIds: [seed.sourceMessageId] } : {}),
         localId: seed.localId,
         createdAt: seed.createdAt,
         invokedAt: seed.invokedAt,

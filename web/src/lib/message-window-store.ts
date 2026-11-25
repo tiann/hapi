@@ -144,7 +144,7 @@ type HeldHistoryNavigation = {
     epoch: number
     owner: symbol
     probe?: Promise<void>
-    activationEpochPending?: boolean
+    epochCheckPending?: boolean
     recovery?: { api: ApiClient; after: MessagePosition | null }
     catchUpNeeded?: boolean
 }
@@ -1501,14 +1501,13 @@ export function holdHistoryNavigationWindow(sessionId: string, api?: ApiClient):
         window.recovery = { api: controller.api, after: pending.after }
         window.catchUpNeeded = true
     }
-    // A cached window can report hasMore=false without proving it belongs to
-    // the current epoch. Replace the canceled activation sync with a held
-    // probe instead of letting the jump succeed against that cache alone.
+    // Neither an unverified cache nor a window that missed SSE can prove its
+    // epoch from hasMore=false. Replace a canceled refresh with a held probe.
     cancelTailSync(sessionId)
-    if (initial.preferLatestOnActivation) {
-        window.activationEpochPending = true
-        const activationApi = api ?? controller?.api
-        if (activationApi) void reconcileHeldHistoryNavigation(activationApi, sessionId)
+    if (initial.preferLatestOnActivation || initial.pendingGapRecovery) {
+        window.epochCheckPending = true
+        const epochApi = api ?? controller?.api
+        if (epochApi) void reconcileHeldHistoryNavigation(epochApi, sessionId)
     }
     const ownsHold = () => window.owner === owner && heldHistoryWindows.get(sessionId) === window
     const isCurrent = () => ownsHold() && getState(sessionId).epoch === epoch
@@ -1516,13 +1515,13 @@ export function holdHistoryNavigationWindow(sessionId: string, api?: ApiClient):
         isCurrent,
         verify: async () => {
             await window.probe
-            return isCurrent() && !window.activationEpochPending
+            return isCurrent() && !window.epochCheckPending
         },
         verifyStart: async () => {
             const oldestSeq = getState(sessionId).oldestSeq
             await window.probe
             const state = getState(sessionId)
-            return isCurrent() && !window.activationEpochPending && !state.hasMore && state.oldestSeq === oldestSeq
+            return isCurrent() && !window.epochCheckPending && !state.hasMore && state.oldestSeq === oldestSeq
         },
         finish: (keepHistory) => {
             if (!ownsHold()) return
@@ -1568,9 +1567,10 @@ function reconcileHeldHistoryNavigation(api: ApiClient, sessionId: string): Prom
     const probe = api.getMessages(sessionId, { limit: PAGE_SIZE }).then(async response => {
         if (!isCurrent()) return
         if (response.page.epoch !== held.epoch) return reset()
-        if (held.activationEpochPending) {
-            held.activationEpochPending = false
-            updateState(sessionId, previous => buildState(previous, { preferLatestOnActivation: false }))
+        if (held.epochCheckPending) {
+            held.epochCheckPending = false
+            updateState(sessionId, previous => previous.preferLatestOnActivation
+                ? buildState(previous, { preferLatestOnActivation: false }) : previous)
         }
 
         // Refresh retained rows, never splice a disconnected latest page into
