@@ -241,6 +241,26 @@ test('conversation start waits for epoch verification of complete cached history
     if (screenshots) await page.screenshot({ path: `${screenshots}/reply-navigation-verified-rewind.png` })
 })
 
+test('the outline exposes busy state until a footer jump finishes', async ({ page }) => {
+    await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&cachedReentry=1&cachedComplete=1&holdLatest=1')
+    const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Cached reply before rewind' })
+    await reply.getByRole('button', { name: 'Jump to conversation start' }).press('Enter')
+    await expect(page.getByText('Loading earlier messages…', { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: 'Open history', exact: true }).click()
+    const outline = page.getByRole('complementary', { name: 'Outline', exact: true })
+    await outline.getByRole('searchbox').fill('Cached prompt 29')
+    const entry = outline.getByRole('button', { name: /Cached prompt 29/ })
+    await expect(entry).toBeDisabled()
+    await expect(outline).toHaveAttribute('aria-busy', 'true')
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/reply-navigation-busy-outline.png` })
+    await page.evaluate(() => window.__probe.releaseLatest())
+    await expect(entry).toBeEnabled()
+    await entry.click()
+    await expect(outline).toHaveCount(0)
+    await expect(page.getByText('Cached prompt 29', { exact: true })).toBeInViewport()
+})
+
 test('a gap during cached navigation requests a fresh epoch before confirming a jump', async ({ page }) => {
     await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&cachedReentry=1&cachedComplete=1&holdLatest=1')
     const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Cached reply before rewind' })

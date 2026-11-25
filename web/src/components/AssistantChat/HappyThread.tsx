@@ -922,6 +922,7 @@ export function ConversationOutlinePanel(props: {
     items: readonly ConversationOutlineItem[]
     hasMoreMessages: boolean
     isLoadingMoreMessages: boolean
+    navigationBusy?: boolean
     onLoadMore: () => void
     onSelect: (item: ConversationOutlineItem) => void
     onClose: () => void
@@ -942,6 +943,7 @@ export function ConversationOutlinePanel(props: {
         <aside
             className="absolute inset-y-0 right-0 z-30 flex w-full max-w-[24rem] flex-col bg-[var(--app-bg)] shadow-2xl sm:w-[24rem]"
             aria-label={t('session.outline.title')}
+            aria-busy={props.navigationBusy || undefined}
         >
             <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 -left-px w-px bg-[var(--app-border)]" />
             <div className="border-b border-[var(--app-border)] p-3">
@@ -976,7 +978,7 @@ export function ConversationOutlinePanel(props: {
                         <Button
                             variant="outline"
                             onClick={props.onLoadMore}
-                            disabled={props.isLoadingMoreMessages}
+                            disabled={props.isLoadingMoreMessages || props.navigationBusy}
                             aria-busy={props.isLoadingMoreMessages}
                             aria-label={props.isLoadingMoreMessages ? t('misc.loading') : t('session.outline.loadOlder')}
                             title={props.isLoadingMoreMessages ? t('misc.loading') : t('session.outline.loadOlder')}
@@ -1028,7 +1030,8 @@ export function ConversationOutlinePanel(props: {
                                     key={item.id}
                                     type="button"
                                     onClick={() => props.onSelect(item)}
-                                    className="group block w-full min-w-0 rounded-md px-2 py-2 text-left transition-colors hover:bg-[var(--app-subtle-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                                    disabled={props.navigationBusy}
+                                    className="group block w-full min-w-0 rounded-md px-2 py-2 text-left transition-colors enabled:hover:bg-[var(--app-subtle-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] disabled:opacity-60"
                                 >
                                     <span className="flex min-w-0 items-center gap-2 text-[11px] font-medium tabular-nums text-[var(--app-hint)]">
                                         <span className="h-2 w-2 shrink-0 rounded-full bg-[var(--app-button)]" aria-hidden="true" />
@@ -3766,6 +3769,7 @@ export function HappyThread(props: {
                             items={props.outlineItems}
                             hasMoreMessages={props.hasMoreMessages}
                             isLoadingMoreMessages={props.isLoadingMoreMessages}
+                            navigationBusy={isNavigationInFlight}
                             onLoadMore={() => {
                                 void loadOlderFromConsumer()
                             }}
