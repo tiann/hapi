@@ -563,7 +563,11 @@ export class SDKToLogConverter {
                 if (resultMsg.hapi_held_result === true) break
                 // Cost and API time are cumulative across resumes; emit only a
                 // trustworthy per-round delta, never a lifetime total. Token
-                // counts come from `usage`, which is already per round.
+                // counts come only from `usage`, which is already per round. A
+                // result without `usage` (for example from a compatible API that
+                // reports none) carries no token counts: the cumulative
+                // `modelUsage` cannot be attributed to one round, so it is not a
+                // fallback.
                 const perRound = resultMsg.hapi_skip_usage === true
                     ? { totalCostUsd: undefined, durationApiMs: undefined }
                     : this.consumeCumulativeDeltas(resultMsg)
