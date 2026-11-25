@@ -87,6 +87,8 @@ export const HubSettingsResponseSchema = z.object({
     /** Show compact AGENT_NOTIFY_SUMMARY in chat (default off / hide). */
     sessionSummaryInChat: z.boolean(),
     autoBridgeTransientModelErrors: z.boolean(),
+    /** Translate user prompts to English in sessions without an explicit per-session choice. */
+    translateInputByDefault: z.boolean(),
     peerSpawnDefaults: ResolvedPeerSpawnDefaultsSchema
 })
 
@@ -97,6 +99,7 @@ export const UpdateHubSettingsRequestSchema = z
         sessionSummaryContract: z.boolean().optional(),
         sessionSummaryInChat: z.boolean().optional(),
         autoBridgeTransientModelErrors: z.boolean().optional(),
+        translateInputByDefault: z.boolean().optional(),
         peerSpawnDefaults: PeerSpawnDefaultsSchema.optional()
     })
     .refine(
@@ -104,6 +107,7 @@ export const UpdateHubSettingsRequestSchema = z
             data.sessionSummaryContract !== undefined
             || data.sessionSummaryInChat !== undefined
             || data.autoBridgeTransientModelErrors !== undefined
+            || data.translateInputByDefault !== undefined
             || data.peerSpawnDefaults !== undefined,
         { message: 'At least one hub setting field is required' }
     )
@@ -144,6 +148,8 @@ export type SessionsResponse = {
     sessions: SessionSummary[]
     /** SSE position included in this snapshot's scheduled-message fields. */
     sessionScheduleCursor?: string
+    /** Hub epoch milliseconds at response time, used to age job heartbeats. */
+    serverTime?: number
 }
 export type ScratchlistSessionIdsResponse = { sessionIds: string[] }
 export type SessionContentMatch = {
@@ -414,6 +420,33 @@ export const ClaudeLocalSessionWithMessagesSchema = ClaudeLocalSessionSummarySch
 export type ClaudeLocalSessionSummary = z.infer<typeof ClaudeLocalSessionSummarySchema>
 export type ClaudeLocalSessionWithMessages = z.infer<typeof ClaudeLocalSessionWithMessagesSchema>
 
+export const PrepareCursorImportRpcRequestSchema = z.object({
+    uuid: z.string().min(1),
+    workspacePath: z.string().nullable().optional()
+})
+
+export const PrepareCursorImportRpcResponseSchema = z.union([
+    z.object({
+        success: z.literal(true),
+        uuid: z.string().min(1),
+        sourceFormat: z.enum(['acp', 'legacy']),
+        workspacePath: z.string().min(1),
+        title: z.string(),
+        hostName: z.string(),
+        durationMs: z.number()
+    }),
+    z.object({
+        success: z.literal(false),
+        uuid: z.string().min(1),
+        reason: z.string().min(1),
+        message: z.string().min(1),
+        durationMs: z.number()
+    })
+])
+
+export type PrepareCursorImportRpcRequest = z.infer<typeof PrepareCursorImportRpcRequestSchema>
+export type PrepareCursorImportRpcResponse = z.infer<typeof PrepareCursorImportRpcResponseSchema>
+
 export const MAX_OPENCODE_SESSION_IMPORTS = 200
 
 export const ListOpencodeSessionsRpcRequestSchema = z.object({
@@ -486,9 +519,10 @@ export const SESSION_NAME_MAX_LENGTH = 255
 
 export const RenameSessionRequestSchema = z.object({
     name: z.string().min(1).max(SESSION_NAME_MAX_LENGTH).optional(),
-    titleLocked: z.boolean().optional()
-}).refine(value => value.name !== undefined || value.titleLocked !== undefined, {
-    message: 'name or titleLocked is required'
+    titleLocked: z.boolean().optional(),
+    translateInput: z.boolean().optional()
+}).refine(value => value.name !== undefined || value.titleLocked !== undefined || value.translateInput !== undefined, {
+    message: 'name, titleLocked, or translateInput is required'
 })
 
 export type RenameSessionRequest = z.infer<typeof RenameSessionRequestSchema>

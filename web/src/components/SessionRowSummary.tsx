@@ -1,3 +1,4 @@
+import { useHubClock } from '@/lib/app-context'
 import { useMemo, useRef, useSyncExternalStore } from 'react'
 import type { SessionSummary } from '@/types/api'
 import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
@@ -7,6 +8,7 @@ import { getAttentionLabel, SessionAttentionIndicator, SessionRequestIcon } from
 import { classifySessionAttention, sessionIsUnread } from '@/lib/sessionAttention'
 import { getSessionLastSeenAt, getSessionManualUnreadAt } from '@/lib/sessionLastSeen'
 import { formatRelativeTime } from '@/lib/relativeTime'
+import { getStoppedSessionTime } from '@/lib/sessionListOrder'
 import { formatScheduledTooltipDetail } from '@/lib/scheduledTime'
 import { getCodexImportedAt, subscribeCodexImportedSessions } from '@/lib/codexImportedSessions'
 import { useMinuteTick } from '@/hooks/useMinuteTick'
@@ -70,12 +72,16 @@ function formatCodexImportedRelativeTime(
 function getSessionTimeLabel(
     session: SessionSummary,
     importedAt: number | null,
-    t: (key: string, params?: Record<string, string | number>) => string
+    t: (key: string, params?: Record<string, string | number>) => string,
+    showStoppedTime: boolean
 ): string | null {
     if (importedAt !== null) {
         return formatCodexImportedRelativeTime(importedAt, t)
     }
-    return formatRelativeTime(session.updatedAt, t)
+    // In a list ordering stopped sessions by stop time (Active first), a stopped
+    // row shows that time: its stop time when later than its last update.
+    const time = showStoppedTime && !session.active ? getStoppedSessionTime(session) : session.updatedAt
+    return formatRelativeTime(time, t)
 }
 
 const PRESENCE_BADGE_CLASS = {
@@ -131,6 +137,8 @@ export function SessionRowSummary(props: {
     contentSearchTruncated?: boolean
     /** Extra classes for the right-hand time/progress cluster (e.g. to yield to hover actions). */
     trailingClassName?: string
+    /** Show a stopped row's stop time, for lists that order stopped rows by it (Active first). */
+    showStoppedTime?: boolean
 }) {
     const {
         session: s,
@@ -152,6 +160,7 @@ export function SessionRowSummary(props: {
         contentSnippet,
         contentSearchTruncated = false,
         trailingClassName,
+        showStoppedTime = false,
     } = props
     const { t } = useTranslation()
     const sessionName = getSessionTitle(s)
@@ -187,11 +196,11 @@ export function SessionRowSummary(props: {
     const scheduleId = scheduleTooltipIdProp ?? ownedIds.scheduleId
     // Rows are memoized, so the label keeps itself current (also advances job elapsed).
     useMinuteTick()
-    const nowMs = Date.now()
+    const nowMs = useHubClock()?.now() ?? Date.now()
     const codexSessionId = s.metadata?.flavor === 'codex' ? s.metadata?.agentSessionId : null
     const legacyImportedAt = useSyncExternalStore(subscribeCodexImportedSessions, () => getCodexImportedAt(codexSessionId))
     const importedAt = s.metadata?.codexImportedAt !== undefined ? s.metadata.codexImportedAt : legacyImportedAt
-    const timeLabel = getSessionTimeLabel(s, importedAt, t)
+    const timeLabel = getSessionTimeLabel(s, importedAt, t, showStoppedTime)
     const attachedJob = s.attachedJob?.status === 'running' ? s.attachedJob : null
     const jobStale = attachedJob ? isAttachedJobStale(attachedJob, nowMs) : false
     const jobFraction = attachedJob ? attachedJobFraction(attachedJob) : null
@@ -206,18 +215,11 @@ export function SessionRowSummary(props: {
         ? getPrimaryGithubPrRef(s.metadata?.externalRefs)
         : null
 
-    // Presence represents work and connection state on the agent icon. Work
-    // that outlives the `thinking` flag — background tasks (e.g. a background
-    // subagent), derived tool work (hub transcript sweep) and an attached job —
-    // is still work, so it renders working: a waiting badge would read as done.
-    const derivedWork = s.derivedToolWork === true
-    const isRunning = s.active && s.thinking
-    const isBackgroundOnly = s.active && !s.thinking && (s.backgroundTaskCount ?? 0) > 0
-    const presence: 'working' | 'waiting' | 'stopped' = isRunning || attachedJob || derivedWork || isBackgroundOnly
-        ? 'working'
-        : s.active
-            ? 'waiting'
-            : 'stopped'
+    // An attached process reports through its own meter, independently of the agent.
+    const hasForegroundWork = s.active && (s.thinking || s.derivedToolWork === true)
+    const isBackgroundOnly = s.active && !hasForegroundWork && (s.backgroundTaskCount ?? 0) > 0
+    const hasRunningWork = hasForegroundWork || isBackgroundOnly
+    const presence = hasRunningWork ? 'working' : s.active ? 'waiting' : 'stopped'
     const isUnread = sessionIsUnread(s, {
         lastSeenAt: getSessionLastSeenAt(s.id),
         manualUnreadAt: getSessionManualUnreadAt(s.id, s.readState),
@@ -227,16 +229,6 @@ export function SessionRowSummary(props: {
         : s.active && (s.pendingRequestsCount ?? 0) > 0
             ? (s.pendingRequestKinds?.length && !s.pendingRequestKinds.includes('permission') ? 'input' : 'permission')
             : null
-    // `thinking` is authoritative for foreground activity. A pending input can
-    // be blocking or async, and summaries do not distinguish the two, so keep
-    // the spinner rather than hiding real work behind the request symbol.
-    // An attached job keeps its own running spinner because it outlives the
-    // agent and is independently visible; hub-derived open tool work
-    // (autonomous rounds) spins for the same reason — the transcript proves the
-    // agent is mid-call. Background-only work spins too: a static dot reads as
-    // "finished" while the work is still going. Its label tells the two apart.
-    const hasForegroundWork = Boolean(attachedJob) || derivedWork || isRunning
-    const hasRunningWork = hasForegroundWork || isBackgroundOnly
     // While any work runs, the spinner colour carries unread; the bold title and
     // accented time are the at-rest look.
     const emphasizeUnread = isUnread && !hasRunningWork
@@ -262,7 +254,7 @@ export function SessionRowSummary(props: {
     useLowRateAnimation(modelErrorRef, 'ping', modelErrorActive)
     useLowRateAnimation(activityRef, 'spin', hasRunningWork)
     useLowRateAnimation(jobDotRef, 'pulse', attachedJob !== null && !jobStale)
-    useLowRateAnimation(jobStripesRef, 'stripes', attachedJob !== null && jobFraction === null)
+    useLowRateAnimation(jobStripesRef, 'stripes', attachedJob !== null && !jobStale && jobFraction === null)
 
     const agentIcon = (
         <span className="relative inline-flex h-6 w-6 shrink-0 items-center justify-center">

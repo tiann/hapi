@@ -1,6 +1,6 @@
-import type { OpencodePermissionMode } from '@hapi/protocol/types';
+import type { PermissionModeOf, Flavors } from '@hapi/protocol/types';
 
-export type PermissionMode = OpencodePermissionMode;
+export type PermissionMode = PermissionModeOf<typeof Flavors.opencode>;
 
 export interface OpencodeMode {
     permissionMode: PermissionMode;
