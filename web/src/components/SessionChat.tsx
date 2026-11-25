@@ -1,3 +1,4 @@
+import { useSessionFilesPanel } from '@/components/SessionFilesPanel'
 import { BranchConversationDialog } from '@/components/BranchConversationDialog'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
@@ -2122,14 +2123,20 @@ function SessionChatInner(props: SessionChatProps) {
         props.onRefresh()
     }, [switchSession, props.onRefresh])
 
+    const filesPanel = useSessionFilesPanel()
+    const filesPanelOpen = filesPanel?.open ?? false
+    const closeFilesPanel = filesPanel?.close
     const handleToggleFiles = useCallback(() => {
-        setOutlineOpen(false)
+        if (filesPanelOpen && closeFilesPanel) {
+            closeFilesPanel()
+            return
+        }
         navigate({
             to: '/sessions/$sessionId/files',
             params: { sessionId: props.session.id },
             ...PRESERVE_SESSION_SIDEBAR_SCROLL,
         })
-    }, [navigate, props.session.id])
+    }, [closeFilesPanel, filesPanelOpen, navigate, props.session.id])
 
     const handleToggleOutline = useCallback(() => {
         setOutlineOpen((open) => !open)
@@ -2319,7 +2326,7 @@ function SessionChatInner(props: SessionChatProps) {
                 serviceTier={effectiveCodexServiceTier}
                 onBack={props.onBack}
                 onToggleFiles={props.session.metadata?.path ? handleToggleFiles : undefined}
-                filesActive={false}
+                filesActive={filesPanelOpen}
                 onToggleOutline={handleToggleOutline}
                 outlineActive={outlineOpen}
                 onToggleConciseView={() => setConciseChatMode(!conciseChatMode)}
