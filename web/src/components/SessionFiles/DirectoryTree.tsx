@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { DEFAULT_UPLOAD_CHUNK_BYTES } from '@hapi/protocol/apiTypes'
 import type { ApiClient } from '@/api/client'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { queryKeys } from '@/lib/query-keys'
@@ -120,11 +119,21 @@ function parentDirectory(path: string): string {
     return index === -1 ? '' : path.slice(0, index)
 }
 
+type PendingUpload = {
+    id: string
+    dir: string
+    name: string
+    size: number
+    loaded: number
+}
+
 type WorkspaceFileActions = {
     uploadTo: (dir: string, label: string) => void
     requestDelete: (path: string, kind: 'file' | 'directory') => void
     /** Directory currently receiving an upload, if any. */
     uploadingDir: string | null
+    /** Files being uploaded, shown in their target folder until they land. */
+    pendingUploads: PendingUpload[]
 }
 
 type PendingConfirm = {
@@ -136,10 +145,14 @@ type PendingConfirm = {
     onCancel?: () => void
 }
 
+/** Smaller than the attachment chunk so the per-row progress bar moves smoothly. */
+const WORKSPACE_UPLOAD_CHUNK_BYTES = 1024 * 1024
+
 /**
  * Upload/delete against the session workspace on the runner's machine.
- * Uploads are chunked; a name clash asks before replacing, and deletes always
- * ask first. Directory listings are refreshed after each change.
+ * Picked files appear in their target folder straight away with a progress
+ * bar; each lands as a normal row once the listing refreshes, or disappears
+ * on failure. A name clash asks before replacing; deletes always ask first.
  */
 function useWorkspaceFileActions(props: {
     api: ApiClient | null
@@ -152,14 +165,27 @@ function useWorkspaceFileActions(props: {
     const inputRef = useRef<HTMLInputElement>(null)
     const targetRef = useRef<{ dir: string; label: string } | null>(null)
     const [uploadingDir, setUploadingDir] = useState<string | null>(null)
-    const [progress, setProgress] = useState<string | null>(null)
+    const [pendingUploads, setPendingUploads] = useState<PendingUpload[]>([])
     const [confirm, setConfirm] = useState<PendingConfirm | null>(null)
     const [confirmPending, setConfirmPending] = useState(false)
 
-    const refreshDirectory = useCallback((dir: string) => {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.sessionDirectory(props.sessionId, dir) })
+    const refreshDirectory = useCallback(async (dir: string) => {
         void queryClient.invalidateQueries({ queryKey: queryKeys.gitStatus(props.sessionId) })
+        await queryClient.invalidateQueries({ queryKey: queryKeys.sessionDirectory(props.sessionId, dir) })
     }, [props.sessionId, queryClient])
+
+    const updatePending = useCallback((id: string, loaded: number) => {
+        setPendingUploads((prev) => prev.map((item) => item.id === id ? { ...item, loaded } : item))
+    }, [])
+    const removePending = useCallback((id: string) => {
+        setPendingUploads((prev) => prev.filter((item) => item.id !== id))
+    }, [])
+
+    // Toasts here only inform: clicking one must not navigate to the chat
+    // (that would close the files panel), so no session/url target.
+    const notify = useCallback((title: string, body: string) => {
+        toast.addToast({ title, body, sessionId: '', url: '' })
+    }, [toast])
 
     const askToReplace = useCallback((name: string, dirLabel: string) => new Promise<boolean>((resolve) => {
         let settled = false
@@ -178,14 +204,18 @@ function useWorkspaceFileActions(props: {
         })
     }), [t])
 
-    const uploadOne = useCallback(async (file: File, dir: string, overwrite: boolean): Promise<'ok' | 'exists'> => {
+    const uploadOne = useCallback(async (
+        file: File,
+        dir: string,
+        overwrite: boolean,
+        onProgress: (loaded: number) => void,
+    ): Promise<'ok' | 'exists'> => {
         const api = props.api
         if (!api) throw new Error('Not connected')
         const uploadId = crypto.randomUUID()
-        const chunkSize = DEFAULT_UPLOAD_CHUNK_BYTES
         let offset = 0
         do {
-            const end = Math.min(offset + chunkSize, file.size)
+            const end = Math.min(offset + WORKSPACE_UPLOAD_CHUNK_BYTES, file.size)
             const result = await api.uploadWorkspaceFileChunk(props.sessionId, {
                 dir,
                 name: file.name,
@@ -202,8 +232,7 @@ function useWorkspaceFileActions(props: {
                 throw new Error(result.error ?? t('files.directories.upload.error.title'))
             }
             offset = end
-            const percent = file.size === 0 ? 100 : Math.round((offset / file.size) * 100)
-            setProgress(t('files.directories.uploading', { name: file.name, percent }))
+            onProgress(offset)
         } while (offset < file.size)
         return 'ok'
     }, [props.api, props.sessionId, t])
@@ -213,39 +242,52 @@ function useWorkspaceFileActions(props: {
         if (!target || files.length === 0) return
         setUploadingDir(target.dir)
         props.onExpand(target.dir)
-        let uploaded = 0
+        const queued = files.map((file) => ({
+            file,
+            pending: { id: crypto.randomUUID(), dir: target.dir, name: file.name, size: file.size, loaded: 0 },
+        }))
+        setPendingUploads((prev) => [...prev, ...queued.map((item) => item.pending)])
+
+        const uploaded: string[] = []
         try {
-            for (const file of files) {
-                setProgress(t('files.directories.uploading', { name: file.name, percent: 0 }))
-                let outcome = await uploadOne(file, target.dir, false)
-                if (outcome === 'exists') {
-                    if (!await askToReplace(file.name, target.label)) continue
-                    outcome = await uploadOne(file, target.dir, true)
+            for (const { file, pending } of queued) {
+                const onProgress = (loaded: number) => updatePending(pending.id, loaded)
+                try {
+                    let outcome = await uploadOne(file, target.dir, false, onProgress)
+                    if (outcome === 'exists') {
+                        if (!await askToReplace(file.name, target.label)) {
+                            removePending(pending.id)
+                            continue
+                        }
+                        outcome = await uploadOne(file, target.dir, true, onProgress)
+                    }
+                    // Keep the progress row until the refreshed listing shows
+                    // the real file, so the row never blinks out and back.
+                    await refreshDirectory(target.dir).catch(() => {})
+                    removePending(pending.id)
+                    uploaded.push(file.name)
+                } catch (error) {
+                    removePending(pending.id)
+                    notify(
+                        t('files.directories.upload.failedNamed', { name: file.name }),
+                        error instanceof Error ? error.message : String(error),
+                    )
                 }
-                if (outcome === 'ok') uploaded += 1
-                refreshDirectory(target.dir)
             }
-            if (uploaded > 0) {
-                toast.addToast({
-                    title: t('files.directories.upload.done', { count: uploaded, dir: target.label }),
-                    body: '',
-                    sessionId: props.sessionId,
-                    url: `/sessions/${props.sessionId}/files?tab=directories`,
-                })
-            }
-        } catch (error) {
-            toast.addToast({
-                title: t('files.directories.upload.error.title'),
-                body: error instanceof Error ? error.message : String(error),
-                sessionId: props.sessionId,
-                url: `/sessions/${props.sessionId}/files?tab=directories`,
-            })
         } finally {
-            refreshDirectory(target.dir)
+            setPendingUploads((prev) => prev.filter((item) => !queued.some((q) => q.pending.id === item.id)))
             setUploadingDir(null)
-            setProgress(null)
         }
-    }, [askToReplace, props, refreshDirectory, t, toast, uploadOne])
+
+        if (uploaded.length > 0) {
+            notify(
+                t('files.directories.upload.successTitle'),
+                uploaded.length === 1
+                    ? t('files.directories.upload.doneNamed', { name: uploaded[0], dir: target.label })
+                    : t('files.directories.upload.done', { count: uploaded.length, dir: target.label }),
+            )
+        }
+    }, [askToReplace, notify, props, refreshDirectory, removePending, t, updatePending, uploadOne])
 
     const uploadTo = useCallback((dir: string, label: string) => {
         if (uploadingDir !== null) return
@@ -268,7 +310,7 @@ function useWorkspaceFileActions(props: {
                 if (!result.success) {
                     throw new Error(result.error ?? t('files.directories.delete.error.default'))
                 }
-                refreshDirectory(parentDirectory(path))
+                void refreshDirectory(parentDirectory(path))
                 if (kind === 'directory') {
                     queryClient.removeQueries({ queryKey: queryKeys.sessionDirectory(props.sessionId, path) })
                 }
@@ -295,11 +337,6 @@ function useWorkspaceFileActions(props: {
                     void handleFiles(files)
                 }}
             />
-            {progress ? (
-                <div className="sticky bottom-0 z-10 border-t border-[var(--app-divider)] bg-[var(--app-bg)] px-3 py-2 text-xs text-[var(--app-hint)]" role="status">
-                    {progress}
-                </div>
-            ) : null}
             <ConfirmDialog
                 isOpen={confirm !== null}
                 onClose={closeConfirm}
@@ -325,9 +362,45 @@ function useWorkspaceFileActions(props: {
     )
 
     return {
-        actions: { uploadTo, requestDelete, uploadingDir },
+        actions: { uploadTo, requestDelete, uploadingDir, pendingUploads },
         elements,
     }
+}
+
+function PendingUploadRow(props: { upload: PendingUpload; indent: number }) {
+    const { t } = useTranslation()
+    const percent = props.upload.size === 0
+        ? (props.upload.loaded > 0 ? 100 : 0)
+        : Math.min(100, Math.round((props.upload.loaded / props.upload.size) * 100))
+    return (
+        <div
+            className="relative flex w-full items-center gap-3 overflow-hidden px-3 py-2 text-left"
+            style={{ paddingLeft: props.indent }}
+            data-testid="pending-upload-row"
+            aria-busy="true"
+        >
+            <div
+                className="pointer-events-none absolute inset-y-0 left-0 bg-[var(--app-link)] opacity-15 transition-[width] duration-300 ease-out"
+                style={{ width: `${percent}%` }}
+                role="progressbar"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={percent}
+                aria-label={props.upload.name}
+            />
+            <span className="relative h-7 w-7 shrink-0" />
+            <span className="relative h-4 w-4" />
+            <span className="relative opacity-60">
+                <FileIcon fileName={props.upload.name} size={22} />
+            </span>
+            <div className="relative min-w-0 flex-1">
+                <div className="truncate font-medium text-[var(--app-hint)]">{props.upload.name}</div>
+                <div className="truncate text-xs text-[var(--app-link)]">
+                    {t('files.directories.uploadingPercent', { percent })}
+                </div>
+            </div>
+        </div>
+    )
 }
 
 function DirectorySkeleton(props: { depth: number; rows?: number }) {
@@ -453,6 +526,16 @@ function DirectoryNode(props: {
     )
     const directories = useMemo(() => sortedEntries.filter((entry) => entry.type === 'directory'), [sortedEntries])
     const files = useMemo(() => sortedEntries.filter((entry) => entry.type === 'file'), [sortedEntries])
+    const pendingHere = useMemo(
+        () => (props.actions?.pendingUploads ?? []).filter((upload) => upload.dir === props.path),
+        [props.actions?.pendingUploads, props.path],
+    )
+    // A replacing upload stands in for the existing row until it lands.
+    const visibleFiles = useMemo(() => {
+        if (pendingHere.length === 0) return files
+        const pendingNames = new Set(pendingHere.map((upload) => upload.name))
+        return files.filter((entry) => !pendingNames.has(entry.name))
+    }, [files, pendingHere])
     const childDepth = props.depth + 1
 
     const indent = 12 + props.depth * 14
@@ -566,7 +649,11 @@ function DirectoryNode(props: {
                             )
                         })}
 
-                        {files.map((entry) => {
+                        {pendingHere.map((upload) => (
+                            <PendingUploadRow key={upload.id} upload={upload} indent={childIndent} />
+                        ))}
+
+                        {visibleFiles.map((entry) => {
                             const filePath = props.path ? `${props.path}/${entry.name}` : entry.name
                             const metadata = formatFileMetadata(entry.size, entry.modified, locale)
                             const isDownloading = downloadingPath === filePath
@@ -593,7 +680,7 @@ function DirectoryNode(props: {
                             )
                         })}
 
-                        {directories.length === 0 && files.length === 0 ? (
+                        {directories.length === 0 && files.length === 0 && pendingHere.length === 0 ? (
                             <div
                                 className="px-3 py-2 text-sm text-[var(--app-hint)]"
                                 style={{ paddingLeft: childIndent }}

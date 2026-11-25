@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { I18nProvider } from '@/lib/i18n-context'
 import { ToastProvider } from '@/lib/toast-context'
+import { ToastContainer } from '@/components/ToastContainer'
 import { DEFAULT_DIRECTORY_SORT } from '@/lib/directory-sort'
 import { DirectoryTree } from '@/components/SessionFiles/DirectoryTree'
 
@@ -44,6 +45,7 @@ function renderTree(handlers: {
                     onAddToComposer={handlers.onAddToComposer}
                     sort={DEFAULT_DIRECTORY_SORT}
                 />
+                <ToastContainer />
             </ToastProvider>
         </I18nProvider>
         </QueryClientProvider>
@@ -156,5 +158,53 @@ describe('DirectoryTree add to composer', () => {
 
         expect(onAddToComposer.mock.calls).toEqual([['README.md'], ['src/']])
         expect(screen.queryByRole('button', { name: 'Add project to composer' })).toBeNull()
+    })
+})
+
+describe('DirectoryTree upload progress', () => {
+    function deferred<T>() {
+        let resolve!: (value: T) => void
+        const promise = new Promise<T>((r) => { resolve = r })
+        return { promise, resolve }
+    }
+
+    it('shows the file in its folder with a progress bar, then confirms success', async () => {
+        const firstChunk = deferred<{ success: boolean; size?: number }>()
+        const uploadWorkspaceFileChunk = vi.fn()
+            .mockImplementationOnce(() => firstChunk.promise)
+            .mockResolvedValueOnce({ success: true, size: 1_500_000, path: 'src/big.bin' })
+        renderTree({ api: { uploadWorkspaceFileChunk } })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Upload files to project' }))
+        const input = screen.getByTestId('workspace-upload-input') as HTMLInputElement
+        fireEvent.change(input, { target: { files: [new File([new Uint8Array(1_500_000)], 'big.bin')] } })
+
+        const row = await screen.findByTestId('pending-upload-row')
+        expect(row.textContent).toContain('big.bin')
+        expect(screen.getByRole('progressbar', { name: 'big.bin' }).getAttribute('aria-valuenow')).toBe('0')
+
+        await act(async () => firstChunk.resolve({ success: true, size: 1_048_576 }))
+        await waitFor(() => expect(
+            Number(screen.queryByRole('progressbar', { name: 'big.bin' })?.getAttribute('aria-valuenow') ?? 100)
+        ).toBeGreaterThan(0))
+
+        expect(await screen.findByText('Upload complete')).toBeTruthy()
+        expect(screen.getByText('Uploaded big.bin to project')).toBeTruthy()
+        expect(screen.queryByTestId('pending-upload-row')).toBeNull()
+        expect(uploadWorkspaceFileChunk).toHaveBeenCalledTimes(2)
+    })
+
+    it('drops the row and reports the failure when the upload fails', async () => {
+        const uploadWorkspaceFileChunk = vi.fn().mockResolvedValue({ success: false, error: 'Disk full' })
+        renderTree({ api: { uploadWorkspaceFileChunk } })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Upload files to project' }))
+        const input = screen.getByTestId('workspace-upload-input') as HTMLInputElement
+        fireEvent.change(input, { target: { files: [new File(['x'], 'bad.txt')] } })
+
+        expect(await screen.findByText('Failed to upload bad.txt')).toBeTruthy()
+        expect(screen.getByText('Disk full')).toBeTruthy()
+        expect(screen.queryByTestId('pending-upload-row')).toBeNull()
+        expect(screen.queryByText('Upload complete')).toBeNull()
     })
 })
