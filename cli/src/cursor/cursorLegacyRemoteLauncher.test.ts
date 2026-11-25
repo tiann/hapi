@@ -60,12 +60,14 @@ vi.mock('@/utils/process', () => ({
     classifyRetainedIdentity: vi.fn(() => 'match'),
     isAgentOwnedProcessGroup: vi.fn(() => true),
     verifyAgentOwnedProcessGroupExited: vi.fn(async () => true),
+    retainedIdentityStillAlive: vi.fn(() => false),
 }));
 
 import {
     isAgentOwnedProcessGroup,
     killProcessByChildProcess,
     killRetainedProcessTree,
+    retainedIdentityStillAlive,
     snapshotProcessTreeIdentities,
     verifyAgentOwnedProcessGroupExited,
 } from '@/utils/process';
@@ -848,5 +850,110 @@ describe('cursorLegacyRemoteLauncher', () => {
         } finally {
             waitSpy.mockRestore();
         }
+    });
+
+    it('merges previously captured Cursor descendants that drop out of a Stop refresh (#2021)', async () => {
+        const snapMock = vi.mocked(snapshotProcessTreeIdentities);
+        const killMock = vi.mocked(killRetainedProcessTree);
+        const aliveMock = vi.mocked(retainedIdentityStillAlive);
+        const descendant = {
+            pid: 9001,
+            startMarker: 'marker-9001',
+            bootId: 'boot',
+            tgid: 9001,
+            pgid: 4242,
+        };
+        const root = {
+            pid: 4242,
+            startMarker: 'marker-4242',
+            bootId: 'boot',
+            tgid: 4242,
+            pgid: 4242,
+        };
+        // Spawn capture includes a descendant; first Stop refresh drops it
+        // while the identity is still alive — merge must retain it for kill.
+        snapMock
+            .mockReturnValueOnce([descendant, root])
+            .mockReturnValueOnce([root]);
+        aliveMock.mockImplementation((identity) => identity.pid === descendant.pid);
+        killMock.mockClear();
+
+        const child1 = makeChild({ hold: true, pid: 4242 });
+        spawnMock.mockReturnValueOnce(child1);
+        const queue = new MessageQueue2<EnhancedMode>(() => 'm');
+        queue.push('first', { permissionMode: 'default' }, 'first');
+
+        const client = makeClient();
+        const session = makeSession(queue, client);
+
+        const { cursorLegacyRemoteLauncher } = await import('./cursorLegacyRemoteLauncher');
+        const launchPromise = cursorLegacyRemoteLauncher(session);
+        await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(1));
+        await new Promise((resolve) => setTimeout(resolve, 30));
+
+        const abort = client.rpcHandlerManager.handlers.get('abort')! as () => Promise<void>;
+        await abort();
+        expect(killMock).toHaveBeenCalled();
+        const killedTree = killMock.mock.calls[0]?.[0] as Array<{ pid: number }>;
+        expect(killedTree.some((identity) => identity.pid === descendant.pid)).toBe(true);
+
+        child1.closeChild?.(null);
+        queue.close();
+        await launchPromise;
+        aliveMock.mockReturnValue(false);
+        snapMock.mockImplementation((pid: number) => [{
+            pid,
+            startMarker: `marker-${pid}`,
+            bootId: 'boot',
+            tgid: pid,
+            pgid: pid,
+        }]);
+    });
+
+    it('finishes ordinary Cursor close without a process-group scan when no tools are open (#2021)', async () => {
+        const snapMock = vi.mocked(snapshotProcessTreeIdentities);
+        const ownedGroup = vi.mocked(isAgentOwnedProcessGroup);
+        const verifyGroup = vi.mocked(verifyAgentOwnedProcessGroupExited);
+        // Minimal host: spawn snapshot and group probe both unavailable.
+        snapMock.mockReturnValue(null);
+        ownedGroup.mockReturnValue(false);
+        verifyGroup.mockClear();
+
+        const child1 = makeChild({ hold: true, pid: 6161 });
+        spawnMock.mockReturnValueOnce(child1);
+        const queue = new MessageQueue2<EnhancedMode>(() => 'm');
+        queue.push('first', { permissionMode: 'default' }, 'first');
+
+        const client = makeClient();
+        const session = makeSession(queue, client);
+        const thinking = vi.spyOn(session, 'onThinkingChange');
+
+        const { cursorLegacyRemoteLauncher } = await import('./cursorLegacyRemoteLauncher');
+        const launchPromise = cursorLegacyRemoteLauncher(session);
+        await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(1));
+        await new Promise((resolve) => setTimeout(resolve, 30));
+
+        child1.emitStdout(JSON.stringify({
+            type: 'result',
+            subtype: 'success',
+            result: 'done',
+            session_id: 'legacy-id',
+        }));
+        child1.closeChild?.(0);
+
+        await vi.waitFor(() => expect(thinking).toHaveBeenCalledWith(false));
+        expect(verifyGroup).not.toHaveBeenCalled();
+
+        queue.close();
+        await launchPromise;
+        thinking.mockRestore();
+        ownedGroup.mockReturnValue(true);
+        snapMock.mockImplementation((pid: number) => [{
+            pid,
+            startMarker: `marker-${pid}`,
+            bootId: 'boot',
+            tgid: pid,
+            pgid: pid,
+        }]);
     });
 });

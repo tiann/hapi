@@ -3474,4 +3474,59 @@ describe('AcpSdkBackend agentInfo.version and flushPendingMessageBuffers', () =>
             snap.mockRestore();
         }
     });
+
+    it('preserves Windows incomplete ACP evidence after spawn PIDs look gone (#2021)', async () => {
+        const processUtils = await import('@/utils/process');
+        const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+        Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' });
+        const spawnTree = [{
+            pid: 4242,
+            startMarker: 'gen-win',
+            bootId: null,
+            tgid: null,
+            pgid: null,
+        }];
+        // Spawn captures a tree; pre-close refresh fails (Windows incomplete);
+        // post-close the spawn PID looks gone — must still refuse settlement.
+        const snap = vi.spyOn(processUtils, 'snapshotProcessTreeIdentities')
+            .mockReturnValueOnce(spawnTree)
+            .mockReturnValue(null);
+        const alive = vi.spyOn(processUtils, 'retainedIdentityStillAlive').mockReturnValue(false);
+        const classify = vi.spyOn(processUtils, 'classifyRetainedIdentity').mockReturnValue('match');
+
+        const backend = new AcpSdkBackend({
+            command: 'opencode',
+            args: ['acp'],
+            flavor: 'opencode',
+            textChunkMode: 'delta',
+            toolCallLifetimeStore: null,
+        });
+        const createSpy = vi.spyOn(AcpStdioTransport, 'create').mockImplementation(async () => ({
+            sendRequest: vi.fn(async (method: string) => {
+                if (method === 'initialize') return { protocolVersion: 1, agentCapabilities: {} };
+                return {};
+            }),
+            sendNotification: vi.fn(),
+            onNotification: vi.fn(),
+            onStderrError: () => {},
+            registerRequestHandler: () => {},
+            isAlive: () => true,
+            getProcessPid: () => 4242,
+            close: async () => true,
+        } as unknown as AcpStdioTransport));
+
+        try {
+            await backend.initialize();
+            classify.mockReturnValue('match');
+            await backend.disconnect();
+            expect(backend.wasAgentTreeEnded()).toBe(false);
+            expect(await backend.verifyRetainedAgentExit(true)).toBe(false);
+        } finally {
+            createSpy.mockRestore();
+            snap.mockRestore();
+            alive.mockRestore();
+            classify.mockRestore();
+            Object.defineProperty(process, 'platform', platform);
+        }
+    });
 });

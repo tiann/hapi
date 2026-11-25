@@ -462,4 +462,46 @@ describe('SessionHeader', () => {
 
         expect(await screen.findByText('Could not update pin: Network unavailable')).toBeInTheDocument()
     })
+
+    it('hides Archive for a disconnected session with durable tool work (#2021)', () => {
+        const api = {
+            getMachines: vi.fn().mockResolvedValue({ machines: [] }),
+            getScratchlist: vi.fn().mockResolvedValue({ entries: [] }),
+        } as unknown as ApiClient
+
+        renderHeaderWithApi(baseSession({
+            active: false,
+            derivedToolWork: true,
+            metadata: {
+                flavor: 'codex',
+                path: '/repo',
+                host: 'machine',
+                lifecycleState: 'working',
+            },
+        }), api)
+
+        fireEvent.click(screen.getByTitle('More actions'))
+        expect(screen.queryByRole('menuitem', { name: 'Archive' })).toBeNull()
+    })
+
+    it('offers Archive for a disconnected live lifecycle without durable work', () => {
+        const api = {
+            getMachines: vi.fn().mockResolvedValue({ machines: [] }),
+            getScratchlist: vi.fn().mockResolvedValue({ entries: [] }),
+        } as unknown as ApiClient
+
+        renderHeaderWithApi(baseSession({
+            active: false,
+            derivedToolWork: false,
+            metadata: {
+                flavor: 'codex',
+                path: '/repo',
+                host: 'machine',
+                lifecycleState: 'idle',
+            },
+        }), api)
+
+        fireEvent.click(screen.getByTitle('More actions'))
+        expect(screen.getByRole('menuitem', { name: 'Archive' })).toBeInTheDocument()
+    })
 })

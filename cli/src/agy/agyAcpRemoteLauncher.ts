@@ -794,6 +794,13 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 if (inspection.state === 'completed') {
                     this.pausedWakeupStepIndex = null;
                     this.lastTranscriptStepIndex = Math.max(this.lastTranscriptStepIndex, inspection.latestStepIndex);
+                    // Record completion before any await that Stop can race —
+                    // disarm hard-stop so a slow resume cannot restart a finished
+                    // wakeup (#2021 Minor).
+                    this.clearWakeupCancelHardStop();
+                    this.pendingVerifiedWakeupStop = false;
+                    this.pendingStopBackend = null;
+                    this.pendingStopSettlements = [];
                     const wakeupFirstStepIndex = inspection.steps[0]?.step_index;
                     const live = this.usesLiveWakeupRendering();
                     // The live stream already rendered this wakeup: settle it before the
@@ -834,20 +841,6 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         session.sendAgentMessage(
                             agyRoundSummary(converted.usage, converted.durationMs, this.currentModelId, null, wakeupNumTurns)
                         );
-                    }
-                    if (abortController.signal.aborted || this.pendingVerifiedWakeupStop) {
-                        // Wakeup already completed — disarm the hard-stop restart
-                        // timer and finish settlement without retiring a finished
-                        // wakeup (#2021 Minor).
-                        this.clearWakeupCancelHardStop();
-                        this.pendingVerifiedWakeupStop = false;
-                        this.pendingStopBackend = null;
-                        this.pendingStopSettlements = [];
-                        session.onThinkingChange(false);
-                        if (session.queue.size() === 0 && !this.shouldExit) {
-                            session.sendSessionEvent({ type: 'ready' });
-                        }
-                        return;
                     }
                     session.onThinkingChange(false);
                     if (session.queue.size() === 0 && !this.shouldExit) {
@@ -2423,9 +2416,15 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     });
                     this.backendLost = true;
                     verified = await this.retireBackend(backendRef);
-                    // Only respawn after verified exit — otherwise leave the
-                    // session Stop-retryable with thinking still on (#2021).
-                    if (verified && !this.shouldExit && this.acpSessionId) {
+                    // Only respawn after verified exit — and only if this
+                    // generation is still current (completion may have disarmed
+                    // the timer while we awaited retirement) (#2021 Minor).
+                    if (
+                        verified
+                        && generation === this.wakeupHardStopGeneration
+                        && !this.shouldExit
+                        && this.acpSessionId
+                    ) {
                         try {
                             await this.startBackend(this.acpSessionId);
                         } catch (error) {

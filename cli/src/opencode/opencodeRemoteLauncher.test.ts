@@ -2277,9 +2277,11 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             emitText('replayed buffered tail');
             resolveReplay();
         };
+        // Runtime fixture reports a PID (worker metadata). Teardown must not
+        // treat the Vitest worker as a surviving agent tree (#2021).
         internal.transport = {
             getProcessPid: () => process.pid,
-            close: async () => {},
+            close: async () => true,
             sendNotification: () => {},
             sendRequest: async (method: string) => {
                 if (method === 'session/load') {
@@ -2306,6 +2308,22 @@ describe('opencodeRemoteLauncher inline model switch', () => {
                 }
                 throw new Error(`Unexpected ACP request: ${method}`);
             }
+        };
+        const markFixtureAgentExited = () => {
+            const state = backend as unknown as {
+                agentTreeEnded: boolean
+                retainedAgentTree: unknown
+                spawnedRootIdentity: unknown
+                retainedTreeSnapshotIncomplete: boolean
+            };
+            state.agentTreeEnded = true;
+            state.retainedAgentTree = null;
+            state.spawnedRootIdentity = null;
+            state.retainedTreeSnapshotIncomplete = false;
+            Object.assign(internal.transport as object, {
+                getProcessPid: () => null,
+                close: async () => true,
+            });
         };
         harness.clientMetadata = { path: '/tmp/hapi-opencode-test', host: 'fixture',
             opencodeHistoryCheckpoint: { sessionId: 'acp-session-1', messageIds: ['u1', 'a1'],
@@ -2388,6 +2406,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         } finally {
             if (replayTimer) clearTimeout(replayTimer);
             releaseNotificationQueue?.();
+            markFixtureAgentExited();
             session.queue.close();
             gate.release();
             try { await pending; } finally {

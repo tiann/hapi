@@ -10,6 +10,7 @@ import {
     getSystemBootId,
     isAgentOwnedProcessGroup,
     killRetainedProcessTree,
+    retainedIdentityStillAlive,
     snapshotProcessTreeIdentities,
     verifyAgentOwnedProcessGroupExited,
     type RetainedProcessIdentity,
@@ -166,6 +167,9 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
     private stopTreeSnapshotIncomplete = false;
     /** Root identity captured at spawn — first Stop snapshot must match it (#2021). */
     private spawnedRootIdentity: RetainedProcessIdentity | null = null;
+    /** Open tool-call ids for the active subprocess — ordinary close skips group
+     *  verify when this set is empty (#2021 Major). */
+    private currentProcessOpenToolCallIds: Set<string> | null = null;
     /** Resolve a close that arrived before Stop finished verifying the tree. */
     private resolveAfterStopTreeVerified: (() => void) | null = null;
     /**
@@ -272,6 +276,7 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             // including buffered tool_call starts that arrive between abort and
             // close (#2021).
             const processOpenToolCallIds = new Set<string>();
+            this.currentProcessOpenToolCallIds = processOpenToolCallIds;
 
             try {
                 const { exitCode, stderr } = await this.runAgentProcess(args, session.path, (event) => {
@@ -342,6 +347,7 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             } finally {
                 // Settle after close/drain so a late buffered tool_call start
                 // between abort and close is included in settledCallIds.
+                this.currentProcessOpenToolCallIds = null;
                 const unsettled = [...processOpenToolCallIds];
                 processOpenToolCallIds.clear();
                 this.publishToolSettlements(unsettled);
@@ -497,9 +503,17 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                     tryFinishAfterStop();
                     return;
                 }
-                // Ordinary close (crash / natural exit): stdio close is not
-                // proof that descendants with separate stdio are gone. Verify
-                // the spawn-time tree / agent-owned group before settling (#2021).
+                // Ordinary close with no outstanding tools: finish without a
+                // process-group scan (pgrep may be unavailable) (#2021 Major).
+                // Keep tree verification for Stop/handoff and unresolved tools.
+                const openTools = this.currentProcessOpenToolCallIds;
+                if (!openTools || openTools.size === 0) {
+                    finish(closeExitCode);
+                    return;
+                }
+                // Ordinary close with open tools: stdio close is not proof that
+                // descendants with separate stdio are gone. Verify the retained
+                // tree / agent-owned group before settling (#2021).
                 void (async () => {
                     if (settled) return;
                     let verified = true;
@@ -515,8 +529,6 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                                 true,
                             );
                         } else if (this.spawnedRootIdentity || this.stopTreeSnapshotIncomplete) {
-                            // Had a spawn identity but no safe coverage — keep
-                            // settlement pending for a Stop retry (#2021).
                             verified = false;
                         }
                     } catch (error) {
@@ -528,7 +540,6 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                         finish(closeExitCode);
                         return;
                     }
-                    // Keep identities for a later Stop; do not settle tools yet.
                     this.resolveAfterStopTreeVerified = () => {
                         if (settled || !stdoutClosed) return;
                         if (this.stopTreeVerified === true) finish(closeExitCode);
@@ -672,12 +683,27 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                     && root.pid === spawned.pid
                     && root.startMarker === spawned.startMarker
                 ) {
-                    this.retainedStopTree = snap;
+                    // Merge with unresolved prior members — a reparented
+                    // descendant can drop out of a fresh scan while still
+                    // alive (#2021 Major).
+                    const prior = this.retainedStopTree ?? [];
+                    const merged = [...snap];
+                    for (const old of prior) {
+                        const stillListed = snap.some(
+                            (identity) =>
+                                identity.pid === old.pid
+                                && identity.startMarker === old.startMarker,
+                        );
+                        if (!stillListed && retainedIdentityStillAlive(old)) {
+                            merged.push(old);
+                        }
+                    }
+                    this.retainedStopTree = merged;
                     this.stopTreeSnapshotIncomplete = false;
                 } else if (!this.retainedStopTree) {
                     this.stopTreeSnapshotIncomplete = true;
                 }
-                // Refresh failed but spawn-time tree exists — keep it for
+                // Refresh failed but prior tree exists — keep it for
                 // individual member signaling; do not sticky-incomplete.
             }
             let force = this.stopKillEscalated || leavingRemote;

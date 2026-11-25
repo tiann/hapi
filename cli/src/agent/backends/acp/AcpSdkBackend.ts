@@ -1641,9 +1641,10 @@ export class AcpSdkBackend implements AgentBackend {
             // Always check the retained pre-close tree before publishing
             // settlement / child interruption (#2021 tip Major).
             if (preCloseTree && preCloseTree.length > 0) {
-                this.retainedTreeSnapshotIncomplete = false;
+                // Never clear a Windows incomplete-refresh latch here — spawn
+                // PID absence alone must not unlock settlement (#2021 Major).
                 const survivors = preCloseTree.some((identity) => retainedIdentityStillAlive(identity));
-                if (survivors) {
+                if (survivors || this.retainedTreeSnapshotIncomplete) {
                     this.retainedAgentTree = preCloseTree;
                     agentEnded = false;
                 } else if (closeOk) {
@@ -1651,6 +1652,7 @@ export class AcpSdkBackend implements AgentBackend {
                         agentEnded = true;
                         this.agentTreeEnded = true;
                         this.retainedAgentTree = null;
+                        this.retainedTreeSnapshotIncomplete = false;
                     } else {
                         this.retainedAgentTree = preCloseTree;
                         agentEnded = false;
