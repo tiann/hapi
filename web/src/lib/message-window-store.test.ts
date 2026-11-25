@@ -2944,6 +2944,43 @@ describe('gap recovery', () => {
         expect(getMessageWindowState(id).messages).toEqual([oldest, completed, tail])
     })
 
+    it('transfers an in-flight gap cursor to a navigation before cancelling the request', async () => {
+        const id = sessionId('gap-hold-inflight-cursor')
+        const initial = makeAgentMessage({ id: '20', seq: 20, at: 2_000 })
+        const missed = makeAgentMessage({ id: '21', seq: 21, at: 2_100 })
+        const live = makeAgentMessage({ id: '22', seq: 22, at: 2_200 })
+        const pending = deferred<MessagesResponse>()
+        const cursors: (number | null)[] = []
+        let seeded = false
+        const api = createApi(async (_id, query) => {
+            if (query.afterAt !== undefined) {
+                cursors.push(query.afterSeq ?? null)
+                if (cursors.length === 1) return pending.promise
+                const catchUpRows = query.afterSeq === 20 ? [missed, live] : []
+                return afterResponse(catchUpRows, { epoch: 1, nextAfterAt: 2_200, nextAfterSeq: 22,
+                    snapshotHeadAt: 2_200, snapshotHeadSeq: 22 })
+            }
+            if (!seeded) {
+                seeded = true
+                return latestResponse([initial], { epoch: 1 })
+            }
+            return latestResponse([live], { epoch: 1 })
+        })
+        await syncTailMessages(api, id)
+        const reconnect = recoverWindowAfterGapResume(api, id)
+        expect(cursors).toEqual([20])
+        setMessageViewMode(id, 'history')
+        const held = holdHistoryNavigationWindow(id)!
+        ingestIncomingMessages(id, [live])
+        pending.resolve(afterResponse([missed, live], { epoch: 1, nextAfterAt: 2_200, nextAfterSeq: 22,
+            snapshotHeadAt: 2_200, snapshotHeadSeq: 22 }))
+        await reconnect
+        held.finish(true)
+        await syncTailMessages(api, id)
+        expect(cursors).toEqual([20, 20])
+        expect(getMessageWindowState(id).messages.map(message => message.id)).toEqual(['20', '21', '22'])
+    })
+
     it('catches up from the pre-probe cursor even when live SSE advances the tail first', async () => {
         const id = sessionId('gap-hold-sse-advance')
         const initial = makeAgentMessage({ id: '20', seq: 20, at: 2_000 })

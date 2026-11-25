@@ -1488,6 +1488,12 @@ export function holdHistoryNavigationWindow(sessionId: string): HistoryNavigatio
     const previous = heldHistoryWindows.get(sessionId)
     const window: HeldHistoryNavigation = previous?.epoch === epoch ? previous : { epoch }
     heldHistoryWindows.set(sessionId, window)
+    const controller = tailSyncControllers.get(sessionId)
+    const pending = deferredGapCursors.get(sessionId)
+    if (controller && pending?.epoch === epoch && getState(sessionId).pendingGapRecovery) {
+        window.recovery = { api: controller.api, after: pending.after }
+        window.catchUpNeeded = true
+    }
     cancelTailSync(sessionId)
     const isCurrent = () => heldHistoryWindows.get(sessionId) === window && getState(sessionId).epoch === epoch
     return {
@@ -1667,6 +1673,12 @@ export function recoverWindowAfterGapResume(api: ApiClient, sessionId: string): 
         || previous.epoch === null
     ) {
         return syncTailMessages(api, sessionId)
+    }
+    // Keep the earliest cursor until the whole recovery succeeds. A history
+    // jump may cancel this request after SSE has already advanced the view.
+    const saved = deferredGapCursors.get(sessionId)
+    if (!saved || saved.epoch !== previous.epoch) {
+        deferredGapCursors.set(sessionId, { epoch: previous.epoch, after: getNewestCursor(previous)! })
     }
     updateState(sessionId, (current) => buildState(current, { pendingGapRecovery: true }))
     return syncTailMessages(api, sessionId)

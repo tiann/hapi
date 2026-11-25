@@ -3042,6 +3042,7 @@ export function HappyThread(props: {
 
     const jumpToPrompt = useCallback(async (messageId: string, replyToMessageId?: string, focusTarget = false): Promise<boolean> => {
         if (navigationInFlightRef.current) return false
+        const wasTailFollowing = autoScrollEnabledRef.current && atBottomRef.current
         const runId = navigationRunRef.current
         const heldWindow = holdHistoryNavigationWindow(props.sessionId)
         historyNavigationWindowRef.current = heldWindow
@@ -3083,6 +3084,13 @@ export function HappyThread(props: {
                 historyNavigationRef.current = false
                 navigationInFlightRef.current = false
                 setIsNavigationInFlight(false)
+                const viewport = viewportRef.current
+                if (reachedPrompt && wasTailFollowing && !hasMoreMessagesRef.current && !hasMoreNewerRef.current
+                    && viewport && viewport.scrollHeight - viewport.clientHeight <= 1) {
+                    autoScrollEnabledRef.current = true
+                    atBottomRef.current = true
+                    onViewModeChangeRef.current('tail')
+                }
                 scheduleCoverageAfterSettling()
             }
         }
