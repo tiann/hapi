@@ -142,6 +142,7 @@ const tailSyncControllers = new Map<string, TailSyncController>()
 const messageWindowTargetLocks = new Set<string>()
 type HeldHistoryNavigation = {
     epoch: number
+    owner: symbol
     probe?: Promise<void>
     recovery?: { api: ApiClient; after: MessagePosition | null }
     catchUpNeeded?: boolean
@@ -1486,7 +1487,11 @@ export function holdHistoryNavigationWindow(sessionId: string): HistoryNavigatio
     const epoch = getState(sessionId).epoch
     if (epoch === null) return null
     const previous = heldHistoryWindows.get(sessionId)
-    const window: HeldHistoryNavigation = previous?.epoch === epoch ? previous : { epoch }
+    const owner = Symbol('history-navigation')
+    // A second jump may start while the first jump's reconnect probe is
+    // pending. Transfer the lease without discarding that shared work.
+    const window: HeldHistoryNavigation = previous?.epoch === epoch ? previous : { epoch, owner }
+    window.owner = owner
     heldHistoryWindows.set(sessionId, window)
     const controller = tailSyncControllers.get(sessionId)
     const pending = deferredGapCursors.get(sessionId)
@@ -1495,7 +1500,8 @@ export function holdHistoryNavigationWindow(sessionId: string): HistoryNavigatio
         window.catchUpNeeded = true
     }
     cancelTailSync(sessionId)
-    const isCurrent = () => heldHistoryWindows.get(sessionId) === window && getState(sessionId).epoch === epoch
+    const ownsHold = () => window.owner === owner && heldHistoryWindows.get(sessionId) === window
+    const isCurrent = () => ownsHold() && getState(sessionId).epoch === epoch
     return {
         isCurrent,
         verify: async () => {
@@ -1509,16 +1515,16 @@ export function holdHistoryNavigationWindow(sessionId: string): HistoryNavigatio
             return isCurrent() && !state.hasMore && state.oldestSeq === oldestSeq
         },
         finish: (keepHistory) => {
-            if (heldHistoryWindows.get(sessionId) !== window) return
-            if (keepHistory && getState(sessionId).requiresLatestReset) return
-            const stillReconciling = window.probe
-            releaseHeldHistory(sessionId, window)
-            const resumeRecovery = () => {
-                if (!window.recovery || heldHistoryWindows.has(sessionId) || getState(sessionId).epoch !== epoch) return
-                void recoverWindowAfterGapResume(window.recovery.api, sessionId)
+            if (!ownsHold()) return
+            const finishWhenReconciled = () => {
+                if (!ownsHold() || (keepHistory && getState(sessionId).requiresLatestReset)) return
+                releaseHeldHistory(sessionId, window)
+                if (window.catchUpNeeded && window.recovery && getState(sessionId).epoch === epoch) {
+                    void recoverWindowAfterGapResume(window.recovery.api, sessionId)
+                }
             }
-            if (stillReconciling) void stillReconciling.then(resumeRecovery)
-            else if (window.catchUpNeeded) resumeRecovery()
+            if (window.probe) void window.probe.then(finishWhenReconciled)
+            else finishWhenReconciled()
         }
     }
 }

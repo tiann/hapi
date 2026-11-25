@@ -2944,6 +2944,42 @@ describe('gap recovery', () => {
         expect(getMessageWindowState(id).messages).toEqual([oldest, completed, tail])
     })
 
+    it('passes the pending reconnect probe from a failed jump to a second jump', async () => {
+        const id = sessionId('gap-second-jump')
+        const initial = makeAgentMessage({ id: '20', seq: 20, at: 2_000 })
+        const missed = makeAgentMessage({ id: '21', seq: 21, at: 2_100 })
+        const pending = deferred<MessagesResponse>()
+        let calls = 0
+        const after: Array<number | null | undefined> = []
+        const api = createApi(async (_id, query) => {
+            if (++calls === 1) return latestResponse([initial], { epoch: 1 })
+            if (calls === 2) return pending.promise
+            if (query.afterAt !== undefined) {
+                after.push(query.afterSeq)
+                return afterResponse([missed], { epoch: 1, nextAfterSeq: 21, nextAfterAt: 2_100,
+                    snapshotHeadSeq: 21, snapshotHeadAt: 2_100 })
+            }
+            return latestResponse([initial, missed], { epoch: 1 })
+        })
+        await syncTailMessages(api, id)
+        setMessageViewMode(id, 'history')
+        const first = holdHistoryNavigationWindow(id)!
+        const reconnect = recoverWindowAfterGapResume(api, id)
+        first.finish(false)
+        const second = holdHistoryNavigationWindow(id)!
+        const verified = vi.fn()
+        const verifying = second.verify().then(verified)
+        await Promise.resolve()
+        expect(verified).not.toHaveBeenCalled()
+        pending.resolve(latestResponse([missed], { epoch: 1 }))
+        await Promise.all([reconnect, verifying])
+        expect(verified).toHaveBeenCalledWith(true)
+        expect(after).toEqual([])
+        second.finish(true)
+        await vi.waitFor(() => expect(getMessageWindowState(id).messages.map(row => row.id)).toEqual(['20', '21']))
+        expect(after).toEqual([20])
+    })
+
     it('resumes a contiguous gap when navigation fails before the held probe returns', async () => {
         const id = sessionId('gap-failed-navigation')
         const initial = makeAgentMessage({ id: '20', seq: 20, at: 2_000 })

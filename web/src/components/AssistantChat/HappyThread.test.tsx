@@ -289,6 +289,24 @@ describe('assistant prompt lookup', () => {
         viewport.remove()
     })
 
+    it('records the oldest overlap before an already-pending page evicts the selected reply', () => {
+        const viewport = document.createElement('div')
+        viewport.innerHTML = `
+            <div class="happy-thread-messages">
+                <div id="hapi-message-agent-text:overlap" data-hapi-message-role="assistant"></div>
+                <div id="hapi-message-agent-text:reply" data-hapi-message-role="assistant"></div>
+            </div>
+        `
+        document.body.append(viewport)
+        const state = capturePromptAnchorState(viewport, 'agent-text:reply')
+        viewport.firstElementChild!.innerHTML = `
+            <div id="hapi-message-user-text:prompt" data-hapi-turn-input="true"></div>
+            <div id="hapi-message-agent-text:overlap" data-hapi-message-role="assistant"></div>
+        `
+        expect(findPromptTarget(viewport, 'agent-text:reply', state)?.id).toBe('hapi-message-user-text:prompt')
+        viewport.remove()
+    })
+
     it('recovers a re-keyed last reply by its source identity after a prepend', () => {
         const viewport = document.createElement('div')
         viewport.innerHTML = `

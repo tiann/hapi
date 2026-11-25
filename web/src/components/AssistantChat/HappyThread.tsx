@@ -629,20 +629,25 @@ export function findPromptTarget(
 
 export function capturePromptAnchorState(
     viewport: HTMLElement | null,
-    messageId: string
+    messageId: string,
+    replyToMessageId?: string
 ): PromptAnchorState {
     if (!viewport) return { current: false, nextAnchorId: null }
     const anchor = document.getElementById(getConversationMessageAnchorId(messageId))
     if (!(anchor instanceof HTMLElement) || !viewport.contains(anchor)) {
         return { current: false, nextAnchorId: null }
     }
-    return {
+    const state: PromptAnchorState = {
         current: true,
         sourceMessageIds: getPromptAnchorSourceMessageIds(anchor),
         nextAnchorId: anchor.nextElementSibling instanceof HTMLElement
             ? anchor.nextElementSibling.id
             : null
     }
+    // Establish an overlap while the selected reply is still rendered; an
+    // older page already in flight can evict the reply before lookup resumes.
+    findPromptTarget(viewport, messageId, state, replyToMessageId)
+    return state
 }
 
 async function findPreviousUserMessageAfterRender(
@@ -3071,7 +3076,7 @@ export function HappyThread(props: {
         clearConversationStartFeedback()
         releaseSearchTargetHistoryLock()
         try {
-            const assistantAnchorState = capturePromptAnchorState(viewportRef.current, messageId)
+            const assistantAnchorState = capturePromptAnchorState(viewportRef.current, messageId, replyToMessageId)
             // Resolve the prompt through the history-aware path even when its
             // message anchor is already rendered. A direct scroll to the
             // replyToMessageId can race assistant-ui's tail restoration and
