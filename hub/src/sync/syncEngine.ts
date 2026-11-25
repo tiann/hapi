@@ -1060,6 +1060,20 @@ export class SyncEngine {
             after.id,
             keepForOwner ? durable!.tasks : [],
         )
+        // Previous worker's in-flight turn latch must not block Archive under a
+        // replacement generation (#2021 Approach).
+        const turnLatch = after.metadata?.unresolvedTurn
+        const keepTurnForOwner = Boolean(
+            turnLatch
+            && typeof turnLatch.hostStartMarker === 'string'
+            && turnLatch.hostStartMarker.length > 0
+            && typeof ownerMarker === 'string'
+            && ownerMarker.length > 0
+            && turnLatch.hostStartMarker === ownerMarker
+        )
+        if (!keepTurnForOwner) {
+            this.sessionCache.setUnresolvedTurn(after.id, false)
+        }
         // Steer admission ownership is OpenCode/Claude only; Cursor/Codex keep
         // their separate delivery owner (see steerDeliveryLifecycle tests).
         if (before.flavor === 'opencode' || before.flavor === 'claude') {
@@ -4000,6 +4014,7 @@ export class SyncEngine {
                         if (status === 'already_gone') {
                             this.store.messages.retireOpenChildToolWork(sessionId)
                             this.sessionCache.setBackgroundTasks(sessionId, [])
+                            this.sessionCache.setUnresolvedTurn(sessionId, false)
                             this.sessionCache.noteDerivedWork(
                                 sessionId,
                                 this.store.messages.getLiveToolWork(sessionId),

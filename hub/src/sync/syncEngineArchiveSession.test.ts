@@ -731,9 +731,10 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(cache().getSession(sessionId)?.active).toBe(true)
     })
 
-    it('refuses still_alive when thinking was cleared by heartbeat expiry (disconnected mid-turn) (#2021 Major)', async () => {
-        // expireInactive flips active=false and thinking=false after missed
-        // keepalives - that is NOT a reason to skip verified cleanup.
+    it('refuses archive while an expired in-flight turn is still alive (#2021 Approach)', async () => {
+        // expireInactive flips active=false and thinking=false, but the durable
+        // unresolvedTurn latch must keep Archive from Kill/Stop while the
+        // Runner still reports the worker generation alive.
         const sessionId = insertActiveSession('sess-expired-thinking', 'machine-x')
         const live = cache().getSession(sessionId)!
         live.thinking = true
@@ -742,12 +743,33 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(cache().expireInactive(Date.now())).toContain(sessionId)
         expect(live.active).toBe(false)
         expect(live.thinking).toBe(false)
+        expect(live.metadata?.unresolvedTurn).toBeTruthy()
 
         setKillSessionMissingTarget()
-        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
-            async () => 'still_alive'
+        let killCalled = false
+        let stopCalled = false
+        const gateway = engine as unknown as {
+            rpcGateway: {
+                killSession: unknown
+                stopRunnerSession: unknown
+                probeRunnerSessionExit: unknown
+            }
+        }
+        gateway.rpcGateway.killSession = async () => {
+            killCalled = true
+            throw new RpcTargetMissingError('KillSession', 'handler-not-registered')
+        }
+        gateway.rpcGateway.stopRunnerSession = async () => {
+            stopCalled = true
+            return 'still_alive'
+        }
+        gateway.rpcGateway.probeRunnerSessionExit = async () => 'still_alive'
 
-        await expect(engine.archiveSession(sessionId)).rejects.toThrow(/not yet confirmed/)
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(killCalled).toBe(false)
+        expect(stopCalled).toBe(false)
         expect(cache().getSession(sessionId)?.metadata?.lifecycleState).not.toBe('archived')
     })
 

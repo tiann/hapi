@@ -102,6 +102,8 @@ const HUB_OWNED_METADATA_FIELDS = [
     'childToolWork',
     // Durable background-task snapshot across Hub restart (#2021 Major).
     'backgroundWork',
+    // Durable in-flight turn latch across expiry / Hub restart (#2021 Approach).
+    'unresolvedTurn',
 ] as const
 
 const CONTRIBUTION_FIELDS = ['externalRefs'] as const

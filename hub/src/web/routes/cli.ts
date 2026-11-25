@@ -148,13 +148,14 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
                 getConfiguration().githubPrAwareness
             )
             // Hub stamps spawnedBySessionId at peer spawn and owns childToolWork
-            // / backgroundWork settlement evidence; CLI create/adopt must not
-            // forge those (#2021).
+            // / backgroundWork / unresolvedTurn settlement evidence; CLI
+            // create/adopt must not forge those (#2021).
             if (metadata && typeof metadata === 'object' && !Array.isArray(metadata)) {
                 const {
                     spawnedBySessionId: _ignoredParent,
                     childToolWork: _ignoredChildWork,
                     backgroundWork: _ignoredBackgroundWork,
+                    unresolvedTurn: _ignoredUnresolvedTurn,
                     ...rest
                 } = metadata as Record<string, unknown>
                 metadata = rest

@@ -326,6 +326,14 @@ export const MetadataSchema = z.object({
         })).default([]),
         hostStartMarker: z.string().optional(),
     }).optional(),
+    // Hub-owned in-flight turn latch (#2021 Approach). Survives heartbeat
+    // expiry (which clears ephemeral `thinking`) and Hub restart so Archive
+    // cannot StopSession a worker still generating with no open tools.
+    // Bound to hostStartMarker when known.
+    unresolvedTurn: z.object({
+        hostStartMarker: z.string().optional(),
+        since: z.number().optional(),
+    }).optional(),
     // 'running' | 'idle' | 'archived' (see shared/src/sessionLifecycle.ts).
     // 'idle' is written by the hub's keepalive-idle reconciler (tiann/hapi#1820)
     // and reverts to 'running' on the next agent progress.

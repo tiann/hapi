@@ -752,6 +752,12 @@ export class SessionCache {
         if (requestedThinking || pendingThinkingUntil <= hubNow) {
             this.pendingThinkingUntilBySessionId.delete(session.id)
         }
+        // Durable latch tracks real in-flight turns across expiry (#2021 Approach).
+        if (session.thinking) {
+            this.setUnresolvedTurn(session.id, true)
+        } else if (!preserveQueuedThinking) {
+            this.setUnresolvedTurn(session.id, false)
+        }
         // The agent says it's idle: whatever it does next is a new turn.
         if (!requestedThinking) this.forgetInterruptedTurn(session.id)
         this.recordTurn(session, wasThinking, hubNow, 'agent', 'idle')
@@ -869,6 +875,7 @@ export class SessionCache {
         session.thinking = true
         session.thinkingAt = nextTime
         if (!wasThinking) session.activeTurnStartedAt = activeTurnStartedAt
+        this.setUnresolvedTurn(session.id, true)
         this.recordTurn(session, wasThinking, session.activeTurnStartedAt ?? nextTime, 'hub_prompt', 'idle')
         session.updatedAt = Math.max(session.updatedAt, nextTime)
         this.pendingThinkingUntilBySessionId.set(session.id, nextTime + QUEUED_MESSAGE_THINKING_GRACE_MS)
@@ -976,6 +983,68 @@ export class SessionCache {
             sessionId,
             data: { backgroundTaskCount: tasks.length, backgroundTasks: tasks } satisfies SessionPatch
         })
+    }
+
+    /**
+     * Persist / clear the hub-owned in-flight turn latch so Archive still sees
+     * unresolved foreground work after heartbeat expiry clears ephemeral
+     * `thinking` (#2021 Approach).
+     */
+    setUnresolvedTurn(sessionId: string, unresolved: boolean): void {
+        const session = this.sessions.get(sessionId)
+        if (!session?.metadata) return
+        const existing = session.metadata.unresolvedTurn
+        if (unresolved) {
+            const hostStartMarker = session.metadata.hostStartMarker
+            const alreadyLatched = Boolean(existing && typeof existing === 'object')
+            if (alreadyLatched) {
+                const sameOwner = !(
+                    typeof hostStartMarker === 'string'
+                    && hostStartMarker.length > 0
+                    && typeof existing?.hostStartMarker === 'string'
+                    && existing.hostStartMarker.length > 0
+                    && existing.hostStartMarker !== hostStartMarker
+                )
+                if (sameOwner) return
+            }
+            const metadata = {
+                ...session.metadata,
+                unresolvedTurn: {
+                    ...(typeof hostStartMarker === 'string' && hostStartMarker.length > 0
+                        ? { hostStartMarker }
+                        : {}),
+                    since: Date.now(),
+                },
+            }
+            const metaResult = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                metadata,
+                session.metadataVersion,
+                session.namespace,
+                { touchUpdatedAt: false },
+            )
+            if (metaResult.result === 'success') {
+                session.metadata = metaResult.value as typeof session.metadata
+                session.metadataVersion = metaResult.version
+            }
+            return
+        }
+        if (!existing) return
+        const metadata = {
+            ...session.metadata,
+            unresolvedTurn: null,
+        }
+        const metaResult = this.store.sessions.updateSessionMetadata(
+            sessionId,
+            metadata,
+            session.metadataVersion,
+            session.namespace,
+            { touchUpdatedAt: false },
+        )
+        if (metaResult.result === 'success') {
+            session.metadata = metaResult.value as typeof session.metadata
+            session.metadataVersion = metaResult.version
+        }
     }
 
     /**
@@ -1261,11 +1330,13 @@ export class SessionCache {
         session.backgroundTaskCount = 0
         session.backgroundTasks = []
         session.derivedToolWork = false
-        // Confirmed exit — drop durable background evidence (#2021 Major).
-        if (session.metadata?.backgroundWork) {
+        // Confirmed exit — drop durable background + in-flight turn evidence
+        // (#2021 Major / Approach).
+        if (session.metadata?.backgroundWork || session.metadata?.unresolvedTurn) {
             const clearedMeta = {
                 ...session.metadata,
-                backgroundWork: null,
+                ...(session.metadata.backgroundWork ? { backgroundWork: null } : {}),
+                ...(session.metadata.unresolvedTurn ? { unresolvedTurn: null } : {}),
             }
             const metaResult = this.store.sessions.updateSessionMetadata(
                 session.id,
@@ -1316,6 +1387,9 @@ export class SessionCache {
             // patch carry, not the sweep time: a reloaded cache must keep the
             // same stop time, or stopped rows reorder after a hub restart.
             this.store.sessions.setSessionActive(session.id, false, session.activeAt, session.namespace)
+            // Capture in-flight turn before clearing ephemeral thinking so
+            // Archive still probes the Runner generation (#2021 Approach).
+            if (wasThinking) this.setUnresolvedTurn(session.id, true)
             session.thinking = false
             session.activeTurnStartedAt = null
             // Heartbeat expiry is not process-death proof. Antigravity (and
@@ -1325,6 +1399,7 @@ export class SessionCache {
             // Keep the last background snapshot until the worker clears it or
             // handleSessionEnd confirms exit. derivedToolWork can be refreshed
             // from the transcript on Archive; drop the ephemeral latch only.
+            // unresolvedTurn is hub-owned durable evidence — do not clear here.
             session.derivedToolWork = false
             // The last keepalive is the last time the agent was known to be working.
             this.recordTurn(session, wasThinking, session.activeAt, 'agent', 'expired')
