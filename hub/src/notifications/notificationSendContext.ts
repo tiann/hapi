@@ -12,5 +12,11 @@ export type NativeDeliveryGate = {
 export type NotificationSendContext = {
     nativeGate?: NativeDeliveryGate
     /** Ready-event turn state, captured before the first channel can await network I/O. */
-    readyState?: Readonly<{ thinking: boolean; activeTurnStartedAt?: number | null }>
+    readyState?: Readonly<{
+        thinking: boolean
+        activeTurnStartedAt?: number | null
+        isSuperseded: () => boolean
+    }>
+    /** Requests present when permission dispatch began, before any channel awaits I/O. */
+    permissionRequestIds?: readonly string[]
 }

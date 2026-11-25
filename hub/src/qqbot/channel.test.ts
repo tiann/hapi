@@ -274,7 +274,7 @@ it('delivers real SyncEngine notification events through NotificationHub to the 
     }
 })
 
-it('suppresses a stale QQ ready alert after an earlier channel delays dispatch', async () => {
+it.each([false, true])('suppresses stale QQ ready after an earlier channel delays dispatch (native turn: %s)', async (nativeTurn) => {
     const store = new Store(':memory:')
     const io = { of: () => ({ to: () => ({ emit() {} }) }) }
     const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
@@ -291,18 +291,25 @@ it('suppresses a stale QQ ready alert after an earlier channel delays dispatch',
     try {
         const session = engine.getOrCreateSession('delayed-ready', { path: '/workspace/test', host: 'test' }, {}, config.namespace)
         const time = Date.now()
-        engine.handleSessionAlive({ sid: session.id, time, mode: 'remote', thinking: false })
+        engine.handleSessionAlive({ sid: session.id, time, mode: 'remote', thinking: nativeTurn })
         engine.handleRealtimeEvent({ type: 'message-received', sessionId: session.id, message: {
             id: 'ready-event', seq: 1, localId: null, createdAt: time,
             content: { role: 'agent', content: { type: 'event', data: { type: 'ready' } } }
         } })
         expect(earlier).toHaveBeenCalledTimes(1)
         expect(fetch).not.toHaveBeenCalled()
-        // Apply an in-place cache update while the earlier channel is still awaiting I/O.
-        engine.handleRealtimeEvent({ type: 'session-updated', sessionId: session.id, data: { thinking: true } })
         const dispatchedSession = earlier.mock.calls[0]?.[0]
-        expect(dispatchedSession === engine.getSession(session.id)).toBe(true)
-        expect(dispatchedSession?.thinking).toBe(true)
+        if (nativeTurn) {
+            expect(dispatchedSession?.activeTurnStartedAt).toBeNull()
+            engine.handleSessionAlive({ sid: session.id, time: time + 1, mode: 'remote', thinking: false })
+            engine.handleSessionAlive({ sid: session.id, time: time + 2, mode: 'remote', thinking: true })
+            expect(engine.getSession(session.id)?.activeTurnStartedAt).toBeNull()
+        } else {
+            // Apply an in-place cache update while the earlier channel is still awaiting I/O.
+            engine.handleRealtimeEvent({ type: 'session-updated', sessionId: session.id, data: { thinking: true } })
+            expect(dispatchedSession === engine.getSession(session.id)).toBe(true)
+        }
+        expect(engine.getSession(session.id)?.thinking).toBe(true)
         releaseEarlier.resolve()
         await dispatched.promise
         expect(fetch).not.toHaveBeenCalled()
@@ -344,6 +351,54 @@ it('suppresses a permission request cleared during the NotificationHub debounce'
         expect(dispatched).toHaveBeenCalledTimes(1)
         expect(fetch).not.toHaveBeenCalled()
     } finally {
+        hub.stop()
+        engine.stop()
+        store.close()
+    }
+})
+
+it('does not notify twice for a replacement request while an earlier channel awaits I/O', async () => {
+    const store = new Store(':memory:')
+    const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+    const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+    const fetch = mockFetch()
+    const qq = new QqBotChannel(config, baseUrl, new VisibilityTracker(), id => engine.getSession(id), fetch)
+    const firstStarted = Promise.withResolvers<void>()
+    const releaseFirst = Promise.withResolvers<void>()
+    let calls = 0
+    const earlier = async () => {
+        if (++calls === 1) {
+            firstStarted.resolve()
+            await releaseFirst.promise
+        }
+    }
+    const dispatched = mock(async () => {})
+    const hub = new NotificationHub(engine, [
+        { sendReady: async () => {}, sendPermissionRequest: earlier },
+        qq,
+        { sendReady: async () => {}, sendPermissionRequest: dispatched }
+    ], { permissionDebounceMs: 1 })
+    try {
+        const session = engine.getOrCreateSession('replacement-permission', { path: '/workspace/test', host: 'test' }, {}, config.namespace)
+        const now = Date.now()
+        engine.handleSessionAlive({ sid: session.id, time: now, mode: 'remote' })
+        const addRequest = (version: number, id: string, tool: string) => engine.handleRealtimeEvent({
+            type: 'session-updated', sessionId: session.id,
+            data: { agentState: { version, value: { requests: { [id]: { tool, arguments: {}, createdAt: now } } } } }
+        })
+        addRequest(session.agentStateVersion + 1, 'first', 'Read')
+        await firstStarted.promise
+        addRequest(session.agentStateVersion + 1, 'replacement', 'AskUserQuestion')
+        releaseFirst.resolve()
+
+        const deadline = Date.now() + 1_000
+        while (dispatched.mock.calls.length < 2 && Date.now() < deadline) await Bun.sleep(5)
+        expect(dispatched).toHaveBeenCalledTimes(2)
+        const sends = fetch.mock.calls.filter(([url]) => url === messageUrl)
+        expect(sends).toHaveLength(1)
+        expect(getBody(sends[0]?.[1]).markdown.content).toContain('needs your input')
+    } finally {
+        releaseFirst.resolve()
         hub.stop()
         engine.stop()
         store.close()

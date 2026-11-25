@@ -16,6 +16,8 @@ export class NotificationHub {
     private readonly lastKnownRequests: Map<string, Set<string>> = new Map()
     private readonly notificationDebounce: Map<string, NodeJS.Timeout> = new Map()
     private readonly lastReadyNotificationAt: Map<string, number> = new Map()
+    // Only track turn transitions while at least one ready notification is in flight.
+    private readonly readyDispatches = new Map<string, { thinking: boolean; generation: number; inFlight: number }>()
     /**
      * sessionId -> the `eventId` of the last `lastModelError` we already
      * notified for. Fire ONCE per distinct error event; subsequent
@@ -80,6 +82,7 @@ export class NotificationHub {
         this.notificationDebounce.clear()
         this.lastKnownRequests.clear()
         this.lastReadyNotificationAt.clear()
+        this.readyDispatches.clear()
         this.lastModelErrorNotifiedId.clear()
         for (const timer of this.modelErrorRetryTimers.values()) {
             clearTimeout(timer)
@@ -106,6 +109,12 @@ export class NotificationHub {
                 this.checkForModelErrorNotification(session)
                 return
             }
+            const readyDispatch = this.readyDispatches.get(session.id)
+            if (readyDispatch) {
+                // Native agent turns do not always have an activeTurnStartedAt timestamp.
+                if (session.thinking && !readyDispatch.thinking) readyDispatch.generation++
+                readyDispatch.thinking = session.thinking
+            }
             this.checkForPermissionNotification(session)
             // Model-error gating: fire when metadata.lastModelError.eventId
             // differs from what we last notified for this session.
@@ -119,6 +128,7 @@ export class NotificationHub {
         }
 
         if (event.type === 'session-ended' && event.sessionId) {
+            this.readyDispatches.delete(event.sessionId)
             if (event.reason === 'completed') {
                 this.sendSessionCompletion(event.sessionId, event.reason).catch((error) => {
                     console.error('[NotificationHub] Failed to send session completion notification:', error)
@@ -145,6 +155,7 @@ export class NotificationHub {
         }
         this.lastKnownRequests.delete(sessionId)
         this.lastReadyNotificationAt.delete(sessionId)
+        this.readyDispatches.delete(sessionId)
         if (removeModelErrorWatermark) {
             this.lastModelErrorNotifiedId.delete(sessionId)
             this.clearModelErrorRetry(sessionId)
@@ -407,21 +418,39 @@ export class NotificationHub {
     }
 
     private async notifyReady(session: Session): Promise<void> {
+        const id = session.id
+        const dispatch = this.readyDispatches.get(id) ?? { thinking: session.thinking, generation: 0, inFlight: 0 }
+        this.readyDispatches.set(id, dispatch)
+        const generation = dispatch.generation
+        dispatch.inFlight++
         const ctx: NotificationSendContext = {
             nativeGate: { sent: false },
-            readyState: { thinking: session.thinking, activeTurnStartedAt: session.activeTurnStartedAt }
+            readyState: {
+                thinking: session.thinking,
+                activeTurnStartedAt: session.activeTurnStartedAt,
+                isSuperseded: () => dispatch.generation !== generation || this.readyDispatches.get(id) !== dispatch
+            }
         }
-        for (const channel of this.channels) {
-            try {
-                await channel.sendReady(session, ctx)
-            } catch (error) {
-                console.error('[NotificationHub] Failed to send ready notification:', error)
+        try {
+            for (const channel of this.channels) {
+                try {
+                    await channel.sendReady(session, ctx)
+                } catch (error) {
+                    console.error('[NotificationHub] Failed to send ready notification:', error)
+                }
+            }
+        } finally {
+            if (--dispatch.inFlight === 0 && this.readyDispatches.get(id) === dispatch) {
+                this.readyDispatches.delete(id)
             }
         }
     }
 
     private async notifyPermission(session: Session): Promise<void> {
-        const ctx: NotificationSendContext = { nativeGate: { sent: false } }
+        const ctx: NotificationSendContext = {
+            nativeGate: { sent: false },
+            permissionRequestIds: Object.keys(session.agentState?.requests ?? {})
+        }
         for (const channel of this.channels) {
             try {
                 await channel.sendPermissionRequest(session, ctx)
