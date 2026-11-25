@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { resolveExecutable } from '@/agent/agentLaunchCommand';
+import { windowsSystemTool } from '@/utils/windowsSystemTools';
 
 const windowsPath = path.win32;
 
@@ -13,7 +14,7 @@ export interface CodexCommand {
 
 function findWhereResults(command: string): string[] {
     try {
-        const result = execFileSync('where.exe', [command], {
+        const result = execFileSync(windowsSystemTool('where'), [command], {
             encoding: 'utf8',
             stdio: ['pipe', 'pipe', 'pipe'],
             cwd: homedir(),

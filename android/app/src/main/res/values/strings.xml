@@ -823,4 +823,8 @@
     <string name="passkey_enter_hub">Enter Hub address manually</string>
     <string name="passkey_hub_address_required">This passkey does not include its Hub address. Enter the address, then continue with the passkey.</string>
     <string name="passkey_error_wrong_hub">This passkey belongs to a different Hub. Choose a passkey for this Hub or check the address.</string>
+    <string name="sessions_grouped">Group by project folder</string>
+    <string name="sessions_other_project">Other</string>
+    <string name="sessions_folder_expanded">Expanded</string>
+    <string name="sessions_folder_collapsed">Collapsed</string>
 </resources>

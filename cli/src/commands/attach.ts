@@ -4,10 +4,10 @@ import { authAndSetupMachineIfNeeded } from '@/ui/auth';
 import { maybeAutoStartServer } from '@/utils/autoStartServer';
 import { CodexAppServerClient } from '@/codex/codexAppServerClient';
 import { initializeSharedClient } from '@/codex/shared/launch';
-import { assertAttachableRoot, runAttachedRuntime, validateAttachedEndpoint, type AttachedOptions } from '@/codex/shared/attached';
+import { assertAttachableRoot, loadedThreadIds, runAttachedRuntime, validateAttachedEndpoint, type AttachedOptions } from '@/codex/shared/attached';
 import { findRuntime } from '@/codex/shared/registry';
 import { runtimeControl } from '@/codex/shared/frontend';
-import { record, string } from '@/codex/shared/gateway';
+import { record } from '@/codex/shared/gateway';
 
 const HELP = `Experimental external Codex bridge (explicit external endpoint required).
   hapi attach <native-thread-id> --socket /absolute/path.sock [--new-view]
@@ -15,8 +15,8 @@ const HELP = `Experimental external Codex bridge (explicit external endpoint req
   hapi detach <hapi-session-id>
 
 The thread must already be loaded in the external app-server. Runs in the
-foreground; Ctrl-C, detach and End session disconnect HAPI only. No app-server,
-desktop configuration, login item or launchctl setting is created or changed.`;
+foreground; Ctrl-C, detach and End session disconnect HAPI only. This command
+does not configure desktop sharing. For automatic ChatGPT sync, see hapi codex-desktop setup.`;
 
 export function parseAttachArgs(args: string[]): AttachedOptions & { list: boolean } {
     let endpoint: string | undefined; let threadId: string | undefined; let newView = false; let list = false;
@@ -41,17 +41,11 @@ async function listLoaded(endpoint: string): Promise<void> {
     client.setServerRequestHandler(() => {});
     try {
         await initializeSharedClient(client);
-        let cursor: string | undefined;
-        do {
-            const page = record(await client.request('thread/loaded/list', { cursor }));
-            for (const id of Array.isArray(page.data) ? page.data : []) {
-                if (typeof id !== 'string') continue;
-                const thread = record(record(await client.request('thread/read', { threadId: id, includeTurns: false })).thread);
-                try { assertAttachableRoot(thread, id); } catch { continue; }
-                console.log(JSON.stringify({ threadId: id, name: thread.name ?? null, cwd: thread.cwd }));
-            }
-            cursor = string(page.nextCursor);
-        } while (cursor);
+        for await (const id of loadedThreadIds(client)) {
+            const thread = record(record(await client.request('thread/read', { threadId: id, includeTurns: false })).thread);
+            try { assertAttachableRoot(thread, id); } catch { continue; }
+            console.log(JSON.stringify({ threadId: id, name: thread.name ?? null, cwd: thread.cwd }));
+        }
     } finally { await client.disconnect(); }
 }
 
