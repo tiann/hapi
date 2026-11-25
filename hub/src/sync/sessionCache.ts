@@ -1330,26 +1330,12 @@ export class SessionCache {
         session.backgroundTaskCount = 0
         session.backgroundTasks = []
         session.derivedToolWork = false
-        // Confirmed exit — drop durable background + in-flight turn evidence
-        // (#2021 Major / Approach).
-        if (session.metadata?.backgroundWork || session.metadata?.unresolvedTurn) {
-            const clearedMeta = {
-                ...session.metadata,
-                ...(session.metadata.backgroundWork ? { backgroundWork: null } : {}),
-                ...(session.metadata.unresolvedTurn ? { unresolvedTurn: null } : {}),
-            }
-            const metaResult = this.store.sessions.updateSessionMetadata(
-                session.id,
-                clearedMeta,
-                session.metadataVersion,
-                session.namespace,
-                { touchUpdatedAt: false },
-            )
-            if (metaResult.result === 'success') {
-                session.metadata = metaResult.value as typeof session.metadata
-                session.metadataVersion = metaResult.version
-            }
-        }
+        // Wrapper / CLI session-end is not agent-containment proof (#2021 Approach).
+        // Keep durable backgroundWork + unresolvedTurn so Archive still probes
+        // before Stop. Latch an in-flight turn when thinking was true at exit
+        // (mirrors expireInactive). Generation replace / probe already_gone
+        // clear these later.
+        if (wasThinking) this.setUnresolvedTurn(session.id, true)
         this.pendingThinkingUntilBySessionId.delete(session.id)
 
         this.publisher.emit({

@@ -819,6 +819,56 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(store.messages.getLiveToolWork(sessionId)).toBe(false)
     })
 
+    it('refuses archive after active wrapper exit while durable turn survives (#2021 Approach)', async () => {
+        // Child-exit before heartbeat expiry used to clear unresolvedTurn via
+        // sessionCache.handleSessionEnd — Archive then skipped the probe.
+        const sessionId = insertActiveSession('sess-active-exit-turn', 'machine-x', 6161, {
+            flavor: 'cursor',
+        })
+        const live = cache().getSession(sessionId)!
+        const marker = 'Mon Nov 25 12:00:00 2026'
+        const current = store.sessions.getSession(sessionId)!
+        expect(store.sessions.updateSessionMetadata(
+            sessionId,
+            { ...current.metadata as object, hostStartMarker: marker, lifecycleStateSince: Date.now() - 1_000 },
+            current.metadataVersion,
+            NAMESPACE,
+        ).result).toBe('success')
+        cache().refreshSession(sessionId)
+        cache().handleSessionAlive({ sid: sessionId, time: Date.now(), thinking: true })
+        expect(cache().getSession(sessionId)?.thinking).toBe(true)
+
+        engine.handleSessionChildExited({
+            machineId: 'machine-x',
+            namespace: live.namespace,
+            sid: sessionId,
+            pid: 6161,
+            processStartMarker: marker,
+            time: Date.now(),
+        })
+        const after = cache().getSession(sessionId)!
+        expect(after.active).toBe(false)
+        expect(after.thinking).toBe(false)
+        expect(after.metadata?.unresolvedTurn).toBeTruthy()
+
+        setKillSessionMissingTarget()
+        let stopCalled = false
+        const gateway = engine as unknown as {
+            rpcGateway: { stopRunnerSession: unknown; probeRunnerSessionExit: unknown }
+        }
+        gateway.rpcGateway.stopRunnerSession = async () => {
+            stopCalled = true
+            return 'already_gone'
+        }
+        gateway.rpcGateway.probeRunnerSessionExit = async () => 'still_alive'
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(stopCalled).toBe(false)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).not.toBe('archived')
+    })
+
     it('refuses archive when wrapper tombstone but agent containment still live (#2021 Approach)', async () => {
         // Runner probe returns still_alive when an ACP process group survives
         // the HAPI wrapper exit — Archive must 409 with zero Kill/Stop.

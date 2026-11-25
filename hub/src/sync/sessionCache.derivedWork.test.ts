@@ -76,7 +76,7 @@ describe('derived tool work flag', () => {
         store.close()
     })
 
-    it('handleSessionEnd clears the derived flag alongside background tasks', () => {
+    it('handleSessionEnd clears ephemeral flags but keeps durable backgroundWork (#2021 Approach)', () => {
         const originalDateNow = Date.now
         Date.now = () => baseTime
         try {
@@ -102,6 +102,11 @@ describe('derived tool work flag', () => {
             expect(ended.backgroundTaskCount).toBe(0)
             expect(ended.backgroundTasks).toEqual([])
             expect(ended.derivedToolWork).toBe(false)
+            // Wrapper exit is not containment proof — durable snapshot remains
+            // so Archive still probes (#2021 Approach).
+            expect(ended.metadata?.backgroundWork?.tasks).toEqual([
+                { id: 'b1', type: 'local_bash', description: 'run' },
+            ])
             expect(derivedWorkPatches(events, session.id)).toEqual([false])
             store.close()
         } finally {

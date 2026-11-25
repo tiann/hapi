@@ -1379,6 +1379,25 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           logger.debug(`[RUNNER RUN] Orphan argv sweep left live PIDs for session ${sessionId}`);
           return 'still_alive';
         }
+        // Argv orphan reap misses detached ACP agents. Refuse success while
+        // published agent containment for this session is still active (#2021).
+        const hostPids = new Set<number>(sessionLastHostPids.get(sessionId) ?? []);
+        for (const [pid, session] of pidToTrackedSession) {
+          if (session.happySessionId === sessionId
+            || session.requestedHappySessionId === sessionId
+            || Boolean(session.sharedSessions?.[sessionId])) {
+            hostPids.add(pid);
+          }
+        }
+        for (const [pid, record] of persistedResumeProcesses) {
+          if (record.requestedSessionId === sessionId || record.confirmedSessionId === sessionId) {
+            hostPids.add(pid);
+          }
+        }
+        if (findLiveAgentRootForSession(sessionId, hostPids) !== null) {
+          logger.debug(`[RUNNER RUN] Orphan sweep blocked by live agent containment for ${sessionId}`);
+          return 'still_alive';
+        }
         if (orphanStatus === 'stopped') {
           rememberVerifiedExit(sessionId);
           return 'stopped';
