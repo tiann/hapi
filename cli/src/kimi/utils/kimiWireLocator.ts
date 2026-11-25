@@ -255,7 +255,12 @@ class KimiWireLocatorImpl {
                 }
             } else if (this.resumeWireBaseline
                 && wireStats.size === this.resumeWireBaseline.size
-                && wireStats.mtimeMs === this.resumeWireBaseline.mtimeMs) {
+                && wireStats.mtimeMs === this.resumeWireBaseline.mtimeMs
+                && wireStats.dev === this.resumeWireBaseline.device
+                && wireStats.ino === this.resumeWireBaseline.inode) {
+                // A resumed journal is unchanged only when its identity still
+                // matches the baseline; an equal-sized file written at the
+                // same time under a new inode is a replacement, not this copy.
                 continue;
             }
 
