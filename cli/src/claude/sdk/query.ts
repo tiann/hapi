@@ -486,6 +486,9 @@ export function query(config: {
         // Use shell: false with absolute path from getDefaultClaudeCodePath()
         // This avoids cmd.exe resolution issues on Windows
         shell: false,
+        // Own process group on POSIX so Runner can verify tool descendants
+        // after wrapper exit (#2021 Approach) — same pattern as ACP.
+        detached: process.platform !== 'win32',
         // Hide transient console windows on Windows when spawning Claude Code
         windowsHide: process.platform === 'win32'
     }) as ChildProcessWithoutNullStreams
@@ -500,8 +503,8 @@ export function query(config: {
             tgid: getProcessThreadGroupId(child.pid),
             pgid: getProcessGroupId(child.pid),
         }, {
-            // No Job Object on this spawn path — fail closed on Windows until
-            // clearAgentRoot after verified child exit.
+            // POSIX detached ⇒ agent-owned group. Windows lacks Job Object on
+            // this path — fail closed until clearAgentRoot after verified exit.
             containmentEstablished: !isWindows(),
         })
     }

@@ -4008,7 +4008,15 @@ export class SyncEngine {
                                 ? meta.hostStartMarker
                                 : undefined
                             if (typeof hostPid === 'number' && hostPid > 0) {
-                                status = await probe(`PID-${hostPid}`, hostStartMarker)
+                                const pidStatus = await probe(`PID-${hostPid}`, hostStartMarker)
+                                // PID-only already_gone proves the wrapper is
+                                // gone, not Codex/app-server or agent
+                                // containment. Only promote still_alive so we
+                                // never clear durable work on a raw-PID
+                                // fallback (#2021 Approach).
+                                if (pidStatus === 'still_alive') {
+                                    status = 'still_alive'
+                                }
                             }
                         }
                         if (status === 'already_gone') {

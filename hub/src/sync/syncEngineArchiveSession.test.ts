@@ -819,6 +819,55 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(store.messages.getLiveToolWork(sessionId)).toBe(false)
     })
 
+    it('refuses archive when only PID-host fallback reports already_gone (#2021 Approach)', async () => {
+        // Session probe unknown (e.g. Codex registry unreadable) + wrapper PID
+        // already_gone must NOT clear durable work — that skipped Codex (#2021).
+        const { AGENT_MESSAGE_PAYLOAD_TYPE } = await import('@hapi/protocol')
+        const sessionId = insertActiveSession('sess-pid-fallback-only', 'machine-x', 7171, {
+            flavor: 'codex',
+        })
+        store.messages.upsertToolCallMessage(
+            sessionId,
+            {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: {
+                        type: 'tool-call',
+                        callId: 'codex-shell',
+                        name: 'shell',
+                        input: {},
+                        status: 'in_progress',
+                    },
+                },
+            },
+            'codex-shell',
+        )
+        const live = cache().getSession(sessionId)!
+        live.activeAt = Date.now() - 360_000
+        expect(cache().expireInactive(Date.now())).toContain(sessionId)
+
+        setKillSessionMissingTarget()
+        let stopCalled = false
+        const gateway = engine as unknown as {
+            rpcGateway: { stopRunnerSession: unknown; probeRunnerSessionExit: unknown }
+        }
+        gateway.rpcGateway.stopRunnerSession = async () => {
+            stopCalled = true
+            return 'already_gone'
+        }
+        gateway.rpcGateway.probeRunnerSessionExit = async (id: string) => {
+            if (id.startsWith('PID-')) return 'already_gone'
+            return 'unknown'
+        }
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(stopCalled).toBe(false)
+        expect(store.messages.getLiveToolWork(sessionId)).toBe(true)
+    })
+
     it('refuses archive after active wrapper exit while durable turn survives (#2021 Approach)', async () => {
         // Child-exit before heartbeat expiry used to clear unresolvedTurn via
         // sessionCache.handleSessionEnd — Archive then skipped the probe.
