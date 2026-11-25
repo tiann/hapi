@@ -519,6 +519,24 @@ const fakeApi = {
             }
         }
 
+        if (direction === 'after' && delayedQueuedReadback) {
+            // Reconnect catch-up must not replace the fixture window with the
+            // latest page or silently evict the just-confirmed older input.
+            const cursorAt = query.afterAt ?? Number.NEGATIVE_INFINITY
+            const cursorSeq = query.afterSeq ?? Number.NEGATIVE_INFINITY
+            const newer = sourceMessages.filter(message => {
+                const position = positionOf(message)
+                return position.at > cursorAt || (position.at === cursorAt && position.seq > cursorSeq)
+            })
+            const pageMessages = newer.slice(0, limit)
+            const head = sourceMessages.at(-1)
+            return { messages: pageMessages, page: pageFrom(pageMessages, {
+                direction: 'after', limit, epoch: fixtureEpoch, hasMore: newer.length > pageMessages.length,
+                snapshotHeadSeq: head?.seq ?? null,
+                snapshotHeadAt: head ? positionOf(head).at : null
+            }) }
+        }
+
         const latestMessages = cachedComplete && fixtureEpoch === 2
             ? [createFixtureMessage(31, { role: 'user', content: { type: 'text', text: 'Current history after rewind' } })]
             : sourceMessages
