@@ -1896,10 +1896,10 @@ export class AcpSdkBackend implements AgentBackend {
             this.toolCallLifetimes = this.createToolCallLifetimes();
         }
         this.activeSessionId = sessionId;
-        // Stamp sessionId onto the durable agent-root publish so Runner probe
-        // can find it after host-pid maps are cleared (#2021 Approach).
+        // Re-publish with HAPI_SESSION_ID from env (never the ACP agent session
+        // id) so Runner probe can find containment after restart (#2021 Approach).
         if (this.spawnedRootIdentity) {
-            publishAgentRootFromIdentity(this.spawnedRootIdentity, { sessionId });
+            publishAgentRootFromIdentity(this.spawnedRootIdentity);
         }
         // Calls of this session still open when a previous process stopped
         // keep their ids (an agent that outlives HAPI's restart may report them).

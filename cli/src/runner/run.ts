@@ -18,7 +18,10 @@ import { writeRunnerState, RunnerLocallyPersistedState, readRunnerState, acquire
 import { getCliArgs } from '@/utils/cliArgs';
 import { getProcessStartMarker, getSystemBootId, getProcessThreadGroupId, normalizeBootId, isProcessAlive, isWindows, killProcess, killProcessByChildProcess, killProcessTreeByPid } from '@/utils/process';
 import { findStopSessionOrphanTargets, listWindowsProcessesWithCommandLine, reapRunnerSpawnedOrphans } from '@/runner/orphanReap';
-import { findLiveAgentRootForSession } from '@/runner/agentRootRegistry';
+import {
+    findLiveAgentRootForSession,
+    hostAgentContainmentActive,
+} from '@/runner/agentRootRegistry';
 import { decideUntrackedRunnerWebhook } from '@/runner/lateRunnerWebhook';
 import { cleanupFailedStartupAfterExit, sessionStartupTimeout, waitForRecoverableStartup } from './sessionStartup';
 import { buildChildExitNotices, type ChildExitNotice } from './childExitNotice';
@@ -1742,6 +1745,10 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       }
 
       if (hasVerifiedExit(sessionId)) {
+        if (agentContainmentBlocksAlreadyGone(sessionId)) {
+          logger.debug(`[RUNNER RUN] Session ${sessionId} tombstone blocked by live agent containment`);
+          return 'still_alive';
+        }
         logger.debug(`[RUNNER RUN] Session ${sessionId} was previously observed exited`);
         return 'already_gone';
       }
@@ -1752,6 +1759,10 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       // No PID matched and no verified-exit tombstone — distinct from
       // still_alive so callers reconciling stale rows are not blocked forever,
       // while callers that just spawned this id can treat unknown defensively.
+      if (agentContainmentBlocksAlreadyGone(sessionId)) {
+        logger.debug(`[RUNNER RUN] Session ${sessionId} unknown wrapper but agent containment live`);
+        return 'still_alive';
+      }
       logger.debug(`[RUNNER RUN] Session ${sessionId} not found without verified exit`);
       return 'unknown';
     };
@@ -1812,6 +1823,9 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         const pid = parseInt(sessionId.slice(4), 10);
         if (!Number.isFinite(pid) || pid <= 0) return 'unknown';
         if (!isProcessAlive(pid)) {
+          // Wrapper PID gone — still refuse already_gone while its published
+          // agent process group / containment may have members (#2021 Approach).
+          if (hostAgentContainmentActive(pid)) return 'still_alive';
           rememberVerifiedExit(sessionId);
           return 'already_gone';
         }

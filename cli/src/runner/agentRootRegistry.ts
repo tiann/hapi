@@ -1,18 +1,21 @@
 /**
- * Durable agent-process identity for archive probe (#2021 Approach).
+ * Durable agent-process containment for archive probe (#2021 Approach).
  *
  * ACP / Cursor spawn the agent in its own POSIX process group (or Windows Job).
- * When the HAPI wrapper exits, a verified-exit tombstone alone must not prove
- * those agent processes stopped — tools can keep running under the detached
- * group. The CLI writes the agent root here at spawn; Runner probeSessionExit
- * refuses already_gone while the recorded root is still alive.
+ * Wrapper exit tombstones are not containment proof — tools can keep running
+ * under a detached group after the group leader dies. Persist the agent root
+ * against the HAPI session id + wrapper hostPid; Runner probe/stop refuse
+ * already_gone until classifyAgentOwnedProcessGroup reports empty/foreign
+ * (or Windows root identity is gone).
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { resolveHapiHomeDir } from '@/configuration'
+import { HAPI_SESSION_ID_ENV } from '@/agent/hapiSessionEnv'
 import {
+    classifyAgentOwnedProcessGroup,
     getProcessStartMarker,
-    isProcessAlive,
+    isWindows,
     retainedIdentityStillAlive,
     type RetainedProcessIdentity,
 } from '@/utils/process'
@@ -24,6 +27,7 @@ export type AgentRootRecord = {
     bootId?: string | null
     tgid?: number | null
     pgid?: number | null
+    /** HAPI hub session UUID — never the ACP agent session id. */
     sessionId?: string
 }
 
@@ -33,6 +37,12 @@ function agentRootsDir(): string {
 
 function hostPath(hostPid: number): string {
     return join(agentRootsDir(), `host-${hostPid}.json`)
+}
+
+function sessionPath(sessionId: string): string {
+    // Sanitize path segment — hub ids are UUIDs; reject anything odd.
+    const safe = sessionId.replace(/[^a-zA-Z0-9._-]/g, '')
+    return join(agentRootsDir(), `session-${safe}.json`)
 }
 
 function parseRecord(raw: unknown): AgentRootRecord | null {
@@ -52,23 +62,37 @@ function parseRecord(raw: unknown): AgentRootRecord | null {
     }
 }
 
-export function writeAgentRoot(record: AgentRootRecord): void {
-    if (!Number.isSafeInteger(record.hostPid) || record.hostPid <= 0) return
-    if (!Number.isSafeInteger(record.pid) || record.pid <= 0) return
-    const dir = agentRootsDir()
-    mkdirSync(dir, { recursive: true })
-    const path = hostPath(record.hostPid)
+function writeAtomic(path: string, record: AgentRootRecord): void {
     const tmp = `${path}.${process.pid}.tmp`
     writeFileSync(tmp, JSON.stringify(record))
     renameSync(tmp, path)
 }
 
+export function writeAgentRoot(record: AgentRootRecord): void {
+    if (!Number.isSafeInteger(record.hostPid) || record.hostPid <= 0) return
+    if (!Number.isSafeInteger(record.pid) || record.pid <= 0) return
+    const dir = agentRootsDir()
+    mkdirSync(dir, { recursive: true })
+    writeAtomic(hostPath(record.hostPid), record)
+    if (record.sessionId && record.sessionId.length > 0) {
+        writeAtomic(sessionPath(record.sessionId), record)
+    }
+}
+
 export function clearAgentRoot(hostPid: number): void {
     if (!Number.isSafeInteger(hostPid) || hostPid <= 0) return
+    const existing = readAgentRootForHost(hostPid)
     try {
         unlinkSync(hostPath(hostPid))
     } catch {
         // Best effort.
+    }
+    if (existing?.sessionId) {
+        try {
+            unlinkSync(sessionPath(existing.sessionId))
+        } catch {
+            // Best effort.
+        }
     }
 }
 
@@ -83,7 +107,18 @@ export function readAgentRootForHost(hostPid: number): AgentRootRecord | null {
     }
 }
 
-/** List every published agent-root record (small lock dir; crash recovery). */
+export function readAgentRootForSession(sessionId: string): AgentRootRecord | null {
+    if (!sessionId || sessionId.startsWith('PID-')) return null
+    const path = sessionPath(sessionId)
+    if (!existsSync(path)) return null
+    try {
+        return parseRecord(JSON.parse(readFileSync(path, 'utf8')))
+    } catch {
+        return null
+    }
+}
+
+/** List every published host-* agent-root record (small lock dir; crash recovery). */
 export function listAgentRoots(): AgentRootRecord[] {
     const dir = agentRootsDir()
     if (!existsSync(dir)) return []
@@ -105,32 +140,11 @@ export function listAgentRoots(): AgentRootRecord[] {
 }
 
 /**
- * Find a still-alive agent root for this session. Prefers known host PIDs, then
- * scans publishes that stamped sessionId (maps may already be cleared after
- * wrapper exit).
+ * True while agent containment may still have members. Fail closed on
+ * unknown / unprobeable groups — never treat a dead leader PID alone as
+ * group exit (#2021 Approach).
  */
-export function findLiveAgentRootForSession(
-    sessionId: string,
-    knownHostPids: Iterable<number> = [],
-): AgentRootRecord | null {
-    const seen = new Set<number>()
-    for (const hostPid of knownHostPids) {
-        if (!Number.isSafeInteger(hostPid) || hostPid <= 0 || seen.has(hostPid)) continue
-        seen.add(hostPid)
-        const root = readAgentRootForHost(hostPid)
-        if (root && agentRootRecordStillAlive(root)) return root
-        if (root && !agentRootRecordStillAlive(root)) clearAgentRoot(hostPid)
-    }
-    for (const root of listAgentRoots()) {
-        if (seen.has(root.hostPid)) continue
-        if (root.sessionId !== sessionId) continue
-        if (agentRootRecordStillAlive(root)) return root
-        clearAgentRoot(root.hostPid)
-    }
-    return null
-}
-
-export function agentRootRecordStillAlive(record: AgentRootRecord): boolean {
+export function agentRootContainmentActive(record: AgentRootRecord): boolean {
     const identity: RetainedProcessIdentity = {
         pid: record.pid,
         startMarker: record.startMarker,
@@ -138,12 +152,59 @@ export function agentRootRecordStillAlive(record: AgentRootRecord): boolean {
         tgid: record.tgid ?? null,
         pgid: record.pgid ?? null,
     }
-    // Prefer generation-bound identity when we have a start marker; fall back
-    // to bare liveness when the platform could not capture one at spawn.
-    if (record.startMarker) {
-        return retainedIdentityStillAlive(identity)
+    if (!isWindows() && typeof record.pgid === 'number' && record.pgid > 0) {
+        const state = classifyAgentOwnedProcessGroup(identity)
+        // empty/foreign ⇒ containment ended; ours/unknown ⇒ still blocking
+        return state === 'ours' || state === 'unknown'
     }
-    return isProcessAlive(record.pid)
+    // Windows / no pgid: generation-bound root identity (match or unknown).
+    return retainedIdentityStillAlive(identity)
+}
+
+/** @deprecated Use agentRootContainmentActive — name kept for call-site churn. */
+export function agentRootRecordStillAlive(record: AgentRootRecord): boolean {
+    return agentRootContainmentActive(record)
+}
+
+/**
+ * Find active containment for this HAPI session. Prefers known host PIDs, then
+ * the session-* index, then a host-* scan by stamped sessionId.
+ */
+export function findLiveAgentRootForSession(
+    sessionId: string,
+    knownHostPids: Iterable<number> = [],
+): AgentRootRecord | null {
+    const seen = new Set<number>()
+    const consider = (root: AgentRootRecord | null): AgentRootRecord | null => {
+        if (!root) return null
+        if (agentRootContainmentActive(root)) return root
+        clearAgentRoot(root.hostPid)
+        return null
+    }
+    for (const hostPid of knownHostPids) {
+        if (!Number.isSafeInteger(hostPid) || hostPid <= 0 || seen.has(hostPid)) continue
+        seen.add(hostPid)
+        const live = consider(readAgentRootForHost(hostPid))
+        if (live) return live
+    }
+    const bySession = consider(readAgentRootForSession(sessionId))
+    if (bySession) return bySession
+    for (const root of listAgentRoots()) {
+        if (seen.has(root.hostPid)) continue
+        if (root.sessionId !== sessionId) continue
+        const live = consider(root)
+        if (live) return live
+    }
+    return null
+}
+
+/** True when a hostPid's published agent containment is still active. */
+export function hostAgentContainmentActive(hostPid: number): boolean {
+    const root = readAgentRootForHost(hostPid)
+    if (!root) return false
+    if (agentRootContainmentActive(root)) return true
+    clearAgentRoot(hostPid)
+    return false
 }
 
 /** Publish spawn identity for the current HAPI host process. */
@@ -151,6 +212,8 @@ export function publishAgentRootFromIdentity(
     identity: RetainedProcessIdentity,
     extras?: { sessionId?: string },
 ): void {
+    const fromEnv = (process.env[HAPI_SESSION_ID_ENV] ?? '').trim()
+    const sessionId = (extras?.sessionId ?? fromEnv) || undefined
     writeAgentRoot({
         hostPid: process.pid,
         pid: identity.pid,
@@ -158,7 +221,7 @@ export function publishAgentRootFromIdentity(
         bootId: identity.bootId,
         tgid: identity.tgid,
         pgid: identity.pgid,
-        sessionId: extras?.sessionId,
+        sessionId,
     })
 }
 
