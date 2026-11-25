@@ -291,6 +291,8 @@ const delayedQueuedReadback = fixtureParams.has('delayedQueuedReadback')
 const queuedReadbackGate = delayedQueuedReadback ? new Promise<void>(resolve => { releaseQueuedReadback = resolve }) : null
 let fixtureConsumed = false
 const batchedReply = fixtureParams.has('batchedReply')
+const claudeBatch = fixtureParams.get('provider') === 'claude'
+const lateClaudeFollowUp = fixtureParams.has('lateClaudeFollowUp')
 let fixtureEpoch = 1
 let fixtureSteerConfirmed = false
 const rekeyReply = fixtureParams.has('rekeyReply')
@@ -326,6 +328,11 @@ const allMessages: DecryptedMessage[] = conciseLongTurn ? Array.from({ length: T
     createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'Prompt from the older page' } }),
     createFixtureMessage(2, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Earlier part of the reply' } } }),
     createFixtureMessage(3, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Last part of the reply' } } }),
+] : lateClaudeFollowUp ? [
+    createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'Original Claude input' } }),
+    createFixtureMessage(2, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Original Claude reply' } } }),
+    { ...createFixtureMessage(3, { role: 'user', content: { type: 'text', text: 'Follow-up input picked up after the result' } }), localId: 'late-steer' },
+    createFixtureMessage(4, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Claude follow-up reply' } } }),
 ] : batchedReply ? [
     { ...createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'First accepted batch member' } }), localId: 'batch-first' },
     { ...createFixtureMessage(2, { role: 'user', content: { type: 'text', text: 'Last accepted batch member' } }), localId: 'batch-last' },
@@ -579,10 +586,10 @@ const fakeSession = {
     thinking: false,
     agentState: null,
     metadata: { path: '/tmp/fixture', host: 'fixture', ...(batchedReply ? {
-        flavor: 'codex', capabilities: { concurrentClients: true },
+        ...(claudeBatch ? { flavor: 'claude' } : { flavor: 'codex', capabilities: { concurrentClients: true } }),
         conversationHistoryTurns: { 'batch-first': 'native-turn', 'batch-last': 'native-turn' },
         conversationHistoryPoints: { 'batch-first': true }
-    } : {}) }
+    } : lateClaudeFollowUp ? { flavor: 'claude' } : {}) }
 } as unknown as Session
 
 const noopSend = () => {}
@@ -648,7 +655,7 @@ function FixtureThreadSession(props: { activeSessionId: string }) {
 
     return (
         <AssistantRuntimeProvider runtime={runtime}>
-            {(loadedPromptPreload || lateSteerJump || lateConsumeJump || delayedQueuedReadback || batchedReply) && <style>{'[data-hapi-message-role="assistant"] { min-height: 1800px; }'}</style>}
+            {(loadedPromptPreload || lateSteerJump || lateConsumeJump || delayedQueuedReadback || batchedReply || lateClaudeFollowUp) && <style>{'[data-hapi-message-role="assistant"] { min-height: 1800px; }'}</style>}
             {navigationShell ? (
                 <header data-testid="navigation-header" className="flex h-[76px] shrink-0 items-center p-3">
                     <button type="button" onClick={() => setOutlineOpen(true)}>Open history</button>

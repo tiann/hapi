@@ -9,7 +9,7 @@ import {
     getBlockPresentationTimestamp,
     getResponseGroupTimestamps,
     buildAssistantReplyTargets,
-    sharedCodexTurnContinuations
+    confirmedTurnContinuations
 } from './assistant-runtime'
 import { reconcileChatBlocks } from '@/chat/reconcile'
 import type { AgentEventBlock, AgentTextBlock, CliOutputBlock, ToolCallBlock, UserTextBlock } from '@/chat/types'
@@ -383,9 +383,9 @@ describe('buildAssistantReplyTargets', () => {
         expect(buildAssistantReplyTargets(blocks).get('agent-text:answer')).toBe('user-text:original')
     })
 
-    it('uses the first proven Shared Codex batch input, not a later member with the same invocation time', () => {
-        const continuations = sharedCodexTurnContinuations({ path: '/test', host: 'local', flavor: 'codex',
-            capabilities: { concurrentClients: true },
+    it.each(['codex', 'claude'] as const)('uses the first proven %s batch input, not a later member with the same invocation time', flavor => {
+        const continuations = confirmedTurnContinuations({ path: '/test', host: 'local', flavor,
+            ...(flavor === 'codex' ? { capabilities: { concurrentClients: true } } : {}),
             conversationHistoryTurns: { first: 'turn', last: 'turn', separate: 'next' },
             conversationHistoryPoints: { first: true, separate: true }
         })
@@ -398,6 +398,18 @@ describe('buildAssistantReplyTargets', () => {
         expect(buildAssistantReplyTargets(assignThreadMessageIds([last, answer]), continuations).has('agent-text:answer')).toBe(false)
         expect(buildAssistantReplyTargets(assignThreadMessageIds([first, last, next, answer]), continuations).get('agent-text:answer'))
             .toBe('user-text:msg-next')
+    })
+
+    it.each([true, false])('distinguishes a mid-turn steer from a new follow-up input (steered=%s)', steered => {
+        const blocks = assignThreadMessageIds([
+            userText('original', { invokedAt: 1_000 }),
+            agentText('first-answer'),
+            userText('pickup', { invokedAt: 2_000, steered }),
+            agentText('second-answer')
+        ])
+        const targets = buildAssistantReplyTargets(blocks)
+        expect(targets.get('agent-text:first-answer')).toBe('user-text:original')
+        expect(targets.get('agent-text:second-answer')).toBe(steered ? 'user-text:original' : 'user-text:pickup')
     })
 
     it('retargets a reply when a late acknowledgement adds only the steered flag', () => {

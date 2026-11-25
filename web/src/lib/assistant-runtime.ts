@@ -377,8 +377,11 @@ export type BlockWithThreadMessageId = {
  */
 const NO_TURN_CONTINUATIONS: ReadonlyMap<string, string> = new Map()
 
-export function sharedCodexTurnContinuations(metadata: Session['metadata']): ReadonlyMap<string, string> {
-    if (metadata?.flavor !== 'codex' || metadata.capabilities?.concurrentClients !== true) return NO_TURN_CONTINUATIONS
+export function confirmedTurnContinuations(metadata: Session['metadata']): ReadonlyMap<string, string> {
+    if (!metadata || (metadata.flavor !== 'claude'
+        && !(metadata.flavor === 'codex' && metadata.capabilities?.concurrentClients === true))) {
+        return NO_TURN_CONTINUATIONS
+    }
     const continuations = new Map<string, string>()
     const turns = metadata.conversationHistoryTurns ?? {}
     const firstByTurn = new Map<string, string | null>()
@@ -1110,7 +1113,7 @@ export function useHappyRuntime(props: {
     )
 
     const turnContinuations = useMemo(
-        () => sharedCodexTurnContinuations(props.session.metadata),
+        () => confirmedTurnContinuations(props.session.metadata),
         [props.session.metadata]
     )
     const replyTargets = useMemo(

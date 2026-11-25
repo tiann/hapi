@@ -460,21 +460,34 @@ test('keeps the initiating prompt through a reconnect during a long reply jump',
 })
 
 
-test('a reply jumps to the first accepted Codex batch member, even across a page', async ({ page }) => {
-    await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&batchedReply=1')
-    const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Reply to the accepted batch' })
-    await expect.poll(async () => (await geometry(page)).chatScrollTop).toBeGreaterThan(500)
-    await expect(page.getByText('First accepted batch member', { exact: true })).toHaveCount(0)
-    await reply.getByRole('button', { name: 'Jump to turn input' }).press('Enter', { timeout: 7_000 })
-    const first = page.locator('[data-hapi-turn-input="true"]').filter({ hasText: 'First accepted batch member' })
-    await expect(first).toBeFocused()
-    await expect(first).toBeInViewport()
-    await expect(page.locator('[data-hapi-turn-input="true"]').filter({ hasText: 'Last accepted batch member' })).toHaveCount(0)
-    await expect(page.getByText('Loading turn input…', { exact: true })).toHaveCount(0)
-    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
-    if (screenshots) await page.screenshot({ path: `${screenshots}/reply-navigation-codex-batch-first.png` })
-})
+for (const provider of ['codex', 'claude']) {
+    test(`a reply jumps to the first accepted ${provider} batch member, even across a page`, async ({ page }) => {
+        await page.goto(`/e2e-fixtures/history-load-fixture.html?navigationShell=1&batchedReply=1&provider=${provider}`)
+        const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Reply to the accepted batch' })
+        await expect.poll(async () => (await geometry(page)).chatScrollTop).toBeGreaterThan(500)
+        await expect(page.getByText('First accepted batch member', { exact: true })).toHaveCount(0)
+        await reply.getByRole('button', { name: 'Jump to turn input' }).press('Enter', { timeout: 7_000 })
+        const first = page.locator('[data-hapi-turn-input="true"]').filter({ hasText: 'First accepted batch member' })
+        await expect(first).toBeFocused()
+        await expect(first).toBeInViewport()
+        await expect(page.locator('[data-hapi-turn-input="true"]').filter({ hasText: 'Last accepted batch member' })).toHaveCount(0)
+        await expect(page.getByText('Loading turn input…', { exact: true })).toHaveCount(0)
+        const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+        if (screenshots) await page.screenshot({ path: `${screenshots}/reply-navigation-${provider}-batch-first.png` })
+    })
+}
 
+test('a late Claude steer that starts a new turn remains a reply target', async ({ page }) => {
+    await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&lateClaudeFollowUp=1')
+    await expect.poll(async () => (await geometry(page)).chatScrollTop).toBeGreaterThan(500)
+    const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Claude follow-up reply' })
+    await reply.getByRole('button', { name: 'Jump to turn input' }).press('Enter')
+    const followUp = page.locator('[data-hapi-turn-input="true"]').filter({ hasText: 'Follow-up input picked up after the result' })
+    await expect(followUp).toBeFocused()
+    await expect(followUp).toBeInViewport()
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/reply-navigation-claude-follow-up.png` })
+})
 
 test('rechecks the destination when a reconnect marks the apparent prompt as a steer', async ({ page }) => {
     await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&lateSteerJump=1')
