@@ -3076,8 +3076,33 @@ export function HappyThread(props: {
                 }
                 return prompt
             }
+            const verifyPromptHistory = async () => {
+                if (!heldWindow) return !isCancelled()
+                if (!await heldWindow.verify()) {
+                    if (isCancelled()) return false
+                    throw new Error('Could not verify prompt history')
+                }
+                // Readback can promote a queued row or mark a candidate as
+                // steered. Re-evaluate only after the updated runtime commits.
+                const version = getMessageWindowState(sessionIdRef.current).messagesVersion
+                const deadline = Date.now() + 1500
+                while (!isCancelled() && appliedMessagesVersionRef.current < version && Date.now() < deadline) {
+                    await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve()))
+                }
+                if (isCancelled()) return false
+                if (appliedMessagesVersionRef.current < version) {
+                    throw new Error('Prompt history refresh did not render')
+                }
+                return true
+            }
             for (let attempt = 0; ; attempt += 1) {
-                const target = await locatePrompt()
+                let target = await locatePrompt()
+                if (!target && !assistantAnchorState.blockedBySystemTurn && heldWindow && !isCancelled()) {
+                    // All older pages can already be loaded while the only
+                    // input is still hidden as queued. Verify before giving up.
+                    if (!await verifyPromptHistory()) return false
+                    target = await locatePrompt()
+                }
                 if (isCancelled()) return false
                 if (assistantAnchorState.blockedBySystemTurn) {
                     setPromptNavigationStatus('idle')
@@ -3086,25 +3111,7 @@ export function HappyThread(props: {
                 if (!target) throw new Error('No preceding user message found')
                 target.scrollIntoView({ block: 'start', behavior: 'smooth' })
                 const settled = await waitForPromptScrollSettlement(viewport, target, isCancelled)
-                if (heldWindow && !await heldWindow.verify()) {
-                    if (isCancelled()) return false
-                    throw new Error('Could not verify prompt history')
-                }
-                if (isCancelled()) return false
-                // The reconnect may have marked the current node as a steer
-                // without removing it. Let the updated assistant runtime commit
-                // before checking that this is still the reply's input.
-                if (heldWindow) {
-                    const version = getMessageWindowState(sessionIdRef.current).messagesVersion
-                    const deadline = Date.now() + 1500
-                    while (!isCancelled() && appliedMessagesVersionRef.current < version && Date.now() < deadline) {
-                        await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve()))
-                    }
-                    if (!isCancelled() && appliedMessagesVersionRef.current < version) {
-                        throw new Error('Prompt history refresh did not render')
-                    }
-                }
-                if (isCancelled()) return false
+                if (!await verifyPromptHistory()) return false
                 const current = findTarget()
                 if (settled && current === target && target.isConnected) {
                     if (shouldFocusTarget()) target.focus({ preventScroll: true })

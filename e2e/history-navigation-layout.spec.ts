@@ -550,6 +550,28 @@ test('waits for retained queued input readback outside the reconnect latest page
     if (screenshots) await page.screenshot({ path: `${screenshots}/reply-navigation-queued-readback.png` })
 })
 
+test('verifies a queued input before declaring that no prompt exists', async ({ page }) => {
+    await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&delayedQueuedReadback=1&onlyQueuedInput=1')
+    const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Reply after delayed acknowledgement' })
+    await expect.poll(async () => (await geometry(page)).chatScrollTop).toBeGreaterThan(500)
+    await page.evaluate(() => window.__probe.loadMore())
+    await expect.poll(() => page.evaluate(() => window.__probe.windowState().oldestSeq)).toBe(2)
+    await expect(page.locator('[data-hapi-turn-input="true"]')).toHaveCount(0)
+    const button = reply.getByRole('button', { name: 'Jump to turn input' })
+    await button.focus()
+    await button.evaluate(element => {
+        void window.__probe.gap()
+        const button = element as HTMLButtonElement
+        button.click()
+    })
+    await expect.poll(() => page.evaluate(() => window.__probe.queuedReadbackIds)).toEqual(['queued-before-latest'])
+    await page.evaluate(() => window.__probe.releaseQueuedReadback())
+    await expect(page.locator('[data-hapi-turn-input="true"]').filter({ hasText: 'Newly confirmed input' })).toBeFocused()
+    await expect(page.getByText('Could not load turn input. Try again.', { exact: true })).toHaveCount(0)
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/reply-navigation-only-queued-input.png` })
+})
+
 test('does not preload older history while a jump to a loaded prompt is settling', async ({ page }) => {
     await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&loadedPromptPreload=1')
     const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Reply to loaded prompt' })

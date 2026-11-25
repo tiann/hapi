@@ -329,7 +329,9 @@ const allMessages: DecryptedMessage[] = conciseLongTurn ? Array.from({ length: T
     { ...createFixtureMessage(2, { role: 'user', content: { type: 'text', text: 'Last accepted batch member' } }), localId: 'batch-last' },
     createFixtureMessage(3, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Reply to the accepted batch' } } }),
 ] : delayedQueuedReadback ? [
-    createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'Earlier valid input' } }),
+    fixtureParams.has('onlyQueuedInput')
+        ? createFixtureMessage(1, { role: 'agent', content: { type: 'output', data: { isMeta: true } } })
+        : createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'Earlier valid input' } }),
     { ...createFixtureMessage(2, { role: 'user', content: { type: 'text', text: 'Newly confirmed input' } }), localId: 'queued-before-latest', invokedAt: null, status: 'queued' },
     ...Array.from({ length: 201 }, (_, index) => createFixtureMessage(index + 3, { role: 'agent', content: { type: 'output', data: { isMeta: true } } })),
     createFixtureMessage(204, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Reply after delayed acknowledgement' } } }),

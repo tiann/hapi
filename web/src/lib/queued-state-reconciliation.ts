@@ -26,7 +26,9 @@ async function reconcileQueuedState(api: ApiClient, sessionId: string): Promise<
     const { queuedLocalIds, dispatchingLocalIds, indeterminateLocalIds, invokedLocalMessages } =
         await readQueuedState(api, sessionId, candidateLocalIds)
     const currentWindow = getMessageWindowState(sessionId)
-    if (currentWindow.epoch !== window.epoch || currentWindow.requiresLatestReset) return
+    // Historical context deliberately keeps requiresLatestReset set until a
+    // return to tail. Only a change during this request invalidates it.
+    if (currentWindow.epoch !== window.epoch || (!window.requiresLatestReset && currentWindow.requiresLatestReset)) return
     applyInvokedQueuedState(invokedLocalMessages, (ids, invokedAt, steered) => {
         if (steered) markMessagesConsumed(sessionId, ids, invokedAt, true)
         else markMessagesConsumed(sessionId, ids, invokedAt)

@@ -168,6 +168,13 @@ describe('reconcileQueuedStateAfterConnect', () => {
         expect(mockReconcileQueuedLocalIds).not.toHaveBeenCalled()
     })
 
+    it('clears a canceled queued row in a stable historical search window', async () => {
+        mockGetCandidates.mockReturnValueOnce(['canceled-local'])
+        vi.mocked(getMessageWindowState).mockReturnValue({ epoch: 1, requiresLatestReset: true, messages: [] } as unknown as ReturnType<typeof getMessageWindowState>)
+        await reconcileQueuedStateAfterConnect(createMockApi(), 'historical-search')
+        expect(mockReconcileQueuedLocalIds).toHaveBeenCalledWith('historical-search', ['canceled-local'], [])
+    })
+
     it('ignores queue readback from before the message window was rewound', async () => {
         mockGetCandidates.mockReturnValueOnce(['local-1'])
         const store = vi.mocked(getMessageWindowState)
