@@ -62,7 +62,7 @@ function asToolNames(value: unknown): string[] | undefined {
 
 const RUNTIME_CONNECTION_STATUSES = new Set(['notStarted', 'starting', 'connected', 'authenticationRequired', 'failed', 'cancelled', 'disabled'])
 
-function parseInventoryEntries(value: unknown): CodexMcpServerInventory[] | undefined {
+function parseInventoryEntries(value: unknown, strict = false): CodexMcpServerInventory[] | undefined {
     const record = asRecord(value)
     const entries = Array.isArray(value)
         ? value
@@ -71,10 +71,14 @@ function parseInventoryEntries(value: unknown): CodexMcpServerInventory[] | unde
             : null
     if (!entries) return undefined
 
-    return entries.flatMap((entry) => {
+    const inventory: CodexMcpServerInventory[] = []
+    for (const entry of entries) {
         const item = asRecord(entry)
         const name = asString(item?.name ?? item?.serverName ?? item?.server_name)
-        if (!name) return []
+        if (!name) {
+            if (strict) return undefined
+            continue
+        }
         const enabled = item?.enabled
         const runtimeStatus = asString(item?.runtimeStatus ?? item?.runtime_status)
         const status = enabled === false
@@ -90,13 +94,14 @@ function parseInventoryEntries(value: unknown): CodexMcpServerInventory[] | unde
         const toolsUnavailable = Boolean(item?.toolsError ?? item?.tools_error)
         const toolNames = toolsUnavailable ? undefined : asToolNames(item?.toolNames ?? item?.tool_names ?? item?.tools)
         const inventoryStatus = toolsUnavailable && status !== 'disabled' ? 'unavailable' : status
-        return [{
+        inventory.push({
             name,
             ...(enabled === true ? { enabled: true } : {}),
             ...(toolNames ? { toolNames } : {}),
             ...(inventoryStatus && inventoryStatus !== 'unsupported' ? { status: inventoryStatus } : {})
-        }]
-    })
+        })
+    }
+    return inventory
 }
 
 export function parseCodexMcpInventoryOutput(output: string): CodexMcpServerInventory[] | undefined {
@@ -108,7 +113,9 @@ export function parseCodexMcpInventoryOutput(output: string): CodexMcpServerInve
 }
 
 export function parseCodexMcpStatusResponse(value: unknown): CodexMcpServerInventory[] | undefined {
-    return parseInventoryEntries(value)
+    // A scoped response is used as evidence that a server is absent. A
+    // malformed entry cannot provide that evidence, unlike an empty array.
+    return parseInventoryEntries(value, true)
 }
 
 export function mergeCodexMcpInventories(

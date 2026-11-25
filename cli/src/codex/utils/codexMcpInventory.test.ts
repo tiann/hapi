@@ -31,6 +31,8 @@ describe('codex MCP inventory', () => {
         expect(parseCodexMcpInventoryOutput('[]')).toEqual([])
         expect(parseCodexMcpStatusResponse({ data: [] })).toEqual([])
         expect(parseCodexMcpStatusResponse({ unexpected: [] })).toBeUndefined()
+        expect(parseCodexMcpStatusResponse({ data: [{}] })).toBeUndefined()
+        expect(parseCodexMcpStatusResponse({ data: [{ name: 'connected' }, { serverName: '  ' }] })).toBeUndefined()
     })
 
     it('passes only configuration selectors to the MCP inventory command', () => {

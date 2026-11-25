@@ -252,9 +252,9 @@ describe('thread MCP inventory', () => {
         }));
     })
 
-    it('retains a saved runtime-only server when the scoped response cannot be parsed', async () => {
+    it.each([{ unexpected: [] }, { data: [{}] }])('retains a saved runtime-only server when the scoped response cannot be parsed: %j', async (response) => {
         sharedHarness.configuredInventory = [];
-        sharedHarness.runtimeInventory = Promise.resolve({ unexpected: [] });
+        sharedHarness.runtimeInventory = Promise.resolve(response);
         const f = await fixture({ contextDetails: { version: 1, provider: 'codex', updatedAt: 10,
             codex: { mcpServers: [{ name: 'runtime-only', toolNames: ['last_known'] }] },
         } });
