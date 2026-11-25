@@ -608,6 +608,11 @@
                 "contains": "\"steeringActive\":true",
                 "event": "update-state",
                 "result": "success"
+              },
+              {
+                "event": "update-metadata",
+                "contains": "\"model\":\"sonnet\"",
+                "result": "success"
               }
             ]
           }
@@ -872,84 +877,7 @@
         ],
         "connection": 1,
         "event": "update-metadata"
-      }
-    ],
-    "1/update-state": [
-      {
-        "ack": [
-          {
-            "agentState": {
-              "controlledByUser": false,
-              "startingMode": "remote",
-              "steeringActive": true
-            },
-            "result": "success",
-            "version": 4
-          }
-        ],
-        "ackRequested": true,
-        "args": [
-          {
-            "agentState": {
-              "controlledByUser": false,
-              "startingMode": "remote",
-              "steeringActive": true
-            },
-            "expectedVersion": 3,
-            "sid": "<uuid:1>"
-          }
-        ],
-        "connection": 1,
-        "event": "update-state"
-      }
-    ],
-    "2/others": [
-      {
-        "ackRequested": false,
-        "args": [
-          {
-            "accepted": true,
-            "removed": false
-          }
-        ],
-        "connection": 1,
-        "event": "update-ack"
-      }
-    ],
-    "2/step": [
-      {
-        "ackRequested": false,
-        "args": [
-          {
-            "expectAck": {
-              "accepted": true,
-              "removed": false
-            },
-            "sendUpdate": {
-              "localId": "local-2",
-              "message": {
-                "content": {
-                  "content": {
-                    "text": "follow up",
-                    "type": "text"
-                  },
-                  "role": "user"
-                },
-                "createdAt": 2,
-                "id": "message-2",
-                "localId": "local-2",
-                "seq": 2
-              },
-              "messageId": "message-2",
-              "t": "retry-queued-message"
-            }
-          }
-        ],
-        "connection": 1,
-        "event": "step"
-      }
-    ],
-    "2/update-metadata": [
+      },
       {
         "ack": [
           {
@@ -1080,6 +1008,81 @@
         ],
         "connection": 1,
         "event": "update-metadata"
+      }
+    ],
+    "1/update-state": [
+      {
+        "ack": [
+          {
+            "agentState": {
+              "controlledByUser": false,
+              "startingMode": "remote",
+              "steeringActive": true
+            },
+            "result": "success",
+            "version": 4
+          }
+        ],
+        "ackRequested": true,
+        "args": [
+          {
+            "agentState": {
+              "controlledByUser": false,
+              "startingMode": "remote",
+              "steeringActive": true
+            },
+            "expectedVersion": 3,
+            "sid": "<uuid:1>"
+          }
+        ],
+        "connection": 1,
+        "event": "update-state"
+      }
+    ],
+    "2/others": [
+      {
+        "ackRequested": false,
+        "args": [
+          {
+            "accepted": true,
+            "removed": false
+          }
+        ],
+        "connection": 1,
+        "event": "update-ack"
+      }
+    ],
+    "2/step": [
+      {
+        "ackRequested": false,
+        "args": [
+          {
+            "expectAck": {
+              "accepted": true,
+              "removed": false
+            },
+            "sendUpdate": {
+              "localId": "local-2",
+              "message": {
+                "content": {
+                  "content": {
+                    "text": "follow up",
+                    "type": "text"
+                  },
+                  "role": "user"
+                },
+                "createdAt": 2,
+                "id": "message-2",
+                "localId": "local-2",
+                "seq": 2
+              },
+              "messageId": "message-2",
+              "t": "retry-queued-message"
+            }
+          }
+        ],
+        "connection": 1,
+        "event": "step"
       }
     ],
     "3/chat": [
