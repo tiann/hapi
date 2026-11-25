@@ -896,6 +896,7 @@ private class ChatViewModelHolder(
         scope = scope,
         drafts = hubGraph.chatDrafts,
         scratchlist = hubGraph.scratchlistStore,
+        recentSkills = hubGraph.recentSkills,
     )
 
     /**
@@ -1105,13 +1106,7 @@ private fun pairingViewModel(
     val parentEntry = remember(entry) { navController.getBackStackEntry(Routes.PAIRING) }
     return viewModel(
         viewModelStoreOwner = parentEntry,
-        factory = viewModelFactory {
-            PairingViewModel(
-                clientFactory = graph.pairingClientFactory,
-                credentialStore = graph.credentialStore,
-                registry = graph.hubRegistry,
-            )
-        },
+        factory = viewModelFactory { graph.newPairingViewModel() },
     )
 }
 

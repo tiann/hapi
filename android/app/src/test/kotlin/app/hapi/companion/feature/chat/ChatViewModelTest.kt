@@ -203,6 +203,8 @@ private open class FakeMessagesApi : ChatSessionApi {
         CodexModelsResponse(success = false, error = "not scripted")
     override suspend fun getSlashCommands(sessionId: String): app.hapi.protocol.wire.SlashCommandsResponse =
         app.hapi.protocol.wire.SlashCommandsResponse(success = false, error = "not scripted")
+    override suspend fun getSkills(sessionId: String): app.hapi.protocol.wire.SkillsResponse =
+        app.hapi.protocol.wire.SkillsResponse(success = false, error = "not scripted")
     override suspend fun searchSessionFiles(
         sessionId: String,
         query: String,

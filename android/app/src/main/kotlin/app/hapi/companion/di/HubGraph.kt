@@ -2,6 +2,8 @@ package app.hapi.companion.di
 
 import android.content.Context
 import app.hapi.companion.feature.chat.composer.ChatDrafts
+import app.hapi.companion.feature.chat.composer.DataStoreRecentSkills
+import app.hapi.companion.feature.chat.composer.RecentSkills
 import app.hapi.companion.feature.home.ConnectionChrome
 import app.hapi.companion.feature.home.RunnerSkewChrome
 import app.hapi.data.HubSession
@@ -97,12 +99,12 @@ class HubGraph(
 
     val machineStore: MachineStore = MachineStore(session.api, scope, snapshotDir)
 
-    private val readNamespace = credentialStore.get(session.hubUrl)?.jwt?.let { JwtPeek.peek(it)?.ns }
-    val lastSeenStore: LastSeenStore = LastSeenStore(scope, snapshotDir, namespace = readNamespace)
+    internal val pairedNamespace = credentialStore.get(session.hubUrl)?.jwt?.let { JwtPeek.peek(it)?.ns }
+    val lastSeenStore: LastSeenStore = LastSeenStore(scope, snapshotDir, namespace = pairedNamespace)
 
     private fun configureReadState() {
         scope.launch {
-            val namespace = readNamespace ?: runCatching { session.ensureFreshToken()?.let { JwtPeek.peek(it)?.ns } }.getOrNull()
+            val namespace = pairedNamespace ?: runCatching { session.ensureFreshToken()?.let { JwtPeek.peek(it)?.ns } }.getOrNull()
                 ?: return@launch
             lastSeenStore.configure(namespace) { id, state ->
                 check(session.ensureFreshToken()?.let { JwtPeek.peek(it)?.ns } == namespace) { "Read state identity changed" }
@@ -201,6 +203,9 @@ class HubGraph(
 
     /** Per-session composer drafts, keyed under this hub (process-wide DataStore). */
     val chatDrafts: ChatDrafts = DataStoreChatDrafts(context.chatDraftsDataStore, hubKey = session.hubUrl)
+
+    // Without an identified namespace the picker still works, but never shares history across accounts.
+    val recentSkills: RecentSkills? = pairedNamespace?.let { DataStoreRecentSkills(context.hapiDataStore, session.hubUrl, it) }
 
     override fun close() {
         networkMonitor.close()

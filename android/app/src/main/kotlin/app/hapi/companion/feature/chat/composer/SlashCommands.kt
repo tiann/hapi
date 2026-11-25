@@ -8,8 +8,7 @@ import app.hapi.protocol.wire.SlashCommand
  * `ChatComposer`; `ChatViewModel` drives these over the session's
  * `metadata.slashCommands` + the `GET /slash-commands` RPC result.
  *
- * The skills `$` trigger is deferred (needs the `GET /skills` source and the
- * web's `$`-mention insert semantics) — `/` only for now.
+ * The `$` trigger is handled separately by [SkillSuggestions].
  */
 object SlashCommands {
     /**

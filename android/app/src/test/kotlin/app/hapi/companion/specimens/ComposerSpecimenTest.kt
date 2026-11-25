@@ -3,7 +3,16 @@ package app.hapi.companion.specimens
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.unit.dp
 import app.hapi.companion.feature.chat.ComposerUiState
 import app.hapi.companion.feature.chat.QueuedRowUi
@@ -14,6 +23,9 @@ import app.hapi.companion.feature.chat.composer.DictationState
 import app.hapi.companion.feature.chat.composer.MentionSuggestion
 import app.hapi.companion.feature.chat.composer.PendingSchedule
 import app.hapi.companion.feature.chat.composer.QueuedMessagesBar
+import app.hapi.companion.feature.chat.composer.SkillSuggestion
+import app.hapi.companion.feature.chat.composer.SkillSuggestions
+import app.hapi.protocol.wire.SkillSummary
 import app.hapi.protocol.wire.SlashCommand
 import org.junit.Rule
 import org.junit.Test
@@ -39,6 +51,34 @@ class ComposerSpecimenTest {
     @Test fun slashDark() = capture("composer-slash", SpecimenTheme.Dark) { Slash() }
     @Test fun mentionLight() = capture("composer-mention", SpecimenTheme.Light) { Mention() }
     @Test fun mentionDark() = capture("composer-mention", SpecimenTheme.Dark) { Mention() }
+
+    @Test fun skillRowMovesCaretWithoutRewritingDraft() {
+        val text = "Run \$review please"
+        val caret = "Run \$review ".length
+        val token = requireNotNull(SkillSuggestions.token(text, caret - 1, caret - 1))
+        val skill = SkillSuggestion(SkillSummary("review", "Review the current change"), token, opening = 1)
+        val state = mutableStateOf(ComposerUiState(text = text, isSending = false, canSteer = false))
+        compose.setContent {
+            Specimen(SpecimenTheme.Light) {
+                ChatComposer(
+                    state = state.value,
+                    onTextChange = { _, _, _ -> },
+                    onSend = { error("Selecting a skill must not send the draft") },
+                    onSendSteer = {},
+                    onAbort = {},
+                    skillSuggestions = if (state.value.adoptCaret) emptyList() else listOf(skill),
+                    onSkillSelected = { state.value = state.value.copy(caretPosition = caret, adoptCaret = true) },
+                )
+            }
+        }
+        compose.onNodeWithText("Review the current change").assertIsDisplayed()
+        compose.captureSpecimen("composer-skills", SpecimenTheme.Light)
+        compose.onNodeWithText("\$review").performClick()
+        compose.onNodeWithText("\$review").assertDoesNotExist()
+        compose.onNodeWithTag("chat-composer-input").assert(
+            SemanticsMatcher.expectValue(SemanticsProperties.TextSelectionRange, TextRange(caret)),
+        )
+    }
 
     private fun capture(name: String, theme: SpecimenTheme, content: @Composable () -> Unit) {
         compose.setContent {

@@ -86,6 +86,7 @@ class PairingViewModel(
     private val registry: HubRegistry,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val nowMs: () -> Long = System::currentTimeMillis,
+    private val onPaired: suspend (String) -> Unit = {},
 ) : ViewModel() {
 
     private val mutableState = MutableStateFlow<PairingUiState>(PairingUiState.Idle)
@@ -210,19 +211,14 @@ class PairingViewModel(
 
         // A passkey sign-in replaces any previous pairing secret for this hub:
         // the stored entry authenticates by passkey session from now on.
-        withContext(ioDispatcher) {
-            credentialStore.set(
-                HubCredentials(
-                    hubUrl = hubUrl,
-                    passkeySession = login.passkeySession,
-                    jwt = login.token,
-                    jwtObtainedAtMs = nowMs(),
-                )
-            )
-        }
-        registry.addHub(hubUrl, makeActive = true)
-        mutablePrefill.value = null
-        return PairingUiState.Success(hubUrl)
+        return completePairing(
+            HubCredentials(
+                hubUrl = hubUrl,
+                passkeySession = login.passkeySession,
+                jwt = login.token,
+                jwtObtainedAtMs = nowMs(),
+            ),
+        )
     }
 
     /** Cancellation → silent [PairingUiState.Idle]; everything else → an error. */
@@ -276,19 +272,22 @@ class PairingViewModel(
             return PairingUiState.Error(PairingError.Unreachable(hubUrl))
         }
 
-        // Credentials first, then the roster: the active-hub observer builds a
-        // HubGraph as soon as the registry flips, and it must find the secret.
-        withContext(ioDispatcher) {
-            credentialStore.set(
-                HubCredentials(
-                    hubUrl = hubUrl,
-                    accessToken = accessToken,
-                    jwt = auth.token,
-                    jwtObtainedAtMs = nowMs(),
-                )
-            )
-        }
+        return completePairing(
+            HubCredentials(
+                hubUrl = hubUrl,
+                accessToken = accessToken,
+                jwt = auth.token,
+                jwtObtainedAtMs = nowMs(),
+            ),
+        )
+    }
+
+    private suspend fun completePairing(credentials: HubCredentials): PairingUiState.Success {
+        val hubUrl = credentials.hubUrl
+        // The active graph needs the new credentials before the roster changes.
+        withContext(ioDispatcher) { credentialStore.set(credentials) }
         registry.addHub(hubUrl, makeActive = true)
+        onPaired(hubUrl)
         mutablePrefill.value = null
         return PairingUiState.Success(hubUrl)
     }

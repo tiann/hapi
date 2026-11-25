@@ -3,6 +3,7 @@ package app.hapi.companion.feature.chat
 import app.hapi.companion.feature.chat.attachments.ComposerAttachmentStatus
 import app.hapi.companion.feature.chat.attachments.PreparedAttachment
 import app.hapi.companion.feature.chat.attachments.PrepareResult
+import app.hapi.companion.feature.chat.composer.RecentSkills
 import app.hapi.companion.feature.chat.composer.ChatDrafts
 import app.hapi.companion.feature.chat.composer.PendingSchedule
 import app.hapi.companion.feature.share.PendingShare
@@ -58,6 +59,8 @@ import app.hapi.protocol.wire.SessionMetadata
 import app.hapi.protocol.wire.SessionCapabilities
 import app.hapi.protocol.wire.SessionSummary
 import app.hapi.protocol.wire.SessionSummaryMetadata
+import app.hapi.protocol.wire.SkillSummary
+import app.hapi.protocol.wire.SkillsResponse
 import app.hapi.protocol.wire.SlashCommand
 import app.hapi.protocol.wire.SlashCommandsResponse
 import app.hapi.protocol.wire.SteerQueuedMessageResponse
@@ -305,6 +308,17 @@ private class RecordingChatApi : ChatSessionApi {
         return slashCommandsResult
     }
 
+    var skillsResult = SkillsResponse(success = false, error = "not scripted")
+    var skillsGate: CompletableDeferred<Unit>? = null
+    var skillsFailure: Exception? = null
+    val skillsCalls = mutableListOf<String>()
+    override suspend fun getSkills(sessionId: String): SkillsResponse {
+        skillsCalls += sessionId
+        skillsGate?.await()
+        skillsFailure?.let { throw it }
+        return skillsResult
+    }
+
     var fileSearchResult: FileSearchResponse = FileSearchResponse(success = false, error = "not scripted")
     var fileSearchFailure: Exception? = null
     /** Non-null ⇒ the file RPC records its call then parks until completed. */
@@ -465,6 +479,7 @@ private class InteractionHarness(
     testScope: TestScope,
     detail: Session = detail(),
     val scratchlist: FakeScratchlist? = null,
+    recentSkills: RecentSkills? = null,
 ) {
     val api = RecordingChatApi()
     val scope = testScope.backgroundScope
@@ -493,6 +508,7 @@ private class InteractionHarness(
         scope = scope,
         drafts = drafts,
         scratchlist = scratchlist,
+        recentSkills = recentSkills,
         pipelineDispatcher = StandardTestDispatcher(testScope.testScheduler),
         uiDispatcher = StandardTestDispatcher(testScope.testScheduler),
         draftSaveDebounceMs = 10,
@@ -1905,6 +1921,293 @@ class ChatViewModelInteractionTest {
 
         harness.viewModel.setComposerText("/co bar")
         harness.viewModel.slashSuggestions.first { it.isEmpty() }
+    }
+
+    @Test
+    fun `skill picker loads on dollar and replaces the complete active word without sending`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        val review = SkillSummary("review", "Review a change")
+        harness.api.skillsResult = SkillsResponse(
+            success = true,
+            skills = listOf(SkillSummary("code-review"), SkillSummary("review-utils"), review),
+        )
+        vm.start()
+        vm.setComposerText("cost\$review")
+        testScheduler.runCurrent()
+        assertTrue(harness.api.skillsCalls.isEmpty())
+
+        vm.setComposerText("\$")
+        testScheduler.runCurrent()
+        assertEquals(3, vm.skillSuggestions.value.size)
+        assertEquals(1, harness.api.skillsCalls.size)
+
+        val text = "Run \$review-old please"
+        val caret = "Run \$review".length
+        vm.onComposerChange(text, caret, caret)
+        testScheduler.runCurrent()
+        assertEquals(listOf("review", "review-utils", "code-review"), vm.skillSuggestions.value.map { it.skill.name })
+        assertEquals("Review a change", vm.skillSuggestions.value.first().skill.description)
+        assertEquals(1, harness.api.skillsCalls.size)
+
+        vm.selectSkillSuggestion(vm.skillSuggestions.value.first())
+        testScheduler.runCurrent()
+        assertEquals("Run \$review please", vm.composer.value.text)
+        assertEquals("Run \$review ".length, vm.composer.value.caretPosition)
+        assertTrue(vm.skillSuggestions.value.isEmpty())
+        assertTrue(harness.api.sendCalls.value.isEmpty())
+        assertTrue(vm.slashSuggestions.value.isEmpty())
+        assertTrue(vm.mentionSuggestions.value.isEmpty())
+    }
+
+    @Test
+    fun `inserting a skill preserves surrounding full width punctuation and prose`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        harness.api.skillsResult = SkillsResponse(success = true, skills = listOf(SkillSummary("Review")))
+        vm.start()
+
+        for ((before, after) in listOf("请用 " to "，检查这段", "请用（" to "）检查这段", "请用 " to "。再检查")) {
+            val draft = "$before\$rev$after"
+            val caret = before.length + "\$rev".length
+            vm.onComposerChange(draft, caret, caret)
+            testScheduler.runCurrent()
+            vm.selectSkillSuggestion(vm.skillSuggestions.value.single())
+            testScheduler.runCurrent()
+
+            assertEquals("$before\$Review$after", vm.composer.value.text)
+            assertEquals(before.length + "\$Review".length + 1, vm.composer.value.caretPosition)
+            assertTrue(vm.skillSuggestions.value.isEmpty())
+        }
+        assertTrue(harness.api.sendCalls.value.isEmpty())
+    }
+
+    @Test
+    fun `dotted skill name is one word at mid name and at word end`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        val skill = SkillSummary("foo.bar")
+        harness.api.skillsResult = SkillsResponse(success = true, skills = listOf(skill))
+        vm.start()
+
+        val draft = "Run \$foo.baz please"
+        val caret = "Run \$foo".length
+        vm.onComposerChange(draft, caret, caret)
+        testScheduler.runCurrent()
+        vm.selectSkillSuggestion(vm.skillSuggestions.value.single())
+        testScheduler.runCurrent()
+        assertEquals("Run \$foo.bar please", vm.composer.value.text)
+        assertEquals("Run \$foo.bar ".length, vm.composer.value.caretPosition)
+        assertTrue(vm.skillSuggestions.value.isEmpty())
+
+        vm.setComposerText("\$foo.bar")
+        testScheduler.runCurrent()
+        assertEquals(listOf(skill), vm.skillSuggestions.value.map { it.skill })
+    }
+
+    @Test
+    fun `inserting before ASCII punctuation preserves it and does not add a space`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        harness.api.skillsResult = SkillsResponse(success = true, skills = listOf(SkillSummary("Review")))
+        vm.start()
+
+        for (suffix in listOf(", then run", ". Then run")) {
+            // Exact match exercises the caret-only path: the text should not change.
+            val draft = "Run \$Review$suffix"
+            val caret = "Run \$Review".length
+            vm.onComposerChange(draft, caret, caret)
+            testScheduler.runCurrent()
+            vm.selectSkillSuggestion(vm.skillSuggestions.value.single())
+            testScheduler.runCurrent()
+
+            assertEquals(draft, vm.composer.value.text)
+            assertEquals(caret + 1, vm.composer.value.caretPosition)
+            assertTrue(vm.composer.value.adoptCaret)
+            assertTrue(vm.skillSuggestions.value.isEmpty())
+        }
+    }
+
+    @Test
+    fun `selecting an exact skill before a space moves the caret without changing the draft`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        val review = SkillSummary("review")
+        harness.api.skillsResult = SkillsResponse(success = true, skills = listOf(review))
+        val text = "Run \$review please"
+        val caret = "Run \$review".length
+        vm.start()
+        vm.onComposerChange(text, caret, caret)
+        testScheduler.runCurrent()
+        assertEquals(listOf(review), vm.skillSuggestions.value.map { it.skill })
+
+        vm.selectSkillSuggestion(vm.skillSuggestions.value.first())
+        testScheduler.runCurrent()
+        assertEquals(text, vm.composer.value.text)
+        assertEquals(caret + 1, vm.composer.value.caretPosition)
+        assertTrue(vm.composer.value.adoptCaret)
+        assertTrue(vm.skillSuggestions.value.isEmpty())
+    }
+
+    @Test
+    fun `skill discovery failure clears the menu and retries only on a new opening`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        vm.start()
+        vm.setComposerText("\$")
+        testScheduler.runCurrent()
+        assertTrue(vm.skillSuggestions.value.isEmpty())
+        vm.setComposerText("\$re")
+        testScheduler.runCurrent()
+        assertEquals(1, harness.api.skillsCalls.size)
+
+        vm.onComposerChange("\$re", 1, 3) // Selection, not a caret: closes the menu.
+        testScheduler.runCurrent()
+        val review = SkillSummary("review")
+        harness.api.skillsResult = SkillsResponse(success = true, skills = listOf(review))
+        vm.onComposerChange("\$re", 3, 3)
+        testScheduler.runCurrent()
+        assertEquals(listOf(review), vm.skillSuggestions.value.map { it.skill })
+        assertEquals(2, harness.api.skillsCalls.size)
+    }
+
+    @Test
+    fun `closing the skill picker discards a late response`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        val review = SkillSummary("review")
+        val gate = CompletableDeferred<Unit>()
+        harness.api.skillsGate = gate
+        harness.api.skillsResult = SkillsResponse(success = true, skills = listOf(review))
+        vm.start()
+        vm.setComposerText("\$re")
+        testScheduler.runCurrent()
+        assertEquals(1, harness.api.skillsCalls.size)
+        vm.setComposerText("ordinary draft")
+        testScheduler.runCurrent()
+        gate.complete(Unit)
+        testScheduler.runCurrent()
+        assertEquals("ordinary draft", vm.composer.value.text)
+        assertTrue(vm.skillSuggestions.value.isEmpty())
+    }
+
+    @Test
+    fun `restoring a dollar draft opens the picker and typing does not refetch`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        val review = SkillSummary("Review")
+        harness.drafts.map[IX_SESSION] = "请用 \$rev"
+        harness.api.skillsResult = SkillsResponse(success = true, skills = listOf(review, SkillSummary("Run")))
+        vm.start()
+        testScheduler.runCurrent()
+        assertEquals(listOf(review), vm.skillSuggestions.value.map { it.skill })
+        vm.onComposerChange("请用 \$revi", "请用 \$revi".length, "请用 \$revi".length)
+        testScheduler.runCurrent()
+        assertEquals(listOf(review), vm.skillSuggestions.value.map { it.skill })
+        assertEquals(listOf(IX_SESSION), harness.api.skillsCalls)
+    }
+
+    @Test
+    fun `a transport failure can retry after leaving and reentering by moving only the caret`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        val text = "\$rev\tplease"
+        val caret = "\$rev".length
+        harness.api.skillsFailure = java.io.IOException("offline")
+        vm.start()
+        vm.onComposerChange(text, caret, caret)
+        testScheduler.runCurrent()
+        assertEquals(1, harness.api.skillsCalls.size)
+        assertTrue(vm.skillSuggestions.value.isEmpty())
+
+        vm.onComposerChange(text, text.length, text.length)
+        testScheduler.runCurrent()
+        harness.api.skillsFailure = null
+        harness.api.skillsResult = SkillsResponse(success = true, skills = listOf(SkillSummary("Review")))
+        vm.onComposerChange(text, caret, caret)
+        testScheduler.runCurrent()
+        assertEquals(2, harness.api.skillsCalls.size)
+        vm.selectSkillSuggestion(vm.skillSuggestions.value.single())
+        testScheduler.runCurrent()
+        assertEquals("\$Review\tplease", vm.composer.value.text)
+        assertEquals("\$Review\t".length, vm.composer.value.caretPosition)
+    }
+
+    @Test
+    fun `a stale row cannot insert into a second token or into a newly opened picker`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        val text = "\$rev \$rev"
+        val firstCaret = "\$rev".length
+        harness.api.skillsResult = SkillsResponse(success = true, skills = listOf(SkillSummary("Review")))
+        vm.start()
+        vm.onComposerChange(text, firstCaret, firstCaret)
+        testScheduler.runCurrent()
+        val old = vm.skillSuggestions.value.single()
+
+        vm.onComposerChange(text, text.length, text.length)
+        // UI has not rendered the new suggestions yet.
+        vm.selectSkillSuggestion(old)
+        testScheduler.runCurrent()
+        assertEquals(text, vm.composer.value.text)
+        assertEquals(text.length, vm.composer.value.caretPosition)
+        assertEquals(1, harness.api.skillsCalls.size)
+
+        vm.onComposerChange(text, 0, text.length)
+        testScheduler.runCurrent()
+        assertTrue(vm.skillSuggestions.value.isEmpty())
+        vm.onComposerChange(text, firstCaret, firstCaret)
+        testScheduler.runCurrent()
+        vm.selectSkillSuggestion(old)
+        testScheduler.runCurrent()
+        assertEquals(text, vm.composer.value.text)
+        vm.selectSkillSuggestion(vm.skillSuggestions.value.single())
+        testScheduler.runCurrent()
+        assertEquals("\$Review \$rev", vm.composer.value.text)
+    }
+
+    @Test
+    fun `a quick reopen of the same token invalidates its old catalogue and taps`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        harness.api.skillsResult = SkillsResponse(success = true, skills = listOf(SkillSummary("Review")))
+        vm.start()
+        vm.setComposerText("\$rev")
+        testScheduler.runCurrent()
+        val old = vm.skillSuggestions.value.single()
+
+        // A selection close + reopen can be conflated into one emission downstream.
+        vm.onComposerChange("\$rev", 0, 4)
+        vm.onComposerChange("\$rev", 4, 4)
+        vm.selectSkillSuggestion(old)
+        testScheduler.runCurrent()
+        assertEquals("\$rev", vm.composer.value.text)
+        assertEquals(2, harness.api.skillsCalls.size)
+        assertTrue(vm.skillSuggestions.value.single() !== old)
+    }
+
+    @Test
+    fun `a successful skill insertion records the original name without blocking on preferences`() = runTest {
+        val written = mutableListOf<String>()
+        val recent = object : RecentSkills {
+            override val names = MutableStateFlow(emptyList<String>())
+            override suspend fun record(name: String) {
+                written += name
+                throw java.io.IOException("cannot persist")
+            }
+        }
+        val harness = InteractionHarness(this, recentSkills = recent)
+        val vm = harness.viewModel
+        harness.api.skillsResult = SkillsResponse(success = true, skills = listOf(SkillSummary("Code-Review")))
+        vm.start()
+        vm.setComposerText("\$CODE")
+        testScheduler.runCurrent()
+        val row = vm.skillSuggestions.value.single()
+        vm.selectSkillSuggestion(row)
+        vm.selectSkillSuggestion(row) // Duplicate tap must not record two writes.
+        testScheduler.runCurrent()
+        assertEquals("\$Code-Review ", vm.composer.value.text)
+        assertEquals(listOf("Code-Review"), written)
     }
 
     @Test

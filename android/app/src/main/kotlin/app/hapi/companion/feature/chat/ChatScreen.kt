@@ -197,6 +197,7 @@ internal fun ChatScreen(
         }
     }
     val slashSuggestions by viewModel.slashSuggestions.collectAsState()
+    val skillSuggestions by viewModel.skillSuggestions.collectAsState()
     val mentionSuggestions by viewModel.mentionSuggestions.collectAsState()
 
     // --------------------------------------------------------- attachments --
@@ -364,6 +365,8 @@ internal fun ChatScreen(
                         onAttachmentRemove = viewModel.attachments::remove,
                         slashSuggestions = slashSuggestions,
                         onSlashCommandSelected = viewModel::selectSlashCommand,
+                        skillSuggestions = skillSuggestions,
+                        onSkillSelected = viewModel::selectSkillSuggestion,
                         mentionSuggestions = mentionSuggestions,
                         onMentionSelected = viewModel::selectMentionSuggestion,
                         pendingSchedule = pendingSchedule,
