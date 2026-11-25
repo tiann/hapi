@@ -1043,18 +1043,18 @@ export class SyncEngine {
         this.sessionCache.noteDerivedWork(after.id, this.store.messages.getLiveToolWork(after.id))
         // Previous worker's background snapshot must not block Archive under a
         // replacement that never re-emits membership (#2021 Major). Keep only a
-        // durable snapshot already bound to the new hostStartMarker.
+        // snapshot attributable to the replacement (both markers present + equal).
         const durable = after.metadata?.backgroundWork
         const ownerMarker = after.metadata?.hostStartMarker
         const keepForOwner = Boolean(
             durable
             && Array.isArray(durable.tasks)
             && durable.tasks.length > 0
-            && (
-                durable.hostStartMarker === undefined
-                || ownerMarker === undefined
-                || durable.hostStartMarker === ownerMarker
-            ),
+            && typeof durable.hostStartMarker === 'string'
+            && durable.hostStartMarker.length > 0
+            && typeof ownerMarker === 'string'
+            && ownerMarker.length > 0
+            && durable.hostStartMarker === ownerMarker
         )
         this.sessionCache.setBackgroundTasks(
             after.id,

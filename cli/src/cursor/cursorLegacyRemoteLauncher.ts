@@ -303,6 +303,10 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                                 case 'tool_call':
                                     processOpenToolCallIds.add(agentMsg.id);
                                     messageBuffer.addMessage(`Tool: ${agentMsg.name}`, 'tool');
+                                    // Refresh Windows retained ownership while the
+                                    // root still matches so late tool children enter
+                                    // the generation-bound set before close (#2021).
+                                    this.refreshWindowsRetainedTreeWhileRootAlive();
                                     break;
                                 case 'tool_result':
                                     processOpenToolCallIds.delete(agentMsg.id);
@@ -393,10 +397,10 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                     pgid: getProcessGroupId(child.pid),
                 };
                 this.retainedStopTree = snapshotProcessTreeIdentities(child.pid);
-                // Windows ancestry-validated spawn trees are generation-bound
-                // evidence that can finish a natural close after the root exits.
-                // Only mark incomplete when the snapshot itself failed (#2021 Major).
-                if (!this.retainedStopTree) {
+                // Windows: tools started later with separate stdio are missing
+                // from the launch scan. Keep incomplete until a live refresh
+                // while the root still matches covers them (#2021 Major).
+                if (isWindows() || !this.retainedStopTree) {
                     this.stopTreeSnapshotIncomplete = true;
                 }
             } else {
@@ -685,6 +689,41 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             this.displayPermissionMode = permissionMode;
             this.messageBuffer.addMessage(`[MODE:${permissionMode}]`, 'system');
         }
+    }
+
+    /**
+     * While the Windows Cursor root still matches, merge a fresh ancestry
+     * snapshot into the retained tree so late tool children are covered before
+     * ordinary close (#2021 Major).
+     */
+    private refreshWindowsRetainedTreeWhileRootAlive(): void {
+        if (!isWindows()) return;
+        const spawned = this.spawnedRootIdentity;
+        if (!spawned || classifyRetainedIdentity(spawned) !== 'match') return;
+        const snap = snapshotProcessTreeIdentities(spawned.pid);
+        const root = snap?.[snap.length - 1];
+        if (
+            !snap
+            || !root
+            || root.pid !== spawned.pid
+            || root.startMarker !== spawned.startMarker
+        ) {
+            return;
+        }
+        const prior = this.retainedStopTree ?? [];
+        const merged = snap.slice(0, -1);
+        const seen = new Set(snap.map((identity) => `${identity.pid}:${identity.startMarker}`));
+        for (const old of prior) {
+            const key = `${old.pid}:${old.startMarker}`;
+            if (seen.has(key)) continue;
+            if (retainedIdentityStillAlive(old)) {
+                merged.push(old);
+                seen.add(key);
+            }
+        }
+        merged.push(root);
+        this.retainedStopTree = merged;
+        this.stopTreeSnapshotIncomplete = false;
     }
 
     protected async cleanup(): Promise<void> {

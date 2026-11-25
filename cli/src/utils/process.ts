@@ -679,15 +679,15 @@ export function expandWindowsRetainedIdentities(
     }
     for (const [childPid, entry] of table) {
       if (entry.parentPid !== parentPid || seen.has(childPid)) continue;
+      // Both sides of the link need creation markers before we follow the
+      // numeric parent PID — missing evidence is incomplete coverage (#2021).
+      if (!parentIdentity.startMarker || !parent.marker || !entry.marker) {
+        return null;
+      }
+      if (parent.marker !== parentIdentity.startMarker) continue;
       // Child created before the verified parent generation cannot belong to it
       // (PID-reuse of the parent after an older tree forked) (#2021 Major).
-      if (
-        parentIdentity.startMarker
-        && entry.marker
-        && entry.marker < parentIdentity.startMarker
-      ) {
-        continue;
-      }
+      if (entry.marker < parentIdentity.startMarker) continue;
       working.push({
         pid: childPid,
         startMarker: entry.marker,

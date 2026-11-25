@@ -536,20 +536,23 @@ export class SessionCache {
         }
 
         // Restore hub-owned background snapshot after Hub restart when the
-        // in-memory cache was empty (#2021 Major). Drop it when the owning
-        // worker generation no longer matches.
+        // in-memory cache was empty (#2021 Major). Require both markers present
+        // and equal — missing markers are unowned and must not block Archive.
         if ((session.backgroundTaskCount ?? 0) === 0) {
             const durable = metadata?.backgroundWork
-            if (durable && Array.isArray(durable.tasks) && durable.tasks.length > 0) {
-                const ownerMarker = metadata?.hostStartMarker
-                const durableMarker = durable.hostStartMarker
-                const generationOk = durableMarker === undefined
-                    || ownerMarker === undefined
-                    || durableMarker === ownerMarker
-                if (generationOk) {
-                    session.backgroundTasks = durable.tasks
-                    session.backgroundTaskCount = durable.tasks.length
-                }
+            const ownerMarker = metadata?.hostStartMarker
+            if (
+                durable
+                && Array.isArray(durable.tasks)
+                && durable.tasks.length > 0
+                && typeof durable.hostStartMarker === 'string'
+                && durable.hostStartMarker.length > 0
+                && typeof ownerMarker === 'string'
+                && ownerMarker.length > 0
+                && durable.hostStartMarker === ownerMarker
+            ) {
+                session.backgroundTasks = durable.tasks
+                session.backgroundTaskCount = durable.tasks.length
             }
         }
 

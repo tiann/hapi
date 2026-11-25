@@ -1126,9 +1126,17 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         } catch (error) {
             logger.debug('[agy-acp] disconnect failed', error);
         }
-        if (backend.wasAgentTreeEnded()) return true;
-        // Unconfirmed close nulled the transport but retained a PID — probe again.
-        return backend.verifyRetainedAgentExit(true);
+        let verified = backend.wasAgentTreeEnded();
+        if (!verified) {
+            // Unconfirmed close nulled the transport but retained a PID — probe again.
+            verified = await backend.verifyRetainedAgentExit(true);
+        }
+        // Every verified backend exit retires background commands from earlier
+        // prompts before ready/replacement (#2021 Major).
+        if (verified) {
+            this.clearBackgroundTasksSnapshot();
+        }
+        return verified;
     }
 
     /** Apply the batch's mode and model; false when the turn must not run. */
@@ -2235,7 +2243,13 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
     /** Abort and session end clear the indicator with an empty snapshot. */
     private clearBackgroundTasksSnapshot(): void {
-        if (this.activeBgTasks.size === 0 && this.lastBgSnapshotIds.length === 0) return;
+        // Drop backing command records too — otherwise a later wakeup can
+        // re-publish dead tasks after verified backend exit (#2021 Major).
+        this.backgroundCommands.length = 0;
+        if (this.activeBgTasks.size === 0 && this.lastBgSnapshotIds.length === 0) {
+            this.emitBackgroundTasksSnapshot();
+            return;
+        }
         this.activeBgTasks.clear();
         this.emitBackgroundTasksSnapshot();
     }
