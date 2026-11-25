@@ -472,6 +472,22 @@ describe('claudeLocalLauncher context window seed (#1858)', () => {
         expect((sentMessages[0].message as { usage: Record<string, unknown> }).usage.context_window).toBeUndefined()
     })
 
+    it.each([undefined, 350_000])('drops a saved 1M window on the first sample after resuming a plain preset (%s)', async (explicitWindow) => {
+        const { session, getMetadata, setMetadata } = createSessionStub()
+        session.getModel = () => 'sonnet'
+        setMetadata({ ...getMetadata(), contextDetails: {
+            version: 1, provider: 'claude', updatedAt: 10,
+            model: 'claude-sonnet-4-6', contextWindow: 1_000_000, usage: { contextTokens: 10 }
+        } })
+        await claudeLocalLauncher(session as never)
+
+        harness.scannerOnMessage!(assistant('claude-sonnet-4-6', {
+            input_tokens: 20, ...(explicitWindow ? { context_window: explicitWindow } : {})
+        }))
+        expect(getMetadata().contextDetails?.usage?.contextTokens).toBe(20)
+        expect(getMetadata().contextDetails?.contextWindow).toBe(explicitWindow)
+    })
+
     it.each([undefined, 350_000])('does not inherit a 1M window after switching to the bare preset (%s)', async (explicitWindow) => {
         const { session, getMetadata } = createSessionStub()
         const local = session as typeof session & { localContextModel: string | null }

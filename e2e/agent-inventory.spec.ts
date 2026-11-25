@@ -60,6 +60,16 @@ test('the status bar uses the saved Claude window behind a configured model alia
 })
 
 
+test('uses the plain Claude budget when the resumed sample has no expanded window', async ({ page }) => {
+    await page.goto('/e2e-fixtures/agent-inventory-fixture.html?provider=claude&plainClaudeResume=1')
+    const status = page.getByTestId('saved-claude-alias-usage')
+    await expect(status.getByRole('button', { name: 'Context details', exact: true })).toContainText('53%')
+    await expect(status.getByRole('button', { name: 'Context details', exact: true })).toContainText('100k / 190k')
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await status.screenshot({ path: `${screenshots}/agent-inventory-plain-claude-resume.png` })
+})
+
+
 test('classifies legacy Claude MCP entries separately from system tools', async ({ page }) => {
     await page.goto('/e2e-fixtures/agent-inventory-fixture.html?provider=claude&legacyMcp=1')
     await page.getByRole('button', { name: /Agent context details/ }).click()

@@ -1208,6 +1208,37 @@ describe('shared steering availability', () => {
         expect(f.metadata().contextDetails).toMatchObject({ contextWindow: 128_000, usage: { contextTokens: 12_000 } });
     });
 
+    it('publishes active-turn usage received while the initial attach snapshot is pending', async () => {
+        const f = await fixture({ attached: true, beforeBind: root => {
+            const native = root.client as unknown as {
+                thread: { turns: NativeTurn[] };
+                notify(method: string, params: unknown): void;
+                request(method: string, params?: Record<string, unknown>): Promise<unknown>;
+            };
+            native.thread.turns = [
+                { id: 'completed-turn', status: 'completed', items: [] },
+                { id: 'active-turn', status: 'inProgress', items: [] }
+            ];
+            const request = native.request.bind(native);
+            native.request = async (method, params) => {
+                if (method === 'thread/read' && params?.threadId === 'thread' && params.includeTurns) {
+                    native.notify('thread/tokenUsage/updated', { threadId: 'thread', turnId: 'active-turn',
+                        tokenUsage: { modelContextWindow: 128_000, last: { inputTokens: 12_000 } } });
+                    native.notify('thread/tokenUsage/updated', { threadId: 'thread', turnId: 'completed-turn',
+                        tokenUsage: { modelContextWindow: 200_000, last: { inputTokens: 75_000 } } });
+                }
+                return request(method, params);
+            };
+        }, contextDetails: {
+            version: 1, provider: 'codex', updatedAt: 10,
+            model: 'old-turn-model', contextWindow: 200_000, usage: { contextTokens: 80_000 }
+        } });
+        await f.root.activate();
+        await f.drain();
+        expect(f.metadata().contextDetails).toMatchObject({ contextWindow: 128_000, usage: { contextTokens: 12_000 } });
+        expect(f.send.mock.calls.filter(call => call.some(arg => arg?.type === 'token_count'))).toHaveLength(1);
+    });
+
     it('keeps the rerouted usage model and window while publishing inventory-only updates', async () => {
         const f = await fixture({ contextDetails: {
             version: 1, provider: 'codex', updatedAt: 10,

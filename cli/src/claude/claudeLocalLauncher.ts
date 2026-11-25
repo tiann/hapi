@@ -20,7 +20,7 @@ function stampContextWindow(message: RawJSONLines, contextModel: string | null):
         message.message.usage.context_window ??= 1_000_000;
     }
 }
-import { buildClaudeContextDetails, publishContextDetails } from '@/agent/contextDetails';
+import { buildClaudeContextDetails, publishContextDetails, sameClaudeModelID } from '@/agent/contextDetails';
 
 function isInterruptMarker(message: RawJSONLines): boolean {
     if (message.type !== 'user' || message.isSidechain) return false;
@@ -64,8 +64,14 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
                         }
                         const preset = session.localContextModel;
                         const presetChanged = publishedLocalPreset !== undefined && publishedLocalPreset !== preset;
+                        const saved = publishedLocalPreset === undefined ? session.client.getMetadata()?.contextDetails : undefined;
+                        // A resumed local transcript may keep the same bare model ID
+                        // even when the selected preset no longer requests 1M.
+                        const resumedWithPlainPreset = Boolean(preset && !/\[1m\]$/i.test(preset)
+                            && saved?.provider === 'claude' && saved.contextWindow === 1_000_000
+                            && saved.model && details.model && sameClaudeModelID(saved.model, details.model));
                         publishedLocalPreset = preset;
-                        publishContextDetails(session.client, details, { clearContextSample: presetChanged });
+                        publishContextDetails(session.client, details, { clearContextSample: presetChanged || resumedWithPlainPreset });
                     }
                 }
             }

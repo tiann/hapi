@@ -70,6 +70,7 @@ export class SharedCodexRoot {
     private heartbeat?: ReturnType<typeof setInterval>;
     private work: Promise<unknown> = Promise.resolve();
     private notifications = Promise.resolve();
+    private pendingAttachUsage?: Map<string, { params: unknown; receivedAt: number }> = new Map();
     private currentTurn: string | undefined;
     // Ephemeral observations only: dequeue/compaction never prove acceptance.
     private readonly dequeuedInputs = new Set<string>();
@@ -173,12 +174,17 @@ export class SharedCodexRoot {
                 this.publishPlan();
             }
             const receivedAt = Date.now();
-            const modelAtReceipt = record(params).threadId === this.threadId ? this.settings.model ?? undefined : undefined;
-            const liveTurnAtReceipt = this.currentTurn !== undefined && record(params).turnId === this.currentTurn;
-            this.notifications = this.notifications.then(() => this.notification(method, params, modelAtReceipt, receivedAt, liveTurnAtReceipt)).catch(error => {
-                logger.debug('[Codex shared] projection', error);
-                this.failAttached();
-            });
+            const paramsRecord = record(params);
+            const isRoot = this.threadId !== '' && paramsRecord.threadId === this.threadId;
+            const turnId = string(paramsRecord.turnId);
+            if (this.host.attached && isRoot && method === 'thread/tokenUsage/updated' && turnId && this.pendingAttachUsage) {
+                // Subscribe can precede the first snapshot. Keep only the newest
+                // sample per turn until the snapshot identifies the active one.
+                this.pendingAttachUsage.set(turnId, { params, receivedAt });
+                return;
+            }
+            const modelAtReceipt = isRoot ? this.settings.model ?? undefined : undefined;
+            this.enqueueNotification(method, params, modelAtReceipt, receivedAt, Boolean(isRoot && turnId && turnId === this.currentTurn));
         });
         this.client.setTransportAbandonedHandler(() => {
             if (this.host.attached) {
@@ -362,7 +368,11 @@ export class SharedCodexRoot {
         }
         this.acceptSettings(response); this.acceptSettings(this.host.settingsFor(threadId) ?? {});
         if (!this.host.attached) await this.projectHistory(this.projection, response.thread);
-        await this.refresh(); await this.refreshChildren(true);
+        await this.refresh();
+        const usage = this.currentTurn ? this.pendingAttachUsage?.get(this.currentTurn) : undefined;
+        this.pendingAttachUsage = undefined;
+        if (usage) this.enqueueNotification('thread/tokenUsage/updated', usage.params, undefined, usage.receivedAt, true);
+        await this.refreshChildren(true);
     }
     async activate(options: SharedLaunchOptions = {}): Promise<void> {
         // Restored input cannot run before the cold-resume settings are applied.
@@ -567,6 +577,12 @@ export class SharedCodexRoot {
         };
         for (const listener of this.settingsListeners) listener();
         this.publishPlan();
+    }
+    private enqueueNotification(method: string, params: unknown, modelAtReceipt: string | undefined, receivedAt: number, liveTurnAtReceipt: boolean): void {
+        this.notifications = this.notifications.then(() => this.notification(method, params, modelAtReceipt, receivedAt, liveTurnAtReceipt)).catch(error => {
+            logger.debug('[Codex shared] projection', error);
+            this.failAttached();
+        });
     }
     private async notification(method: string, params: unknown, modelAtReceipt?: string, receivedAt = Date.now(), liveTurnAtReceipt = false): Promise<void> {
         // Native broadcasts can arrive while bind() is loading the local
