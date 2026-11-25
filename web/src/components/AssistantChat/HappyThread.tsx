@@ -543,6 +543,23 @@ function findPromptBeforeWithOverlap(messages: HTMLElement[], end: number, state
     return target
 }
 
+function captureNavigationFocus(viewport: HTMLElement | null, keyboard: boolean): HTMLElement | null {
+    const active = document.activeElement
+    return keyboard && active instanceof HTMLElement && viewport?.contains(active) ? active : null
+}
+
+function restoreNavigationFocus(viewport: HTMLElement | null, source: HTMLElement | null): void {
+    // Loading can evict the button or hide it when its target comes into
+    // view. Don't steal focus if the reader moved it elsewhere meanwhile.
+    if (!viewport || !source || (document.activeElement !== source && document.activeElement !== document.body)) return
+    const buttonRect = source.getBoundingClientRect()
+    const viewportRect = viewport.getBoundingClientRect()
+    const available = viewport.contains(source) && buttonRect.height > 0
+        && buttonRect.bottom > viewportRect.top && buttonRect.top < viewportRect.bottom
+    const fallback = available ? source : viewport
+    fallback.focus({ preventScroll: true })
+}
+
 export async function waitForPromptScrollSettlement(
     viewport: HTMLElement,
     target: HTMLElement,
@@ -589,8 +606,18 @@ export function findPromptTarget(
 ): HTMLElement | null {
     if (assistantAnchorState.blockedBySystemTurn) return null
     const messages = Array.from(viewport.querySelectorAll<HTMLElement>(MESSAGE_ANCHOR_SELECTOR))
-    if (replyToMessageId) {
-        const replyTargetAnchorId = getConversationMessageAnchorId(replyToMessageId)
+    const assistantAnchorId = getConversationMessageAnchorId(messageId)
+    const assistantAnchor = messages.find(message => message.id === assistantAnchorId)
+        ?? findRekeyedReply(messages, assistantAnchorState.sourceMessageIds ?? [])
+    if (assistantAnchor?.dataset.hapiReplySystemTurn === 'true') {
+        assistantAnchorState.blockedBySystemTurn = true
+        return null
+    }
+    // Reconnect can change the association while the old prompt is still
+    // valid. If the reply is evicted, trust only the bounded history lookup.
+    const currentReplyTarget = assistantAnchor ? assistantAnchor.dataset.hapiReplyTarget ?? replyToMessageId : undefined
+    if (currentReplyTarget) {
+        const replyTargetAnchorId = getConversationMessageAnchorId(currentReplyTarget)
         const replyTarget = messages.find(message => message.id === replyTargetAnchorId)
         if (replyTarget?.dataset.hapiSystemTurn === 'true') {
             assistantAnchorState.blockedBySystemTurn = true
@@ -599,9 +626,6 @@ export function findPromptTarget(
         if (replyTarget?.dataset.hapiTurnInput === 'true') return replyTarget
     }
 
-    const assistantAnchorId = getConversationMessageAnchorId(messageId)
-    const assistantAnchor = messages.find(message => message.id === assistantAnchorId)
-        ?? findRekeyedReply(messages, assistantAnchorState.sourceMessageIds ?? [])
     if (assistantAnchor) {
         assistantAnchorState.current = true
         assistantAnchorState.sourceMessageIds ??= getPromptAnchorSourceMessageIds(assistantAnchor)
@@ -3103,8 +3127,7 @@ export function HappyThread(props: {
     const jumpToPrompt = useCallback(async (messageId: string, replyToMessageId?: string, focusTarget = false): Promise<boolean> => {
         if (navigationInFlightRef.current) return false
         const sourceViewport = viewportRef.current
-        const active = document.activeElement
-        const sourceButton = focusTarget && active instanceof HTMLElement && sourceViewport?.contains(active) ? active : null
+        const sourceButton = captureNavigationFocus(sourceViewport, focusTarget)
         const wasTailFollowing = autoScrollEnabledRef.current && atBottomRef.current
         // A cached re-entry's late initial-scroll effect must not reclaim
         // a viewport the reader already asked to navigate explicitly.
@@ -3157,18 +3180,7 @@ export function HappyThread(props: {
                 navigationInFlightRef.current = false
                 setIsNavigationInFlight(false)
                 const viewport = viewportRef.current
-                // A failed jump may have paged out its button or hidden it
-                // once the candidate came into view. Don't strand keyboard
-                // focus, or steal it if the reader moved to another control.
-                if (!reachedPrompt && sourceButton && viewport && viewport === sourceViewport
-                    && (document.activeElement === sourceButton || document.activeElement === document.body)) {
-                    const buttonRect = sourceButton.getBoundingClientRect()
-                    const viewportRect = viewport.getBoundingClientRect()
-                    const available = viewport.contains(sourceButton) && buttonRect.height > 0
-                        && buttonRect.bottom > viewportRect.top && buttonRect.top < viewportRect.bottom
-                    const fallback = available ? sourceButton : viewport
-                    fallback.focus({ preventScroll: true })
-                }
+                if (!reachedPrompt && viewport === sourceViewport) restoreNavigationFocus(viewport, sourceButton)
                 const hasDisconnectedTail = getMessageWindowState(props.sessionId).requiresLatestReset
                 if (wasTailFollowing && !hasMoreNewerRef.current && !hasDisconnectedTail && viewport && (reachedPrompt
                     ? !hasMoreMessagesRef.current && viewport.scrollHeight - viewport.clientHeight <= 1
@@ -3185,6 +3197,7 @@ export function HappyThread(props: {
     const scrollToConversationStart = useCallback(async (focusTarget = false): Promise<boolean> => {
         if (navigationInFlightRef.current) return false
         const currentViewport = viewportRef.current
+        const sourceButton = captureNavigationFocus(currentViewport, focusTarget)
         releaseSearchTargetHistoryLock()
         const wasTailFollowing = autoScrollEnabledRef.current && atBottomRef.current
         // A short, fully loaded conversation is already at both ends. There
@@ -3280,6 +3293,7 @@ export function HappyThread(props: {
         } finally {
             heldWindow?.finish(reachedStart)
             if (!runCancelled()) {
+                if (!reachedStart && viewportRef.current === currentViewport) restoreNavigationFocus(currentViewport, sourceButton)
                 if (heldWindow?.isCurrent() === false && !reachedStart) {
                     setConversationStartStatus(status => status === 'loading' ? 'idle' : status)
                 }

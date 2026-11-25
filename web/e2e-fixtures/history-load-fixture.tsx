@@ -40,6 +40,7 @@ type Probe = {
     failNextLatest: () => void
     setEpoch: (epoch: number) => void
     confirmSteer: () => Promise<void>
+    confirmConsumed: () => Promise<void>
     releaseLatest: () => void
     holdBefore: () => void
     releaseBefore: () => void
@@ -81,6 +82,10 @@ window.__probe = {
     },
     failNextLatest: () => { failNextLatest = true },
     setEpoch: epoch => { fixtureEpoch = epoch },
+    confirmConsumed: async () => {
+        fixtureConsumed = true
+        await recoverWindowAfterGapResume(fakeApi, currentActiveSessionId)
+    },
     confirmSteer: async () => {
         fixtureSteerConfirmed = true
         await recoverWindowAfterGapResume(fakeApi, currentActiveSessionId)
@@ -137,6 +142,7 @@ const navigationMedia = fixtureParams.has('navigationMedia')
 const sessionSwitch = fixtureParams.has('sessionSwitch')
 const shortPages = fixtureParams.has('shortPages')
 const failBeforeCount = Number(fixtureParams.get('failBefore') ?? '0')
+const failBeforeSeq = Number(fixtureParams.get('failBeforeSeq') ?? '0')
 const filteredOlder = fixtureParams.has('filteredOlder')
 const epochBump = fixtureParams.has('epochBump')
 const coldInitial = fixtureParams.has('coldInitial')
@@ -273,6 +279,8 @@ const jumpStartGap = fixtureParams.has('jumpStartGap')
 const promptJumpGap = jumpStartGap && fixtureParams.has('promptJumpGap')
 const loadedPromptPreload = fixtureParams.has('loadedPromptPreload')
 const lateSteerJump = fixtureParams.has('lateSteerJump')
+const lateConsumeJump = fixtureParams.has('lateConsumeJump')
+let fixtureConsumed = false
 const batchedReply = fixtureParams.has('batchedReply')
 let fixtureEpoch = 1
 let fixtureSteerConfirmed = false
@@ -313,6 +321,10 @@ const allMessages: DecryptedMessage[] = conciseLongTurn ? Array.from({ length: T
     { ...createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'First accepted batch member' } }), localId: 'batch-first' },
     { ...createFixtureMessage(2, { role: 'user', content: { type: 'text', text: 'Last accepted batch member' } }), localId: 'batch-last' },
     createFixtureMessage(3, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Reply to the accepted batch' } } }),
+] : lateConsumeJump ? [
+    createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'Earlier valid input' } }),
+    { ...createFixtureMessage(2, { role: 'user', content: { type: 'text', text: 'Newly confirmed input' } }), invokedAt: null },
+    createFixtureMessage(3, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Reply after delayed acknowledgement' } } }),
 ] : lateSteerJump ? [
     createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'Original fixture prompt' } }),
     createFixtureMessage(2, { role: 'user', content: { type: 'text', text: 'Unconfirmed correction' } }),
@@ -429,7 +441,7 @@ const fakeApi = {
         const limit = direction === 'latest' && (loadedPromptPreload || batchedReply) ? 2
             : direction === 'latest' && rekeyReply ? 1
             : direction === 'latest' && !coldInitial && !cachedReentry && !sessionSwitch ? 200 : requestedLimit
-        if (jumpStartGap && direction === 'before' && query.beforeSeq === 201 && !beforeResponseGate) window.__probe.holdBefore()
+        if (jumpStartGap && direction === 'before' && query.beforeSeq === 201 && query.beforeSeq !== failBeforeSeq && !beforeResponseGate) window.__probe.holdBefore()
         const responseGate = direction === 'before' ? beforeResponseGate : null
         window.__probe.requests.push({
             sessionId: requestedSessionId,
@@ -456,7 +468,7 @@ const fakeApi = {
 
         if (direction === 'before') {
             beforeAttempts += 1
-            if (beforeAttempts <= failBeforeCount) {
+            if (beforeAttempts <= failBeforeCount || query.beforeSeq === failBeforeSeq) {
                 throw new Error('fixture: forced before-page failure')
             }
             const cursorAt = query.beforeAt ?? Number.POSITIVE_INFINITY
@@ -488,7 +500,8 @@ const fakeApi = {
             ? [createFixtureMessage(31, { role: 'user', content: { type: 'text', text: 'Current history after rewind' } })]
             : sourceMessages
         const pageMessages = latestMessages.slice(-limit).map(message =>
-            fixtureSteerConfirmed && message.id === 'm-2' ? { ...message, steered: true } : message)
+            message.id === 'm-2' && fixtureConsumed ? { ...message, invokedAt: BASE_AT + 2 }
+                : message.id === 'm-2' && fixtureSteerConfirmed ? { ...message, steered: true } : message)
         // After an epoch bump the "rewritten" tail renders taller rows, so
         // the reset changes content height — this is what re-fires the
         // ResizeObserver coverage re-check in the epoch-reset scenario.
@@ -589,7 +602,7 @@ function FixtureThreadSession(props: { activeSessionId: string }) {
 
     return (
         <AssistantRuntimeProvider runtime={runtime}>
-            {(loadedPromptPreload || lateSteerJump || batchedReply) && <style>{'[data-hapi-message-role="assistant"] { min-height: 1800px; }'}</style>}
+            {(loadedPromptPreload || lateSteerJump || lateConsumeJump || batchedReply) && <style>{'[data-hapi-message-role="assistant"] { min-height: 1800px; }'}</style>}
             {navigationShell ? (
                 <header data-testid="navigation-header" className="flex h-[76px] shrink-0 items-center p-3">
                     <button type="button" onClick={() => setOutlineOpen(true)}>Open history</button>

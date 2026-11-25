@@ -166,6 +166,8 @@ export function HappyAssistantMessage() {
             data-hapi-message-role="assistant"
             data-hapi-source-message-ids={sourceMessageIds?.join(' ') || undefined}
             data-hapi-reply-source-message-ids={replySourceMessageIds?.join(' ') || undefined}
+            data-hapi-reply-target={replyToMessageId ?? ''}
+            data-hapi-reply-system-turn={replyToMessageId === null ? 'true' : undefined}
             className={`happy-message ${rootClass} scroll-mt-4`}
         >
             {isCliOutput

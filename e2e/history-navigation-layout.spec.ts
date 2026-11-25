@@ -481,6 +481,26 @@ test('rechecks the destination when a reconnect marks the apparent prompt as a s
 })
 
 
+test('rechecks the reply association when reconnect confirms another input', async ({ page }) => {
+    await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&lateConsumeJump=1')
+    await expect.poll(async () => (await geometry(page)).chatScrollTop).toBeGreaterThan(500)
+    await page.evaluate(() => {
+        const original = HTMLElement.prototype.scrollIntoView
+        HTMLElement.prototype.scrollIntoView = function (options) {
+            if (this.matches('[data-hapi-turn-input="true"]') && this.textContent?.includes('Earlier valid input')) {
+                void window.__probe.confirmConsumed()
+            }
+            original.call(this, options)
+        }
+    })
+    const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Reply after delayed acknowledgement' })
+    await reply.getByRole('button', { name: 'Jump to turn input' }).press('Enter')
+    await expect(page.locator('[data-hapi-turn-input="true"]').filter({ hasText: 'Newly confirmed input' })).toBeFocused()
+    await expect(page.getByText('Earlier valid input', { exact: true })).toBeAttached()
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/reply-navigation-confirmed-input.png` })
+})
+
 test('does not preload older history while a jump to a loaded prompt is settling', async ({ page }) => {
     await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&loadedPromptPreload=1')
     const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Reply to loaded prompt' })
@@ -541,6 +561,17 @@ for (const action of ['Jump to conversation start', 'Jump to turn input']) {
     })
 }
 
+
+test('a failed start jump focuses the viewport when pagination evicts the button', async ({ page }) => {
+    await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&jumpStartGap=1&failBeforeSeq=201')
+    const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Latest fixture reply' })
+    await reply.getByRole('button', { name: 'Jump to conversation start' }).press('Enter')
+    await expect(page.getByText('Could not load earlier messages. Try again.', { exact: true })).toBeVisible({ timeout: 40_000 })
+    await expect(reply).toHaveCount(0)
+    await expect(page.locator('.chat-scroll-y')).toBeFocused()
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/reply-navigation-start-failed-focus.png` })
+})
 
 for (const action of ['Jump to conversation start', 'Jump to turn input']) {
     test(`keeps keyboard focus on ${action} when the history request fails`, async ({ page }) => {
