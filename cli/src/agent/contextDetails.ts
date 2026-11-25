@@ -212,6 +212,14 @@ export function buildClaudeContextDetails(args: {
     return details
 }
 
+export function withClaudeUsageSource(details: ContextDetails, entry?: { type: string; timestamp?: string; uuid?: string } | null): ContextDetails {
+    if (entry?.type !== 'assistant' || !entry.timestamp || !entry.uuid || details.usage?.contextTokens === undefined) return details
+    const sampledAt = Date.parse(entry.timestamp)
+    return Number.isFinite(sampledAt) && sampledAt >= 0
+        ? { ...details, usage: { ...details.usage, sampledAt, sourceMessageUuid: entry.uuid } }
+        : details
+}
+
 function buildCodexUsage(value: unknown, explicitContextTokens?: number): ContextUsageSnapshot | undefined {
     const usage = normalizeCodexUsageSnapshot(value)
     if (!usage) {

@@ -387,9 +387,13 @@ export class SharedCodexRoot {
         this.acceptSettings(response); this.acceptSettings(this.host.settingsFor(threadId) ?? {});
         if (!this.host.attached) await this.projectHistory(this.projection, response.thread);
         await this.refresh();
-        const usage = this.currentTurn ? this.pendingAttachUsage?.get(this.currentTurn) : undefined;
+        // An idle thread can replay its latest completed sample before the
+        // first snapshot. Seed generation from that replay without counting
+        // it as a live sample that could replace already-saved context.
+        const usageTurn = this.currentTurn ?? (this.latestTurn?.status === 'completed' ? this.latestTurn.id : undefined);
+        const usage = usageTurn ? this.pendingAttachUsage?.get(usageTurn) : undefined;
         this.pendingAttachUsage = undefined;
-        if (usage) this.enqueueNotification('thread/tokenUsage/updated', usage.params, undefined, usage.receivedAt, true);
+        if (usage) this.enqueueNotification('thread/tokenUsage/updated', usage.params, undefined, usage.receivedAt, usageTurn === this.currentTurn);
         await this.refreshChildren(true);
     }
     async activate(options: SharedLaunchOptions = {}): Promise<void> {

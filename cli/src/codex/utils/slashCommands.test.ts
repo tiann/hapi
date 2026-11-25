@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { resolveCodexSlashCommand } from './slashCommands';
+import { getBuiltinSlashCommands, mergeSlashCommands } from '@hapi/protocol/slashCommands';
 
 const state = {
     permissionMode: 'default' as const,
@@ -9,6 +10,13 @@ const state = {
 };
 
 describe('resolveCodexSlashCommand', () => {
+    it('includes /fast in the real Codex catalog and keeps custom overrides', () => {
+        const builtins = getBuiltinSlashCommands('codex');
+        expect(builtins).toContainEqual(expect.objectContaining({ name: 'fast', source: 'builtin' }));
+        const custom = { name: 'fast', source: 'project' as const, content: 'Run the fast check' };
+        expect(mergeSlashCommands([...builtins, custom]).filter(item => item.name === 'fast')).toEqual([custom]);
+    });
+
     it('toggles proactive multi-agent mode', () => {
         expect(resolveCodexSlashCommand('/agent', state)).toMatchObject({
             updates: { proactiveMultiAgent: true }

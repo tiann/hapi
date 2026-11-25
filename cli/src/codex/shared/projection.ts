@@ -249,7 +249,7 @@ export class SharedCodexProjection {
                     // Resume can replay a previous turn without the model that
                     // produced it. Preserve the attributed snapshot rather than
                     // relabeling it or showing an unattributed event in the Web.
-                    if (!model && !liveTurnAtReceipt && saved?.provider === 'codex' && saved.model && saved.usage?.contextTokens !== undefined) return;
+                    if (!model && !liveTurnAtReceipt && saved?.provider === 'codex' && saved.usage?.contextTokens !== undefined) return;
                     this.onTokenUsage?.(event.info, model);
                 }
                 send({ ...event, ...(model ? { model } : {}), flavor: 'codex', scope: { role: 'parent', threadId: this.threadId }, scope_role: 'parent', thread_id: this.threadId }, key);

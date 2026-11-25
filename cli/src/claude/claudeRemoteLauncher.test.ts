@@ -978,6 +978,12 @@ describe('claudeRemoteLauncher resume anchor', () => {
             version: 1, updatedAt: 10, provider: 'claude', model: 'claude-opus', contextWindow: 200_000,
             usage: { contextTokens: 90_000 }
         } }
+        const { SDKToLogConverter } = await import('./utils/sdkToLogConverter')
+        const { OutgoingMessageQueue } = await import('./utils/OutgoingMessageQueue')
+        const stamp = '2026-09-01T13:00:00.000Z'
+        const mirrored = { type: 'assistant' as const, uuid: 'relayed-entry', timestamp: stamp }
+        const convert = vi.spyOn(SDKToLogConverter.prototype, 'convert').mockImplementation(message => message.type === 'assistant' ? mirrored : null)
+        const enqueue = vi.spyOn(OutgoingMessageQueue.prototype, 'enqueue')
         let probe: ContextCallbacks | undefined
         harness.contextForLaunch = callbacks => { probe = callbacks }
         harness.messages = [{ type: 'assistant', message: { role: 'assistant', model: 'claude-fable-5',
@@ -993,10 +999,16 @@ describe('claudeRemoteLauncher resume anchor', () => {
             harness.switchAfterCall = 1
             harness.triggerSwitch = () => client.rpcHandlers.get(RPC_METHODS.Switch)?.()
             await claudeRemoteLauncher(session as any)
+            expect(enqueue).toHaveBeenCalledWith(mirrored)
             expect(client.getMetadata().contextDetails).toMatchObject({
-                model: 'claude-fable-5', contextWindow: 1_000_000, usage: { contextTokens: 100 }
+                model: 'claude-fable-5', contextWindow: 1_000_000,
+                usage: { contextTokens: 100, sourceMessageUuid: mirrored.uuid, sampledAt: Date.parse(stamp) }
             })
-        } finally { session.stopKeepAlive() }
+        } finally {
+            convert.mockRestore()
+            enqueue.mockRestore()
+            session.stopKeepAlive()
+        }
     })
 
     it('keeps assistant usage when the matching window probe arrives late', async () => {

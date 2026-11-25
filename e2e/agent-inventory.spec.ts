@@ -11,6 +11,7 @@ for (const provider of ['codex', 'claude']) {
             await expect(details.getByText('disabled', { exact: true })).toBeVisible()
             await expect(details.getByText('old-search', { exact: true })).toHaveCount(0)
             await expect(details.getByText('fresh-search', { exact: true })).toBeVisible()
+            await expect(details.getByText('/fast', { exact: true })).toBeVisible()
             await expect(details.getByText(/^\/(clear|new|agent)$/)).toHaveCount(0)
         } else {
             await expect(details.getByText('automatic-skill', { exact: true })).toBeVisible()
@@ -49,6 +50,15 @@ test('the status bar uses the saved Codex usage window, not the configured model
     await expect(status.getByRole('button', { name: 'Context details', exact: true })).toContainText('80k / 200k')
     const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
     if (screenshots) await status.screenshot({ path: `${screenshots}/agent-inventory-saved-window.png` })
+})
+
+
+test('the meter can show the initial replay for an idle Codex attach with no saved sample', async ({ page }) => {
+    await page.goto('/e2e-fixtures/agent-inventory-fixture.html?provider=codex&idleCodexReplay=1')
+    const meter = page.getByTestId('idle-codex-usage').getByRole('button', { name: 'Context details', exact: true })
+    await expect(meter).toContainText('25k / 200k')
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await meter.screenshot({ path: `${screenshots}/codex-idle-attach-usage.png` })
 })
 
 

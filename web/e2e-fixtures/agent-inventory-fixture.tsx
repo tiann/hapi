@@ -1,6 +1,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import type { ContextDetails } from '@hapi/protocol'
+import { getBuiltinSlashCommands } from '@hapi/protocol/slashCommands'
 import '../src/index.css'
 import { StatusBar } from '../src/components/AssistantChat/StatusBar'
 import { ContextDetailsDialog } from '../src/components/AssistantChat/ContextDetailsDialog'
@@ -19,7 +20,11 @@ const details: ContextDetails = isClaude
     : { version: 1, updatedAt: 1, provider: 'codex', codex: {
         mcpServers: params.has('knownNamesOnly') ? [{ name: 'docs' }] : [{ name: 'runtime-only', status: 'disabled', toolNames: ['old-search'] },
             { name: 'ready-server', status: 'connected', toolNames: ['fresh-search'] }],
-        slashCommands: params.has('customAgent') ? ['/compact', '/agent'] : ['/compact']
+        slashCommands: [
+            '/compact',
+            ...getBuiltinSlashCommands('codex').filter(command => command.name === 'fast').map(command => `/${command.name}`),
+            ...(params.has('customAgent') ? ['/agent'] : [])
+        ]
     } }
 
 function ClaudeRewindUsageFixture() {
@@ -27,7 +32,7 @@ function ClaudeRewindUsageFixture() {
     return <div className="m-4">
         <button onClick={() => setRewound(true)}>Apply committed rewind</button>
         <StatusBar active thinking={false} agentState={null} agentFlavor="claude" model="claude-sonnet-4-6"
-            contextModel="claude-sonnet-4-6" contextSize={40_000} contextWindow={190_000} contextSampledAt={1000}
+            contextModel="claude-sonnet-4-6" contextSize={40_000} contextSampledAt={1000}
             contextDetails={{ ...details, model: 'claude-sonnet-4-6', ...(rewound ? {} : {
                 contextWindow: 400_000, usage: { contextTokens: 120_000, sampledAt: 2000, sourceMessageUuid: 'rewound-answer' }
             }) }} />
@@ -49,6 +54,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
             <StatusBar active thinking={false} agentState={null} agentFlavor="claude" model="sonnet"
                 contextDetails={{ ...details, model: 'claude-sonnet-4-6',
                     ...(plainClaudeResume ? {} : { contextWindow: 1_000_000 }), usage: { contextTokens: 100_000 } }} />
+        </div> : params.has('idleCodexReplay') ? <div data-testid="idle-codex-usage" className="m-4">
+            <StatusBar active thinking={false} agentState={null} agentFlavor="codex" model="configured-model"
+                contextDetails={{ ...details, model: 'configured-model', contextWindow: 200_000, usage: { contextTokens: 25_000 } }} />
         </div> : params.has('savedUsage') ? <div data-testid="saved-codex-usage" className="m-4">
             <StatusBar active thinking={false} agentState={null} agentFlavor="codex" model="configured-model" contextModel="configured-model"
                 contextDetails={{ ...details, model: 'actual-turn-model', contextWindow: 200_000, usage: { contextTokens: 80_000 } }} />

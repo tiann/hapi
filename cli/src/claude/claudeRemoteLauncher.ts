@@ -22,7 +22,7 @@ import {
     type RemoteLauncherDisplayContext,
     type RemoteLauncherExitReason
 } from "@/modules/common/remote/RemoteLauncherBase";
-import { buildClaudeContextDetails, publishContextDetails, sameClaudeModelID } from '@/agent/contextDetails';
+import { buildClaudeContextDetails, publishContextDetails, sameClaudeModelID, withClaudeUsageSource } from '@/agent/contextDetails';
 
 interface PermissionsField {
     date: number;
@@ -335,6 +335,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
         };
 
         function onMessage(message: SDKMessage) {
+            let assistantDetails: ReturnType<typeof buildClaudeContextDetails> = null;
             const rawPayload = message as unknown as Record<string, unknown>;
             const isSidechain = typeof rawPayload.parent_tool_use_id === 'string';
             if (!isSidechain) {
@@ -374,7 +375,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 usageSamplePreset = selectedContextPreset;
                                 assistantSampleModel = details.model ?? null;
                             }
-                            publishContextDetails(session.client, details);
+                            assistantDetails = details;
                         }
                     }
                 } else if (message.type === 'result') {
@@ -465,6 +466,9 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
             }
 
             const logMessage = sdkToLogConverter.convert(msg);
+            if (assistantDetails) {
+                publishContextDetails(session.client, withClaudeUsageSource(assistantDetails, logMessage));
+            }
             if (logMessage) {
                 if (logMessage.type === 'user' && logMessage.message?.content) {
                     const content = Array.isArray(logMessage.message.content)

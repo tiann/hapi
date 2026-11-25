@@ -15,6 +15,7 @@ export const BUILTIN_SLASH_COMMANDS = {
         { name: 'agent', description: 'Toggle proactive Codex multi-agent delegation', source: 'builtin' },
         { name: 'clear', description: 'Clear current Codex thread context', source: 'builtin' },
         { name: 'compact', description: 'Compact current Codex thread context', source: 'builtin' },
+        { name: 'fast', description: 'Show or set Codex fast service tier', source: 'builtin' },
         { name: 'goal', description: 'Set, view, pause, resume, or clear a persistent Codex goal', source: 'builtin' },
         { name: 'help', description: 'Show supported HAPI Codex slash commands', source: 'builtin' },
         { name: 'plan', description: 'Enable plan mode; use /plan off to return to default', source: 'builtin' },

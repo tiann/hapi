@@ -1239,6 +1239,56 @@ describe('shared steering availability', () => {
         expect(f.send.mock.calls.filter(call => call.some(arg => arg?.type === 'token_count'))).toHaveLength(1);
     });
 
+    it.each([false, true])('seeds generation from idle attach replay without replacing saved usage (%s)', async (hasSavedUsage) => {
+        vi.useFakeTimers();
+        try {
+            vi.setSystemTime(1_000_000);
+            const f = await fixture({ attached: true, beforeBind: root => {
+                const native = root.client as unknown as {
+                    thread: { turns: NativeTurn[] };
+                    notify(method: string, params: unknown): void;
+                    request(method: string, params?: Record<string, unknown>): Promise<unknown>;
+                };
+                native.thread.turns = [{ id: 'prior', status: 'completed', items: [] }];
+                const request = native.request.bind(native);
+                native.request = async (method, params) => {
+                    if (method === 'thread/resume') native.notify('thread/tokenUsage/updated', {
+                        threadId: 'thread', turnId: 'prior', tokenUsage: { modelContextWindow: 200_000,
+                            last: { inputTokens: 25_000 }, total: { outputTokens: 100 } }
+                    });
+                    return request(method, params);
+                };
+            }, ...(hasSavedUsage ? { contextDetails: {
+                version: 1, provider: 'codex', updatedAt: 10,
+                model: 'saved-rerouted-model', contextWindow: 128_000, usage: { contextTokens: 29_000 }
+            } } : {}) });
+            await f.root.activate();
+            await f.drain();
+            expect(f.metadata().contextDetails).toMatchObject(hasSavedUsage
+                ? { model: 'saved-rerouted-model', contextWindow: 128_000, usage: { contextTokens: 29_000 } }
+                : { contextWindow: 200_000, usage: { contextTokens: 25_000 } });
+
+            vi.setSystemTime(1_001_000);
+            const turn = { id: 'next', status: 'inProgress', items: [] };
+            f.native.thread.turns.push(turn);
+            f.native.notify('turn/started', { threadId: 'thread', turn });
+            await f.drain();
+            vi.setSystemTime(1_002_000);
+            f.native.notify('thread/tokenUsage/updated', { threadId: 'thread', turnId: turn.id,
+                tokenUsage: { total: { outputTokens: 160 } } });
+            await f.drain();
+            vi.setSystemTime(1_003_000);
+            turn.status = 'completed';
+            f.native.notify('turn/completed', { threadId: 'thread', turn });
+            await f.drain();
+            expect(f.send.mock.calls.map(([body]) => body).filter(body => body.type === 'turn_duration')).toEqual([
+                expect.objectContaining({ durationMs: 2_000, generationMs: 2_000, generationOutputTokens: 60 })
+            ]);
+            const initial = f.send.mock.calls.find(([body]) => body.type === 'token_count' && body.turn_id === 'prior');
+            expect(Boolean(initial)).toBe(!hasSavedUsage);
+        } finally { vi.useRealTimers(); }
+    });
+
     it('accepts buffered usage if an already-running turn completes during the initial attach read', async () => {
         const f = await fixture({ attached: true, beforeBind: root => {
             const native = root.client as unknown as {

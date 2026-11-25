@@ -280,6 +280,7 @@ describe('claudeLocalLauncher message filtering', () => {
 
         harness.scannerOnMessage!({
             type: 'assistant', uuid: 'assistant-local-window',
+            timestamp: '2026-09-01T13:00:00.000Z',
             message: {
                 role: 'assistant', model: 'claude-sonnet-4-5', content: [{ type: 'text', text: 'hello' }],
                 usage: { input_tokens: 100, output_tokens: 1, ...(explicitWindow ? { context_window: explicitWindow } : {}) }
@@ -287,7 +288,8 @@ describe('claudeLocalLauncher message filtering', () => {
         })
 
         expect(getMetadata().contextDetails).toMatchObject({
-            model: 'claude-sonnet-4-5', contextWindow: expectedWindow, usage: { contextTokens: 100 }
+            model: 'claude-sonnet-4-5', contextWindow: expectedWindow,
+            usage: { contextTokens: 100, sampledAt: Date.parse('2026-09-01T13:00:00.000Z'), sourceMessageUuid: 'assistant-local-window' }
         })
     })
 

@@ -20,7 +20,7 @@ function stampContextWindow(message: RawJSONLines, contextModel: string | null):
         message.message.usage.context_window ??= 1_000_000;
     }
 }
-import { buildClaudeContextDetails, publishContextDetails, sameClaudeModelID } from '@/agent/contextDetails';
+import { buildClaudeContextDetails, publishContextDetails, sameClaudeModelID, withClaudeUsageSource } from '@/agent/contextDetails';
 
 function isInterruptMarker(message: RawJSONLines): boolean {
     if (message.type !== 'user' || message.isSidechain) return false;
@@ -59,12 +59,6 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
                         model: nestedModel ?? (typeof rawMessage.model === 'string' ? rawMessage.model : lastSystemModel)
                     });
                     if (details) {
-                        if (message.type === 'assistant' && contextUsage && message.timestamp && details.usage?.contextTokens !== undefined) {
-                            const sampledAt = Date.parse(message.timestamp);
-                            if (Number.isFinite(sampledAt) && sampledAt >= 0) {
-                                details.usage = { ...details.usage, sampledAt, sourceMessageUuid: message.uuid };
-                            }
-                        }
                         if (details.model) {
                             lastSystemModel = details.model;
                         }
@@ -77,7 +71,7 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
                             && saved?.provider === 'claude' && saved.contextWindow === 1_000_000
                             && saved.model && details.model && sameClaudeModelID(saved.model, details.model));
                         publishedLocalPreset = preset;
-                        publishContextDetails(session.client, details, { clearContextSample: presetChanged || resumedWithoutExpandedPreset });
+                        publishContextDetails(session.client, withClaudeUsageSource(details, message), { clearContextSample: presetChanged || resumedWithoutExpandedPreset });
                     }
                 }
             }
