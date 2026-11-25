@@ -601,10 +601,11 @@ describe('bootstrapExistingSession', () => {
         expect(metadata.hostStartMarker).toBeUndefined()
     })
 
-    it('does not probe the start marker for terminal sessions', () => {
-        // The runner only reads the marker of runner-started sessions; the
-        // probe is a synchronous process spawn (PowerShell on Windows) that a
-        // terminal start must not pay for.
+    it('probes the start marker for terminal sessions too', () => {
+        // Hub binds durable backgroundWork to hostPid + hostStartMarker for
+        // both Runner and terminal launches (#2021 Major). One probe at
+        // session start; the cost is intentional.
+        getProcessStartMarkerMock.mockReturnValueOnce('Mon Sep 28 11:00:00 2026')
         const metadata = buildSessionMetadata({
             flavor: 'cursor',
             startedBy: 'terminal',
@@ -613,9 +614,9 @@ describe('bootstrapExistingSession', () => {
             now: 123
         })
 
-        expect(getProcessStartMarkerMock).not.toHaveBeenCalled()
+        expect(getProcessStartMarkerMock).toHaveBeenCalledWith(process.pid)
         expect(metadata.hostPid).toBe(process.pid)
-        expect(metadata).not.toHaveProperty('hostStartMarker')
+        expect(metadata.hostStartMarker).toBe('Mon Sep 28 11:00:00 2026')
     })
 })
 

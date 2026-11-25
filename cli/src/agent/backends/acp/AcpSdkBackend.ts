@@ -245,6 +245,8 @@ export class AcpSdkBackend implements AgentBackend {
      * transport.close() alone for settlement (#2021 tip Major).
      */
     private retainedTreeSnapshotIncomplete = false;
+    /** True when spawn assigned a Windows Job Object (settlement uses job emptiness) (#2021). */
+    private windowsJobContained = false;
 
     /** Retry configuration for ACP initialization */
     private static readonly INIT_RETRY_OPTIONS = {
@@ -366,6 +368,8 @@ export class AcpSdkBackend implements AgentBackend {
         const spawnPid = typeof this.transport.getProcessPid === 'function'
             ? this.transport.getProcessPid()
             : null;
+        this.windowsJobContained = typeof this.transport.getWindowsAgentJob === 'function'
+            && this.transport.getWindowsAgentJob() !== null;
         if (typeof spawnPid === 'number' && spawnPid > 0) {
             this.spawnedRootIdentity = {
                 pid: spawnPid,
@@ -378,6 +382,11 @@ export class AcpSdkBackend implements AgentBackend {
             if (spawnTree && spawnTree.length > 0) {
                 this.retainedAgentTree = spawnTree;
                 this.retainedTreeSnapshotIncomplete = false;
+            } else if (this.windowsJobContained) {
+                // Job membership covers descendants even without a CIM tree (#2021).
+                this.retainedTreeSnapshotIncomplete = false;
+            } else if (isWindows()) {
+                this.retainedTreeSnapshotIncomplete = true;
             }
         } else {
             this.spawnedRootIdentity = null;
@@ -1684,31 +1693,33 @@ export class AcpSdkBackend implements AgentBackend {
                 preCloseTree = merged;
                 this.retainedAgentTree = merged;
                 this.retainedTreeSnapshotIncomplete = false;
-            } else if (isWindows() && !live) {
+            } else if (isWindows() && !live && !this.windowsJobContained) {
                 // Windows cannot cover mid-close forks without a fresh tree.
                 this.retainedTreeSnapshotIncomplete = true;
-            } else if (isWindows()) {
+            } else if (isWindows() && !this.windowsJobContained) {
                 // Root no longer matches — spawn-only evidence is not teardown
                 // coverage for descendants started after spawn (#2021 Major).
                 this.retainedTreeSnapshotIncomplete = true;
             }
-        } else if (isWindows() && this.retainedAgentTree) {
+        } else if (isWindows() && this.retainedAgentTree && !this.windowsJobContained) {
             this.retainedTreeSnapshotIncomplete = true;
         }
         // When live snapshot failed but spawn identity exists, retain a
         // single-member tree from spawn so POSIX group verify still has evidence.
         if ((!preCloseTree || preCloseTree.length === 0) && this.spawnedRootIdentity) {
             preCloseTree = [this.spawnedRootIdentity];
-            if (!isWindows()) this.retainedTreeSnapshotIncomplete = false;
+            if (!isWindows() || this.windowsJobContained) this.retainedTreeSnapshotIncomplete = false;
             else this.retainedTreeSnapshotIncomplete = true;
         }
         try {
             const closeOk = (await this.transport.close()) === true;
-            // Even when transport.close reports success, the root may have
-            // exited on EOF while a reparented pre-close descendant survives.
-            // Always check the retained pre-close tree before publishing
-            // settlement / child interruption (#2021 tip Major).
-            if (preCloseTree && preCloseTree.length > 0) {
+            // Job Object close already settled on ActiveProcesses === 0 (#2021).
+            if (this.windowsJobContained && closeOk) {
+                agentEnded = true;
+                this.agentTreeEnded = true;
+                this.retainedAgentTree = null;
+                this.retainedTreeSnapshotIncomplete = false;
+            } else if (preCloseTree && preCloseTree.length > 0) {
                 // Never clear a Windows incomplete-refresh latch here — spawn
                 // PID absence alone must not unlock settlement (#2021 Major).
                 const survivors = preCloseTree.some((identity) => retainedIdentityStillAlive(identity));

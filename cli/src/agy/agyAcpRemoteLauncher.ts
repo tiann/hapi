@@ -1619,11 +1619,17 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             }
             for (const id of [...turn.commandCallIds, ...turn.deferredLiveCommandCalls.keys()]) {
                 this.rememberStoppedWakeupCall(parseToolCallLifetimeId(id) ?? id);
-                // A completed wakeup can leave run_command in the background.
-                // Keep those records + hub snapshot so Archive stays blocked
+                // A completed wakeup (no aborted turn) can leave run_command in
+                // the background — keep those records so Archive stays blocked
                 // until terminal result or verified backend exit (#2021 Major).
-                if (this.backgroundCommands.some((entry) => entry.callId === id)) {
-                    continue;
+                // User Stop of an in-flight / reattached wakeup retires that
+                // turn's background bookkeeping instead (#2021 unit-cli).
+                const bgIdx = this.backgroundCommands.findIndex((entry) => entry.callId === id);
+                if (bgIdx >= 0) {
+                    if (!abortedTurn && this.reactiveWakeupCompleted) {
+                        continue;
+                    }
+                    this.backgroundCommands.splice(bgIdx, 1);
                 }
                 this.noteBackgroundTaskSettled(id);
             }

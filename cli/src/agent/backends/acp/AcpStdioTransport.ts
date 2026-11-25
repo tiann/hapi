@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptions } from 'node:child_process';
+import { tryAssignWindowsAgentJob, type WindowsAgentJob } from '@/utils/windowsJobObject';
 import {
     acquireAgentCliSpawnLease,
     releaseAgentCliSpawnLeaseFromAcpRegisterSync
@@ -106,6 +107,8 @@ export class AcpStdioTransport {
     private exitError: Error | null = null;
     /** ACP child PID when known (for lock attribution / exit logs). */
     private childPid: number | null = null;
+    /** Windows Job Object for this agent — null when containment unavailable (#2021). */
+    private windowsAgentJob: WindowsAgentJob | null = null;
 
     /** Rolling join window for stderr before close-time classification. */
     private static readonly RECENT_STDERR_WINDOW = 8_000;
@@ -124,12 +127,14 @@ export class AcpStdioTransport {
             try {
                 registerActiveAcpTransport();
                 try {
-                    const process = spawn(
+                    const child = spawn(
                         options.command,
                         options.args ?? [],
                         buildAcpStdioSpawnOptions(options.env, options.cwd)
                     ) as ChildProcessWithoutNullStreams;
-                    return new AcpStdioTransport(process, true, options.command);
+                    const transport = new AcpStdioTransport(child, true, options.command);
+                    await transport.attachWindowsJobIfNeeded();
+                    return transport;
                 } catch (error) {
                     unregisterActiveAcpTransport();
                     throw error;
@@ -139,12 +144,21 @@ export class AcpStdioTransport {
             }
         }
 
-        const process = spawn(
+        const child = spawn(
             options.command,
             options.args ?? [],
             buildAcpStdioSpawnOptions(options.env, options.cwd)
         ) as ChildProcessWithoutNullStreams;
-        return new AcpStdioTransport(process, false, options.command);
+        const transport = new AcpStdioTransport(child, false, options.command);
+        await transport.attachWindowsJobIfNeeded();
+        return transport;
+    }
+
+    /** Assign a kill-on-close Job Object immediately after spawn (#2021 Approach). */
+    private async attachWindowsJobIfNeeded(): Promise<void> {
+        const pid = this.getProcessPid();
+        if (typeof pid !== 'number' || pid <= 0 || process.platform !== 'win32') return;
+        this.windowsAgentJob = await tryAssignWindowsAgentJob(pid);
     }
 
     private constructor(process: ChildProcessWithoutNullStreams, shouldGuardAgentCli: boolean, command: string) {
@@ -265,6 +279,11 @@ export class AcpStdioTransport {
     /** PID of the spawned ACP agent process, when known. */
     getProcessPid(): number | null {
         return typeof this.process.pid === 'number' ? this.process.pid : this.childPid;
+    }
+
+    /** Windows Job Object when containment was established at spawn (#2021). */
+    getWindowsAgentJob(): WindowsAgentJob | null {
+        return this.windowsAgentJob;
     }
 
     onStderrError(handler: ((error: AcpStderrError) => void) | null): void {
@@ -427,7 +446,16 @@ export class AcpStdioTransport {
     /** Ends the agent process; resolves true once its whole process tree is confirmed gone. */
     async close(): Promise<boolean> {
         this.process.stdin.end();
-        const treeGone = await killProcessByChildProcess(this.process);
+        let treeGone: boolean;
+        if (this.windowsAgentJob) {
+            // Job membership is the settlement source of truth on Windows (#2021).
+            this.windowsAgentJob.terminate(1);
+            treeGone = this.windowsAgentJob.isEmpty();
+            this.windowsAgentJob.release();
+            this.windowsAgentJob = null;
+        } else {
+            treeGone = await killProcessByChildProcess(this.process);
+        }
         this.releaseAgentCliGuard();
         this.markClosed(new Error('ACP transport closed'));
         return treeGone;
