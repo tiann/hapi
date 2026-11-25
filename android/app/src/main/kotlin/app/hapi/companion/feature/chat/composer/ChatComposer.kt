@@ -160,22 +160,16 @@ fun ChatComposer(
             keyboard?.show()
         }
     }
-    // The field owns the caret; the text stays VM-driven (draft prefill,
-    // send-clear, slash/mention inserts). External text edits adopt the VM's
-    // resting caret ([ComposerUiState.caretPosition] — a mention insert lands
-    // mid-draft, other programmatic sets rest at the tail); user edits and
-    // caret moves never adopt, so typing mid-draft keeps its position.
-    var field by remember { mutableStateOf(TextFieldValue(state.text)) }
+    // Restore the VM caret on creation and sync explicit VM edits. Otherwise
+    // the field owns the live selection so typing mid-draft keeps its position.
+    fun fieldFromState(): TextFieldValue {
+        val caret = if (state.caretPosition >= 0) state.caretPosition.coerceIn(0, state.text.length) else state.text.length
+        return TextFieldValue(state.text, TextRange(caret))
+    }
+    var field by remember { mutableStateOf(fieldFromState()) }
     val requestedCaret = state.caretPosition.takeIf { state.adoptCaret }
     LaunchedEffect(state.text, requestedCaret) {
-        if (field.text != state.text || requestedCaret != null) {
-            val caret = if (state.caretPosition >= 0) {
-                state.caretPosition.coerceIn(0, state.text.length)
-            } else {
-                state.text.length
-            }
-            field = TextFieldValue(state.text, TextRange(caret))
-        }
+        if (field.text != state.text || requestedCaret != null) field = fieldFromState()
     }
     val gate = composerSendGate(state, attachments)
     val recording = dictation as? DictationState.Recording

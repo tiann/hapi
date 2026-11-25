@@ -3,6 +3,7 @@ package app.hapi.companion.specimens
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
@@ -78,6 +79,35 @@ class ComposerSpecimenTest {
         compose.onNodeWithTag("chat-composer-input").assert(
             SemanticsMatcher.expectValue(SemanticsProperties.TextSelectionRange, TextRange(caret)),
         )
+    }
+
+    @Test fun recreatedComposerKeepsTheRetainedMidDraftCaret() {
+        val text = "Run \$rev please"
+        val caret = "Run \$rev".length
+        val token = requireNotNull(SkillSuggestions.token(text, caret, caret))
+        val skill = SkillSuggestion(SkillSummary("review"), token, opening = 1)
+        val state = mutableStateOf(ComposerUiState(text = "Run", isSending = false, canSteer = false))
+        val generation = mutableStateOf(0)
+        compose.setContent {
+            Specimen(SpecimenTheme.Light) {
+                key(generation.value) {
+                    ChatComposer(
+                        state = state.value,
+                        onTextChange = { _, _, _ -> error("Restoring a caret must not edit the draft") },
+                        onSend = {}, onSendSteer = {}, onAbort = {},
+                        skillSuggestions = if (state.value.text == text) listOf(skill) else emptyList(),
+                    )
+                }
+            }
+        }
+        compose.runOnIdle { state.value = state.value.copy(text = text, caretPosition = caret) }
+        val selection = SemanticsMatcher.expectValue(SemanticsProperties.TextSelectionRange, TextRange(caret))
+        compose.onNodeWithTag("chat-composer-input").assert(selection)
+
+        compose.runOnIdle { generation.value++ }
+
+        compose.onNodeWithText("\$review").assertIsDisplayed()
+        compose.onNodeWithTag("chat-composer-input").assert(selection)
     }
 
     private fun capture(name: String, theme: SpecimenTheme, content: @Composable () -> Unit) {

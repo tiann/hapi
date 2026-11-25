@@ -30,6 +30,7 @@ import app.hapi.protocol.wire.SyncEvent
 import coil.ImageLoader
 import java.io.Closeable
 import java.io.File
+import java.security.MessageDigest
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -82,8 +83,14 @@ class HubGraph(
 
     private val networkMonitor = AndroidNetworkMonitor(context, sseEngine::networkChanged)
 
-    /** Per-hub snapshot root (filesDir — survives cache pressure). */
-    private val snapshotDir: File = File(File(context.filesDir, "hubs"), dirNameFor(session.hubUrl))
+    internal val pairedNamespace = session.authenticator.currentJwt()?.let { JwtPeek.peek(it)?.ns }
+
+    // Legacy URL-only snapshots have no reliable owner. Never read them, and
+    // do not open disk snapshots until this graph has an identified namespace.
+    private val snapshotDir: File? = pairedNamespace?.let { namespace ->
+        val digest = MessageDigest.getInstance("SHA-256").digest("${session.hubUrl}\u0000$namespace".encodeToByteArray())
+        File(File(context.filesDir, "hub-snapshots"), digest.joinToString("") { "%02x".format(it) })
+    }
 
     val sessionStore: SessionStore = SessionStore(session.api, scope, snapshotDir)
 
@@ -99,8 +106,10 @@ class HubGraph(
 
     val machineStore: MachineStore = MachineStore(session.api, scope, snapshotDir)
 
-    internal val pairedNamespace = credentialStore.get(session.hubUrl)?.jwt?.let { JwtPeek.peek(it)?.ns }
-    val lastSeenStore: LastSeenStore = LastSeenStore(scope, snapshotDir, namespace = pairedNamespace)
+    // Read state already namespaces its own files, so keep its existing location.
+    val lastSeenStore: LastSeenStore = LastSeenStore(
+        scope, File(File(context.filesDir, "hubs"), dirNameFor(session.hubUrl)), namespace = pairedNamespace,
+    )
 
     private fun configureReadState() {
         scope.launch {
@@ -118,7 +127,7 @@ class HubGraph(
     val messageWindows: MessageWindowStores = MessageWindowStores(
         api = session.api,
         scope = scope,
-        snapshots = WindowSnapshots(File(snapshotDir, "windows")),
+        snapshots = snapshotDir?.let { WindowSnapshots(File(it, "windows")) },
         historyRetentionLimit = app.hapi.protocol.window.OLDER_LOAD_WINDOW_SIZE,
     )
 

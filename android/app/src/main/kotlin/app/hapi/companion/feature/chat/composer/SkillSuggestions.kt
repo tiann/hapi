@@ -13,38 +13,33 @@ internal object SkillSuggestions {
     data class Token(val start: Int, val end: Int, val word: String, val query: String)
     data class Edit(val text: String, val caret: Int)
 
-    private fun isNameChar(char: Char?): Boolean = char != null && (
-        char.isLetterOrDigit() || char.isSurrogate() || char in "-_" ||
-            char.category == CharCategory.NON_SPACING_MARK || char.category == CharCategory.COMBINING_SPACING_MARK
-    )
-
-    private fun isBoundary(text: String, index: Int): Boolean {
-        val char = text[index]
-        return when (char) {
-            // A dot in foo.bar belongs to the name; a sentence-final dot does not.
-            '.' -> !(isNameChar(text.getOrNull(index - 1)) && isNameChar(text.getOrNull(index + 1)))
-            '-', '_' -> false
-            '<', '>', '\uFFFC' -> true
-            else -> char.isWhitespace() || when (char.category) {
-                CharCategory.CONNECTOR_PUNCTUATION,
-                CharCategory.DASH_PUNCTUATION,
-                CharCategory.START_PUNCTUATION,
-                CharCategory.END_PUNCTUATION,
-                CharCategory.INITIAL_QUOTE_PUNCTUATION,
-                CharCategory.FINAL_QUOTE_PUNCTUATION,
-                CharCategory.OTHER_PUNCTUATION -> true
-                else -> false
-            }
+    private fun isNameChar(text: String, index: Int): Boolean {
+        val char = text.getOrNull(index) ?: return false
+        val codePoint = if (char.isLowSurrogate() && index > 0 && text[index - 1].isHighSurrogate()) {
+            text.codePointAt(index - 1)
+        } else {
+            text.codePointAt(index)
+        }
+        return Character.isLetterOrDigit(codePoint) || char in "-_" || when (Character.getType(codePoint)) {
+            Character.NON_SPACING_MARK.toInt(), Character.COMBINING_SPACING_MARK.toInt() -> true
+            else -> false
         }
     }
 
+    private fun isNameAt(text: String, index: Int): Boolean = if (text.getOrNull(index) == '.') {
+        // A dot in foo.bar belongs to the name; a sentence-final dot does not.
+        isNameChar(text, index - 1) && isNameChar(text, index + 1)
+    } else {
+        isNameChar(text, index)
+    }
+
     fun token(text: String, start: Int, end: Int): Token? {
-        if (start != end || start !in 1..text.length || isBoundary(text, start - 1)) return null
+        if (start != end || start !in 1..text.length) return null
         var wordStart = start - 1
-        while (wordStart > 0 && !isBoundary(text, wordStart - 1)) wordStart--
-        if (text[wordStart] != '$') return null
+        while (isNameAt(text, wordStart)) wordStart--
+        if (text.getOrNull(wordStart) != '$' || isNameAt(text, wordStart - 1)) return null
         var wordEnd = start
-        while (wordEnd < text.length && !isBoundary(text, wordEnd)) wordEnd++
+        while (isNameAt(text, wordEnd)) wordEnd++
         return Token(wordStart, wordEnd, text.substring(wordStart, wordEnd), text.substring(wordStart + 1, start))
     }
 
@@ -72,7 +67,11 @@ internal object SkillSuggestions {
         // Keep existing punctuation and whitespace verbatim; only a bare word at EOF needs a space.
         val suffix = if (token.end == text.length) " " else ""
         val replaced = text.replaceRange(token.start, token.end, "\$$name$suffix")
-        val separatorLength = if (text.startsWith("\r\n", token.end)) 2 else 1
+        val separatorLength = when {
+            token.end == text.length -> 1 // The appended space.
+            text.startsWith("\r\n", token.end) -> 2
+            else -> Character.charCount(text.codePointAt(token.end))
+        }
         return Edit(replaced, token.start + 1 + name.length + separatorLength)
     }
 }

@@ -1983,6 +1983,26 @@ class ChatViewModelInteractionTest {
     }
 
     @Test
+    fun `inserting a skill preserves adjacent references and symbol separators`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        harness.api.skillsResult = SkillsResponse(success = true, skills = listOf(SkillSummary("review")))
+        vm.start()
+
+        for (separator in listOf("+", "", "💬")) {
+            val caret = "Run \$rev".length
+            vm.onComposerChange("Run \$rev$separator\$lint", caret, caret)
+            testScheduler.runCurrent()
+            vm.selectSkillSuggestion(vm.skillSuggestions.value.single())
+            testScheduler.runCurrent()
+
+            assertEquals("Run \$review$separator\$lint", vm.composer.value.text)
+            if (separator.isNotEmpty()) assertEquals("Run \$review$separator".length, vm.composer.value.caretPosition)
+        }
+        assertTrue(harness.api.sendCalls.value.isEmpty())
+    }
+
+    @Test
     fun `dotted skill name is one word at mid name and at word end`() = runTest {
         val harness = InteractionHarness(this)
         val vm = harness.viewModel
