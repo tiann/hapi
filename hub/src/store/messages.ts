@@ -352,13 +352,12 @@ function writeDurableChildToolWork(db: Database, sessionId: string, state: Child
     // settledCallIds are an OpenCode rewind latch (null flavor uses the same
     // full-rebuild path). Named non-OpenCode flavors still settle in memory
     // but must not grow metadata on every foreground tool result (#2021 Minor).
-    // Upsert by call ID (Set) — do not FIFO-evict; rewind can delete a result
-    // while its start remains and needs this evidence (#2021 Minor).
+    // Do not dump every in-memory settled ID into metadata on ordinary results
+    // (quadratic SQLite writes). Latch grows only via turn-complete settledCallIds
+    // / rewind harvest through latchOpenCodeSettledCallIds (#2021 Minor).
     let settledCallIds: string[]
     if (flavor === null || flavor === 'opencode') {
-        const merged = new Set(priorSettledCalls)
-        for (const id of state.settled) merged.add(id)
-        settledCallIds = [...merged]
+        settledCallIds = priorSettledCalls
     } else {
         settledCallIds = priorSettledCalls
     }
@@ -487,17 +486,68 @@ function ensureChildToolCallStateRebuilt(db: Database, sessionId: string): Child
     return state
 }
 
+/** Latch OpenCode settled call IDs into durable metadata without a full rewrite of in-memory settled. */
+function latchOpenCodeSettledCallIds(db: Database, sessionId: string, callIds: string[]): void {
+    if (callIds.length === 0) return
+    const flavor = readSessionFlavor(db, sessionId)
+    if (flavor !== null && flavor !== 'opencode') return
+    const state = childToolCallState(db, sessionId)
+    seedDurableChildToolWorkIfNeeded(db, sessionId, state)
+    for (const id of callIds) {
+        state.settled.add(id)
+        state.open.delete(id)
+    }
+    const row = prepareCached(db, 'SELECT metadata FROM sessions WHERE id = ?').get(sessionId) as
+        | { metadata: string | null }
+        | undefined
+    if (!row) return
+    const prior = safeJsonParse(row.metadata)
+    const metadata = isRecord(prior) ? { ...prior } : {}
+    const existing = isRecord(metadata.childToolWork) ? metadata.childToolWork : null
+    const priorSettledCalls = Array.isArray(existing?.settledCallIds)
+        ? existing.settledCallIds.filter((id): id is string => typeof id === 'string')
+        : []
+    const merged = new Set(priorSettledCalls)
+    for (const id of callIds) merged.add(id)
+    const settledCallIds = [...merged]
+    if (
+        priorSettledCalls.length === settledCallIds.length
+        && priorSettledCalls.every((id, i) => id === settledCallIds[i])
+    ) {
+        writeDurableChildToolWork(db, sessionId, state)
+        return
+    }
+    const next: DurableChildToolWork = {
+        running: Array.isArray(existing?.running) ? [...existing.running].map(String).sort() : [...state.runningChildren].sort(),
+        settled: Array.isArray(existing?.settled) ? [...existing.settled].map(String).sort() : [...state.settledChildren].sort(),
+        settledCallIds,
+    }
+    // Prefer live state for running/settled children.
+    next.running = [...state.runningChildren].sort()
+    next.settled = [...state.settledChildren].sort()
+    metadata.childToolWork = next
+    prepareCached(db, `
+        UPDATE sessions
+        SET metadata = ?, metadata_version = metadata_version + 1, seq = seq + 1
+        WHERE id = ?
+    `).run(JSON.stringify(metadata), sessionId)
+}
+
 /** Incremental update only — never full-scan the transcript on ingest. */
 function noteChildToolCallState(db: Database, sessionId: string, content: unknown): void {
     const state = childToolCallState(db, sessionId)
     seedDurableChildToolWorkIfNeeded(db, sessionId, state)
     applyChildToolCallContent(state, content)
+    const turnSettled = acpTurnCompleteSettledCallIds(content)
+    if (turnSettled.length > 0) {
+        latchOpenCodeSettledCallIds(db, sessionId, turnSettled)
+        return
+    }
     if (
         acpTurnCompleteChildStatus(content)
         || acpTurnCompleteRetiredChildSessionIds(content).length > 0
         || toolCallResultCallId(content) !== null
         || isChildScopedAcpToolCall(content)
-        || acpTurnCompleteSettledCallIds(content).length > 0
     ) {
         writeDurableChildToolWork(db, sessionId, state)
     }
@@ -2384,7 +2434,17 @@ export function mergeSessionMessages(
  * Truncate the invocation-ordered suffix at the boundary identified by seq.
  * Bumps message epoch so web clients reset their window.
  */
-export function truncateOpenCodeRewind(db: Database, sessionId: string, cutoffSeq: number, boundaryId: string): number {
+/**
+ * Truncate OpenCode rewind suffix. Returns harvested settlement evidence so the
+ * caller can fold it into the enclosing metadata CAS (must not bump
+ * metadata_version here — syncEngine CAS would reject) (#2021).
+ */
+export function truncateOpenCodeRewind(
+    db: Database,
+    sessionId: string,
+    cutoffSeq: number,
+    boundaryId: string,
+): { epoch: number; harvestedSettledCallIds: string[]; harvestedSettledChildren: string[] } {
     return db.transaction(() => {
         const target = prepareCached(db, `
             SELECT seq, COALESCE(invoked_at, created_at) AS position_at
@@ -2397,15 +2457,30 @@ export function truncateOpenCodeRewind(db: Database, sessionId: string, cutoffSe
                 OR (COALESCE(invoked_at, created_at) = ? AND seq >= ?)
             )
         `).all(sessionId, target.position_at, target.position_at, target.seq) as Array<{ id: string; content: string }>
-        // Harvest settlements whose completion rows are about to disappear while
-        // their starts may remain — store by call ID in durable metadata (#2021).
-        const harvested = childToolCallState(db, sessionId)
-        seedDurableChildToolWorkIfNeeded(db, sessionId, harvested)
+        // Collect terminal evidence only — do not replay running transitions
+        // from deleted rows into the settled registry (#2021).
+        const harvestedSettledIds = new Set<string>()
+        const harvestedSettledChildren = new Set<string>()
         for (const row of deletedRows) {
-            applyChildToolCallContent(harvested, decodeMessageContent(row.content))
+            const decoded = decodeMessageContent(row.content)
+            const resultCallId = toolCallResultCallId(decoded)
+            if (resultCallId) harvestedSettledIds.add(resultCallId)
+            for (const id of acpTurnCompleteSettledCallIds(decoded)) harvestedSettledIds.add(id)
+            for (const id of acpTurnCompleteRetiredChildSessionIds(decoded)) harvestedSettledChildren.add(id)
+            const childStatus = acpTurnCompleteChildStatus(decoded)
+            if (
+                childStatus
+                && (childStatus.status === 'completed'
+                    || childStatus.status === 'failed'
+                    || childStatus.status === 'interrupted')
+            ) {
+                harvestedSettledChildren.add(childStatus.childSessionId)
+            }
+            if (isTerminalToolCallRow(decoded)) {
+                const callId = getToolCallId(decoded)
+                if (callId) harvestedSettledIds.add(callId)
+            }
         }
-        const harvestedSettledIds = [...harvested.settled]
-        const harvestedSettledChildren = [...harvested.settledChildren]
         prepareCached(db, `
             DELETE FROM messages WHERE session_id = ? AND (
                 COALESCE(invoked_at, created_at) > ?
@@ -2414,9 +2489,9 @@ export function truncateOpenCodeRewind(db: Database, sessionId: string, cutoffSe
         `).run(sessionId, target.position_at, target.position_at, target.seq)
         invalidateMessageContentSearchInjectedTurnCache(db, [sessionId])
         for (const row of deletedRows) removeMessageContentSearchIndex(db, row.id)
-        // Drop in-memory child-work state. Next live-work check rebuilds from
-        // the remaining transcript plus hub-owned childToolWork metadata, so a
-        // verified completion rewind deleted is not forgotten (#2021).
+        // Drop in-memory child-work state, then latch harvested terminals into
+        // durable metadata (callers that CAS afterward must re-read
+        // metadata_version). Do not replay deleted running markers (#2021).
         const state = childToolCallState(db, sessionId)
         state.rebuilt = false
         state.durableSeeded = false
@@ -2424,15 +2499,27 @@ export function truncateOpenCodeRewind(db: Database, sessionId: string, cutoffSe
         state.settled.clear()
         state.runningChildren.clear()
         state.settledChildren.clear()
-        for (const id of harvestedSettledIds) state.settled.add(id)
-        for (const id of harvestedSettledChildren) state.settledChildren.add(id)
+        seedDurableChildToolWorkIfNeeded(db, sessionId, state)
+        for (const id of harvestedSettledIds) {
+            state.settled.add(id)
+            state.open.delete(id)
+        }
+        for (const id of harvestedSettledChildren) {
+            state.settledChildren.add(id)
+            state.runningChildren.delete(id)
+        }
+        latchOpenCodeSettledCallIds(db, sessionId, [...harvestedSettledIds])
         writeDurableChildToolWork(db, sessionId, state)
         state.durableSeeded = true
         prepareCached(db, `UPDATE sessions SET read_revision = content_revision, read_state_version = read_state_version + 1
             WHERE id = ? AND read_revision < content_revision AND NOT EXISTS (
                 SELECT 1 FROM messages WHERE session_id = sessions.id AND content_revision > sessions.read_revision
             )`).run(sessionId)
-        return bumpMessageEpoch(db, sessionId)
+        return {
+            epoch: bumpMessageEpoch(db, sessionId),
+            harvestedSettledCallIds: [...harvestedSettledIds],
+            harvestedSettledChildren: [...harvestedSettledChildren],
+        }
     })()
 }
 

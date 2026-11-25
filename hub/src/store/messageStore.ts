@@ -76,7 +76,11 @@ export class MessageStore {
         this.db = db
     }
 
-    truncateOpenCodeRewind(sessionId: string, cutoffSeq: number, boundaryId: string): number {
+    truncateOpenCodeRewind(sessionId: string, cutoffSeq: number, boundaryId: string): {
+        epoch: number
+        harvestedSettledCallIds: string[]
+        harvestedSettledChildren: string[]
+    } {
         return truncateOpenCodeRewind(this.db, sessionId, cutoffSeq, boundaryId)
     }
 

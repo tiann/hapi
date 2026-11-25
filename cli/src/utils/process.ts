@@ -393,6 +393,72 @@ export async function killProcess(pid: number, force: boolean = false, deadlineM
   }
 }
 
+/** Generation-bound identity for one member of a retained process tree (#2021). */
+export type RetainedProcessIdentity = {
+  pid: number;
+  startMarker: string | null;
+  bootId: string | null;
+  tgid: number | null;
+};
+
+/**
+ * Snapshot the live process tree under `rootPid` with generation markers.
+ * Returns `null` when the scan is incomplete — callers must keep Stop unresolved (#2021).
+ */
+export function snapshotProcessTreeIdentities(rootPid: number): RetainedProcessIdentity[] | null {
+  const n = typeof rootPid === 'number' ? rootPid : Number(rootPid);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const pids = isWindows() ? collectWindowsProcessTree(n) : collectProcessTree(n);
+  if (pids === 'scan_failed') return null;
+  const bootId = getSystemBootId();
+  return pids.map((pid) => ({
+    pid,
+    startMarker: getProcessStartMarker(pid),
+    bootId,
+    tgid: getProcessThreadGroupId(pid),
+  }));
+}
+
+/** True when this OS PID still matches the retained generation (PID-reuse safe). */
+export function retainedIdentityStillAlive(identity: RetainedProcessIdentity): boolean {
+  if (!isProcessAlive(identity.pid)) return false;
+  if (identity.startMarker) {
+    const marker = getProcessStartMarker(identity.pid);
+    if (marker === null) return true; // probe failed — fail closed as still alive
+    return marker === identity.startMarker;
+  }
+  if (identity.bootId && identity.tgid) {
+    const bootId = getSystemBootId();
+    const tgid = getProcessThreadGroupId(identity.pid);
+    if (bootId === null || tgid === null) return true;
+    return bootId === identity.bootId && tgid === identity.tgid;
+  }
+  // No generation marker — treat as still alive while the PID exists.
+  return true;
+}
+
+/**
+ * Kill retained tree members whose generation still matches, then verify none remain.
+ * Incomplete verification returns false (#2021).
+ */
+export async function killRetainedProcessTree(
+  identities: RetainedProcessIdentity[],
+  force = false,
+): Promise<boolean> {
+  if (identities.length === 0) return true;
+  // Kill each retained member by identity — descendants may have been
+  // reparented off the original root after the first attempt (#2021).
+  for (const identity of identities) {
+    if (!retainedIdentityStillAlive(identity)) continue;
+    try {
+      await killProcess(identity.pid, force);
+    } catch {
+      // continue verifying others
+    }
+  }
+  return identities.every((identity) => !retainedIdentityStillAlive(identity));
+}
+
 /**
  * Recursively collects all descendant PIDs of a process (depth-first).
  * Returns PIDs in child-first order (leaves first, root last), or

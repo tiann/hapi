@@ -3741,6 +3741,7 @@ export class SyncEngine {
             if (current.metadataVersion !== expectedVersion) throw new Error('OpenCode rewind metadata version changed')
             let next: OpenCodeRewindOperation = { ...op }
             let nextMetadata = metadata
+            let casVersion = current.metadataVersion
             // A reserved operation has not durably authorized native mutation.
             // Keep it rejectable when preparation failed before persistence.
             if (report.phase === 'unknown') next.phase = op.phase === 'reserved' ? 'reserved' : 'unknown'
@@ -3779,14 +3780,42 @@ export class SyncEngine {
                         if (nextIndex >= 0) indexes[local] = nextIndex
                     }
                     if (JSON.stringify(Object.entries(indexes).sort()) !== JSON.stringify(Object.entries(report.indexes ?? {}).sort())) throw new Error('Retained locator mismatch')
-                    this.store.messages.truncateOpenCodeRewind(sessionId, op.cutoffSeq, hubBoundary.id)
+                    const rewindCut = this.store.messages.truncateOpenCodeRewind(sessionId, op.cutoffSeq, hubBoundary.id)
                     next = { ...op, phase: 'committed' }
-                    nextMetadata = { ...metadata, opencodeHistoryCheckpoint: checkpoint, conversationHistoryIndexes: indexes,
-                        conversationHistoryPoints: Object.fromEntries(Object.keys(indexes).map(key => [key, true as const])) }
+                    // truncate may have latched settlements (bumps metadata_version).
+                    // Re-read so the enclosing CAS uses the post-truncate version and
+                    // keeps harvested childToolWork (#2021).
+                    const afterCut = this.store.sessions.getSession(sessionId)
+                    const cutMeta = MetadataSchema.parse(afterCut?.metadata ?? metadata)
+                    const priorChild = asRecord(cutMeta.childToolWork) ?? asRecord(metadata.childToolWork)
+                    const priorSettledCalls = Array.isArray(priorChild?.settledCallIds)
+                        ? priorChild.settledCallIds.filter((id): id is string => typeof id === 'string')
+                        : []
+                    const priorSettledChildren = Array.isArray(priorChild?.settled)
+                        ? priorChild.settled.filter((id): id is string => typeof id === 'string')
+                        : []
+                    const priorRunning = Array.isArray(priorChild?.running)
+                        ? priorChild.running.filter((id): id is string => typeof id === 'string')
+                        : []
+                    const settledCallIds = [...new Set([...priorSettledCalls, ...rewindCut.harvestedSettledCallIds])]
+                    const settledChildren = [...new Set([...priorSettledChildren, ...rewindCut.harvestedSettledChildren])]
+                    const runningChildren = priorRunning.filter((id) => !settledChildren.includes(id))
+                    nextMetadata = {
+                        ...cutMeta,
+                        opencodeHistoryCheckpoint: checkpoint,
+                        conversationHistoryIndexes: indexes,
+                        conversationHistoryPoints: Object.fromEntries(Object.keys(indexes).map(key => [key, true as const])),
+                        childToolWork: {
+                            running: runningChildren.sort(),
+                            settled: settledChildren.sort(),
+                            settledCallIds,
+                        },
+                    }
+                    casVersion = afterCut?.metadataVersion ?? current.metadataVersion
                     invalidated = true
                 }
             }
-            const updated = this.store.sessions.updateSessionMetadata(sessionId, { ...nextMetadata, opencodeRewind: next }, current.metadataVersion, namespace)
+            const updated = this.store.sessions.updateSessionMetadata(sessionId, { ...nextMetadata, opencodeRewind: next }, casVersion, namespace)
             if (updated.result !== 'success') throw new Error('OpenCode rewind metadata CAS failed')
             if (invalidated) {
                 const todos = this.store.messages.getAllMessages(sessionId).map(m => extractTodoWriteTodosFromMessageContent(m.content)).filter(Boolean).at(-1) ?? null

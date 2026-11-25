@@ -306,10 +306,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     /** Set when the armed wakeup hard-stop confirmed process-tree exit (#2021). */
     private wakeupHardStopVerifiedExit = false;
     /**
-     * Wakeup Stop ran but tree exit was unconfirmed — keep thinking on and let
-     * a later Stop retry verified retirement (#2021).
+     * Wakeup/prompt Stop ran but tree exit was unconfirmed — keep thinking on
+     * and let a later Stop retry verified retirement (#2021).
      */
     private pendingVerifiedWakeupStop = false;
+    /** Backend still being retired while pendingVerifiedWakeupStop is set. */
+    private pendingStopBackend: AcpSdkBackend | null = null;
+    /** Settlement IDs captured with the pending Stop backend (#2021). */
+    private pendingStopSettlements: string[] = [];
     private lastTurnMode: AgyMode | null = null;
     private lastSessionModeSnapshot: {
         permissionMode: PermissionMode | undefined;
@@ -738,6 +742,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     }
                     if (!verified) {
                         this.pendingVerifiedWakeupStop = true;
+                        this.pendingStopBackend = this.backend;
                         this.session.sendSessionEvent({
                             type: 'message',
                             message: 'Antigravity stop could not be verified; try Stop again.',
@@ -745,6 +750,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         return;
                     }
                     this.pendingVerifiedWakeupStop = false;
+                    this.pendingStopBackend = null;
+                    this.pendingStopSettlements = [];
                     await this.discardStoppedWakeup();
                     this.syncTranscriptCursor();
                     if (!this.usesLiveWakeupRendering()) await this.advanceBackendCursor();
@@ -1034,12 +1041,42 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async relaunchBackend(): Promise<void> {
+        // Never replace a backend whose Stop is still unverified — settlement
+        // on the replacement would clear thinking while the original runs (#2021).
+        if (this.pendingVerifiedWakeupStop) {
+            const verified = await this.retryPendingVerifiedStop();
+            if (!verified) {
+                throw new Error('Antigravity stop still unverified; cannot start a replacement');
+            }
+        }
         const previous = this.backend;
         this.backend = null;
         this.handlerOwnerTurn = null;
         this.discardingStoppedStarts = false;
         if (previous) await this.retireBackend(previous);
         await this.startBackend(this.acpSessionId);
+    }
+
+    /** Retry retirement of the pending Stop backend; settle on verified exit. */
+    private async retryPendingVerifiedStop(): Promise<boolean> {
+        const backend = this.pendingStopBackend ?? this.backend;
+        if (!backend) {
+            this.pendingVerifiedWakeupStop = false;
+            return true;
+        }
+        let verified = backend.wasAgentTreeEnded();
+        if (!verified) verified = await this.retireBackend(backend);
+        if (!verified) return false;
+        this.pendingWakeupSettlements.push(...this.pendingStopSettlements.splice(0));
+        this.pendingStopBackend = null;
+        this.pendingVerifiedWakeupStop = false;
+        if (this.backend === backend) this.backend = null;
+        await this.discardStoppedWakeup();
+        this.session.onThinkingChange(false);
+        if (this.session.queue.size() === 0 && !this.shouldExit) {
+            this.session.sendSessionEvent({ type: 'ready' });
+        }
+        return true;
     }
 
     /**
@@ -1194,6 +1231,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 return;
             }
             let relaunched = false;
+            if (this.pendingVerifiedWakeupStop) {
+                const verified = await this.retryPendingVerifiedStop();
+                if (!verified) {
+                    this.reportTurnError('Antigravity stop still unverified; press Stop again before sending.');
+                    restoreIfUserTurn();
+                    return;
+                }
+            }
             if (this.backendLost || !this.backend || !this.backend.isTransportAlive()) {
                 try {
                     await this.relaunchBackend();
@@ -1338,6 +1383,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     }
                 } else {
                     this.pendingVerifiedWakeupStop = true;
+                    this.pendingStopBackend = this.backend;
+                    this.pendingStopSettlements = [...new Set([
+                        ...turn.openCommands,
+                        ...turn.commandCallIds,
+                        ...turn.deferredLiveCommandCalls.keys(),
+                        ...turn.backendSettledCallIds,
+                        ...this.pendingWakeupSettlements.splice(0),
+                    ])];
                     keepThinkingForUnverifiedStop = true;
                     this.session.sendSessionEvent({
                         type: 'message',
@@ -2418,20 +2471,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private async handleAbort(): Promise<void> {
         const hadTurn = this.turn !== null || this.reactiveWakeupAbort !== null || this.pendingVerifiedWakeupStop;
         await this.cancelActiveTurn();
-        // Retry path: prior wakeup Stop left thinking on after unverified exit.
-        if (this.pendingVerifiedWakeupStop && this.wakeupHardStopDone) {
-            let verified = await this.waitForWakeupCancelHardStop();
-            if (!verified && this.backend) {
-                verified = await this.retireBackend(this.backend);
+        // Retry path: prior Stop left thinking on after unverified exit.
+        if (this.pendingVerifiedWakeupStop) {
+            if (this.wakeupHardStopDone) {
+                await this.waitForWakeupCancelHardStop();
             }
-            if (verified) {
-                this.pendingVerifiedWakeupStop = false;
-                await this.discardStoppedWakeup();
-                this.session.onThinkingChange(false);
-                if (this.session.queue.size() === 0 && !this.shouldExit) {
-                    this.session.sendSessionEvent({ type: 'ready' });
-                }
-            }
+            await this.retryPendingVerifiedStop();
         }
         this.clearBackgroundTasksSnapshot();
         this.abortController.abort();

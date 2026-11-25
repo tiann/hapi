@@ -386,11 +386,13 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                 };
             };
             this.abandonStopVerification = () => {
-                // Rejected Switch: agent keeps running — do not gate natural close.
-                aborted = false;
-                this.resolveAfterStopTreeVerified = null;
-                this.stopTreeVerified = null;
-                if (stdoutClosed && !settled) finish(closeExitCode);
+                // Rejected Switch: keep the Stop gate and process identity so a
+                // later Stop can retry. Do NOT finish the turn here — stdout
+                // close alone must not settle while descendants may live (#2021).
+                this.resolveAfterStopTreeVerified = () => {
+                    if (settled || !stdoutClosed) return;
+                    if (this.stopTreeVerified === true) finish(null);
+                };
             };
             const armDrainBound = () => {
                 if (settled || drainTimer !== undefined || !this.stopDrainArmed) return;
@@ -588,7 +590,9 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             } else if (leavingRemote) {
                 // Keep the launcher recoverable: do not reset the queue or mark
                 // the turn aborted until the process tree is confirmed gone (#2021).
+                // Preserve verification gate + activeChild for a later Stop.
                 this.stopDrainArmed = false;
+                this.stopTreeVerified = false;
                 this.abandonStopVerification?.();
                 this.messageBuffer.addMessage(
                     'Exit: agent process still open after force kill — handoff blocked',

@@ -592,7 +592,8 @@ describe('cursorLegacyRemoteLauncher', () => {
         ).rejects.toThrow(/still open after force kill/);
         expect(killMock.mock.calls.some((call) => call[1] === true)).toBe(true);
 
-        // Late close after a rejected Switch must not complete the handoff.
+        // Late close after a rejected Switch must not complete the handoff —
+        // tree verify is still false, so settlement waits for Stop retry.
         child1.closeChild?.(null);
         await new Promise((resolve) => setTimeout(resolve, 50));
         expect(await Promise.race([
@@ -600,8 +601,10 @@ describe('cursorLegacyRemoteLauncher', () => {
             new Promise<'pending'>((resolve) => setTimeout(() => resolve('pending'), 100)),
         ])).toBe('pending');
 
-        // Recover: confirm kill on a fresh Stop path, then close the queue.
+        // Recover: confirm kill on a fresh Stop, then close the queue.
         killMock.mockResolvedValue(true);
+        const abort = client.rpcHandlerManager.handlers.get('abort')! as () => Promise<void>;
+        await abort();
         queue.close();
         await launchPromise;
         killMock.mockResolvedValue(true);

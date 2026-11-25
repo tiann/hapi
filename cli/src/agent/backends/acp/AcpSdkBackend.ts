@@ -14,7 +14,12 @@ import {
 } from './toolCallLifetimes';
 import { defaultToolCallLifetimeStore, type ToolCallLifetimeStore } from './toolCallLifetimeStore';
 import { randomUUID } from 'node:crypto';
-import { isProcessAlive, killProcessTreeByPid } from '@/utils/process';
+import {
+    killRetainedProcessTree,
+    retainedIdentityStillAlive,
+    snapshotProcessTreeIdentities,
+    type RetainedProcessIdentity,
+} from '@/utils/process';
 
 /** Why the backend is bumping/clearing hub thinking — launchers filter chatter here (#1553). */
 export type AgentActivitySource =
@@ -208,10 +213,10 @@ export class AcpSdkBackend implements AgentBackend {
     /** Latched once `transport.close()` confirms the agent process tree is gone (#2021). */
     private agentTreeEnded = false;
     /**
-     * PID retained after an unconfirmed close so a later Stop can re-verify /
-     * re-kill without a live transport (#2021).
+     * Generation-bound process-tree snapshot retained after an unconfirmed
+     * close so Stop retry verifies the original members (not a reused PID) (#2021).
      */
-    private retainedAgentPid: number | null = null;
+    private retainedAgentTree: RetainedProcessIdentity[] | null = null;
 
     /** Retry configuration for ACP initialization */
     private static readonly INIT_RETRY_OPTIONS = {
@@ -1346,12 +1351,13 @@ export class AcpSdkBackend implements AgentBackend {
 
     /** PID of the spawned ACP agent process, when known (used by the opencode v2 REST discovery). */
     getProcessPid(): number | null {
-        return this.transport ? this.transport.getProcessPid() : this.retainedAgentPid;
+        if (this.transport) return this.transport.getProcessPid();
+        return this.retainedAgentTree?.[this.retainedAgentTree.length - 1]?.pid ?? null;
     }
 
     /**
-     * Re-check / re-kill a process retained after an unconfirmed close.
-     * Used by Stop retry when `disconnect` already nulled the transport (#2021).
+     * Re-check / re-kill the generation-bound tree retained after an unconfirmed
+     * close. Root PID absence alone is not enough — descendants may survive (#2021).
      */
     async verifyRetainedAgentExit(force = false): Promise<boolean> {
         if (this.agentTreeEnded) return true;
@@ -1359,17 +1365,17 @@ export class AcpSdkBackend implements AgentBackend {
             await this.disconnect();
             return this.agentTreeEnded;
         }
-        const pid = this.retainedAgentPid;
-        if (pid == null) return this.agentTreeEnded;
-        if (!isProcessAlive(pid)) {
+        const tree = this.retainedAgentTree;
+        if (!tree || tree.length === 0) return this.agentTreeEnded;
+        if (tree.every((identity) => !retainedIdentityStillAlive(identity))) {
             this.agentTreeEnded = true;
-            this.retainedAgentPid = null;
+            this.retainedAgentTree = null;
             return true;
         }
-        const killed = await killProcessTreeByPid(pid, force);
+        const killed = await killRetainedProcessTree(tree, force);
         if (killed) {
             this.agentTreeEnded = true;
-            this.retainedAgentPid = null;
+            this.retainedAgentTree = null;
         }
         return killed;
     }
@@ -1419,8 +1425,8 @@ export class AcpSdkBackend implements AgentBackend {
             }
         }
         if (!this.transport) {
-            // Prior unconfirmed close retained a PID — retry verification (#2021).
-            if (this.retainedAgentPid != null) {
+            // Prior unconfirmed close retained a tree snapshot — retry (#2021).
+            if (this.retainedAgentTree != null) {
                 await this.verifyRetainedAgentExit(true);
             }
             return;
@@ -1460,14 +1466,19 @@ export class AcpSdkBackend implements AgentBackend {
         const closePid = typeof this.transport.getProcessPid === 'function'
             ? this.transport.getProcessPid()
             : null;
+        // Snapshot before close so reparented descendants stay verifiable (#2021).
+        const preCloseTree = typeof closePid === 'number' && closePid > 0
+            ? snapshotProcessTreeIdentities(closePid)
+            : null;
         try {
             agentEnded = (await this.transport.close()) === true;
             if (agentEnded) {
                 this.agentTreeEnded = true;
-                this.retainedAgentPid = null;
-            } else if (typeof closePid === 'number' && closePid > 0) {
-                // Keep a generation-bound verifier for Stop retry (#2021).
-                this.retainedAgentPid = closePid;
+                this.retainedAgentTree = null;
+            } else {
+                // Incomplete scan → keep unresolved (null tree means retry cannot
+                // claim verified exit via root-only absence).
+                this.retainedAgentTree = preCloseTree;
             }
         } finally {
             this.transport = null;
