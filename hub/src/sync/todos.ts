@@ -81,7 +81,10 @@ function extractTodosFromPlanText(value: unknown, allowSingleStep = false): Todo
     return normalizePlanEntries(
         listLines
             .filter((line) => line.indent === topLevelIndent)
-            .map((line) => line.content)
+            .map(({ content }) => {
+                const checkbox = /^\[([ xX])\]\s+(.+)$/.exec(content)
+                return checkbox ? { content: checkbox[2], status: checkbox[1] === ' ' ? 'pending' : 'completed' } : content
+            })
     )
 }
 
@@ -190,34 +193,23 @@ export function extractSessionTodosFromMessageContent(messageContent: unknown): 
 
 const STRUCTURED_TODOS_BACKFILL_PAGE_SIZE = 200
 
-export function findLatestStructuredTodos(
-    store: Store,
-    sessionId: string
-): { todos: NonNullable<ReturnType<typeof extractSessionTodosFromMessageContent>>; source: { at: number; seq: number } } | null {
-    let before: { at: number; seq: number } | undefined
+type StructuredTodosSnapshot = { todos: TodoItem[]; source: { at: number; seq: number } }
 
+export function findLatestStructuredTodos(store: Store, sessionId: string): StructuredTodosSnapshot | null {
+    // Walk the existing (session_id, seq) index once, retaining the newest
+    // source by creation time and sequence even for imported out-of-order rows.
+    let beforeSeq: number | undefined
+    let latest: StructuredTodosSnapshot | null = null
     while (true) {
-        const page = store.messages.getMessagesByPosition(
-            sessionId,
-            STRUCTURED_TODOS_BACKFILL_PAGE_SIZE,
-            before,
-            'created'
-        )
-        for (let i = page.length - 1; i >= 0; i -= 1) {
-            const message = page[i]
-            if (!message) continue
+        const page = store.messages.getMessagesBeforeSeq(sessionId, beforeSeq, STRUCTURED_TODOS_BACKFILL_PAGE_SIZE)
+        for (const message of page) {
+            const at = message.createdAt
+            const seq = message.seq
+            if (latest && (at < latest.source.at || (at === latest.source.at && seq <= latest.source.seq))) continue
             const todos = extractSessionTodosFromMessageContent(message.content)
-            if (todos) {
-                return {
-                    todos,
-                    source: { at: message.createdAt, seq: message.seq }
-                }
-            }
+            if (todos) latest = { todos, source: { at, seq } }
         }
-
-        if (page.length < STRUCTURED_TODOS_BACKFILL_PAGE_SIZE) return null
-        const oldest = page[0]
-        if (!oldest) return null
-        before = { at: oldest.createdAt, seq: oldest.seq }
+        if (page.length < STRUCTURED_TODOS_BACKFILL_PAGE_SIZE) return latest
+        beforeSeq = page[0]!.seq
     }
 }

@@ -93,6 +93,19 @@ describe('extractSessionTodosFromMessageContent', () => {
         ])
     })
 
+    it('uses Markdown checkboxes as completion status and strips the markers', () => {
+        const todos = extractSessionTodosFromMessageContent({ role: 'agent', content: { type: 'output', data: {
+            type: 'assistant', message: { content: [
+                { type: 'tool_use', name: 'ExitPlanMode', input: { plan: '- [x] Inspect\n- [ ] Implement\n- [X] Verify' } }
+            ] },
+        } } })
+        expect(todos?.map(({ content, status }) => ({ content, status }))).toEqual([
+            { content: 'Inspect', status: 'completed' },
+            { content: 'Implement', status: 'pending' },
+            { content: 'Verify', status: 'completed' }
+        ])
+    })
+
     it('promotes a structured Markdown plan attached to ExitPlanMode', () => {
         const todos = extractSessionTodosFromMessageContent({
             role: 'assistant',

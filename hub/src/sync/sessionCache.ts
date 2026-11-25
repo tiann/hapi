@@ -345,15 +345,18 @@ export class SessionCache {
      * message's older `createdAt` as the SSE version.
      */
     rebuildTodosFromTranscript(sessionId: string, options: { touchUpdatedAt?: boolean } = {}): void {
-        const stored = this.store.sessions.getSession(sessionId)
-        if (!stored) return
-
-        this.todoBackfillAttemptedSessionIds.delete(sessionId)
-        const latest = findLatestStructuredTodos(this.store, sessionId)
-        this.store.sessions.replaceSessionTodos(sessionId, latest?.todos ?? null, stored.namespace,
-            latest?.source, options)
+        if (!this.persistTodosFromTranscript(sessionId, options)) return
         this.todoBackfillAttemptedSessionIds.add(sessionId)
         this.refreshSession(sessionId)
+    }
+
+    /** Persist without refreshing or publishing cache state inside a transaction. */
+    persistTodosFromTranscript(sessionId: string, options: { touchUpdatedAt?: boolean } = {}): boolean {
+        const stored = this.store.sessions.getSession(sessionId)
+        if (!stored) return false
+        const latest = findLatestStructuredTodos(this.store, sessionId)
+        return this.store.sessions.replaceSessionTodos(sessionId, latest?.todos ?? null, stored.namespace,
+            latest?.source, options)
     }
 
     refreshSession(sessionId: string): Session | null {

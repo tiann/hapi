@@ -3442,9 +3442,13 @@ export class SyncEngine {
         truncateFromLocalId: string,
         discardedThroughSeq?: number
     ): void {
-        this.store.messages.truncateMessagesFromLocalId(sessionId, truncateFromLocalId, [], discardedThroughSeq)
+        this.store.runInTransaction(() => {
+            this.store.messages.truncateMessagesFromLocalId(sessionId, truncateFromLocalId, [], discardedThroughSeq)
+            if (!this.sessionCache.persistTodosFromTranscript(sessionId)) {
+                throw new Error('Failed to persist tasks for rewound transcript')
+            }
+        })
         this.scrubHistoryLocators(sessionId, namespace)
-        this.sessionCache.rebuildTodosFromTranscript(sessionId)
         this.markClaudeRewindCutApplied(sessionId, namespace, truncateFromLocalId)
         this.eventPublisher.emit({
             type: 'messages-invalidated',

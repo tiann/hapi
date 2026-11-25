@@ -311,6 +311,32 @@ describe('SessionCache structured task backfill', () => {
         } finally { store.close() }
     })
 
+    it('scans a long plan-free transcript once in bounded indexed sequence pages', () => {
+        const store = new Store(':memory:')
+        try {
+            const created = store.sessions.getOrCreateSession('large-plan-free-session', { path: '/tmp', host: 'h' }, null, 'default')
+            const rowCount = 1601
+            store.runInTransaction(() => {
+                for (let index = 0; index < rowCount; index++) {
+                    store.messages.addMessage(created.id, { role: 'assistant', content: `Output ${index}` }, undefined, undefined, 2000 - index)
+                }
+            })
+            const seqs: number[] = []
+            const readPage = store.messages.getMessagesBeforeSeq.bind(store.messages)
+            store.messages.getMessagesBeforeSeq = (...args) => {
+                const rows = readPage(...args)
+                expect(rows.length).toBeLessThanOrEqual(200)
+                seqs.push(...rows.map(row => row.seq))
+                return rows
+            }
+            const cache = new SessionCache(store, createPublisher([]))
+            cache.reloadAll()
+            expect(seqs).toHaveLength(rowCount)
+            expect(new Set(seqs).size).toBe(rowCount)
+            expect(cache.getSession(created.id)?.todos).toBeUndefined()
+        } finally { store.close() }
+    })
+
     it('persists the one-time backfill marker and skips the scan after restart', () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-structured-todos-backfill-'))
         tempDirs.push(dir)
@@ -330,10 +356,10 @@ describe('SessionCache structured task backfill', () => {
         })
 
         let scanCount = 0
-        const originalGetMessagesByPosition = store.messages.getMessagesByPosition.bind(store.messages)
-        store.messages.getMessagesByPosition = (...args) => {
+        const originalGetMessagesBeforeSeq = store.messages.getMessagesBeforeSeq.bind(store.messages)
+        store.messages.getMessagesBeforeSeq = (...args) => {
             scanCount += 1
-            return originalGetMessagesByPosition(...args)
+            return originalGetMessagesBeforeSeq(...args)
         }
 
         const firstCache = new SessionCache(store, createPublisher([]))
@@ -346,10 +372,10 @@ describe('SessionCache structured task backfill', () => {
 
         const reopenedStore = new Store(dbPath)
         try {
-            const restartedOriginalGetMessagesByPosition = reopenedStore.messages.getMessagesByPosition.bind(reopenedStore.messages)
-            reopenedStore.messages.getMessagesByPosition = (...args) => {
+            const restartedOriginalGetMessagesBeforeSeq = reopenedStore.messages.getMessagesBeforeSeq.bind(reopenedStore.messages)
+            reopenedStore.messages.getMessagesBeforeSeq = (...args) => {
                 scanCount += 1
-                return restartedOriginalGetMessagesByPosition(...args)
+                return restartedOriginalGetMessagesBeforeSeq(...args)
             }
             const restartedCache = new SessionCache(reopenedStore, createPublisher([]))
             restartedCache.reloadAll()
