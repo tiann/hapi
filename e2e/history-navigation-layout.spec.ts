@@ -271,6 +271,23 @@ for (const structuralReset of [false, true]) {
 }
 
 
+test('keeps the initiating prompt through a reconnect during a long reply jump', async ({ page }) => {
+    await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&jumpStartGap=1&promptJumpGap=1')
+    const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Latest fixture reply' })
+    await reply.getByRole('button', { name: 'Jump to turn input' }).press('Enter')
+    await expect.poll(() => page.evaluate(() => window.__probe.requests.map(r => r.beforeSeq)), {
+        timeout: 30_000
+    }).toContain(201)
+    await page.evaluate(() => window.__probe.gap())
+    await page.evaluate(() => window.__probe.releaseBefore())
+    const prompt = page.locator('[data-hapi-turn-input="true"]').filter({ has: page.getByText('Fixture message 1', { exact: true }) })
+    await expect(prompt).toBeFocused({ timeout: 15_000 })
+    await expect(prompt).toBeInViewport()
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/reply-navigation-reconnect-keeps-prompt.png` })
+})
+
+
 test('does not preload older history while a jump to a loaded prompt is settling', async ({ page }) => {
     await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&loadedPromptPreload=1')
     const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Reply to loaded prompt' })

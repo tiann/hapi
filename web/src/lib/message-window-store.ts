@@ -140,11 +140,18 @@ const sessionAccessOrder = new Map<string, true>()
 const listeners = new Map<string, Set<() => void>>()
 const tailSyncControllers = new Map<string, TailSyncController>()
 const messageWindowTargetLocks = new Set<string>()
-type HeldConversationStart = { epoch: number; probe?: Promise<void>; catchUpApi?: ApiClient }
-const conversationStartWindows = new Map<string, HeldConversationStart>()
+type HeldHistoryNavigation = {
+    epoch: number
+    probe?: Promise<void>
+    recovery?: { api: ApiClient; after: MessagePosition | null }
+    catchUpNeeded?: boolean
+}
+const deferredGapCursors = new Map<string, { epoch: number; after: MessagePosition }>()
+const heldHistoryWindows = new Map<string, HeldHistoryNavigation>()
 
-export type ConversationStartWindow = {
+export type HistoryNavigationWindow = {
     isCurrent: () => boolean
+    verify: () => Promise<boolean>
     verifyStart: () => Promise<boolean>
     finish: (keepHistory: boolean) => void
 }
@@ -327,7 +334,7 @@ function isEvictableInactiveWindow(sessionId: string, state: InternalState): boo
     if (tailSyncControllers.get(sessionId)?.running) {
         return false
     }
-    if (messageWindowTargetLocks.has(sessionId) || conversationStartWindows.has(sessionId)) {
+    if (messageWindowTargetLocks.has(sessionId) || heldHistoryWindows.has(sessionId)) {
         return false
     }
     return !hasProtectedMessages(state.messages)
@@ -406,6 +413,7 @@ function evictExcessInactiveWindows(protectedSessionId?: string): void {
             state.olderGeneration + 1
         )
         states.delete(candidateId)
+        deferredGapCursors.delete(candidateId)
         tailSyncControllers.delete(candidateId)
         appliedRewindLocalIds.delete(candidateId)
         pendingNotifySessionIds.delete(candidateId)
@@ -1069,7 +1077,8 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
     const generation = beginTailSync(sessionId)
     try {
         const initial = getState(sessionId)
-        const initialCursor = getNewestCursor(initial)
+        const deferred = deferredGapCursors.get(sessionId)
+        const initialCursor = deferred?.epoch === initial.epoch ? deferred.after : getNewestCursor(initial)
         const preferLatestOnActivation = initial.preferLatestOnActivation
         const pendingGapRecovery = initial.pendingGapRecovery
         const canIncrement = initialCursor !== null
@@ -1347,6 +1356,7 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
 function startTailSync(sessionId: string, controller: TailSyncController): Promise<void> {
     const runningPrefersLatest = getState(sessionId).preferLatestOnActivation
     const runningPendingRecovery = getState(sessionId).pendingGapRecovery
+    const replayCursor = deferredGapCursors.get(sessionId)
     const running = runTailSync(controller.api, sessionId)
     controller.running = running
     controller.runningPrefersLatest = runningPrefersLatest
@@ -1354,6 +1364,9 @@ function startTailSync(sessionId: string, controller: TailSyncController): Promi
     const finish = () => {
         if (tailSyncControllers.get(sessionId) !== controller || controller.running !== running) {
             return
+        }
+        if (replayCursor === deferredGapCursors.get(sessionId) && !getState(sessionId).pendingGapRecovery) {
+            deferredGapCursors.delete(sessionId)
         }
         controller.running = null
         controller.runningPrefersLatest = false
@@ -1459,17 +1472,30 @@ export function activateMessageWindow(sessionId: string): void {
     }
 }
 
-/** Keep the explicit jump's oldest pages intact across background reconciliation. */
-export function holdConversationStartWindow(sessionId: string): ConversationStartWindow | null {
+function releaseHeldHistory(sessionId: string, window: HeldHistoryNavigation): void {
+    heldHistoryWindows.delete(sessionId)
+    if ((!window.probe && !window.catchUpNeeded) || !window.recovery?.after) return
+    const previous = deferredGapCursors.get(sessionId)
+    if (!previous || previous.epoch !== window.epoch || comparePosition(window.recovery.after, previous.after) < 0) {
+        deferredGapCursors.set(sessionId, { epoch: window.epoch, after: window.recovery.after })
+    }
+}
+
+/** Keep explicit history navigation intact across background reconciliation. */
+export function holdHistoryNavigationWindow(sessionId: string): HistoryNavigationWindow | null {
     const epoch = getState(sessionId).epoch
     if (epoch === null) return null
-    const previous = conversationStartWindows.get(sessionId)
-    const window: HeldConversationStart = previous?.epoch === epoch ? previous : { epoch }
-    conversationStartWindows.set(sessionId, window)
+    const previous = heldHistoryWindows.get(sessionId)
+    const window: HeldHistoryNavigation = previous?.epoch === epoch ? previous : { epoch }
+    heldHistoryWindows.set(sessionId, window)
     cancelTailSync(sessionId)
-    const isCurrent = () => conversationStartWindows.get(sessionId) === window && getState(sessionId).epoch === epoch
+    const isCurrent = () => heldHistoryWindows.get(sessionId) === window && getState(sessionId).epoch === epoch
     return {
         isCurrent,
+        verify: async () => {
+            await window.probe
+            return isCurrent()
+        },
         verifyStart: async () => {
             const oldestSeq = getState(sessionId).oldestSeq
             await window.probe
@@ -1477,21 +1503,26 @@ export function holdConversationStartWindow(sessionId: string): ConversationStar
             return isCurrent() && !state.hasMore && state.oldestSeq === oldestSeq
         },
         finish: (keepHistory) => {
-            if (conversationStartWindows.get(sessionId) !== window) return
+            if (heldHistoryWindows.get(sessionId) !== window) return
             if (keepHistory && getState(sessionId).requiresLatestReset) return
-            conversationStartWindows.delete(sessionId)
-            if (keepHistory && window.catchUpApi) void recoverWindowAfterGapResume(window.catchUpApi, sessionId)
+            releaseHeldHistory(sessionId, window)
+            if (keepHistory && window.catchUpNeeded && window.recovery) {
+                void recoverWindowAfterGapResume(window.recovery.api, sessionId)
+            }
         }
     }
 }
 
-function reconcileHeldConversationStart(api: ApiClient, sessionId: string): Promise<void> | null {
-    const held = conversationStartWindows.get(sessionId)
+function reconcileHeldHistoryNavigation(api: ApiClient, sessionId: string): Promise<void> | null {
+    const held = heldHistoryWindows.get(sessionId)
     if (!held) return null
     if (held.probe) return held.probe
     const initial = getState(sessionId)
+    // Bind the reconnect to the cursor before any live SSE can advance it.
+    const recovery = held.recovery ??= { api, after: getNewestCursor(initial) }
+    recovery.api = api
     const requestBaseline = new Map(initial.messages.map(message => [message.id, message]))
-    const isCurrent = () => conversationStartWindows.get(sessionId) === held
+    const isCurrent = () => heldHistoryWindows.get(sessionId) === held
     const reset = async () => {
         markMessageWindowForLatestReset(sessionId, getState(sessionId).messages)
         await syncTailMessages(api, sessionId)
@@ -1516,8 +1547,7 @@ function reconcileHeldConversationStart(api: ApiClient, sessionId: string): Prom
         // the historical window. Leave the pagination cursors untouched.
         reconcileRows(response.messages, requestBaseline)
         const head = pagePosition(response.page.snapshotHeadAt, response.page.snapshotHeadSeq)
-        const cursor = getNewestCursor(getState(sessionId))
-        if (head && cursor && comparePosition(head, cursor) > 0) held.catchUpApi = api
+        if (head && recovery.after && comparePosition(head, recovery.after) > 0) held.catchUpNeeded = true
 
         const inLatest = new Set(response.messages.map(message => message.id))
         const candidates = getState(sessionId).messages.filter(message => !inLatest.has(message.id) && isNonTerminalToolCallRow(message))
@@ -1527,15 +1557,19 @@ function reconcileHeldConversationStart(api: ApiClient, sessionId: string): Prom
         if (!isCurrent()) return
         const updates: DecryptedMessage[] = []
         for (const [index, result] of results.entries()) {
-            if (result.status !== 'fulfilled' || !result.value) continue
+            if (result.status !== 'fulfilled' || !result.value) {
+                held.catchUpNeeded = true
+                continue
+            }
             if (result.value.page.epoch !== held.epoch) return reset()
             const updated = result.value.messages.find(message => message.id === candidates[index].id)
             if (updated) updates.push(updated)
+            else held.catchUpNeeded = true
         }
         reconcileRows(updates, new Map(candidates.map(message => [message.id, message])))
     }).catch(() => {
         // Keep the visible history if the reconnect request itself fails.
-        if (isCurrent()) held.catchUpApi = api
+        if (isCurrent()) held.catchUpNeeded = true
     }).finally(() => { held.probe = undefined })
     held.probe = probe
     return probe
@@ -1546,10 +1580,14 @@ export function syncTailMessages(
     sessionId: string,
     options: { ensureAfterCurrent?: boolean } = {}
 ): Promise<void> {
-    const heldReconciliation = reconcileHeldConversationStart(api, sessionId)
+    const heldReconciliation = reconcileHeldHistoryNavigation(api, sessionId)
     if (heldReconciliation) return heldReconciliation
     if (messageWindowTargetLocks.has(sessionId)) {
         return Promise.resolve()
+    }
+    const deferred = deferredGapCursors.get(sessionId)
+    if (deferred?.epoch === getState(sessionId).epoch) {
+        updateState(sessionId, previous => previous.pendingGapRecovery ? previous : buildState(previous, { pendingGapRecovery: true }))
     }
     let controller = tailSyncControllers.get(sessionId)
     if (!controller) {
@@ -1616,7 +1654,7 @@ export function syncTailMessages(
  * reconnect.
  */
 export function recoverWindowAfterGapResume(api: ApiClient, sessionId: string): Promise<void> {
-    const heldReconciliation = reconcileHeldConversationStart(api, sessionId)
+    const heldReconciliation = reconcileHeldHistoryNavigation(api, sessionId)
     if (heldReconciliation) return heldReconciliation
     if (messageWindowTargetLocks.has(sessionId)) {
         return Promise.resolve()
@@ -2070,7 +2108,8 @@ export function cancelOlderMessageLoad(sessionId: string): void {
 
 export function setMessageViewMode(sessionId: string, mode: MessageViewMode): void {
     if (mode === 'tail') {
-        conversationStartWindows.delete(sessionId)
+        const held = heldHistoryWindows.get(sessionId)
+        if (held) releaseHeldHistory(sessionId, held)
         messageWindowTargetLocks.delete(sessionId)
     }
     updateState(sessionId, (previous) => {
@@ -2130,7 +2169,8 @@ export function subscribeMessageWindow(sessionId: string, listener: () => void):
 }
 
 export function clearMessageWindow(sessionId: string): void {
-    conversationStartWindows.delete(sessionId)
+    heldHistoryWindows.delete(sessionId)
+    deferredGapCursors.delete(sessionId)
     messageWindowTargetLocks.delete(sessionId)
     tailSyncControllers.delete(sessionId)
     const previous = states.get(sessionId)
@@ -2152,7 +2192,8 @@ function markMessageWindowForLatestReset(sessionId: string, messages: DecryptedM
 
     // A rewind/invalidation is authoritative and must refresh even when a
     // historical search target or jump-to-start paused background tail sync.
-    conversationStartWindows.delete(sessionId)
+    heldHistoryWindows.delete(sessionId)
+    deferredGapCursors.delete(sessionId)
     messageWindowTargetLocks.delete(sessionId)
     tailSyncControllers.delete(sessionId)
     clearPersistedState(sessionId)

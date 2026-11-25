@@ -259,6 +259,7 @@ const sessionMessagesById: Record<string, DecryptedMessage[]> = sessionSwitch
     : {}
 
 const jumpStartGap = fixtureParams.has('jumpStartGap')
+const promptJumpGap = jumpStartGap && fixtureParams.has('promptJumpGap')
 const loadedPromptPreload = fixtureParams.has('loadedPromptPreload')
 let fixtureEpoch = 1
 const rekeyReply = fixtureParams.has('rekeyReply')
@@ -293,6 +294,8 @@ const allMessages: DecryptedMessage[] = rekeyReply ? [
         localId: null,
         content: jumpStartGap && seq === TOTAL_MESSAGES
             ? { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Latest fixture reply' } } }
+            : promptJumpGap && seq > 1
+            ? { role: 'agent', content: { type: 'codex', data: { type: 'message', message: `Older answer segment ${seq}` } } }
             : navigationMedia && seq % 50 === 0 && seq < TOTAL_MESSAGES
             ? {
                 role: 'agent',

@@ -31,7 +31,7 @@ import {
     subscribeMessageWindow,
     syncTailMessages,
     recoverWindowAfterGapResume,
-    holdConversationStartWindow,
+    holdHistoryNavigationWindow,
     updateMessageStatus,
 } from '@/lib/message-window-store'
 
@@ -2907,12 +2907,72 @@ describe('gap recovery', () => {
         }))
         await syncTailMessages(api, id)
         setMessageViewMode(id, 'history')
-        const navigation = holdConversationStartWindow(id)!
+        const navigation = holdHistoryNavigationWindow(id)!
         initial = false
         await recoverWindowAfterGapResume(api, id)
         expect(await navigation.verifyStart()).toBe(true)
         expect(getMessageWindowState(id).messages).toEqual([oldest, completed])
         expect(getMessageWindowState(id).requiresLatestReset).toBe(false)
+    })
+
+    it('retries a failed retained-tool refresh even when the server head did not advance', async () => {
+        const id = sessionId('gap-hold-refresh-retry')
+        const oldest = makeAgentMessage({ id: 'oldest', seq: 1, at: 100 })
+        const running = toolCallRow('tool', 2, 200, 'in_progress')
+        const completed = toolCallRow('tool', 2, 200, 'completed')
+        const tail = makeAgentMessage({ id: 'tail', seq: 3, at: 300 })
+        const context = vi.fn().mockRejectedValueOnce(new Error('temporary failure')).mockResolvedValue(contextResponse([completed], {
+            epoch: 1, targetMessageId: completed.id, nextBeforeAt: 200, nextBeforeSeq: 2,
+            snapshotHeadAt: 300, snapshotHeadSeq: 3
+        }))
+        let initial = true
+        const api = createApi(async (_id, query) => {
+            if (query.afterAt !== undefined) return afterResponse([], {
+                epoch: 1, nextAfterAt: 300, nextAfterSeq: 3, snapshotHeadAt: 300, snapshotHeadSeq: 3
+            })
+            return latestResponse(initial ? [oldest, running, tail] : [tail], { epoch: 1, nextBeforeAt: 300, nextBeforeSeq: 3 })
+        }, context)
+        await syncTailMessages(api, id)
+        initial = false
+        setMessageViewMode(id, 'history')
+        const held = holdHistoryNavigationWindow(id)!
+        await recoverWindowAfterGapResume(api, id)
+        expect(context).toHaveBeenCalledTimes(1)
+        held.finish(true)
+        await syncTailMessages(api, id)
+        expect(context).toHaveBeenCalledTimes(2)
+        expect(getMessageWindowState(id).messages).toEqual([oldest, completed, tail])
+    })
+
+    it('catches up from the pre-probe cursor even when live SSE advances the tail first', async () => {
+        const id = sessionId('gap-hold-sse-advance')
+        const initial = makeAgentMessage({ id: '20', seq: 20, at: 2_000 })
+        const missed = makeAgentMessage({ id: '21', seq: 21, at: 2_100 })
+        const live = makeAgentMessage({ id: '22', seq: 22, at: 2_200 })
+        const probe = deferred<MessagesResponse>()
+        const catchUp = deferred<number | null>()
+        let calls = 0
+        const api = createApi(async (_id, query) => {
+            if (++calls === 1) return latestResponse([initial], { epoch: 1 })
+            if (calls === 2) return probe.promise
+            if (query.afterAt !== undefined) {
+                catchUp.resolve(query.afterSeq ?? null)
+                return afterResponse([missed, live], { epoch: 1, nextAfterAt: 2_200, nextAfterSeq: 22,
+                    snapshotHeadAt: 2_200, snapshotHeadSeq: 22 })
+            }
+            return latestResponse([initial, missed, live], { epoch: 1 })
+        })
+        await syncTailMessages(api, id)
+        setMessageViewMode(id, 'history')
+        const lease = holdHistoryNavigationWindow(id)!
+        const gap = recoverWindowAfterGapResume(api, id)
+        ingestIncomingMessages(id, [live])
+        probe.resolve(latestResponse([live], { epoch: 1 }))
+        await gap
+        lease.finish(true)
+        await syncTailMessages(api, id)
+        expect(await Promise.race([catchUp.promise, Promise.resolve(null)])).toBe(20)
+        expect(getMessageWindowState(id).messages.map(message => message.id)).toEqual(['20', '21', '22'])
     })
 
     it.each([false, true])('waits for a pending epoch probe before confirming history start (reset=%s)', async reset => {
@@ -2932,7 +2992,7 @@ describe('gap recovery', () => {
         getMessages.mockResolvedValueOnce(latestResponse([old], { epoch: 1 }))
         await syncTailMessages(api, id)
         setMessageViewMode(id, 'history')
-        const navigation = holdConversationStartWindow(id)!
+        const navigation = holdHistoryNavigationWindow(id)!
         expect(navigation.isCurrent()).toBe(true)
         probeNext = true
         const gap = recoverWindowAfterGapResume(api, id)

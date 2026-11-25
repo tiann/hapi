@@ -29,7 +29,7 @@ import { ShareTurnDialog } from '@/components/AssistantChat/ShareTurnDialog'
 import { getSessionModelLabel } from '@/lib/sessionModelLabel'
 import { getSessionTitle } from '@/lib/sessionTitle'
 import { isFastServiceTier } from '@/components/AssistantChat/codexFastMode'
-import { holdConversationStartWindow, type ConversationStartWindow, type OlderLoadOutcome } from '@/lib/message-window-store'
+import { holdHistoryNavigationWindow, type HistoryNavigationWindow, type OlderLoadOutcome } from '@/lib/message-window-store'
 import { useSessionHeaderMetadata } from '@/hooks/useSessionHeaderMetadata'
 import { useMachines } from '@/hooks/queries/useMachines'
 import { useMachineLabels } from '@/hooks/useMachineLabels'
@@ -1263,7 +1263,7 @@ export function HappyThread(props: {
     // which immediately requests and renders the latest page.
     const historyNavigationRef = useRef(false)
     const navigationRunRef = useRef(0)
-    const conversationStartWindowRef = useRef<ConversationStartWindow | null>(null)
+    const historyNavigationWindowRef = useRef<HistoryNavigationWindow | null>(null)
     const navigationInFlightRef = useRef(false)
     const [isNavigationInFlight, setIsNavigationInFlight] = useState(false)
     const promptNavigationTimerRef = useRef<number | null>(null)
@@ -1617,8 +1617,8 @@ export function HappyThread(props: {
 
     const cancelHistoryNavigation = useCallback(() => {
         navigationRunRef.current += 1
-        conversationStartWindowRef.current?.finish(false)
-        conversationStartWindowRef.current = null
+        historyNavigationWindowRef.current?.finish(false)
+        historyNavigationWindowRef.current = null
         historyNavigationRef.current = false
         navigationInFlightRef.current = false
         setIsNavigationInFlight(false)
@@ -2162,8 +2162,8 @@ export function HappyThread(props: {
         userCancelledInitialTailRef.current = false
         searchTargetHistoryLockRef.current = false
         navigationRunRef.current += 1
-        conversationStartWindowRef.current?.finish(false)
-        conversationStartWindowRef.current = null
+        historyNavigationWindowRef.current?.finish(false)
+        historyNavigationWindowRef.current = null
         historyNavigationRef.current = false
         navigationInFlightRef.current = false
         setIsNavigationInFlight(false)
@@ -2538,8 +2538,8 @@ export function HappyThread(props: {
     useEffect(() => {
         return () => {
             navigationRunRef.current += 1
-            conversationStartWindowRef.current?.finish(false)
-            conversationStartWindowRef.current = null
+            historyNavigationWindowRef.current?.finish(false)
+            historyNavigationWindowRef.current = null
             historyNavigationRef.current = false
             navigationInFlightRef.current = false
             historyLoaderRef.current.runId += 1
@@ -2977,7 +2977,8 @@ export function HappyThread(props: {
         replyToMessageId: string | undefined,
         assistantAnchorState: PromptAnchorState,
         isCancelled: () => boolean,
-        focusTarget: boolean
+        focusTarget: boolean,
+        heldWindow: HistoryNavigationWindow | null
     ): Promise<boolean> => {
         if (promptNavigationTimerRef.current !== null) {
             window.clearTimeout(promptNavigationTimerRef.current)
@@ -3017,6 +3018,9 @@ export function HappyThread(props: {
             target.scrollIntoView({ block: 'start', behavior: 'smooth' })
             const settled = await waitForPromptScrollSettlement(viewport, target, isCancelled)
             if (!settled) throw new Error('Prompt scroll did not settle')
+            if (heldWindow && !await heldWindow.verify()) return false
+            if (isCancelled()) return false
+            if (!target.isConnected || !viewport.contains(target)) throw new Error('Prompt changed during navigation')
             const completionStatus = getPromptNavigationCompletionStatus(loadedOlderHistory)
             setPromptNavigationStatus(completionStatus)
             if (completionStatus === 'success') {
@@ -3039,7 +3043,11 @@ export function HappyThread(props: {
     const jumpToPrompt = useCallback(async (messageId: string, replyToMessageId?: string, focusTarget = false): Promise<boolean> => {
         if (navigationInFlightRef.current) return false
         const runId = navigationRunRef.current
-        const isCancelled = () => navigationRunRef.current !== runId
+        const heldWindow = holdHistoryNavigationWindow(props.sessionId)
+        historyNavigationWindowRef.current = heldWindow
+        const runCancelled = () => navigationRunRef.current !== runId
+        const isCancelled = () => runCancelled() || heldWindow?.isCurrent() === false
+        let reachedPrompt = false
         navigationInFlightRef.current = true
         historyNavigationRef.current = true
         setIsNavigationInFlight(true)
@@ -3051,11 +3059,11 @@ export function HappyThread(props: {
             // message anchor is already rendered. A direct scroll to the
             // replyToMessageId can race assistant-ui's tail restoration and
             // leave the viewport at its previous position.
-            return await runAfterPendingHistoryLoad(
+            reachedPrompt = await runAfterPendingHistoryLoad(
                 pendingLoadPromiseRef.current,
                 () => {
                     if (isCancelled()) return false
-                    return scrollToPromptForMessage(messageId, replyToMessageId, assistantAnchorState, isCancelled, focusTarget)
+                    return scrollToPromptForMessage(messageId, replyToMessageId, assistantAnchorState, isCancelled, focusTarget, heldWindow)
                 },
                 () => {
                     if (promptNavigationTimerRef.current !== null) {
@@ -3066,15 +3074,19 @@ export function HappyThread(props: {
                     setPromptNavigationStatus('loading')
                 }
             )
+            return reachedPrompt
         } finally {
-            if (!isCancelled()) {
+            const invalidated = heldWindow?.isCurrent() === false
+            heldWindow?.finish(reachedPrompt)
+            if (!runCancelled()) {
+                if (invalidated) clearPromptNavigationFeedback()
                 historyNavigationRef.current = false
                 navigationInFlightRef.current = false
                 setIsNavigationInFlight(false)
                 scheduleCoverageAfterSettling()
             }
         }
-    }, [clearConversationStartFeedback, releaseSearchTargetHistoryLock, scheduleCoverageAfterSettling, scrollToPromptForMessage])
+    }, [clearConversationStartFeedback, clearPromptNavigationFeedback, props.sessionId, releaseSearchTargetHistoryLock, scheduleCoverageAfterSettling, scrollToPromptForMessage])
 
     const scrollToConversationStart = useCallback(async (focusTarget = false): Promise<boolean> => {
         if (navigationInFlightRef.current) return false
@@ -3096,8 +3108,8 @@ export function HappyThread(props: {
             return true
         }
         const runId = navigationRunRef.current
-        const heldWindow = holdConversationStartWindow(props.sessionId)
-        conversationStartWindowRef.current = heldWindow
+        const heldWindow = holdHistoryNavigationWindow(props.sessionId)
+        historyNavigationWindowRef.current = heldWindow
         const runCancelled = () => navigationRunRef.current !== runId
         const isCancelled = () => runCancelled() || heldWindow?.isCurrent() === false
         let reachedStart = false
