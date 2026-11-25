@@ -3615,7 +3615,7 @@ describe('AcpSdkBackend agentInfo.version and flushPendingMessageBuffers', () =>
         }
     });
 
-    it('recovers Windows incomplete ACP teardown once expand verifies the tree exited (#2021)', async () => {
+    it('keeps Windows incomplete ACP teardown pending after expand cleanup (#2021)', async () => {
         const processUtils = await import('@/utils/process');
         const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
         Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' });
@@ -3626,15 +3626,15 @@ describe('AcpSdkBackend agentInfo.version and flushPendingMessageBuffers', () =>
             tgid: null,
             pgid: null,
         }];
-        // Spawn captures a tree; pre-close refresh fails (Windows incomplete).
-        // Later expand+kill confirms every generation-bound member exited.
+        // Incomplete launch-only snapshot can miss later tool children — expand
+        // may clean known seeds but must not authorize settlement (#2021 Major).
         const snap = vi.spyOn(processUtils, 'snapshotProcessTreeIdentities')
             .mockReturnValueOnce(spawnTree)
             .mockReturnValue(null);
         const alive = vi.spyOn(processUtils, 'retainedIdentityStillAlive').mockReturnValue(false);
         const classify = vi.spyOn(processUtils, 'classifyRetainedIdentity').mockReturnValue('match');
         const expandKill = vi.spyOn(processUtils, 'killAndExpandWindowsRetainedTree')
-            .mockResolvedValue({ verified: true, tree: spawnTree });
+            .mockResolvedValue({ verified: false, tree: spawnTree });
 
         const backend = new AcpSdkBackend({
             command: 'opencode',
@@ -3662,9 +3662,12 @@ describe('AcpSdkBackend agentInfo.version and flushPendingMessageBuffers', () =>
             classify.mockReturnValue('match');
             await backend.disconnect();
             expect(backend.wasAgentTreeEnded()).toBe(false);
-            expect(await backend.verifyRetainedAgentExit(true)).toBe(true);
-            expect(backend.wasAgentTreeEnded()).toBe(true);
-            expect(expandKill).toHaveBeenCalled();
+            expect(await backend.verifyRetainedAgentExit(true)).toBe(false);
+            expect(expandKill).toHaveBeenCalledWith(
+                expect.any(Array),
+                true,
+                expect.objectContaining({ incomplete: true }),
+            );
         } finally {
             createSpy.mockRestore();
             snap.mockRestore();

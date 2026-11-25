@@ -1424,14 +1424,13 @@ export class AcpSdkBackend implements AgentBackend {
         if (this.retainedTreeSnapshotIncomplete) {
             if (!tree || tree.length === 0) return false;
             if (isWindows()) {
-                const result = await killAndExpandWindowsRetainedTree(tree, force);
+                const result = await killAndExpandWindowsRetainedTree(tree, force, {
+                    incomplete: true,
+                });
                 this.retainedAgentTree = result.tree;
-                if (!result.verified) return false;
-                this.retainedTreeSnapshotIncomplete = false;
-                this.agentTreeEnded = true;
-                this.retainedAgentTree = null;
-                this.publishPendingDisconnectSettle();
-                return true;
+                // Incomplete snapshots stay pending even when known seeds exit
+                // (#2021 Major) — expand may still clean up observed members.
+                return false;
             }
             const anyAlive = tree.some((identity) => retainedIdentityStillAlive(identity));
             if (anyAlive) {
@@ -1458,9 +1457,12 @@ export class AcpSdkBackend implements AgentBackend {
             return true;
         }
         if (isWindows()) {
-            const result = await killAndExpandWindowsRetainedTree(tree, force);
+            const result = await killAndExpandWindowsRetainedTree(tree, force, {
+                incomplete: this.retainedTreeSnapshotIncomplete,
+            });
             this.retainedAgentTree = result.tree;
             if (result.verified) {
+                this.retainedTreeSnapshotIncomplete = false;
                 this.agentTreeEnded = true;
                 this.retainedAgentTree = null;
                 this.publishPendingDisconnectSettle();
@@ -1493,7 +1495,9 @@ export class AcpSdkBackend implements AgentBackend {
                 const fresh = snapshotProcessTreeIdentities(root.pid);
                 if (fresh && fresh.length > 0) {
                     this.retainedAgentTree = fresh;
-                    const result = await killAndExpandWindowsRetainedTree(fresh, true);
+                    const result = await killAndExpandWindowsRetainedTree(fresh, true, {
+                        incomplete: this.retainedTreeSnapshotIncomplete,
+                    });
                     this.retainedAgentTree = result.tree;
                     return result.verified;
                 }
@@ -1501,7 +1505,9 @@ export class AcpSdkBackend implements AgentBackend {
             }
             // Root gone or refresh failed: expand from generation-bound
             // retained members that remain queryable after root exit (#2021).
-            const result = await killAndExpandWindowsRetainedTree(tree, true);
+            const result = await killAndExpandWindowsRetainedTree(tree, true, {
+                incomplete: this.retainedTreeSnapshotIncomplete,
+            });
             this.retainedAgentTree = result.tree;
             return result.verified;
         }

@@ -100,6 +100,8 @@ const HUB_OWNED_METADATA_FIELDS = [
     'spawnedBySessionId',
     // Durable OpenCode child running/settled ids (#2021).
     'childToolWork',
+    // Durable background-task snapshot across Hub restart (#2021 Major).
+    'backgroundWork',
 ] as const
 
 const CONTRIBUTION_FIELDS = ['externalRefs'] as const

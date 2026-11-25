@@ -535,6 +535,7 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                                 const result = await killAndExpandWindowsRetainedTree(
                                     this.retainedStopTree,
                                     true,
+                                    { incomplete: this.stopTreeSnapshotIncomplete },
                                 );
                                 this.retainedStopTree = result.tree;
                                 verified = result.verified;
@@ -758,6 +759,7 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                             const result = await killAndExpandWindowsRetainedTree(
                                 this.retainedStopTree,
                                 force,
+                                { incomplete: this.stopTreeSnapshotIncomplete },
                             );
                             this.retainedStopTree = result.tree;
                             stopped = result.verified;

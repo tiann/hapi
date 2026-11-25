@@ -560,34 +560,103 @@ function expandRetainedTreeWithProcessGroup(
   return withoutRoot;
 }
 
+type WindowsAncestryEntry = { parentPid: number; marker: string | null };
+
 /**
- * Expand Windows retained identities via CIM trees rooted at every still-matching
- * member. Generation markers stay queryable after the original root exits (#2021).
- * Returns null when any member scan fails — callers must keep Stop unresolved.
+ * One complete Win32 process table (pid → parent + creation marker). Null means
+ * the scan failed — callers must keep Stop unresolved (#2021 Major).
+ */
+export function readWindowsAncestryTable(): Map<number, WindowsAncestryEntry> | null {
+  if (!isWindows()) return null;
+  const command = [
+    "$ErrorActionPreference='Stop'",
+    'trap { exit 1 }',
+    `$scanner=$PID`,
+    "$rows=@(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,"
+      + `@{N='CreationDate';E={if ($_.CreationDate) { ${WINDOWS_CIM_CREATION_DATE_MARKER_EXPR} } else { $null }}})`,
+    'if($rows.Count -eq 0 -or -not ($rows | Where-Object ProcessId -eq $scanner)){ throw "Incomplete process snapshot" }',
+    'ConvertTo-Json -Compress -InputObject $rows',
+  ].join('\n');
+  const result = spawn.sync(
+    windowsSystemTool('powershell'),
+    ['-NoProfile', '-NonInteractive', '-Command', command],
+    { encoding: 'utf8', windowsHide: true, maxBuffer: 32 * 1024 * 1024, timeout: SPAWN_SYNC_TIMEOUT_MS },
+  );
+  if (result.error || result.status !== 0) return null;
+  try {
+    const parsed = JSON.parse((result.stdout ?? '').toString() || 'null') as unknown;
+    const rows = Array.isArray(parsed) ? parsed : parsed ? [parsed] : [];
+    const table = new Map<number, WindowsAncestryEntry>();
+    let sawScanner = false;
+    for (const row of rows) {
+      if (!row || typeof row !== 'object') return null;
+      const pid = Number((row as { ProcessId?: unknown }).ProcessId);
+      const parentPid = Number((row as { ParentProcessId?: unknown }).ParentProcessId);
+      const markerRaw = (row as { CreationDate?: unknown }).CreationDate;
+      if (!Number.isFinite(pid) || pid <= 0 || !Number.isFinite(parentPid)) return null;
+      if (pid === process.pid) sawScanner = true;
+      table.set(pid, {
+        parentPid,
+        marker: typeof markerRaw === 'string' && markerRaw.length > 0 ? markerRaw : null,
+      });
+    }
+    if (!sawScanner || table.size === 0) return null;
+    return table;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Expand Windows retained identities from one ancestry table. Only parent→child
+ * links whose parent generation still matches a verified seed are added — a
+ * reused agent PID must not inherit an unrelated prior child's tree (#2021 Major).
  */
 export function expandWindowsRetainedIdentities(
   identities: RetainedProcessIdentity[],
 ): RetainedProcessIdentity[] | null {
   if (identities.length === 0) return identities;
+  const table = readWindowsAncestryTable();
+  if (table === null) return null;
   const bootId = identities[0]?.bootId ?? getSystemBootId();
   const working = identities.slice();
-  const seen = new Set(working.map((identity) => `${identity.pid}:${identity.startMarker ?? ''}`));
-  for (const identity of [...working]) {
-    if (classifyRetainedIdentity(identity) !== 'match') continue;
-    const pids = collectWindowsProcessTree(identity.pid);
-    if (pids === 'scan_failed') return null;
-    for (const pid of pids) {
-      const startMarker = getProcessStartMarker(pid);
-      const key = `${pid}:${startMarker ?? ''}`;
-      if (seen.has(key)) continue;
+  const seen = new Set(working.map((identity) => identity.pid));
+  const queue = working
+    .filter((identity) => classifyRetainedIdentity(identity) === 'match')
+    .map((identity) => identity.pid);
+  while (queue.length > 0) {
+    const parentPid = queue.shift()!;
+    const parent = table.get(parentPid);
+    const parentIdentity = working.find((identity) => identity.pid === parentPid);
+    if (!parent || !parentIdentity) continue;
+    // Seed/parent generation must still match the retained marker.
+    if (
+      parentIdentity.startMarker
+      && parent.marker
+      && parent.marker !== parentIdentity.startMarker
+    ) {
+      continue;
+    }
+    for (const [childPid, entry] of table) {
+      if (entry.parentPid !== parentPid || seen.has(childPid)) continue;
+      // Child created before the verified parent generation cannot belong to it
+      // (PID-reuse of the parent after an older tree forked) (#2021 Major).
+      if (
+        parentIdentity.startMarker
+        && entry.marker
+        && entry.marker < parentIdentity.startMarker
+      ) {
+        continue;
+      }
       working.push({
-        pid,
-        startMarker,
+        pid: childPid,
+        startMarker: entry.marker,
         bootId,
         tgid: null,
         pgid: null,
       });
-      seen.add(key);
+      seen.add(childPid);
+      queue.push(childPid);
     }
   }
   return working;
@@ -597,11 +666,16 @@ export function expandWindowsRetainedIdentities(
  * Windows teardown that remains valid after the root exits: expand from every
  * still-matching retained member, kill generation-checked matches, expand once
  * more for mid-kill forks, then require every known identity gone (#2021 Major).
+ *
+ * When `incomplete` is set, settlement stays pending even if every known seed
+ * is gone — a launch-only snapshot can miss later tool children (#2021 Major).
  */
 export async function killAndExpandWindowsRetainedTree(
   identities: RetainedProcessIdentity[],
   force = false,
+  opts?: { incomplete?: boolean },
 ): Promise<{ verified: boolean; tree: RetainedProcessIdentity[] }> {
+  const incomplete = opts?.incomplete === true;
   let working = expandWindowsRetainedIdentities(identities);
   if (working === null) {
     // Scan failed — still signal known identities; settlement stays pending.
@@ -620,10 +694,9 @@ export async function killAndExpandWindowsRetainedTree(
   if (working.some((identity) => classifyRetainedIdentity(identity) === 'unknown')) {
     return { verified: false, tree: working };
   }
-  return {
-    verified: working.every((identity) => classifyRetainedIdentity(identity) === 'gone'),
-    tree: working,
-  };
+  const allGone = working.every((identity) => classifyRetainedIdentity(identity) === 'gone');
+  // Incomplete snapshots never authorize settlement from seed absence alone.
+  return { verified: allGone && !incomplete, tree: working };
 }
 
 /**
@@ -652,7 +725,7 @@ export async function killRetainedProcessTree(
         const expanded = expandRetainedTreeWithProcessGroup(working, root);
         if (expanded === null) return false;
         working = expanded;
-        const groupCleared = await verifyAgentOwnedProcessGroupExited(root, true);
+        const groupCleared = await verifyAgentOwnedProcessGroupExited(root, true, force);
         if (
           groupCleared
           && working.every((identity) => classifyRetainedIdentity(identity) === 'gone')
@@ -704,7 +777,7 @@ export async function killRetainedProcessTree(
   // Never signal HAPI's inherited group. Windows taskkill /T already covered the tree.
   // When the leader was already signalled above, this verifies emptiness / foreign.
   if (!isWindows()) {
-    return await verifyAgentOwnedProcessGroupExited(working[working.length - 1]!, true);
+    return await verifyAgentOwnedProcessGroupExited(working[working.length - 1]!, true, force);
   }
   return true;
 }
@@ -749,6 +822,7 @@ export function classifyAgentOwnedProcessGroup(
 export async function verifyAgentOwnedProcessGroupExited(
   root: RetainedProcessIdentity,
   signalGroup: boolean,
+  force = true,
 ): Promise<boolean> {
   if (!isAgentOwnedProcessGroup(root)) {
     // No safe group coverage — keep Stop unresolved.
@@ -765,9 +839,28 @@ export async function verifyAgentOwnedProcessGroupExited(
     if (state === 'empty' || state === 'foreign') return true;
     if (state !== 'ours') return false;
     try {
-      process.kill(-pgid, 'SIGKILL');
+      // First Stop keeps SIGTERM grace so agents can flush buffered results
+      // before escalation (#2021 Major).
+      process.kill(-pgid, force ? 'SIGKILL' : 'SIGTERM');
     } catch {
       // group already gone
+    }
+    if (!force) {
+      const graceDeadline = Date.now() + 2000;
+      while (Date.now() < graceDeadline) {
+        state = classifyAgentOwnedProcessGroup(root);
+        if (state === 'empty' || state === 'foreign') return true;
+        if (state === 'unknown') return false;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      state = classifyAgentOwnedProcessGroup(root);
+      if (state === 'empty' || state === 'foreign') return true;
+      if (state !== 'ours') return false;
+      try {
+        process.kill(-pgid, 'SIGKILL');
+      } catch {
+        // group already gone
+      }
     }
   }
   const deadline = Date.now() + 1000;

@@ -315,6 +315,17 @@ export const MetadataSchema = z.object({
         // rewind that drops the result while retaining the start (#2021).
         settledCallIds: z.array(z.string().min(1)).default([]),
     }).optional(),
+    // Hub-owned durable background-task snapshot (#2021 Major). Survives Hub
+    // restart + worker reconnect when membership is unchanged (Antigravity
+    // only re-emits on change). Bound to hostStartMarker when known.
+    backgroundWork: z.object({
+        tasks: z.array(z.object({
+            id: z.string(),
+            type: z.string(),
+            description: z.string(),
+        })).default([]),
+        hostStartMarker: z.string().optional(),
+    }).optional(),
     // 'running' | 'idle' | 'archived' (see shared/src/sessionLifecycle.ts).
     // 'idle' is written by the hub's keepalive-idle reconciler (tiann/hapi#1820)
     // and reverts to 'running' on the next agent progress.

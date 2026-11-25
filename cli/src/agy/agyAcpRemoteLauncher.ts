@@ -2573,7 +2573,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             }
             await this.retryPendingVerifiedStop();
         }
-        this.clearBackgroundTasksSnapshot();
+        // Background-only sessions have no foreground cancel evidence. Keep
+        // the snapshot until a terminal task result or verified backend exit
+        // so Archive cannot stop a still-running command (#2021 Major).
+        if (this.backend?.wasAgentTreeEnded() === true || this.activeBgTasks.size === 0) {
+            this.clearBackgroundTasksSnapshot();
+        }
         this.abortController.abort();
         this.abortController = new AbortController();
         if (hadTurn) {
@@ -2588,9 +2593,13 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
     private async handleKill(): Promise<void> {
         const turnSettled = this.turnSettled;
-        this.clearBackgroundTasksSnapshot();
         await this.requestExit('exit', () => this.handleAbort());
         await this.backend?.disconnect();
+        // Clear only after verified tree exit — otherwise Archive still sees
+        // live background work (#2021 Major).
+        if (this.backend?.wasAgentTreeEnded() === true || !this.backend) {
+            this.clearBackgroundTasksSnapshot();
+        }
         // The runner ends the session and closes the client as soon as kill
         // returns, so the turn must put its prompt back or confirm it first;
         // a stuck agy only delays that by the bound.

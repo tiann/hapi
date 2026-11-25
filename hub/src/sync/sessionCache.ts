@@ -535,6 +535,24 @@ export class SessionCache {
             copilotAgentMode: existing?.copilotAgentMode ?? metadata?.preferredCopilotAgentMode
         }
 
+        // Restore hub-owned background snapshot after Hub restart when the
+        // in-memory cache was empty (#2021 Major). Drop it when the owning
+        // worker generation no longer matches.
+        if ((session.backgroundTaskCount ?? 0) === 0) {
+            const durable = metadata?.backgroundWork
+            if (durable && Array.isArray(durable.tasks) && durable.tasks.length > 0) {
+                const ownerMarker = metadata?.hostStartMarker
+                const durableMarker = durable.hostStartMarker
+                const generationOk = durableMarker === undefined
+                    || ownerMarker === undefined
+                    || durableMarker === ownerMarker
+                if (generationOk) {
+                    session.backgroundTasks = durable.tasks
+                    session.backgroundTaskCount = durable.tasks.length
+                }
+            }
+        }
+
         this.sessions.set(sessionId, session)
         this.publisher.emit({ type: existing ? 'session-updated' : 'session-added', sessionId, data: session })
         return session
@@ -919,6 +937,31 @@ export class SessionCache {
 
         session.backgroundTasks = tasks
         session.backgroundTaskCount = tasks.length
+        // Persist with the owning worker generation so Hub restart + reconnect
+        // without a membership-change emit still blocks Archive (#2021 Major).
+        const hostStartMarker = session.metadata?.hostStartMarker
+        const metadata = {
+            ...(session.metadata ?? { path: '', host: '' }),
+            backgroundWork: tasks.length > 0
+                ? {
+                    tasks,
+                    ...(typeof hostStartMarker === 'string' && hostStartMarker.length > 0
+                        ? { hostStartMarker }
+                        : {}),
+                }
+                : null,
+        }
+        const metaResult = this.store.sessions.updateSessionMetadata(
+            sessionId,
+            metadata,
+            session.metadataVersion,
+            session.namespace,
+            { touchUpdatedAt: false },
+        )
+        if (metaResult.result === 'success') {
+            session.metadata = metaResult.value as typeof session.metadata
+            session.metadataVersion = metaResult.version
+        }
         this.recordAgentProgress(sessionId)
         this.publisher.emit({
             type: 'session-updated',
@@ -1210,6 +1253,24 @@ export class SessionCache {
         session.backgroundTaskCount = 0
         session.backgroundTasks = []
         session.derivedToolWork = false
+        // Confirmed exit — drop durable background evidence (#2021 Major).
+        if (session.metadata?.backgroundWork) {
+            const clearedMeta = {
+                ...(session.metadata ?? { path: '', host: '' }),
+                backgroundWork: null,
+            }
+            const metaResult = this.store.sessions.updateSessionMetadata(
+                session.id,
+                clearedMeta,
+                session.metadataVersion,
+                session.namespace,
+                { touchUpdatedAt: false },
+            )
+            if (metaResult.result === 'success') {
+                session.metadata = metaResult.value as typeof session.metadata
+                session.metadataVersion = metaResult.version
+            }
+        }
         this.pendingThinkingUntilBySessionId.delete(session.id)
 
         this.publisher.emit({

@@ -1156,9 +1156,11 @@ export class SyncEngine {
         }
         if (!session.active && !session.thinking) {
             // Heartbeat expiry can flip inactive before this exit notice
-            // arrives. Still retire sticky tool work so a later Cursor/ACP
-            // resume does not inherit archive-session-working (#2021).
+            // arrives. Still retire sticky tool work and clear the preserved
+            // background snapshot so Archive is not stuck on a dead worker
+            // (#2021 Major).
             this.store.messages.retireOpenChildToolWork(session.id)
+            this.sessionCache.setBackgroundTasks(session.id, [])
             this.sessionCache.noteDerivedWork(session.id, false)
             return false
         }
