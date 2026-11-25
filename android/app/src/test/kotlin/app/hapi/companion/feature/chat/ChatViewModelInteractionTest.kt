@@ -14,6 +14,7 @@ import app.hapi.data.api.ChatSessionApi
 import app.hapi.data.api.MessagesQuery
 import app.hapi.data.sse.SseEngine
 import app.hapi.data.sse.SseRawEvent
+import app.hapi.data.sse.SseSubscriptionKey
 import app.hapi.data.sse.SseTransport
 import app.hapi.data.sse.TransportEvent
 import app.hapi.data.store.LastSeenStore
@@ -489,6 +490,7 @@ private class InteractionHarness(
     recentSkills: RecentSkills? = null,
     snapshots: WindowSnapshots? = null,
     legacySnapshots: WindowSnapshots? = null,
+    transport: SseTransport = okTransport(),
 ) {
     val api = RecordingChatApi()
     val scope = testScope.backgroundScope
@@ -506,7 +508,7 @@ private class InteractionHarness(
     )
     val engine = SseEngine(
         baseUrl = "http://hub.test",
-        transport = okTransport(),
+        transport = transport,
         tokenProvider = { "jwt" },
         scope = scope,
     )
@@ -625,6 +627,36 @@ class ChatViewModelInteractionTest {
         harness.messageWindows.enableSnapshots(current, "default")
         runCurrent()
         assertEquals(listOf(failed), harness.window().state.value.messages)
+        assertEquals(listOf(failed), current.load(IX_SESSION)?.messages)
+        assertTrue(harness.api.sendCalls.value.isEmpty())
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun `offline upgrade recovers failed sends when the open chat reconnects`() = runTest {
+        val legacy = WindowSnapshots(temp.newFolder(), io = Dispatchers.Unconfined)
+        val current = WindowSnapshots(temp.newFolder(), io = Dispatchers.Unconfined)
+        val failed = buildOptimisticMessage("failed", "unsent text", 10, status = MessageStatus.Failed)
+        legacy.save(IX_SESSION, PersistedMessageWindow(messages = listOf(failed)))
+        val online = okTransport()
+        var attempts = 0
+        val transport = object : SseTransport {
+            override fun open(url: String, lastEventId: String?) = if (attempts++ == 0) {
+                flow { emit(TransportEvent.Failure(code = null)) }
+            } else online.open(url, lastEventId)
+        }
+        val harness = InteractionHarness(this, snapshots = current, legacySnapshots = legacy, transport = transport)
+        harness.sessionStore.detailToLoad = null
+        harness.viewModel.start()
+        runCurrent()
+        assertEquals(1, harness.sessionStore.calls.value.count { it == "loadDetail:$IX_SESSION" })
+        assertTrue(harness.window().state.value.messages.isEmpty())
+
+        harness.sessionStore.detailToLoad = detail()
+        harness.engine.requestReconnect(SseSubscriptionKey.Session(IX_SESSION))
+        runCurrent()
+        assertEquals(2, attempts)
+        assertEquals(2, harness.sessionStore.calls.value.count { it == "loadDetail:$IX_SESSION" })
         assertEquals(listOf(failed), current.load(IX_SESSION)?.messages)
         assertTrue(harness.api.sendCalls.value.isEmpty())
     }
@@ -2303,6 +2335,35 @@ class ChatViewModelInteractionTest {
             assertTrue(vm.composer.value.adoptCaret)
             assertTrue(vm.skillSuggestions.value.isEmpty())
         }
+    }
+
+    @Test
+    fun `selecting before a period dismisses the menu even with a dotted completion`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        val review = SkillSummary("review")
+        val dotted = SkillSummary("review.lint")
+        harness.api.skillsResult = SkillsResponse(success = true, skills = listOf(review, dotted))
+        val text = "Run \$review. Then continue"
+        val caret = "Run \$review".length
+        vm.start()
+        vm.onComposerChange(text, caret, caret)
+        testScheduler.runCurrent()
+        assertEquals(listOf(review, dotted), vm.skillSuggestions.value.map { it.skill })
+
+        vm.selectSkillSuggestion(vm.skillSuggestions.value.first())
+        testScheduler.runCurrent()
+        assertEquals(text, vm.composer.value.text)
+        assertEquals(caret + 1, vm.composer.value.caretPosition)
+        assertTrue(vm.skillSuggestions.value.isEmpty())
+
+        vm.onComposerChange(text, caret + 1, caret + 1) // no actual edit
+        testScheduler.runCurrent()
+        assertTrue(vm.skillSuggestions.value.isEmpty())
+
+        vm.onComposerChange(text, caret, caret)
+        testScheduler.runCurrent()
+        assertEquals(listOf(review, dotted), vm.skillSuggestions.value.map { it.skill })
     }
 
     @Test

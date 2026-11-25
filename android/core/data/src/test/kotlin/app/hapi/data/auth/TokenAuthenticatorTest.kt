@@ -152,11 +152,58 @@ class TokenAuthenticatorTest {
     }
 
     @Test
+    fun `worker exchange can succeed while SSE force refresh has cleared the jwt`() = runBlocking {
+        val worker = startSession()
+        val foreground = TokenAuthenticator(hubUrl, store, OkHttpClient(), events)
+        val workerStarted = CountDownLatch(1)
+        val sseStarted = CountDownLatch(1)
+        val releaseWorker = CountDownLatch(1)
+        val releaseSse = CountDownLatch(1)
+        val authCalls = AtomicInteger()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when {
+                request.path == "/api/auth" && authCalls.incrementAndGet() == 1 -> {
+                    workerStarted.countDown()
+                    check(releaseWorker.await(5, TimeUnit.SECONDS))
+                    authOk(jwt2)
+                }
+                request.path == "/api/auth" -> {
+                    sseStarted.countDown()
+                    check(releaseSse.await(5, TimeUnit.SECONDS))
+                    authOk(fakeJwt(expSeconds = 4_200_000_000))
+                }
+                request.getHeader("Authorization") == "Bearer $jwt2" -> sessionsOk()
+                else -> unauthorized()
+            }
+        }
+        try {
+            val request = async(Dispatchers.IO) { worker.api.getSessions() }
+            assertTrue(workerStarted.await(5, TimeUnit.SECONDS))
+            val refresh = async(Dispatchers.IO) { foreground.ensureFreshToken(forceRefresh = true) }
+            assertTrue(sseStarted.await(5, TimeUnit.SECONDS))
+            assertNull(store.get(hubUrl)?.jwt)
+            releaseWorker.countDown()
+            request.await() // must finish before the foreground exchange does
+            assertEquals(jwt2, store.get(hubUrl)?.jwt)
+            releaseSse.countDown()
+            assertEquals(jwt2, refresh.await())
+        } finally {
+            releaseWorker.countDown()
+            releaseSse.countDown()
+        }
+        assertTrue(events.events.isEmpty())
+    }
+
+    @Test
     fun `losing an exchange after signing out does not retry`() = assertExchangeDoesNotRetry { null }
 
     @Test
     fun `losing an exchange after reentering the same pairing secret does not retry`() =
         assertExchangeDoesNotRetry { it.withJwt(jwt2, 123).copy(pairingId = "new-pairing") }
+
+    @Test
+    fun `losing an exchange cannot fill the empty jwt slot of a later pairing`() =
+        assertExchangeDoesNotRetry { it.withJwt(null, null).copy(pairingId = "new-pairing") }
 
     @Test
     fun `losing an exchange does not reuse a stale jwt`() =

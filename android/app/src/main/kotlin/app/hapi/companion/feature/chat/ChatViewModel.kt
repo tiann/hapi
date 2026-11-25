@@ -27,6 +27,7 @@ import app.hapi.companion.feature.sessions.SessionListViewModel
 import app.hapi.companion.feature.sessions.formatReopenError
 import app.hapi.data.api.ApiError
 import app.hapi.data.api.ChatSessionApi
+import app.hapi.data.sse.EngineEvent
 import app.hapi.data.sse.SseEngine
 import app.hapi.data.sse.SseSubscriptionKey
 import app.hapi.data.sse.SyncEventRouter
@@ -413,6 +414,7 @@ class ChatViewModel(
 
     private val windowStore = MutableStateFlow<MessageWindowStore?>(null)
     private val detailLoadFailed = MutableStateFlow(false)
+    private val detailLoadMutex = Mutex()
 
     private var sseJob: Job? = null
     private var initJob: Job? = null
@@ -484,8 +486,9 @@ class ChatViewModel(
         val selectionEnd: Int = 0,
         val adoptCaret: Boolean = false,
         val skillOpening: Long = 0,
+        val skillSuggestionsDismissed: Boolean = false,
     ) {
-        val skillToken = SkillSuggestions.token(text, selectionStart, selectionEnd)
+        val skillToken = if (skillSuggestionsDismissed) null else SkillSuggestions.token(text, selectionStart, selectionEnd)
     }
 
     private val composerDraft = MutableStateFlow(ComposerDraft())
@@ -836,6 +839,7 @@ class ChatViewModel(
                 }
             }
 
+            val initialDetail = launch(workerContext) { loadDetail() }
             // Subscribe only after the window exists: every routed message
             // event / gap resync then finds a peekable window, and the
             // collector registers before `subscribe` because the engine's
@@ -843,7 +847,15 @@ class ChatViewModel(
             sseJob = scope.launch {
                 sseEngine.events(subscriptionKey)
                     .onSubscription { sseEngine.subscribe(subscriptionKey) }
-                    .collect { router.route(subscriptionKey, it) }
+                    .collect { event ->
+                        router.route(subscriptionKey, event)
+                        if (event is EngineEvent.Handshake) launch {
+                            // The handshake may arrive while the offline REST
+                            // attempt is still failing. Do not block the stream.
+                            initialDetail.join()
+                            loadDetail(onlyIfFailed = true)
+                        }
+                    }
             }
 
             launch(workerContext) {
@@ -858,7 +870,6 @@ class ChatViewModel(
                 featuresRequested = true
                 launch(workerContext) { loadFeatures() }
             }
-            withContext(workerContext) { loadDetail() }
         }
 
         // Badge count + SSE-triggered refetches while this chat is on screen.
@@ -1052,14 +1063,15 @@ class ChatViewModel(
         }
     }
 
-    private suspend fun loadDetail() {
+    private suspend fun loadDetail(onlyIfFailed: Boolean = false) = detailLoadMutex.withLock {
+        if (onlyIfFailed && !detailLoadFailed.value) return@withLock
         val verified = try {
             sessionStore.loadSessionDetail(sessionId)
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (_: Exception) {
             detailLoadFailed.value = true
-            return
+            return@withLock
         }
         detailLoadFailed.value = false
         messageWindows.recoverLegacyFailedSends(sessionId, verified)
@@ -1075,15 +1087,20 @@ class ChatViewModel(
      * only moves when the text actually changes unless a skill pick explicitly
      * adopts the new caret after an already-complete token.
      */
-    private fun setComposerText(text: String, caret: Int, adoptCaret: Boolean = false) {
+    private fun setComposerText(text: String, caret: Int, selectedSkill: Boolean = false) {
         if (importingShare.value) return
         // Fetch the RPC command list on the transition INTO slash mode (the
         // web refetches when the menu opens) — not on every keystroke, so a
         // wedged CLI cannot be hammered while the user types a command.
         val enteredSlashMode = SlashCommands.queryOf(text) != null &&
             SlashCommands.queryOf(composerDraft.value.text) == null
-        if (text != composerDraft.value.text || adoptCaret) {
-            updateComposerDraft(ComposerDraft(text, caret, caret, adoptCaret = adoptCaret))
+        val textChanged = text != composerDraft.value.text
+        if (textChanged || selectedSkill) {
+            updateComposerDraft(ComposerDraft(
+                text, caret, caret,
+                adoptCaret = selectedSkill && !textChanged,
+                skillSuggestionsDismissed = selectedSkill,
+            ))
         }
         if (enteredSlashMode) loadSlashCommands()
         draftJob?.cancel()
@@ -1100,6 +1117,10 @@ class ChatViewModel(
      */
     fun onComposerChange(text: String, selectionStart: Int, selectionEnd: Int) {
         if (importingShare.value) return
+        val draft = composerDraft.value
+        if (draft.skillSuggestionsDismissed && text == draft.text &&
+            selectionStart == draft.selectionStart && selectionEnd == draft.selectionEnd
+        ) return
         // Fetch the RPC command list on the transition INTO slash mode (the
         // web refetches when the menu opens) — not on every keystroke, so a
         // wedged CLI cannot be hammered while the user types a command.
@@ -1229,7 +1250,7 @@ class ChatViewModel(
         val token = draft.skillToken ?: return
         if (draft.skillOpening != suggestion.opening || token != suggestion.token) return
         val edit = SkillSuggestions.insert(draft.text, suggestion)
-        setComposerText(edit.text, edit.caret, adoptCaret = edit.text == draft.text)
+        setComposerText(edit.text, edit.caret, selectedSkill = true)
         recentSkills?.let { history ->
             scope.launch {
                 try {

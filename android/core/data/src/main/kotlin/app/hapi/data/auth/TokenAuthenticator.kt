@@ -166,16 +166,18 @@ class TokenAuthenticator(
                 return null
             }
             val updated = credentials.withJwt(auth.token, nowMs())
-            if (!credentialStore.replace(credentials, updated)) {
-                // The live client and a push worker have separate mutexes. Use
-                // only the saved winner, never the token from a losing exchange.
-                val namespace = updated.pairedNamespace
-                if (credentials.pairedNamespace != null && credentials.pairedNamespace != namespace) return null
-                return reuseSavedJwt(credentials, namespace, failedJwt)
-            }
-            rejectedSecret = null
-            cachedJwt = auth.token
-            return auth.token
+            if (credentialStore.replace(credentials, updated)) return rememberJwt(auth.token)
+
+            val namespace = JwtPeek.peek(auth.token)?.ns ?: return null
+            val latest = matchingCredentials(credentials, namespace) ?: return null
+            // SSE can clear the rejected token while a worker is already
+            // exchanging it. Fill the empty slot only if that same pairing is
+            // still present, without overwriting a competing refresh.
+            if (latest.jwt == null && credentials.jwt != null &&
+                auth.token != credentials.jwt && auth.token != failedJwt && !isStale(auth.token) &&
+                credentialStore.replace(latest, latest.withJwt(auth.token, nowMs()))
+            ) return rememberJwt(auth.token)
+            return reuseSavedJwt(credentials, namespace, failedJwt)
         }
     }
 
@@ -183,11 +185,17 @@ class TokenAuthenticator(
         expected.pairingId == latest.pairingId && expected.authRequest == latest.authRequest &&
             (expected.pairedNamespace == null || expected.pairedNamespace == latest.pairedNamespace)
 
+    private fun matchingCredentials(expected: HubCredentials, namespace: String): HubCredentials? =
+        credentialStore.get(hubUrl)?.takeIf { it.pairedNamespace == namespace && isSamePairing(expected, it) }
+
     private fun reuseSavedJwt(expected: HubCredentials, namespace: String?, failedJwt: String?): String? {
-        val latest = credentialStore.get(hubUrl) ?: return null
-        if (namespace == null || latest.pairedNamespace != namespace || !isSamePairing(expected, latest)) return null
-        val jwt = latest.jwt ?: return null
+        if (namespace == null) return null
+        val jwt = matchingCredentials(expected, namespace)?.jwt ?: return null
         if (jwt == expected.jwt || jwt == failedJwt || JwtPeek.peek(jwt)?.ns != namespace || isStale(jwt)) return null
+        return rememberJwt(jwt)
+    }
+
+    private fun rememberJwt(jwt: String): String {
         rejectedSecret = null
         cachedJwt = jwt
         return jwt
