@@ -50,6 +50,11 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
                 contextSampledAt={claudeSampleOrdering === 'metadata-newer' ? 1000 : 3000}
                 contextDetails={{ ...details, model: 'claude-sonnet-4-6', contextWindow: 400_000,
                     usage: { contextTokens: 120_000, cacheReadTokens: 8_000, sampledAt: 2000 } }} />
+        </div> : params.has('resolvedClaudeWindow') ? <div className="m-4">
+            <StatusBar active thinking={false} agentState={null} agentFlavor="claude"
+                contextModel="claude-sonnet-4-6" contextSize={100_000} contextWindow={200_000} contextSampledAt={1000}
+                contextDetails={{ ...details, model: 'claude-sonnet-4-6', contextWindow: 200_000,
+                    usage: { contextTokens: 100_000, sampledAt: 1000, sourceMessageUuid: 'same-row' } }} />
         </div> : (params.has('savedClaudeAlias') || plainClaudeResume) ? <div data-testid="saved-claude-alias-usage" className="m-4">
             <StatusBar active thinking={false} agentState={null} agentFlavor="claude" model="sonnet"
                 contextDetails={{ ...details, model: 'claude-sonnet-4-6',

@@ -99,6 +99,16 @@ for (const [mode, label, cache] of [
 }
 
 
+test('the Claude meter displays the resolved window for matching usage samples', async ({ page }) => {
+    await page.goto('/e2e-fixtures/agent-inventory-fixture.html?provider=claude&resolvedClaudeWindow=1')
+    const meter = page.getByRole('button', { name: 'Context details', exact: true })
+    await expect(meter).toContainText('50%')
+    await expect(meter).toContainText('100k / 200k')
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await meter.screenshot({ path: `${screenshots}/claude-resolved-window.png` })
+})
+
+
 test('the meter uses retained Claude history when a committed rewind invalidates the saved sample', async ({ page }) => {
     await page.goto('/e2e-fixtures/agent-inventory-fixture.html?provider=claude&claudeRewindUsage=1')
     const meter = page.getByRole('button', { name: 'Context details', exact: true })

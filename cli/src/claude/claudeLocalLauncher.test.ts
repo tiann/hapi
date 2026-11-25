@@ -293,6 +293,19 @@ describe('claudeLocalLauncher message filtering', () => {
         })
     })
 
+    it.each([200_000, 0])('prefers a positive resolved assistant window over the raw limit (%s)', async (resolved) => {
+        const { session, getMetadata } = createSessionStub()
+        await claudeLocalLauncher(session as never)
+        harness.scannerOnMessage!({
+            type: 'assistant', uuid: 'assistant-with-raw-limit', timestamp: '2026-09-01T13:00:00.000Z',
+            context_usage: { total_tokens: 100_000, raw_max_tokens: 1_000_000 },
+            message: { role: 'assistant', model: 'claude-sonnet-4-6', content: [{ type: 'text', text: 'Answer' }],
+                usage: { input_tokens: 100_000, output_tokens: 1, context_window: resolved } }
+        })
+        expect(getMetadata().contextDetails).toMatchObject({ contextWindow: resolved || 1_000_000,
+            usage: { contextTokens: 100_000, sourceMessageUuid: 'assistant-with-raw-limit' } })
+    })
+
     it('does not replace context details with a synthetic API error', async () => {
         const { session, getMetadata } = createSessionStub()
         await claudeLocalLauncher(session as never)

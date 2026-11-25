@@ -51,7 +51,10 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
                 if (!isSyntheticApiError && (rawMessage.type === 'assistant' || rawMessage.type === 'system' || rawMessage.type === 'result')) {
                     const nestedMessage = rawMessage.message as Record<string, unknown> | undefined;
                     const nestedModel = typeof nestedMessage?.model === 'string' ? nestedMessage.model : undefined;
+                    const stampedWindow = message.type === 'assistant' ? message.message?.usage?.context_window : undefined;
                     const details = buildClaudeContextDetails({
+                        effectiveContextWindow: typeof stampedWindow === 'number' && Number.isSafeInteger(stampedWindow)
+                            && stampedWindow > 0 ? stampedWindow : undefined,
                         contextUsage,
                         system: rawMessage.type === 'system' ? rawMessage : undefined,
                         result: rawMessage.type === 'result' ? rawMessage : undefined,
