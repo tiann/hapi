@@ -2169,6 +2169,48 @@ class ChatViewModelInteractionTest {
     }
 
     @Test
+    fun `typing a qualifier after plus signs keeps the same picker open`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        val qualified = SkillSummary("c++:lint")
+        harness.api.skillsResult = SkillsResponse(success = true, skills = listOf(qualified))
+        vm.start()
+
+        for (query in listOf("c", "c+", "c++", "c++:", "c++:li")) {
+            val typed = "Run \$$query"
+            vm.onComposerChange("$typed please", typed.length, typed.length)
+            testScheduler.runCurrent()
+            assertEquals(listOf(qualified), vm.skillSuggestions.value.map { it.skill }, query)
+            assertEquals(1, harness.api.skillsCalls.size)
+        }
+    }
+
+    @Test
+    fun `selecting a qualified skill replaces a suffix after plus signs but preserves prose`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        val qualified = SkillSummary("c++:lint")
+        harness.api.skillsResult = SkillsResponse(success = true, skills = listOf(qualified))
+        vm.start()
+
+        val caret = "Run \$c".length
+        for ((suffix, expected) in listOf(
+            "++:lint" to "Run \$c++:lint please",
+            "++:li" to "Run \$c++:lint please",
+            "++:continue" to "Run \$c++:lint:continue please",
+        )) {
+            vm.onComposerChange("Run \$c$suffix please", caret, caret)
+            testScheduler.runCurrent()
+            vm.selectSkillSuggestion(vm.skillSuggestions.value.single())
+            testScheduler.runCurrent()
+            assertEquals(expected, vm.composer.value.text, suffix)
+            assertEquals("Run \$c++:lint ".length, vm.composer.value.caretPosition)
+            assertTrue(vm.skillSuggestions.value.isEmpty())
+        }
+        assertTrue(harness.api.sendCalls.value.isEmpty())
+    }
+
+    @Test
     fun `plus between references is preserved even if a skill name could include it`() = runTest {
         val harness = InteractionHarness(this)
         val vm = harness.viewModel

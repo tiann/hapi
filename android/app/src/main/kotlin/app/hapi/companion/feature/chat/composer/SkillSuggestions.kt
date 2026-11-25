@@ -37,7 +37,8 @@ internal object SkillSuggestions {
     }
 
     private fun isCandidateAt(text: String, index: Int, caret: Int): Boolean = when (text.getOrNull(index)) {
-        ':' -> isNameChar(text, index - 1) &&
+        // A qualifier can follow a provisional plus run, as in c++:lint.
+        ':' -> (isNameChar(text, index - 1) || text.getOrNull(index - 1) == '+') &&
             (index == caret - 1 || index == text.lastIndex || isNameChar(text, index + 1))
         // Runs such as c++ are possible names, but a plus directly before the
         // next reference remains a separator even if it matches the catalogue.
