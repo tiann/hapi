@@ -1,11 +1,54 @@
-import { AttachmentPrimitive, useThreadComposerAttachment } from '@assistant-ui/react'
+import { useCallback, useContext, useLayoutEffect, useRef, useState } from 'react'
+import {
+    AttachmentPrimitive,
+    useAui,
+    useAuiState,
+} from '@assistant-ui/react'
 import type { PendingAttachment } from '@assistant-ui/react'
+import type {
+    KeyboardEventHandler,
+    MouseEventHandler,
+    MutableRefObject,
+    PointerEventHandler,
+    PointerEvent as ReactPointerEvent,
+} from 'react'
 import { ImagePreview } from '@/components/ImagePreview'
 import { Spinner } from '@/components/Spinner'
+import { RefreshIcon } from '@/components/icons'
 import { useComposerParking } from '@/components/AssistantChat/composerParkingContext'
+import { I18nContext } from '@/lib/i18n-context'
 
 type ComposerAttachmentWithPreview = PendingAttachment & {
     previewUrl?: string
+    retryable?: boolean
+}
+
+const TRUNCATED_REMOVE_MARGIN_LEFT = '-7px'
+
+export type AttachmentDragHandleProps = {
+    onPointerDown: PointerEventHandler<HTMLButtonElement>
+    onKeyDown: KeyboardEventHandler<HTMLButtonElement>
+    ariaLabel: string
+    title: string
+    onSurfacePointerDown?: PointerEventHandler<HTMLElement>
+    onSurfaceContextMenu?: MouseEventHandler<HTMLElement>
+    onSurfaceClick?: MouseEventHandler<HTMLElement>
+}
+
+export type AttachmentRetryHandler = (
+    originalId: string,
+    retryId: string,
+    originalIndex: number,
+) => void
+
+const fallbackTranslations: Record<string, string> = {
+    'attachment.retryUpload': 'Retry upload',
+    'attachment.uploadFailed': 'Upload failed',
+}
+
+function useAttachmentTranslation() {
+    const context = useContext(I18nContext)
+    return context?.t ?? ((key: string) => fallbackTranslations[key] ?? key)
 }
 
 function ErrorIcon() {
@@ -37,28 +80,171 @@ function RemoveIcon() {
     )
 }
 
-export function AttachmentItem() {
-    const { name, status, previewUrl } = useThreadComposerAttachment() as ComposerAttachmentWithPreview
+function DragHandleIcon() {
+    return (
+        <svg
+            aria-hidden="true"
+            xmlns="http://www.w3.org/2000/svg"
+            width="12"
+            height="12"
+            viewBox="0 0 14 14"
+            fill="currentColor"
+        >
+            <circle cx="4" cy="3" r="1" />
+            <circle cx="10" cy="3" r="1" />
+            <circle cx="4" cy="7" r="1" />
+            <circle cx="10" cy="7" r="1" />
+            <circle cx="4" cy="11" r="1" />
+            <circle cx="10" cy="11" r="1" />
+        </svg>
+    )
+}
+
+function DragHandle(props: AttachmentDragHandleProps & { isFile?: boolean }) {
+    const isFile = props.isFile === true
+
+    return (
+        <button
+            type="button"
+            data-testid="attachment-drag-handle"
+            aria-label={props.ariaLabel}
+            title={props.title}
+            onPointerDown={props.onPointerDown}
+            onKeyDown={props.onKeyDown}
+            className={isFile
+                ? 'hapi-composer-attachment-control hapi-composer-attachment-file-control -mx-1 flex h-6 w-6 shrink-0 touch-none cursor-grab items-center justify-center rounded-md bg-transparent text-[var(--app-hint)] transition-colors hover:text-[var(--app-fg)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--app-link)] active:cursor-grabbing'
+                : 'hapi-composer-attachment-control absolute left-1 top-1 z-20 flex h-8 w-8 touch-none cursor-grab items-start justify-start rounded-md bg-transparent text-white/90 transition-colors hover:bg-black/15 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--app-link)] active:cursor-grabbing'}
+        >
+            {isFile ? (
+                <DragHandleIcon />
+            ) : (
+                <span className="flex h-5 w-5 items-center justify-center rounded bg-black/40 shadow-sm ring-1 ring-white/20">
+                    <DragHandleIcon />
+                </span>
+            )}
+        </button>
+    )
+}
+
+export function AttachmentItem(props: {
+    dragHandleProps?: AttachmentDragHandleProps
+    attachmentOrderRef?: MutableRefObject<string[]>
+    retryingAttachmentIdsRef?: MutableRefObject<Set<string>>
+    onRetry?: AttachmentRetryHandler
+} = {}) {
+    const { id, name, file, status, previewUrl, retryable } = useAuiState((s) => s.attachment) as ComposerAttachmentWithPreview
+    const aui = useAui()
+    const composer = aui.composer()
     const isParking = useComposerParking()
+    const t = useAttachmentTranslation()
+    const [isRetrying, setIsRetrying] = useState(false)
+    const filenameRef = useRef<HTMLSpanElement>(null)
+    const [isFilenameTruncated, setIsFilenameTruncated] = useState(false)
     const isUploading = status.type === 'running'
     const isError = status.type === 'incomplete'
+    const showRetry = isError && retryable !== false && !isParking
+    const isRetryPending = isRetrying || props.retryingAttachmentIdsRef?.current.has(id) === true
+
+    useLayoutEffect(() => {
+        const element = filenameRef.current
+        if (!element) return
+
+        const updateTruncation = () => {
+            const next = element.scrollWidth > element.clientWidth
+            setIsFilenameTruncated((current) => current === next ? current : next)
+        }
+        updateTruncation()
+
+        if (typeof ResizeObserver === 'undefined') return
+        const observer = new ResizeObserver(updateTruncation)
+        observer.observe(element)
+        return () => observer.disconnect()
+    }, [name, isError])
+    const surfacePointerDown = props.dragHandleProps?.onSurfacePointerDown
+        ? (event: ReactPointerEvent<HTMLElement>) => {
+            const target = event.target
+            if (target instanceof Element && target.closest('button, a, input, textarea, select, [role="button"]')) {
+                return
+            }
+            props.dragHandleProps?.onSurfacePointerDown?.(event)
+        }
+        : undefined
+
+    const retryUpload = useCallback(async () => {
+        if (isRetryPending || isParking) return
+
+        props.retryingAttachmentIdsRef?.current.add(id)
+        setIsRetrying(true)
+        try {
+            const originalIndex = props.attachmentOrderRef?.current.indexOf(id) ?? -1
+            const retryFile = new File([file], file.name, {
+                type: file.type,
+                lastModified: file.lastModified,
+            })
+            let unsubscribe: (() => void) | undefined
+            if (props.onRetry) {
+                unsubscribe = aui.subscribe(() => {
+                    const retryAttachment = composer.getState().attachments.find(
+                        (attachment) => attachment.file === retryFile,
+                    )
+                    if (!retryAttachment) return
+                    unsubscribe?.()
+                    unsubscribe = undefined
+                    if (!composer.getState().attachments.some((attachment) => attachment.id === id)) {
+                        void composer.attachment({ id: retryAttachment.id }).remove().catch((error) => {
+                            console.error('Failed to cancel replacement attachment', error)
+                        })
+                        return
+                    }
+                    props.onRetry?.(id, retryAttachment.id, originalIndex)
+                    void composer.attachment({ id }).remove().catch((error) => {
+                        console.error('Failed to remove replaced attachment', error)
+                    })
+                })
+            }
+            try {
+                if (!props.onRetry) {
+                    await composer.attachment({ id }).remove()
+                }
+                await composer.addAttachment(retryFile)
+            } finally {
+                unsubscribe?.()
+            }
+        } catch (error) {
+            console.error('Failed to retry attachment upload', error)
+        } finally {
+            props.retryingAttachmentIdsRef?.current.delete(id)
+            setIsRetrying(false)
+        }
+    }, [aui, composer, file, id, isParking, isRetryPending, props.attachmentOrderRef, props.onRetry, props.retryingAttachmentIdsRef])
 
     if (previewUrl && !isError) {
         return (
-            <AttachmentPrimitive.Root className="group relative h-16 w-24 overflow-hidden rounded-lg bg-[var(--app-subtle-bg)]">
+            <AttachmentPrimitive.Root
+                className="group relative h-16 w-24 overflow-hidden rounded-lg bg-[var(--app-subtle-bg)]"
+                onPointerDown={surfacePointerDown}
+                onContextMenu={props.dragHandleProps?.onSurfaceContextMenu}
+            >
                 <ImagePreview
                     src={previewUrl}
                     fileName={name}
                     label={name}
+                    fileSize={file?.size}
                     galleryId="composer-attachments"
-                    buttonClassName="group h-full w-full cursor-zoom-in overflow-hidden rounded-lg text-left"
-                    imageClassName="h-full w-full object-cover transition-opacity group-hover:opacity-85"
+                    buttonClassName={`group h-full w-full cursor-zoom-in overflow-hidden rounded-lg text-left ${props.dragHandleProps ? 'touch-none' : ''}`}
+                    imageClassName="h-full w-full object-cover"
+                    onTriggerPointerDown={props.dragHandleProps?.onSurfacePointerDown}
+                    onTriggerContextMenu={props.dragHandleProps?.onSurfaceContextMenu}
+                    onTriggerClick={props.dragHandleProps?.onSurfaceClick}
                     caption={(
                         <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-1.5 pb-1 pt-3">
                             <span className="block truncate text-[10px] leading-tight text-white">{name}</span>
                         </div>
                     )}
                 />
+                {props.dragHandleProps ? (
+                    <DragHandle {...props.dragHandleProps} />
+                ) : null}
                 {isUploading ? (
                     <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/40">
                         <Spinner size="sm" label={null} className="text-white" />
@@ -66,11 +252,13 @@ export function AttachmentItem() {
                 ) : null}
                 {!isParking ? (
                     <AttachmentPrimitive.Remove
-                        className="absolute right-1 top-1 z-10 flex h-6 w-6 items-center justify-center rounded-full bg-black/65 text-white transition-colors hover:bg-black/85 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-white"
+                        className="hapi-composer-attachment-control absolute right-1 top-1 z-20 flex h-8 w-8 items-start justify-end rounded-md bg-transparent text-white transition-colors hover:bg-black/15 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-white"
                         aria-label="Remove attachment"
                         title="Remove attachment"
                     >
-                        <RemoveIcon />
+                        <span className="flex h-5 w-5 items-center justify-center rounded-md bg-black/40 shadow-sm ring-1 ring-white/20">
+                            <RemoveIcon />
+                        </span>
                     </AttachmentPrimitive.Remove>
                 ) : null}
             </AttachmentPrimitive.Root>
@@ -78,20 +266,46 @@ export function AttachmentItem() {
     }
 
     return (
-        <AttachmentPrimitive.Root className="flex items-center gap-2 rounded-lg bg-[var(--app-subtle-bg)] px-3 py-2 text-base text-[var(--app-fg)]">
+        <AttachmentPrimitive.Root
+            className={`relative flex items-center gap-1.5 rounded-lg bg-[var(--app-subtle-bg)] py-2 pr-2 text-base text-[var(--app-fg)] ${!props.dragHandleProps && !isParking ? 'pl-3' : 'pl-2'}`}
+            onPointerDown={surfacePointerDown}
+            onContextMenu={props.dragHandleProps?.onSurfaceContextMenu}
+        >
+            {showRetry ? (
+                <button
+                    type="button"
+                    className="hapi-composer-attachment-control hapi-composer-attachment-file-control -mx-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-transparent text-red-500 transition-colors hover:text-red-600 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--app-link)] disabled:cursor-wait disabled:opacity-60"
+                    aria-label={t('attachment.retryUpload')}
+                    title={t('attachment.retryUpload')}
+                    disabled={isRetryPending}
+                    onClick={() => { void retryUpload() }}
+                >
+                    <RefreshIcon className="h-[18px] w-[18px]" />
+                </button>
+            ) : props.dragHandleProps && !isError ? (
+                <DragHandle {...props.dragHandleProps} isFile />
+            ) : null}
             {isUploading ? <Spinner size="sm" label={null} className="text-[var(--app-hint)]" /> : null}
-            {isError ? (
-                <span className="text-red-500">
-                    <ErrorIcon />
+            {isError && (!showRetry || isParking) ? (
+                <span data-testid="attachment-error-icon" className="text-red-500">
+                    <span aria-hidden="true">
+                        <ErrorIcon />
+                    </span>
+                    <span className="sr-only">{t('attachment.uploadFailed')}</span>
                 </span>
             ) : null}
-            <span className={`max-w-[150px] truncate ${isError ? 'text-red-500 line-through' : ''}`}>{name}</span>
-            {isError ? <span className="text-xs text-red-500 whitespace-nowrap">Upload failed</span> : null}
+            <span
+                ref={filenameRef}
+                className={`max-w-[150px] truncate ${isError ? 'text-red-500 line-through' : ''}`}
+            >
+                {name}
+            </span>
             {!isParking ? (
                 <AttachmentPrimitive.Remove
-                    className="ml-auto flex h-5 w-5 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:text-[var(--app-fg)]"
+                    className="hapi-composer-attachment-control hapi-composer-attachment-file-control -mx-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-transparent text-[var(--app-hint)] transition-colors hover:text-[var(--app-fg)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--app-link)]"
                     aria-label="Remove attachment"
                     title="Remove attachment"
+                    style={isError && isFilenameTruncated ? { marginLeft: TRUNCATED_REMOVE_MARGIN_LEFT } : undefined}
                 >
                     <RemoveIcon />
                 </AttachmentPrimitive.Remove>

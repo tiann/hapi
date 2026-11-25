@@ -1,6 +1,6 @@
 import type { Store } from '../store'
-import { PUSH_KEY_LENGTH, canonicalJson, encryptEnvelope } from './envelope'
-import type { IosPushSendOutcome, IosPushTransport } from './transport'
+import { PUSH_KEY_LENGTH, canonicalJson, encryptEnvelope } from '../push-native/envelope'
+import type { NativePushSendOutcome, EncryptedPushTransport } from '../push-native/transport'
 
 /**
  * Notification plaintext (PUSH SPEC v1): exactly the FCM data-contract
@@ -15,10 +15,12 @@ export type IosPushNotificationPayload = {
     url?: string
     title: string
     body: string
-    severity?: 'info' | 'success' | 'warning' | 'error'
+    severity?: 'info' | 'warning' | 'error'
     contractVersion: string
     requestId?: string
     notifySummary?: string
+    /** Coalescing identity; when set, used as APNs collapse-id. */
+    tag?: string
 }
 
 export type IosPushSendResult = {
@@ -33,8 +35,8 @@ const APNS_COLLAPSE_ID_MAX_BYTES = 64
  * APNs collapse id: `<type>-<sessionId>`, truncated to 64 bytes on a UTF-8
  * character boundary (APNs rejects oversized collapse ids outright).
  */
-export function buildCollapseId(type: string, sessionId: string): string {
-    const raw = `${type}-${sessionId}`
+export function buildCollapseId(type: string, sessionId: string, tag?: string): string {
+    const raw = tag && tag.length > 0 ? tag : `${type}-${sessionId}`
     if (Buffer.byteLength(raw, 'utf8') <= APNS_COLLAPSE_ID_MAX_BYTES) {
         return raw
     }
@@ -66,7 +68,7 @@ export class IosPushService {
     private static readonly HEALTH_FAILURE_THRESHOLD = 5
 
     constructor(
-        private readonly transport: IosPushTransport,
+        private readonly transport: EncryptedPushTransport,
         private readonly store: Store
     ) {}
 
@@ -91,7 +93,7 @@ export class IosPushService {
         }
 
         const plaintext = canonicalJson(payload)
-        const collapseId = buildCollapseId(payload.type, payload.sessionId)
+        const collapseId = buildCollapseId(payload.type, payload.sessionId, payload.tag)
 
         const invalidTokens: string[] = []
         let sent = 0
@@ -125,7 +127,7 @@ export class IosPushService {
         pushKeyB64: string | null,
         plaintext: string,
         collapseId: string
-    ): Promise<IosPushSendOutcome> {
+    ): Promise<NativePushSendOutcome> {
         // The register route guarantees a valid 32-byte key for ios rows, so
         // a bad key here is a permanently-corrupt row: it can never decrypt
         // anything and would black-hole every future notification. Prune it

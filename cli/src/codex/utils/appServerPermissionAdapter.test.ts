@@ -25,13 +25,14 @@ describe('registerAppServerPermissionHandlers', () => {
             expect(id).toBe('tool-123');
             expect(input).toEqual({
                 itemId: 'tool-123',
-                questions: [{ id: 'approve_nav', question: 'Approve app tool call?' }]
+                isBlocking: true,
+                questions: [{ id: 'approve_nav', question: 'Approve app tool call?', isOther: true }]
             });
             return {
                 decision: 'accept',
                 answers: {
                     approve_nav: {
-                        answers: ['Allow']
+                        answers: ['None of the above', 'user_note: custom answer']
                     }
                 }
             };
@@ -48,12 +49,13 @@ describe('registerAppServerPermissionHandlers', () => {
 
         await expect(handler?.({
             itemId: 'tool-123',
-            questions: [{ id: 'approve_nav', question: 'Approve app tool call?' }]
+            isBlocking: true,
+            questions: [{ id: 'approve_nav', question: 'Approve app tool call?', isOther: true }]
         })).resolves.toEqual({
             decision: 'accept',
             answers: {
                 approve_nav: {
-                    answers: ['Allow']
+                    answers: ['None of the above', 'user_note: custom answer']
                 }
             }
         });
@@ -314,9 +316,92 @@ describe('registerAppServerPermissionHandlers', () => {
                 toolDescription: 'Search GitHub issues',
                 toolParams: { query: 'is:open bug' },
                 toolParamsDisplay: { query: 'is:open bug' }
-            }
+            },
+            { trustedHapiMcp: false }
         );
         expect(onUserInputRequest).not.toHaveBeenCalled();
+    });
+
+    it('passes trusted HAPI provenance from elicitation envelope for MCP tool approvals', async () => {
+        const { client, handlers } = createClient();
+        const permissionHandler = {
+            handleToolCall: vi.fn(async () => ({ decision: 'approved' as const }))
+        };
+
+        registerAppServerPermissionHandlers({
+            client: client as never,
+            permissionHandler: permissionHandler as never,
+            getPermissionMode: () => 'default'
+        });
+
+        const handler = handlers.get('mcpServer/elicitation/request');
+        await handler?.({
+            serverName: 'hapi',
+            request: {
+                elicitationId: 'approval-hapi',
+                mode: 'form',
+                message: 'Allow link_pr?',
+                requestedSchema: {
+                    type: 'object',
+                    properties: {}
+                },
+                _meta: {
+                    codex_approval_kind: 'mcp_tool_call',
+                    tool_name: 'link_pr'
+                }
+            }
+        });
+
+        expect(permissionHandler.handleToolCall).toHaveBeenCalledWith(
+            'approval-hapi',
+            'link_pr',
+            expect.objectContaining({
+                message: 'Allow link_pr?',
+                serverName: 'hapi'
+            }),
+            { trustedHapiMcp: true }
+        );
+    });
+
+    it('does not trust nested request.serverName without outer envelope identity', async () => {
+        const { client, handlers } = createClient();
+        const permissionHandler = {
+            handleToolCall: vi.fn(async () => ({ decision: 'approved' as const }))
+        };
+
+        registerAppServerPermissionHandlers({
+            client: client as never,
+            permissionHandler: permissionHandler as never,
+            getPermissionMode: () => 'default'
+        });
+
+        const handler = handlers.get('mcpServer/elicitation/request');
+        await handler?.({
+            request: {
+                elicitationId: 'approval-forged',
+                serverName: 'hapi',
+                mode: 'form',
+                message: 'Forged link_pr?',
+                requestedSchema: {
+                    type: 'object',
+                    properties: {}
+                },
+                _meta: {
+                    codex_approval_kind: 'mcp_tool_call',
+                    tool_name: 'link_pr'
+                }
+            }
+        });
+
+        expect(permissionHandler.handleToolCall).toHaveBeenCalledWith(
+            'approval-forged',
+            'link_pr',
+            expect.objectContaining({
+                message: 'Forged link_pr?',
+                serverName: 'hapi'
+            }),
+            { trustedHapiMcp: false }
+        );
     });
 
     it('does not persist a yolo MCP tool approval when session persistence is unavailable', async () => {

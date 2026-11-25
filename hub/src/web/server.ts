@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { existsSync } from 'node:fs'
 import { serveStatic } from 'hono/bun'
 import { getConfiguration } from '../configuration'
-import { PROTOCOL_VERSION } from '@hapi/protocol'
+import { FOLLOW_SESSION_REDIRECTS_HEADER, PROTOCOL_VERSION } from '@hapi/protocol'
 import { buildGeminiLiveSetupMessage, QWEN_REALTIME_MODEL } from '@hapi/protocol/voice'
 import { getProviderEnvironment } from '../config/providerCredentials'
 import { readTitleProviderConfig } from '../sync/titleSuggestion'
@@ -16,17 +16,27 @@ import type { SyncEngine } from '../sync/syncEngine'
 import { createAuthMiddleware, type WebAppEnv } from './middleware/auth'
 import { createAuthRoutes } from './routes/auth'
 import { createBindRoutes } from './routes/bind'
+import {
+    createPasskeyLoginRoutes,
+    createPasskeyManagementRoutes,
+    nativePasskeyConfigFromEnv,
+    PasskeyChallengeStore
+} from './routes/passkey'
 import { createEventsRoutes } from './routes/events'
+import { createFeaturesRoutes } from './routes/features'
 import { createSessionsRoutes } from './routes/sessions'
 import { createMessagesRoutes } from './routes/messages'
 import { createPermissionsRoutes } from './routes/permissions'
 import { createMachinesRoutes } from './routes/machines'
 import { createStorageRoutes } from './routes/storage'
 import { createUsageRoutes } from './routes/usage'
+import { createActivityRoutes } from './routes/activity'
 import { createGitRoutes } from './routes/git'
 import { createCliRoutes } from './routes/cli'
 import { createCodexDesktopRoutes } from './routes/codexDesktop'
-import { createPiSessionRoutes } from './routes/piSessions'
+import { createLocalSessionRoutes } from './routes/localSessions/createLocalSessionRoutes'
+import { PI_LOCAL_SESSION_SOURCE, OPENCODE_LOCAL_SESSION_SOURCE, CLAUDE_LOCAL_SESSION_SOURCE } from './routes/localSessions/sources'
+import { createCursorLocalSessionRoutes } from './routes/cursorLocalSessions'
 import { createPushRoutes } from './routes/push'
 import { createDevicesRoutes } from './routes/devices'
 import { createVoiceRoutes } from './routes/voice'
@@ -201,15 +211,97 @@ function findWebappDistDir(): { distDir: string; indexHtmlPath: string } {
     return { distDir, indexHtmlPath: join(distDir, 'index.html') }
 }
 
-function serveEmbeddedAsset(asset: EmbeddedWebAsset): Response {
+const COMPRESSIBLE_CONTENT_TYPE_REGEX =
+    /^\s*(?:text\/(?!event-stream(?:[;\s]|$))[^;\s]+|application\/(?:javascript|json|xml|xml-dtd|ecmascript|dart|postscript|rtf|tar|toml|vnd\.dart|vnd\.ms-fontobject|vnd\.ms-opentype|wasm|x-httpd-php|x-javascript|x-ns-proxy-autoconfig|x-sh|x-tar|x-virtualbox-hdd|x-virtualbox-ova|x-virtualbox-ovf|x-virtualbox-vbox|x-virtualbox-vdi|x-virtualbox-vhd|x-virtualbox-vmdk|x-www-form-urlencoded)|font\/(?:otf|ttf)|image\/(?:bmp|vnd\.adobe\.photoshop|vnd\.microsoft\.icon|vnd\.ms-dds|x-icon|x-ms-bmp)|message\/rfc822|model\/gltf-binary|x-shader\/x-fragment|x-shader\/x-vertex|[^;\s]+?\+(?:json|text|xml|yaml))(?:[;\s]|$)/i
+
+function isCompressibleContentType(contentType: string | null): boolean {
+    return Boolean(contentType && COMPRESSIBLE_CONTENT_TYPE_REGEX.test(contentType))
+}
+
+function withVaryAcceptEncoding(response: Response): Response {
+    const existing = response.headers.get('Vary')
+    if (
+        existing?.trim() === '*' ||
+        existing?.split(',').some((part) => part.trim().toLowerCase() === 'accept-encoding')
+    ) {
+        return response
+    }
+    const nextVary = existing ? `${existing}, Accept-Encoding` : 'Accept-Encoding'
+    try {
+        response.headers.set('Vary', nextVary)
+        return response
+    } catch {
+        const headers = new Headers(response.headers)
+        headers.set('Vary', nextVary)
+        return new Response(response.body, {
+            status: response.status,
+            statusText: response.statusText,
+            headers
+        })
+    }
+}
+
+export function getStaticCacheHeaders(requestPath: string, options?: { spaFallback?: boolean }): Record<string, string> {
+    if (!options?.spaFallback && requestPath === '/sw.js') {
+        return {
+            'Cache-Control': 'no-store, no-cache, must-revalidate',
+            'CDN-Cache-Control': 'no-store',
+            'Cloudflare-CDN-Cache-Control': 'no-store'
+        }
+    }
+    if (!options?.spaFallback && requestPath.startsWith('/assets/fonts/')) {
+        // copyKaTeXFonts (web/vite.config.ts) copies the katex fonts into
+        // assets/fonts/ under their original, non-content-hashed names — the
+        // only non-hashed family under /assets/ — so they must not get the
+        // blanket immutable rule: a katex upgrade can revise a same-named
+        // font, and immutable would pin stale bytes for up to a year in the
+        // browser HTTP cache, the SW precache (vite-plugin-pwa's default
+        // dontCacheBustURLsMatching ^assets/ leaves these entries without a
+        // revision, so workbox installs fetch them through the HTTP cache)
+        // and any CDN edge that respects origin max-age.
+        return {
+            'Cache-Control': 'public, max-age=86400'
+        }
+    }
+    if (!options?.spaFallback && requestPath.startsWith('/assets/')) {
+        return {
+            'Cache-Control': 'public, max-age=31536000, immutable'
+        }
+    }
+    if (
+        options?.spaFallback ||
+        requestPath === '/' ||
+        requestPath === '/index.html' ||
+        requestPath === '/404.html' ||
+        requestPath === '/manifest.webmanifest'
+    ) {
+        return {
+            'Cache-Control': 'no-cache'
+        }
+    }
+    return {}
+}
+
+function isApiOrCliPath(path: string): boolean {
+    return path === '/api' || path.startsWith('/api/') || path === '/cli' || path.startsWith('/cli/')
+}
+
+function isAssetsPath(path: string): boolean {
+    return path === '/assets' || path.startsWith('/assets/')
+}
+
+function serveEmbeddedAsset(
+    asset: EmbeddedWebAsset,
+    method: string,
+    options?: { spaFallback?: boolean }
+): Response {
     const headers: Record<string, string> = {
-        'Content-Type': asset.mimeType
+        'Content-Type': asset.mimeType,
+        ...getStaticCacheHeaders(asset.path, options)
     }
 
-    if (asset.path === '/sw.js') {
-        headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
-        headers['CDN-Cache-Control'] = 'no-store'
-        headers['Cloudflare-CDN-Cache-Control'] = 'no-store'
+    if (method === 'HEAD') {
+        return new Response(null, { status: 200, headers })
     }
 
     return new Response(Bun.file(asset.sourcePath), {
@@ -217,7 +309,7 @@ function serveEmbeddedAsset(asset: EmbeddedWebAsset): Response {
     })
 }
 
-function createWebApp(options: {
+export function createWebApp(options: {
     getSyncEngine: () => SyncEngine | null
     getSseManager: () => SSEManager | null
     getVisibilityTracker: () => VisibilityTracker | null
@@ -226,6 +318,7 @@ function createWebApp(options: {
     vapidPublicKey: string
     corsOrigins?: string[]
     embeddedAssetMap: Map<string, EmbeddedWebAsset> | null
+    distDir?: string
     relayMode?: boolean
     officialWebUrl?: string
 }): Hono<WebAppEnv> {
@@ -241,11 +334,38 @@ function createWebApp(options: {
         allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
         // last-event-id: browsers attach it to EventSource reconnects for
         // SSE replay; allow it in case a browser preflights the request.
-        allowHeaders: ['authorization', 'content-type', 'last-event-id']
+        allowHeaders: ['authorization', 'content-type', 'last-event-id', FOLLOW_SESSION_REDIRECTS_HEADER]
     })
     app.use('/health', corsMiddleware)
     app.use('/api/*', corsMiddleware)
     app.use('/cli/*', corsMiddleware)
+
+    // Gzip JSON API and Web static asset responses (HTML, JS, CSS, SVG, TTF,
+    // manifest). /cli/* stays uncompressed and /api/events uses sync-flushed
+    // compression in compressSseResponse while skipping hono/compress via
+    // Transfer-Encoding. Gated on acceptsGzip so `gzip;q=0` refusals are honored,
+    // and adds Vary: Accept-Encoding so caches never mix representations.
+    const gzipCompress = compress({ encoding: 'gzip' })
+    app.use('*', async (c, next) => {
+        if (c.req.path === '/cli' || c.req.path.startsWith('/cli/')) {
+            return next()
+        }
+        if (acceptsGzip(c.req.header('Accept-Encoding'))) {
+            await gzipCompress(c, next)
+        } else {
+            await next()
+        }
+
+        const contentEncoding = c.res.headers.get('Content-Encoding')
+        const shouldVary = contentEncoding === 'gzip' || (
+            !contentEncoding &&
+            !c.res.headers.has('Transfer-Encoding') &&
+            isCompressibleContentType(c.res.headers.get('Content-Type'))
+        )
+        if (shouldVary) {
+            c.res = withVaryAcceptEncoding(c.res)
+        }
+    })
 
     // Health check endpoint (no auth required).
     // Capabilities are additive so older clients can ignore unknown fields.
@@ -258,48 +378,50 @@ function createWebApp(options: {
         }
     }))
 
-    // Gzip JSON API responses. Over the relay tunnel every byte is metered
-    // twice (the SNI proxy copies in both directions), and API payloads are
-    // repetitive JSON that compresses to roughly a quarter of its size.
-    //
-    // This deliberately does not touch /api/events: streamSSE sets
-    // Transfer-Encoding, which hono's compress() skips, and that stream is
-    // already gzipped by compressSseResponse with an explicit sync flush.
-    // Binary uploads/downloads are skipped too - compress() only handles
-    // content types it knows are compressible.
-    //
-    // Gated on the q-aware parser because hono's compress() matches the
-    // Accept-Encoding value by substring: `gzip;q=0` - an explicit refusal -
-    // would otherwise still get a gzip body it cannot consume.
-    const gzipCompress = compress({ encoding: 'gzip' })
-    app.use('/api/*', async (c, next) => {
-        if (acceptsGzip(c.req.header('Accept-Encoding'))) {
-            return gzipCompress(c, next)
-        }
-        return next()
-    })
-
     app.route('/cli', createCliRoutes(options.getSyncEngine))
 
     app.route('/api', createAuthRoutes(options.jwtSecret, options.store))
     app.route('/api', createBindRoutes(options.jwtSecret, options.store))
+    const passkeyDeps = {
+        jwtSecret: options.jwtSecret,
+        store: options.store,
+        corsOrigins: () => corsOrigins,
+        hubUrl: () => configuration.publicUrl,
+        challenges: new PasskeyChallengeStore(),
+        native: nativePasskeyConfigFromEnv()
+    }
+    app.route('/api', createPasskeyLoginRoutes(passkeyDeps))
 
     app.use('/api/*', createAuthMiddleware(options.jwtSecret))
+    app.route('/api', createFeaturesRoutes())
+    app.route('/api', createPasskeyManagementRoutes(passkeyDeps))
     app.route('/api', createEventsRoutes(options.getSseManager, options.getSyncEngine, options.getVisibilityTracker))
     app.route('/api', createSessionsRoutes(options.getSyncEngine))
     app.route('/api', createMessagesRoutes(options.getSyncEngine))
     app.route('/api', createPermissionsRoutes(options.getSyncEngine))
-    app.route('/api', createMachinesRoutes(options.getSyncEngine))
+    app.route('/api', createMachinesRoutes(options.getSyncEngine, { dataDir: configuration.dataDir }))
     app.route('/api', createStorageRoutes(configuration.dbPath))
-    app.route('/api', createHubSettingsRoutes(configuration.dataDir))
-    app.route('/api', createUsageRoutes(options.store))
+    app.route('/api', createHubSettingsRoutes(configuration.dataDir, options.getSyncEngine))
+    app.route('/api', createUsageRoutes(options.store, options.getSyncEngine))
+    app.route('/api', createActivityRoutes(options.store))
     app.route('/api', createGitRoutes(options.getSyncEngine))
     // 中文注释：这里提供两类 Codex 辅助能力：扫描本地 transcript 以导入到 Hapi，以及按需重启 Codex Desktop 客户端。
     app.route('/api', createCodexDesktopRoutes({
         store: options.store,
         getSyncEngine: options.getSyncEngine
     }))
-    app.route('/api', createPiSessionRoutes({
+    // Local-session import registry: one generic route pair per mounted source
+    // (Pi, OpenCode, Claude); the generic importer owns target matching,
+    // atomic persistence and launch config. Codex stays on its desktop route
+    // to keep the sidecar capabilities and the Codex wire schema separate.
+    app.route('/api', createLocalSessionRoutes({
+        store: options.store,
+        getSyncEngine: options.getSyncEngine,
+        sources: [PI_LOCAL_SESSION_SOURCE, OPENCODE_LOCAL_SESSION_SOURCE, CLAUDE_LOCAL_SESSION_SOURCE]
+    }))
+    // Cursor: same REST pair as the registry flavors, but import runs ACP
+    // prepare/verify then attaches an empty-message HAPI row (resume owns scrollback).
+    app.route('/api', createCursorLocalSessionRoutes({
         store: options.store,
         getSyncEngine: options.getSyncEngine
     }))
@@ -349,7 +471,7 @@ from GitHub Pages instead of through the relay tunnel.
         }
 
         app.use('*', async (c, next) => {
-            if (c.req.path.startsWith('/api')) {
+            if (isApiOrCliPath(c.req.path)) {
                 return await next()
             }
 
@@ -357,27 +479,38 @@ from GitHub Pages instead of through the relay tunnel.
                 return await next()
             }
 
-            const asset = embeddedAssetMap.get(c.req.path)
+            const lookupPath = c.req.path === '/' ? '/index.html' : c.req.path
+            const asset = embeddedAssetMap.get(lookupPath)
             if (asset) {
-                return serveEmbeddedAsset(asset)
+                return serveEmbeddedAsset(asset, c.req.method)
+            }
+
+            if (isAssetsPath(c.req.path)) {
+                return c.notFound()
             }
 
             return await next()
         })
 
         app.get('*', async (c, next) => {
-            if (c.req.path.startsWith('/api')) {
+            if (isApiOrCliPath(c.req.path)) {
                 await next()
                 return
             }
 
-            return serveEmbeddedAsset(indexHtmlAsset)
+            if (isAssetsPath(c.req.path)) {
+                return c.notFound()
+            }
+
+            return serveEmbeddedAsset(indexHtmlAsset, c.req.method, { spaFallback: true })
         })
 
         return app
     }
 
-    const { distDir, indexHtmlPath } = findWebappDistDir()
+    const { distDir, indexHtmlPath } = options.distDir
+        ? { distDir: options.distDir, indexHtmlPath: join(options.distDir, 'index.html') }
+        : findWebappDistDir()
 
     if (!existsSync(indexHtmlPath)) {
         app.get('/', (c) => {
@@ -389,24 +522,53 @@ from GitHub Pages instead of through the relay tunnel.
         return app
     }
 
-    app.use('/assets/*', serveStatic({ root: distDir }))
+    const serveDistStatic = serveStatic({
+        root: distDir,
+        onFound: (_filePath, ctx) => {
+            for (const [key, value] of Object.entries(getStaticCacheHeaders(ctx.req.path))) {
+                ctx.header(key, value)
+            }
+        }
+    })
+    const serveDistSpaFallback = serveStatic({
+        root: distDir,
+        path: 'index.html',
+        onFound: (_filePath, ctx) => {
+            for (const [key, value] of Object.entries(getStaticCacheHeaders('/index.html', { spaFallback: true }))) {
+                ctx.header(key, value)
+            }
+        }
+    })
 
     app.use('*', async (c, next) => {
-        if (c.req.path.startsWith('/api')) {
+        if (isApiOrCliPath(c.req.path)) {
             await next()
             return
         }
 
-        return await serveStatic({ root: distDir })(c, next)
+        if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
+            await next()
+            return
+        }
+
+        const response = await serveDistStatic(c, next)
+        if (!response && !c.finalized && isAssetsPath(c.req.path)) {
+            return c.notFound()
+        }
+        return response
     })
 
     app.get('*', async (c, next) => {
-        if (c.req.path.startsWith('/api')) {
+        if (isApiOrCliPath(c.req.path)) {
             await next()
             return
         }
 
-        return await serveStatic({ root: distDir, path: 'index.html' })(c, next)
+        if (isAssetsPath(c.req.path)) {
+            return c.notFound()
+        }
+
+        return await serveDistSpaFallback(c, next)
     })
 
     return app

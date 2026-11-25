@@ -1,9 +1,14 @@
 package app.hapi.companion.feature.newsession
 
+import app.hapi.companion.feature.directorybrowser.RemoteDirectoryBrowserController
+import app.hapi.companion.feature.directorybrowser.RemoteDirectoryPath
 import app.hapi.companion.feature.newsession.NewSessionLogic.buildSpawnRequest
+import app.hapi.companion.feature.newsession.NewSessionLogic.launchPreferenceFrom
 import app.hapi.companion.feature.newsession.NewSessionLogic.parentQuery
 import app.hapi.companion.feature.newsession.NewSessionLogic.pushRecent
+import app.hapi.companion.feature.newsession.NewSessionLogic.resolvePreferredLaunchSettings
 import app.hapi.companion.feature.newsession.NewSessionLogic.usesNativePermissionSelect
+import app.hapi.companion.feature.newsession.NewSessionLogic.usesSharedPermissionModeState
 import app.hapi.companion.feature.newsession.NewSessionLogic.worktreeNameError
 import app.hapi.data.api.ApiError
 import app.hapi.data.store.MachineListStore
@@ -14,6 +19,7 @@ import app.hapi.protocol.catalog.Flavors
 import app.hapi.protocol.catalog.PermissionMode
 import app.hapi.protocol.catalog.PermissionModes
 import app.hapi.protocol.wire.CodexModelSummary
+import app.hapi.protocol.wire.AgentAvailabilityEntry
 import app.hapi.protocol.wire.Machine
 import app.hapi.protocol.wire.MachineDirectoryEntry
 import app.hapi.protocol.wire.objOrNull
@@ -66,14 +72,25 @@ class NewSessionStrings(
     /** `%1$s` = failure detail. */
     val modelsFailedDetail: String = "Failed to load models: %1\$s",
     val worktreeNameInvalid: String = "Name needs at least one letter or digit",
+    val directoryOutsideWorkspaceRoots: String = "Directory must be inside one of this machine's workspace roots.",
+    val directoryLookupFailed: String = "Failed to browse directories",
+    val agentAvailabilityFailed: String = "Failed to check installed Agents",
+    val runnerUpgradeRequired: String = "Upgrade and restart this machine's HAPI runner before creating sessions.",
+    val noAvailableAgents: String = "No supported Agents are installed on this machine.",
+    val selectedAgentUnavailable: String = "The selected Agent is not available on this machine.",
+    /** Appended to the grok `Auto` option label as `Auto (<value>)` when gated. */
+    val grokAutoUnavailable: String = "unavailable",
 )
 
 /** Which permission control the current flavor renders (web `PermissionField`). */
 sealed interface PermissionUi {
-    /** Native permission-mode picker (grok + codex-family). */
+    /**
+     * Native permission-mode picker (claude, grok, codex-family —
+     * [NewSessionLogic.usesNativePermissionSelect]).
+     */
     data class NativeSelect(val options: List<OptionItem>) : PermissionUi
 
-    /** HAPI YOLO toggle (claude/agy/cursor) with the native mode it maps to. */
+    /** HAPI YOLO toggle (agy/cursor) with the native mode it maps to. */
     data class YoloToggle(val nativeModeLabel: String?) : PermissionUi
 
     /** Pi: the agent manages its own permissions. */
@@ -91,6 +108,12 @@ sealed interface CodexModelsUi {
     data class Failed(val message: String) : CodexModelsUi
 }
 
+sealed interface AgentAvailabilityUi {
+    data object Loading : AgentAvailabilityUi
+    data class Loaded(val agents: List<AgentAvailabilityEntry>) : AgentAvailabilityUi
+    data class Failed(val message: String, val upgradeRequired: Boolean = false) : AgentAvailabilityUi
+}
+
 data class NewSessionUiState(
     val form: NewSessionForm,
     val machines: List<MachineOptionUi>,
@@ -102,6 +125,8 @@ data class NewSessionUiState(
     val directoryStatus: DirectoryStatusUi?,
     /** Creatable flavors (value = flavor id, label from the catalog). */
     val agents: List<OptionItem>,
+    val agentAvailabilityLoading: Boolean,
+    val agentAvailabilityError: String?,
     /** Null hides the model picker (v1: only claude + supported codex). */
     val modelOptions: List<OptionItem>?,
     val modelsLoading: Boolean,
@@ -111,6 +136,8 @@ data class NewSessionUiState(
     /** Codex reasoning-effort options; null hides the field. */
     val reasoningEffortOptions: List<OptionItem>?,
     val permission: PermissionUi,
+    /** Grok create-form gate: `true` renders the Auto-unavailable hint (web `PermissionField`). */
+    val grokAutoUnavailable: Boolean,
     val showCollaborationMode: Boolean,
     val collaborationModeOptions: List<OptionItem>,
     val showFastMode: Boolean,
@@ -136,8 +163,9 @@ data class NewSessionUiState(
  *   discovery is TODO — spawn omits `model` so the agent default applies.
  * - effort: claude static levels; codex reasoning effort from the catalog.
  *   grok/pi effort ships with their model discovery.
- * - grok's `auto` availability probe (directory-scoped grok-models) is
- *   deferred; all catalog modes are offered.
+ * - grok's `auto` availability IS probed (directory-scoped grok-models,
+ *   `autoPermissionModeSupported`); the rest of that response (model/effort
+ *   catalogs) stays deferred with model discovery.
  * - `startingMode` stays unset → the runner spawns `'remote'` (pty deferred).
  */
 class NewSessionViewModel(
@@ -152,8 +180,13 @@ class NewSessionViewModel(
     private val form = MutableStateFlow(NewSessionForm())
     private val prefsData = MutableStateFlow(NewSessionPrefsData())
     private val codexModels = MutableStateFlow<CodexModelsUi>(CodexModelsUi.Hidden)
+    private val agentAvailability = MutableStateFlow<AgentAvailabilityUi>(AgentAvailabilityUi.Loading)
+    /** Grok Auto gate: `null` = unknown/loading (never disables), `false` = unsupported. */
+    private val grokAutoSupport = MutableStateFlow<Boolean?>(null)
     private val suggestions = MutableStateFlow<List<String>>(emptyList())
     private val pathExistence = MutableStateFlow<Map<String, Boolean>>(emptyMap())
+    private val outsideWorkspaceRoots = MutableStateFlow<Set<String>>(emptySet())
+    private val directoryLookupError = MutableStateFlow<String?>(null)
     private val isSpawning = MutableStateFlow(false)
     private val spawnError = MutableStateFlow<String?>(null)
     private val confirmCreateDirectory = MutableStateFlow(false)
@@ -163,12 +196,30 @@ class NewSessionViewModel(
 
     /** Emits the new session id once — navigate-replace to `chat/{id}`. */
     val spawned: SharedFlow<String> = _spawned.asSharedFlow()
+    val directoryBrowser = RemoteDirectoryBrowserController(
+        scope = scope,
+        listDirectory = gateway::listDirectory,
+        fallbackError = strings.directoryLookupFailed,
+    )
 
     private var directoryJob: Job? = null
     private var codexJob: Job? = null
+    private var availabilityJob: Job? = null
+    private var defaultDirectoryJob: Job? = null
+    private var grokAutoJob: Job? = null
     private var codexFetchedForMachine: String? = null
+
+    /** `(machineId, cwd)` already probed — a failed probe never retries (web `retry: false`). */
+    private var grokAutoProbedFor: Pair<String, String>? = null
     private var suppressSuggestions = false
     private var spawnInFlight = false
+    private var directoryRequestVersion = 0L
+
+    /**
+     * A restored draft outranks the remembered launch defaults until the
+     * user switches agent or machine (web `preserveRestoredDraftRef`).
+     */
+    private var draftRestored = false
 
     /** Parent-listing cache: retyping within the same parent re-filters locally. */
     private var cachedListing: Pair<Pair<String, String>, List<MachineDirectoryEntry>>? = null
@@ -178,19 +229,20 @@ class NewSessionViewModel(
             prefsData.value = runCatching { prefs.readPrefs() }.getOrDefault(NewSessionPrefsData())
             val draft = runCatching { prefs.readDraft() }.getOrNull()?.let(NewSessionLogic::sanitizeDraft)
             var initial = draft ?: NewSessionForm()
+            draftRestored = draft != null
             if (initialMachineId != null) {
                 if (draft?.machineId != null && draft.machineId != initialMachineId) {
                     // Draft belongs to another machine (web `newSessionDraftMatchesMachine`).
                     initial = NewSessionForm(machineId = initialMachineId)
+                    draftRestored = false
                     runCatching { prefs.clearDraft() }
                 } else {
                     initial = initial.copy(machineId = initialMachineId)
                 }
             }
-            if (initial.machineId != null && initial.directory.isBlank()) {
-                initial = initial.copy(directory = recentPathsFor(initial.machineId).firstOrNull().orEmpty())
-            }
             form.value = initial
+            if (!draftRestored) applyPreferredLaunchSettings(initial.machineId, initial.agent)
+            refreshAgentAvailability()
             refreshCodexModelsIfNeeded()
             // A restored directory should probe existence but not pop the
             // autocomplete dropdown — suggestions belong to typing.
@@ -211,7 +263,10 @@ class NewSessionViewModel(
                 machineStore.machines.collect { machines ->
                     if (machines.isEmpty()) return@collect
                     val current = form.value.machineId
-                    if (current != null && machines.any { it.id == current }) return@collect
+                    if (current != null && machines.any { it.id == current }) {
+                        if (form.value.directory.isBlank()) initializeMachineDirectory(current)
+                        return@collect
+                    }
                     val lastUsed = prefsData.value.lastMachineId
                     val target = machines.firstOrNull { it.id == lastUsed } ?: machines.first()
                     applyMachineSelection(target.id, resetDirectory = form.value.directory.isBlank())
@@ -236,24 +291,27 @@ class NewSessionViewModel(
     val uiState: StateFlow<NewSessionUiState> = combine(
         form,
         machineStore.machines,
-        codexModels,
-        combine(suggestions, pathExistence, prefsData) { s, exists, stored -> Triple(s, exists, stored) },
+        combine(codexModels, agentAvailability, grokAutoSupport) { codex, availability, grokAuto ->
+            CatalogState(codex, availability, grokAuto)
+        },
+        combine(suggestions, pathExistence, prefsData, outsideWorkspaceRoots, directoryLookupError) {
+                s, exists, stored, outside, lookupError ->
+            DirectoryData(s, exists, stored, outside, lookupError)
+        },
         combine(isSpawning, spawnError, confirmCreateDirectory, machinesRefreshSettled) {
             spawning, error, confirmed, settled ->
             SpawnFlags(spawning, error, confirmed, settled)
         },
-    ) { currentForm, machines, codex, (currentSuggestions, exists, stored), flags ->
-        buildUiState(currentForm, machines, codex, currentSuggestions, exists, stored, flags)
+    ) { currentForm, machines, catalogs, directoryData, flags ->
+        buildUiState(currentForm, machines, catalogs, directoryData, flags)
     }.stateIn(
         scope = scope,
         started = SharingStarted.Eagerly,
         initialValue = buildUiState(
             form.value,
             machineStore.machines.value,
-            codexModels.value,
-            emptyList(),
-            emptyMap(),
-            prefsData.value,
+            CatalogState(codexModels.value, agentAvailability.value, grokAutoSupport.value),
+            DirectoryData(emptyList(), emptyMap(), prefsData.value, emptySet(), null),
             SpawnFlags(isSpawning = false, spawnError = null, confirmed = false, machinesSettled = false),
         ),
     )
@@ -265,16 +323,32 @@ class NewSessionViewModel(
         val machinesSettled: Boolean,
     )
 
+    private data class CatalogState(
+        val codex: CodexModelsUi,
+        val availability: AgentAvailabilityUi,
+        val grokAutoSupported: Boolean?,
+    )
+
+    private data class DirectoryData(
+        val suggestions: List<String>,
+        val exists: Map<String, Boolean>,
+        val stored: NewSessionPrefsData,
+        val outsideWorkspaceRoots: Set<String>,
+        val lookupError: String?,
+    )
+
     // ------------------------------------------------------------ actions --
 
     fun setMachine(machineId: String) {
         if (machineId == form.value.machineId) return
+        draftRestored = false
         applyMachineSelection(machineId, resetDirectory = true)
     }
 
     fun setDirectory(value: String) {
         suppressSuggestions = false
         confirmCreateDirectory.value = false
+        clearGrokAutoSupport()
         form.update { it.copy(directory = value) }
         scheduleDirectoryWork()
     }
@@ -283,10 +357,27 @@ class NewSessionViewModel(
 
     fun pickRecentPath(path: String) = pickPath(path)
 
+    fun openDirectoryBrowser() {
+        val machine = machineStore.machines.value.firstOrNull { it.id == form.value.machineId } ?: return
+        directoryBrowser.open(
+            machineId = machine.id,
+            roots = RemoteDirectoryPath.browseRoots(machine),
+            initialPath = form.value.trimmedDirectory,
+        )
+    }
+
+    fun selectBrowsedDirectory(path: String) {
+        if (path.isNotBlank()) pickPath(path)
+        directoryBrowser.close()
+    }
+
     fun setAgent(agent: String) {
         if (agent == form.value.agent) return
         // Web parity: switching agents resets every agent-dependent field
-        // (yolo is a cross-flavor preference and survives).
+        // (yolo is a cross-flavor preference and survives), then the
+        // remembered launch defaults for the new (machine, agent) dimension
+        // prefill the reset fields.
+        draftRestored = false
         form.update {
             it.copy(
                 agent = agent,
@@ -299,7 +390,9 @@ class NewSessionViewModel(
                 copilotAgentMode = "interactive",
             )
         }
+        applyPreferredLaunchSettings(form.value.machineId, agent)
         refreshCodexModelsIfNeeded()
+        refreshGrokAutoSupportIfNeeded()
     }
 
     fun setModel(model: String) {
@@ -335,6 +428,8 @@ class NewSessionViewModel(
         refreshCodexModelsIfNeeded()
     }
 
+    fun retryAgentAvailability() = refreshAgentAvailability(force = true)
+
     /**
      * Spawn. Directory existence is re-checked server-side first (web
      * `handleCreate`): a missing worktree base is an error; a missing simple
@@ -346,16 +441,38 @@ class NewSessionViewModel(
         val machineId = current.machineId ?: return
         if (current.trimmedDirectory.isEmpty() || spawnInFlight) return
         if (worktreeNameBlocks(current)) return
+        when (val availability = agentAvailability.value) {
+            AgentAvailabilityUi.Loading -> return
+            is AgentAvailabilityUi.Failed -> {
+                spawnError.value = availability.message
+                return
+            }
+            is AgentAvailabilityUi.Loaded -> {
+                if (availability.agents.none {
+                    it.agent == current.agent && it.available
+                }) {
+                    spawnError.value = strings.selectedAgentUnavailable
+                    return
+                }
+            }
+        }
         spawnInFlight = true
         isSpawning.value = true
         spawnError.value = null
         scope.launch {
             try {
                 val directory = current.trimmedDirectory
-                val exists = runCatching { gateway.pathsExist(machineId, listOf(directory)) }
-                    .getOrDefault(emptyMap())[directory]
+                val pathResult = gateway.pathsExist(machineId, listOf(directory))
+                val exists = pathResult.exists[directory]
+                outsideWorkspaceRoots.update { currentOutside ->
+                    (currentOutside - directory) + pathResult.outsideWorkspaceRoots.orEmpty()
+                }
                 if (exists != null) {
                     pathExistence.update { it + (directory to exists) }
+                }
+                if (directory in pathResult.outsideWorkspaceRoots.orEmpty()) {
+                    spawnError.value = strings.directoryOutsideWorkspaceRoots
+                    return@launch
                 }
                 if (current.sessionType == SESSION_TYPE_WORKTREE && exists == false) {
                     spawnError.value = strings.worktreeMissing
@@ -369,13 +486,25 @@ class NewSessionViewModel(
                 val request = buildSpawnRequest(current, codexFastTierVisible(current))
                 val result = gateway.spawn(machineId, request)
                 if (result.type == "success" && result.sessionId != null) {
-                    persistOnSuccess(machineId, directory)
+                    persistOnSuccess(machineId, directory, current)
                     _spawned.tryEmit(result.sessionId!!)
                 } else {
-                    spawnError.value = result.message ?: strings.createFailed
+                    spawnError.value = when (result.code) {
+                        "runner_upgrade_required" -> strings.runnerUpgradeRequired
+                        "agent_unavailable" -> strings.selectedAgentUnavailable
+                        "outside_workspace_roots" -> strings.directoryOutsideWorkspaceRoots
+                        else -> result.message ?: strings.createFailed
+                    }
                 }
             } catch (cancellation: CancellationException) {
                 throw cancellation
+            } catch (error: ApiError) {
+                spawnError.value = when (error.code) {
+                    "runner_upgrade_required" -> strings.runnerUpgradeRequired
+                    "agent_unavailable" -> strings.selectedAgentUnavailable
+                    "outside_workspace_roots" -> strings.directoryOutsideWorkspaceRoots
+                    else -> error.message ?: strings.createFailed
+                }
             } catch (error: Exception) {
                 spawnError.value = error.message ?: strings.createFailed
             } finally {
@@ -391,6 +520,7 @@ class NewSessionViewModel(
         suppressSuggestions = true
         confirmCreateDirectory.value = false
         suggestions.value = emptyList()
+        clearGrokAutoSupport()
         form.update { it.copy(directory = path) }
         scheduleDirectoryWork()
     }
@@ -398,31 +528,96 @@ class NewSessionViewModel(
     private fun recentPathsFor(machineId: String?): List<String> =
         machineId?.let { prefsData.value.recentPaths[it] }.orEmpty()
 
+    /**
+     * Launch-preference restore (web restore effect on agent/machineId
+     * change): refills the agent-dependent defaults from the remembered
+     * `(machine, agent)` entry — or the sentinels when nothing is stored.
+     * The codex model/effort are validated again once the live catalog
+     * settles ([reconcileCodexSelections]); grok keeps its form field out of
+     * the remembered settings entirely.
+     */
+    private fun applyPreferredLaunchSettings(machineId: String?, agent: String) {
+        if (machineId == null) return
+        val resolved = resolvePreferredLaunchSettings(
+            agent,
+            prefsData.value.launchSettings[machineId]?.get(agent),
+        )
+        form.update { current ->
+            current.copy(
+                model = resolved.model,
+                effort = resolved.effort,
+                modelReasoningEffort = resolved.modelReasoningEffort,
+                permissionMode = if (usesSharedPermissionModeState(agent)) {
+                    resolved.permissionMode ?: "default"
+                } else {
+                    current.permissionMode
+                },
+            )
+        }
+    }
+
+    private fun resolveDefaultDirectory(machineId: String, fallback: String) {
+        defaultDirectoryJob?.cancel()
+        val recent = recentPathsFor(machineId)
+        if (recent.isEmpty()) return
+        defaultDirectoryJob = scope.launch {
+            val result = try {
+                gateway.pathsExist(machineId, recent)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Exception) {
+                return@launch
+            }
+            val outside = result.outsideWorkspaceRoots.orEmpty().toSet()
+            val valid = recent.firstOrNull { result.exists[it] == true && it !in outside } ?: return@launch
+            if (form.value.machineId == machineId && form.value.directory == fallback) {
+                suppressSuggestions = true
+                form.update { it.copy(directory = valid) }
+                scheduleDirectoryWork()
+            }
+        }
+    }
+
     private fun applyMachineSelection(machineId: String, resetDirectory: Boolean) {
+        directoryBrowser.close()
         pathExistence.value = emptyMap()
+        outsideWorkspaceRoots.value = emptySet()
+        directoryLookupError.value = null
         suggestions.value = emptyList()
         cachedListing = null
         confirmCreateDirectory.value = false
+        clearGrokAutoSupport()
         // The seeded recent path is a pick, not typing — no dropdown.
         suppressSuggestions = true
         form.update { current ->
             current.copy(
                 machineId = machineId,
                 model = "auto",
-                directory = if (resetDirectory) {
-                    recentPathsFor(machineId).firstOrNull().orEmpty()
-                } else {
-                    current.directory
-                },
             )
         }
+        // Remembered launch defaults follow the machine dimension too (web
+        // restore effect re-runs on machineId change) — unless a restored
+        // draft still owns the form.
+        if (!draftRestored) applyPreferredLaunchSettings(machineId, form.value.agent)
+        refreshAgentAvailability(force = true)
         refreshCodexModelsIfNeeded()
+        if (resetDirectory) initializeMachineDirectory(machineId) else scheduleDirectoryWork()
+    }
+
+    /** Roster updates may seed a directory without replacing current launch choices. */
+    private fun initializeMachineDirectory(machineId: String) {
+        val machine = machineStore.machines.value.firstOrNull { it.id == machineId }
+        val fallback = machine?.let(RemoteDirectoryPath::browseRoots)?.firstOrNull().orEmpty()
+        suppressSuggestions = true
+        form.update { it.copy(directory = fallback) }
+        resolveDefaultDirectory(machineId, fallback)
         scheduleDirectoryWork()
     }
 
     /** Debounced directory work: parent listing for autocomplete + exists probe. */
     private fun scheduleDirectoryWork() {
         directoryJob?.cancel()
+        val requestVersion = ++directoryRequestVersion
         val machineId = form.value.machineId
         if (machineId == null) {
             suggestions.value = emptyList()
@@ -430,24 +625,40 @@ class NewSessionViewModel(
         }
         directoryJob = scope.launch {
             delay(debounceMs)
+            if (directoryRequestVersion != requestVersion || form.value.machineId != machineId) return@launch
             val text = form.value.directory
             val trimmed = text.trim()
 
             val query = if (suppressSuggestions) null else parentQuery(text)
             if (query == null) {
                 suggestions.value = emptyList()
+                directoryLookupError.value = null
             } else {
                 val cacheKey = machineId to query.parent
                 val cached = cachedListing?.takeIf { it.first == cacheKey }?.second
-                val entries = cached ?: try {
-                    val response = gateway.listDirectory(machineId, query.parent)
-                    val listed = if (response.success) response.entries.orEmpty() else emptyList()
-                    if (response.success) cachedListing = cacheKey to listed
-                    listed
+                val response = if (cached == null) try {
+                    gateway.listDirectory(machineId, query.parent)
                 } catch (cancellation: CancellationException) {
                     throw cancellation
-                } catch (_: Exception) {
-                    emptyList()
+                } catch (error: Exception) {
+                    if (directoryRequestVersion == requestVersion && form.value.machineId == machineId) {
+                        directoryLookupError.value = error.message ?: strings.directoryLookupFailed
+                    }
+                    null
+                } else {
+                    null
+                }
+                if (directoryRequestVersion != requestVersion || form.value.machineId != machineId) return@launch
+                val entries = when {
+                    cached != null -> cached
+                    response?.success == true -> response.entries.orEmpty().also {
+                        cachedListing = cacheKey to it
+                        directoryLookupError.value = null
+                    }
+                    response != null -> emptyList<MachineDirectoryEntry>().also {
+                        directoryLookupError.value = response.error ?: strings.directoryLookupFailed
+                    }
+                    else -> emptyList()
                 }
                 // Never suggest the path already typed verbatim.
                 suggestions.value = NewSessionLogic.buildSuggestions(query, entries)
@@ -455,14 +666,64 @@ class NewSessionViewModel(
             }
 
             if (trimmed.isNotEmpty()) {
-                try {
-                    val result = gateway.pathsExist(machineId, listOf(trimmed))
-                    pathExistence.update { it + result }
+                val result = try {
+                    gateway.pathsExist(machineId, listOf(trimmed))
                 } catch (cancellation: CancellationException) {
                     throw cancellation
                 } catch (_: Exception) {
-                    // Unknown existence: no status hint, spawn re-checks anyway.
+                    null
                 }
+                if (result != null && directoryRequestVersion == requestVersion && form.value.machineId == machineId) {
+                    pathExistence.update { it + result.exists }
+                    outsideWorkspaceRoots.update { currentOutside ->
+                        (currentOutside - trimmed) + result.outsideWorkspaceRoots.orEmpty()
+                    }
+                    // Grok Auto gate rides the positive-existence probe (web
+                    // `shouldEnableGrokModelDiscovery`): unknown cwd → back to
+                    // unknown capability, existing cwd → probe once.
+                    if (result.exists[trimmed] == true) {
+                        refreshGrokAutoSupportIfNeeded()
+                    } else {
+                        clearGrokAutoSupport()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun refreshAgentAvailability(force: Boolean = false) {
+        val machineId = form.value.machineId
+        if (machineId == null) {
+            availabilityJob?.cancel()
+            agentAvailability.value = AgentAvailabilityUi.Loading
+            return
+        }
+        if (!force && availabilityJob?.isActive == true) return
+        availabilityJob?.cancel()
+        agentAvailability.value = AgentAvailabilityUi.Loading
+        availabilityJob = scope.launch {
+            val state = try {
+                AgentAvailabilityUi.Loaded(gateway.agentAvailability(machineId).agents)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: ApiError) {
+                if (error.code == "runner_upgrade_required") {
+                    AgentAvailabilityUi.Failed(strings.runnerUpgradeRequired, upgradeRequired = true)
+                } else {
+                    AgentAvailabilityUi.Failed(error.message ?: strings.agentAvailabilityFailed)
+                }
+            } catch (error: Exception) {
+                AgentAvailabilityUi.Failed(error.message ?: strings.agentAvailabilityFailed)
+            }
+            if (form.value.machineId != machineId) return@launch
+            agentAvailability.value = state
+            val available = (state as? AgentAvailabilityUi.Loaded)
+                ?.agents
+                ?.filter { it.available && AgentFlavor.CREATABLE.any { flavor -> flavor.id == it.agent } }
+                ?.map { it.agent }
+                .orEmpty()
+            if (available.isNotEmpty() && form.value.agent !in available) {
+                setAgent(available.first())
             }
         }
     }
@@ -513,6 +774,54 @@ class NewSessionViewModel(
         }
     }
 
+    /**
+     * Grok Auto-mode capability probe (web `useGrokModelsForCwd` +
+     * `shouldEnableGrokModelDiscovery`): fires only for the grok agent with a
+     * machine selected and a directory that exists. `null` (unknown) or `true`
+     * never disables; a literal `false` gates the option and resets an `auto`
+     * selection back to `default` (web `NewSession` reset effect).
+     */
+    private fun refreshGrokAutoSupportIfNeeded() {
+        val current = form.value
+        if (current.agent != "grok") return
+        val machineId = current.machineId ?: return
+        val cwd = current.trimmedDirectory
+        if (cwd.isEmpty()) return
+        if (pathExistence.value[cwd] != true) return
+        val target = machineId to cwd
+        if (grokAutoProbedFor == target) return
+        grokAutoProbedFor = target
+        grokAutoJob?.cancel()
+        grokAutoJob = scope.launch {
+            val supported = try {
+                val response = gateway.grokModels(machineId, cwd)
+                if (response.success) response.autoPermissionModeSupported else null
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Exception) {
+                null
+            }
+            if (form.value.machineId != machineId) return@launch
+            grokAutoSupport.value = supported
+            if (supported == false) {
+                form.update { formValue ->
+                    if (formValue.agent == "grok" && formValue.permissionMode == "auto") {
+                        formValue.copy(permissionMode = "default")
+                    } else {
+                        formValue
+                    }
+                }
+            }
+        }
+    }
+
+    /** Back to unknown capability — new cwd/machine, or the cwd stopped existing. */
+    private fun clearGrokAutoSupport() {
+        grokAutoJob?.cancel()
+        grokAutoProbedFor = null
+        grokAutoSupport.value = null
+    }
+
     private fun reconcileCodexSelections(current: NewSessionForm): NewSessionForm {
         val loaded = codexModels.value as? CodexModelsUi.Loaded ?: return current
         var next = current
@@ -538,11 +847,18 @@ class NewSessionViewModel(
     private fun worktreeNameBlocks(current: NewSessionForm): Boolean =
         current.sessionType == SESSION_TYPE_WORKTREE && worktreeNameError(current.worktreeName) != null
 
-    private suspend fun persistOnSuccess(machineId: String, directory: String) {
+    private suspend fun persistOnSuccess(machineId: String, directory: String, created: NewSessionForm) {
         val updated = prefsData.value.let { stored ->
             stored.copy(
                 lastMachineId = machineId,
                 recentPaths = stored.recentPaths + (machineId to pushRecent(stored.recentPaths[machineId].orEmpty(), directory)),
+                // Remember this (machine, agent) dimension's launch defaults
+                // for the next prefill (web `savePreferredLaunchSettings` on
+                // every create-success path).
+                launchSettings = stored.launchSettings + (
+                    machineId to ((stored.launchSettings[machineId] ?: emptyMap()) +
+                        (created.agent to launchPreferenceFrom(created)))
+                    ),
             )
         }
         prefsData.value = updated
@@ -555,28 +871,45 @@ class NewSessionViewModel(
     private fun buildUiState(
         currentForm: NewSessionForm,
         machines: List<Machine>,
-        codex: CodexModelsUi,
-        currentSuggestions: List<String>,
-        exists: Map<String, Boolean>,
-        stored: NewSessionPrefsData,
+        catalogs: CatalogState,
+        directoryData: DirectoryData,
         flags: SpawnFlags,
     ): NewSessionUiState {
+        val codex = catalogs.codex
+        val availability = catalogs.availability
+        val currentSuggestions = directoryData.suggestions
+        val exists = directoryData.exists
+        val stored = directoryData.stored
         val agent = currentForm.agent
         val selectedMachine = machines.firstOrNull { it.id == currentForm.machineId }
         val trimmed = currentForm.trimmedDirectory
         val directoryExists = if (trimmed.isEmpty()) null else exists[trimmed]
+        val directoryOutsideRoots = trimmed in directoryData.outsideWorkspaceRoots
 
         val missingWorktreeDirectory =
-            currentForm.sessionType == SESSION_TYPE_WORKTREE && trimmed.isNotEmpty() && directoryExists == false
+            !directoryOutsideRoots && currentForm.sessionType == SESSION_TYPE_WORKTREE && trimmed.isNotEmpty() && directoryExists == false
         val needsCreationWarning =
-            currentForm.sessionType == SESSION_TYPE_SIMPLE && trimmed.isNotEmpty() && directoryExists == false
+            !directoryOutsideRoots && currentForm.sessionType == SESSION_TYPE_SIMPLE && trimmed.isNotEmpty() && directoryExists == false
         val directoryStatus = when {
+            directoryOutsideRoots -> DirectoryStatusUi(strings.directoryOutsideWorkspaceRoots, isError = true)
             missingWorktreeDirectory -> DirectoryStatusUi(strings.worktreeMissing, isError = true)
             needsCreationWarning -> DirectoryStatusUi(
                 if (flags.confirmed) strings.directoryMissingConfirm else strings.directoryMissing,
                 isError = false,
             )
+            directoryData.lookupError != null -> DirectoryStatusUi(directoryData.lookupError, isError = true)
             else -> null
+        }
+
+        val availableAgentIds = (availability as? AgentAvailabilityUi.Loaded)
+            ?.agents
+            ?.filter { entry -> entry.available && AgentFlavor.CREATABLE.any { it.id == entry.agent } }
+            ?.map { it.agent }
+            .orEmpty()
+        val availabilityError = when (availability) {
+            AgentAvailabilityUi.Loading -> null
+            is AgentAvailabilityUi.Failed -> availability.message
+            is AgentAvailabilityUi.Loaded -> if (availableAgentIds.isEmpty()) strings.noAvailableAgents else null
         }
 
         val modelOptions: List<OptionItem>? = when {
@@ -601,10 +934,20 @@ class NewSessionViewModel(
             null
         }
 
+        // Grok Auto gate (web PermissionField): only a literal false disables —
+        // null (not probed/omitted/failed) keeps the option fully available.
+        val grokAutoUnavailable = agent == "grok" && catalogs.grokAutoSupported == false
         val permission: PermissionUi = when {
-            agent == "pi" -> PermissionUi.Managed
+            agent == "pi" || agent == "dsh" -> PermissionUi.Managed
             usesNativePermissionSelect(agent) -> PermissionUi.NativeSelect(
-                PermissionModes.forFlavor(agent).map { OptionItem(it.wireId, it.label) },
+                PermissionModes.forFlavor(agent).map { mode ->
+                    val unavailable = grokAutoUnavailable && mode == PermissionMode.Auto
+                    OptionItem(
+                        value = mode.wireId,
+                        label = mode.label + if (unavailable) " (${strings.grokAutoUnavailable})" else "",
+                        enabled = !unavailable,
+                    )
+                },
             )
             else -> PermissionUi.YoloToggle(hapiYoloNativeMode(agent)?.label)
         }
@@ -631,13 +974,16 @@ class NewSessionViewModel(
             suggestions = currentSuggestions,
             recentPaths = currentForm.machineId?.let { stored.recentPaths[it] }.orEmpty(),
             directoryStatus = directoryStatus,
-            agents = AgentFlavor.CREATABLE.map { OptionItem(it.id, Flavors.label(it.id)) },
+            agents = availableAgentIds.map { OptionItem(it, Flavors.label(it)) },
+            agentAvailabilityLoading = availability is AgentAvailabilityUi.Loading,
+            agentAvailabilityError = availabilityError,
             modelOptions = modelOptions,
             modelsLoading = agent == "codex" && codex is CodexModelsUi.Loading,
             modelsError = (codex as? CodexModelsUi.Failed)?.message?.let { strings.modelsFailedDetail.format(it) },
             effortOptions = if (agent == "claude") NewSessionCatalogs.CLAUDE_EFFORTS else null,
             reasoningEffortOptions = reasoningEffortOptions,
             permission = permission,
+            grokAutoUnavailable = grokAutoUnavailable,
             showCollaborationMode = agent == "codex",
             collaborationModeOptions = CodexCollaborationMode.entries.map { OptionItem(it.wireId, it.label) },
             showFastMode = showFastMode,
@@ -650,6 +996,9 @@ class NewSessionViewModel(
                 trimmed.isNotEmpty() &&
                 !flags.isSpawning &&
                 !missingWorktreeDirectory &&
+                !directoryOutsideRoots &&
+                availability is AgentAvailabilityUi.Loaded &&
+                currentForm.agent in availableAgentIds &&
                 nameError == null &&
                 !codexValidationPending,
             confirmCreateDirectory = flags.confirmed && needsCreationWarning,

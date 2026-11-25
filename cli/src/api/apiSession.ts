@@ -1,3 +1,4 @@
+type QueueCancelResult = boolean | 'in-flight' | 'indeterminate' | 'consumed'
 import { EventEmitter } from 'node:events'
 import { randomUUID } from 'node:crypto'
 import { io, type Socket } from 'socket.io-client'
@@ -9,7 +10,6 @@ import { apiValidationError } from '@/utils/errorUtils'
 import { AsyncLock } from '@/utils/lock'
 import type { RawJSONLines } from '@/claude/types'
 import { configuration } from '@/configuration'
-import { extractUserRequest } from '@/agy/utils/agyMessageText'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from "@hapi/protocol"
 import type { SessionEndReason } from '@hapi/protocol'
 import type { ClientToServerEvents, ServerToClientEvents, TerminalOutputPayload, Update } from '@hapi/protocol'
@@ -36,75 +36,19 @@ import type {
 import { AgentStateSchema, CliMessagesResponseSchema, MetadataSchema, UserMessageSchema } from './types'
 import { RpcHandlerManager } from './rpc/RpcHandlerManager'
 import { registerCommonHandlers } from '../modules/common/registerCommonHandlers'
-import { cleanupUploadDir } from '../modules/common/handlers/uploads'
+import { cleanupUploadDir, preserveUploadDirOnExit } from '../modules/common/handlers/uploads'
 import { TerminalManager } from '@/terminal/TerminalManager'
 import { applyVersionedAck } from './versionedUpdate'
 import { buildHubRequestHeaders, buildSocketIoExtraHeaderOptions } from './hubExtraHeaders'
+import { extractRawUserTextContent, isExternalUserMessage } from '@/claude/utils/transcriptEntry'
 
-/**
- * XML tags that Claude Code injects as `type:'user'` messages.
- * These are internal bookkeeping, not text the human actually typed.
- */
-const SYSTEM_INJECTION_PREFIXES = [
-    '<task-notification>',
-    '<command-name>',
-    '<local-command-caveat>',
-    '<system-reminder>',
-]
+// Transcript entry classification moved to @/claude/utils/transcriptEntry;
+// re-exported here so existing importers of the old name keep working.
+export { isExternalUserMessage } from '@/claude/utils/transcriptEntry'
 
 // Cap for the runner-side in-memory agent-terminal screen buffer (matches the
 // hub's scrollback ring). The tail always holds the latest full-screen redraw.
 const AGENT_TERMINAL_LOCAL_BUFFER_BYTES = 256 * 1024
-
-function extractRawUserTextContent(content: unknown): string | null {
-    if (typeof content === 'string') {
-        return content
-    }
-
-    if (!Array.isArray(content)) {
-        return null
-    }
-
-    const parts = content
-        .map((block) => {
-            if (!block || typeof block !== 'object' || Array.isArray(block)) return null
-            const record = block as Record<string, unknown>
-            return record.type === 'text' && typeof record.text === 'string'
-                ? record.text
-                : null
-        })
-        .filter((text): text is string => text !== null)
-
-    return parts.length > 0 ? parts.join('\n') : null
-}
-
-/**
- * Returns true if a JSONL message should be classified as a user-role message
- * (i.e., text typed by a real human) rather than an agent-role message.
- *
- * Claude Code injects system messages (task notifications, command caveats, …)
- * into the JSONL log as `type:'user'` entries so the model sees them in
- * context.  All metadata fields (`userType`, `isMeta`, …) are identical to
- * genuine user messages, so the only reliable signal is the message content
- * itself: injected messages always start with a well-known XML tag.
- */
-export function isExternalUserMessage(body: RawJSONLines): body is Extract<RawJSONLines, { type: 'user' }> {
-    if (body.type !== 'user') return false
-    // Defensive: a malformed/minimal user line may lack `.message`. Treat it as
-    // a non-external (forwardable) message rather than throwing.
-    const message = (body as { message?: { content?: unknown } }).message
-    if (!message || typeof message !== 'object') return false
-    const text = extractRawUserTextContent(message.content)
-    if (text === null) return false
-    if (body.isSidechain === true) return false
-    if (body.isMeta === true) return false
-
-    const trimmed = text.trimStart()
-    for (const prefix of SYSTEM_INJECTION_PREFIXES) {
-        if (trimmed.startsWith(prefix)) return false
-    }
-    return true
-}
 
 /**
  * Dedup filter for messages arriving on the realtime socket and via reconnect
@@ -127,6 +71,13 @@ export class IncomingMessageFilter {
 
     cursorSeq(): number | null {
         return this.lastSeenSeq
+    }
+
+    /** Keep ID deduplication, but stop skipping sequence numbers reused after rewind. */
+    rewindCursor(lastRetainedSeq: number): void {
+        if (this.lastSeenSeq !== null) {
+            this.lastSeenSeq = Math.min(this.lastSeenSeq, lastRetainedSeq)
+        }
     }
 
     /** Returns true if this message should be processed; false to drop as a duplicate. */
@@ -181,9 +132,13 @@ type PendingOutboundEvent = {
     retention: 'lossless' | 'droppable'
 }
 
+import { SESSION_KEEP_ALIVE_INTERVAL_MS } from './keepAlive'
+
+export { SESSION_KEEP_ALIVE_INTERVAL_MS }
 const MAX_PENDING_DROPPABLE_EVENTS = 256
 const MATERIALIZATION_RETRY_MIN_MS = 1_000
 const MATERIALIZATION_RETRY_MAX_MS = 30_000
+const UPDATE_METADATA_ACK_TIMEOUT_MS = 5_000
 
 function isTransientMaterializationError(error: unknown): boolean {
     if (!axios.isAxiosError(error)) {
@@ -231,6 +186,20 @@ function hasSameJsonValue(left: unknown, right: unknown): boolean {
 }
 
 export class ApiSessionClient extends EventEmitter {
+    private reconnectHandler: ((metadataRefreshed?: boolean) => void) | null = null
+    onReconnect(handler: ((metadataRefreshed?: boolean) => void) | null): void { this.reconnectHandler = handler }
+    private metadataAppliedHandler: (() => void) | null = null
+    /** Runs after every applied metadata snapshot: remote update, update ack, refresh, materialization. */
+    onMetadataApplied(handler: (() => void) | null): void { this.metadataAppliedHandler = handler }
+    /** When false, socket.io must not keep the CLI immortal after hub archive (#1910). */
+    private allowReconnect = true
+    /**
+     * Latch for hub-archived EXIT (#1911 criterion 6). Bootstrap may apply
+     * hub-archived via updateMetadata CAS before flavor runners call
+     * registerKillSessionHandler; EventEmitter does not replay past emits, so
+     * the handler must read this synchronously at registration.
+     */
+    hubArchived = false
     private readonly token: string
     readonly sessionId: string
     private metadata: Metadata | null
@@ -241,12 +210,20 @@ export class ApiSessionClient extends EventEmitter {
     private pendingMessages: { message: UserMessage; localId?: string }[] = []
     private pendingHubPromptEchoes: { text: string; localIds: string[] }[] = []
     private pendingMessageCallback: ((message: UserMessage, localId?: string) => void) | null = null
-    private cancelQueuedMessageCallback: ((localId: string) => boolean | 'in-flight' | 'indeterminate' | 'consumed') | null = null
-    private retryQueuedMessageCallback: ((localId: string) => boolean) | null = null
+    private cancelQueuedMessageCallback: ((localId: string) => QueueCancelResult | Promise<QueueCancelResult>) | null = null
+    private retryQueuedMessageCallback: ((localId: string) => boolean | Promise<boolean>) | null = null
     private readonly incomingFilter = new IncomingMessageFilter()
+    private reconciledRewindOperationId: string | undefined
+    // truncateFromLocalId of the Claude rewind intent last seen in metadata.
+    private observedClaudeRewindId: string | undefined
+    private incomingCursorEpoch = 0
+    private pendingRewindBackfill: { operationId: string; epoch: number; afterSeq: number } | null = null
+    private rewindBackfillScheduled = false
     private backfillInFlight: Promise<void> | null = null
     private needsBackfill = false
     private hasConnectedOnce = false
+    // Replayed on (re)connect: a volatile heartbeat sent while disconnected is dropped (#2053).
+    private latestKeepAlive: Omit<Parameters<ClientToServerEvents['session-alive']>[0], 'sid' | 'time'> | null = null
     readonly rpcHandlerManager: RpcHandlerManager
     private readonly terminalManager: TerminalManager
     private agentTerminalResize: ((cols: number, rows: number) => void) | null = null
@@ -284,6 +261,7 @@ export class ApiSessionClient extends EventEmitter {
         this.token = token
         this.sessionId = session.id
         this.metadata = session.metadata
+        this.reconcileCommittedRewindCursor(this.metadata)
         this.metadataVersion = session.metadataVersion
         this.agentState = session.agentState
         this.agentStateVersion = session.agentStateVersion
@@ -327,17 +305,36 @@ export class ApiSessionClient extends EventEmitter {
 
         this.socket.on('connect', () => {
             logger.debug('Socket connected successfully')
+            this.emit('connection-start')
             this.awaitingMaterializedConnection = false
             this.rpcHandlerManager.onSocketConnect(this.socket)
-            if (this.hasConnectedOnce) {
+            const isReconnect = this.hasConnectedOnce
+            if (isReconnect) {
                 this.needsBackfill = true
             }
-            void this.backfillIfNeeded()
+            // Hub may have archived while we were offline (KillSession miss +
+            // no live update-session). On reconnect, reconcile metadata before
+            // message backfill so hub-archived can stop reconnect immortality (#1910).
+            let metadataRefreshed = false
+            const afterMeta = isReconnect
+                ? this.refreshMetadata().then((refreshed) => { metadataRefreshed = refreshed })
+                : Promise.resolve()
+            void afterMeta.finally(() => {
+                if (isReconnect && this.observedClaudeRewindId !== undefined) {
+                    this.armRewindBackfill(`claude:${this.observedClaudeRewindId}`)
+                }
+                void this.backfillIfNeeded()
+if (isReconnect) {
+                    this.reconnectHandler?.(metadataRefreshed)
+                }
+                if (this.state === 'active' && this.allowReconnect) this.emit('connected')
+            })
             this.hasConnectedOnce = true
             this.socket.emit('session-alive', {
                 sid: this.sessionId,
                 time: Date.now(),
-                thinking: false
+                thinking: false,
+                ...this.latestKeepAlive
             })
         })
 
@@ -349,6 +346,13 @@ export class ApiSessionClient extends EventEmitter {
             logger.debug('[API] Socket disconnected:', reason)
             this.rpcHandlerManager.onSocketDisconnect()
             this.terminalManager.closeAll()
+            if (!this.allowReconnect) {
+                try {
+                    this.socket.io.opts.reconnection = false
+                    this.socket.disconnect()
+                } catch { /* already tearing down */ }
+                return
+            }
             if (this.hasConnectedOnce) {
                 this.needsBackfill = true
             }
@@ -422,7 +426,7 @@ export class ApiSessionClient extends EventEmitter {
             this.agentTerminalActive = false
         }))
 
-        this.socket.on('update', (data: Update, ack?: (response: { removed: boolean; inFlight?: boolean; indeterminate?: boolean; accepted?: boolean; consumed?: boolean }) => void) => {
+        this.socket.on('update', async (data: Update, ack?: (response: { removed: boolean; inFlight?: boolean; indeterminate?: boolean; accepted?: boolean; consumed?: boolean }) => void) => {
             try {
                 if (!data.body) return
 
@@ -435,11 +439,12 @@ export class ApiSessionClient extends EventEmitter {
                     // Explicit user retry: release any held in-memory
                     // reservation and bypass the normal message-id dedup.
                     let accepted = true
-                    if (data.body.localId && this.cancelQueuedMessageCallback) {
-                        const cancelled = this.cancelQueuedMessageCallback(data.body.localId)
+                    if (data.body.localId) {
+                        const cancellation = this.cancelQueuedMessage(data.body.localId)
+                        const cancelled = cancellation instanceof Promise ? await cancellation : cancellation
                         accepted = cancelled !== 'in-flight' && cancelled !== 'consumed'
                         if (cancelled === 'indeterminate') {
-                            accepted = this.retryQueuedMessageCallback?.(data.body.localId) === true
+                            accepted = await this.retryQueuedMessageCallback?.(data.body.localId) === true
                         }
                         if (cancelled === 'consumed') {
                             ack?.({ removed: false, accepted: false, consumed: true })
@@ -454,9 +459,10 @@ export class ApiSessionClient extends EventEmitter {
                 }
 
                 if (data.body.t === 'cancel-queued-message') {
-                    const result = (data.body.localId && this.cancelQueuedMessageCallback)
-                        ? this.cancelQueuedMessageCallback(data.body.localId)
+                    const cancellation = data.body.localId
+                        ? this.cancelQueuedMessage(data.body.localId)
                         : false
+                    const result = cancellation instanceof Promise ? await cancellation : cancellation
                     // 'in-flight' = the row is inside an async steer: not
                     // removed, but also NOT consumed — the hub must neither
                     // delete it nor stamp invoked_at.
@@ -471,13 +477,7 @@ export class ApiSessionClient extends EventEmitter {
 
                 if (data.body.t === 'update-session') {
                     if (data.body.metadata && data.body.metadata.version > this.metadataVersion) {
-                        const parsed = MetadataSchema.safeParse(data.body.metadata.value)
-                        if (parsed.success) {
-                            this.metadata = parsed.data
-                        } else {
-                            logger.debug('[API] Ignoring invalid metadata update', { version: data.body.metadata.version })
-                        }
-                        this.metadataVersion = data.body.metadata.version
+                        this.applyRemoteMetadata(data.body.metadata.version, data.body.metadata.value)
                     }
                     if (data.body.agentState && data.body.agentState.version > this.agentStateVersion) {
                         const next = data.body.agentState.value
@@ -499,6 +499,11 @@ export class ApiSessionClient extends EventEmitter {
                 this.emit('message', data.body)
             } catch (error) {
                 logger.debug('[SOCKET] [UPDATE] [ERROR] Error handling update', { error })
+                // A failed asynchronous native cancellation is not permission
+                // for the hub's best-effort path to delete a possibly live row.
+                if (data.body?.t === 'cancel-queued-message' || data.body?.t === 'retry-queued-message') {
+                    ack?.({ removed: false, accepted: false, indeterminate: true })
+                }
             }
         })
 
@@ -515,8 +520,18 @@ export class ApiSessionClient extends EventEmitter {
         return this.metadata
     }
 
+    /** The latest agent state this client holds (stored state right after a resume). */
+    getAgentStateSnapshot(): AgentState | null {
+        return this.agentState
+    }
+
     isPending(): boolean {
         return this.state === 'pending' || this.state === 'materializing'
+    }
+
+    /** Whether hub reads are served live: a null read then is a transient miss, not a waiting socket. */
+    isActive(): boolean {
+        return this.state === 'active'
     }
 
     private isClosed(): boolean {
@@ -573,10 +588,12 @@ export class ApiSessionClient extends EventEmitter {
                     || !hasSameJsonValue(materialized.agentState, latestAgentState)
 
                 this.metadata = materialized.metadata
+                this.reconcileCommittedRewindCursor(this.metadata)
                 this.metadataVersion = materialized.metadataVersion
                 this.agentState = materialized.agentState
                 this.agentStateVersion = materialized.agentStateVersion
                 this.state = 'active'
+                this.metadataAppliedHandler?.()
 
                 if (shouldSyncMetadata && latestMetadata) {
                     this.updateMetadata(() => latestMetadata)
@@ -696,12 +713,21 @@ export class ApiSessionClient extends EventEmitter {
         }
     }
 
-    onCancelQueuedMessage(callback: (localId: string) => boolean | 'in-flight' | 'indeterminate' | 'consumed'): void {
+    onCancelQueuedMessage(callback: (localId: string) => QueueCancelResult | Promise<QueueCancelResult>): void {
         this.cancelQueuedMessageCallback = callback
     }
 
-    onRetryQueuedMessage(callback: (localId: string) => boolean): void {
+    onRetryQueuedMessage(callback: (localId: string) => boolean | Promise<boolean>): void {
         this.retryQueuedMessageCallback = callback
+    }
+
+    private cancelQueuedMessage(localId: string): QueueCancelResult | Promise<QueueCancelResult> {
+        const remaining = this.pendingMessages.filter((pending) => pending.localId !== localId)
+        if (remaining.length !== this.pendingMessages.length) {
+            this.pendingMessages = remaining
+            return true
+        }
+        return this.cancelQueuedMessageCallback?.(localId) ?? false
     }
 
     private enqueueUserMessage(message: UserMessage, localId?: string): void {
@@ -782,7 +808,10 @@ export class ApiSessionClient extends EventEmitter {
             // User messages mirrored from a local agent transcript are history,
             // not new remote input. Keep them in the incoming filter above so
             // reconnect backfill still advances and deduplicates correctly.
-            if (userResult.data.meta?.sentFrom === 'cli') {
+            if (userResult.data.meta?.sentFrom === 'cli'
+                && !(userResult.data.meta.isNativeQueuedMessage === true
+                    && this.metadata?.capabilities?.concurrentClients === true
+                    && message.localId)) {
                 return
             }
             this.enqueueUserMessage(userResult.data, message.localId ?? undefined)
@@ -798,10 +827,170 @@ export class ApiSessionClient extends EventEmitter {
         }
         try {
             await this.backfillMessages()
-            this.needsBackfill = false
+            this.needsBackfill = this.pendingRewindBackfill !== null
         } catch (error) {
             logger.debug('[API] Backfill failed', error)
             this.needsBackfill = true
+        }
+    }
+
+    private reconcileCommittedRewindCursor(metadata: Metadata | null): void {
+        this.reconcileClaudeRewindCursor(metadata?.claudeRewind?.truncateFromLocalId)
+        const operation = metadata?.opencodeRewind
+        if (operation?.phase !== 'committed') {
+            this.scheduleRewindBackfill()
+            return
+        }
+        // A same-process reconnect must see prompts queued while disconnected,
+        // even if Hub truncation reused a sequence below the old cursor. Repeated
+        // metadata for the committed tombstone must not rewind later deliveries.
+        if (operation.operationId !== this.reconciledRewindOperationId) {
+            this.reconciledRewindOperationId = operation.operationId
+            this.armRewindBackfill(operation.operationId)
+        }
+        this.scheduleRewindBackfill()
+    }
+
+    /**
+     * Claude rewind truncates the Hub tail at RPC success while the intent is
+     * already in metadata, and the native restart keeps this client (and its
+     * cursor). Rescan from zero once the intent is gone (native branch proven,
+     * so Hub truncation is certain) and on each reconnect while it is pending.
+     */
+    private reconcileClaudeRewindCursor(intentId: string | undefined): void {
+        const previous = this.observedClaudeRewindId
+        this.observedClaudeRewindId = intentId
+        if (previous !== undefined && intentId === undefined) {
+            this.armRewindBackfill(`claude:${previous}`)
+        }
+    }
+
+    private armRewindBackfill(operationId: string): void {
+        // Invocation order can remove rows below the boundary's insertion
+        // seq too. New inputs may reuse those slots, so rescan from zero.
+        this.incomingFilter.rewindCursor(0)
+        // A newer rewind cannot retire an earlier, still-unscanned prefix.
+        const previousFloor = this.pendingRewindBackfill?.afterSeq
+        const cursor = this.incomingFilter.cursorSeq()
+        const afterSeq = previousFloor === undefined ? cursor : Math.min(previousFloor, cursor ?? previousFloor)
+        this.incomingCursorEpoch += 1
+        this.pendingRewindBackfill = afterSeq === null ? null : {
+            operationId, epoch: this.incomingCursorEpoch, afterSeq
+        }
+    }
+
+    private scheduleRewindBackfill(): void {
+        if (!this.pendingRewindBackfill || this.state !== 'active' || this.rewindBackfillPaused()
+            || this.rewindBackfillScheduled) return
+        this.needsBackfill = true
+        this.rewindBackfillScheduled = true
+        queueMicrotask(() => {
+            this.rewindBackfillScheduled = false
+            if (this.pendingRewindBackfill && this.state === 'active' && !this.rewindBackfillPaused()) {
+                void this.backfillIfNeeded()
+            }
+        })
+    }
+
+    private rewindBackfillPaused(): boolean {
+        const phase = this.metadata?.opencodeRewind?.phase
+        return !this.socket?.connected || phase === 'reserved' || phase === 'prepared' || phase === 'unknown'
+    }
+
+    /**
+     * Apply a remote metadata snapshot (Socket.IO update-session or reconnect
+     * REST reconcile). Advances metadataVersion and emits hub-archived when
+     * the hub flipped lifecycle while this CLI was unreachable.
+     */
+    private applyRemoteMetadata(version: number, value: unknown): void {
+        if (version <= this.metadataVersion) return
+        const parsed = MetadataSchema.safeParse(value)
+        if (!parsed.success) {
+            logger.debug('[API] Ignoring invalid metadata update', { version })
+            this.metadataVersion = version
+            return
+        }
+        const wasHubArchived = this.metadata?.lifecycleState === 'archived'
+            && this.metadata?.archivedBy === 'hub'
+        this.metadata = parsed.data
+        this.reconcileCommittedRewindCursor(this.metadata)
+        this.metadataVersion = version
+        // #1910: hub may archive via metadata when KillSession cannot reach
+        // this CLI. Stop reconnect immortality and let runners exit instead
+        // of sitting as PPID=1 orphans.
+        if (!wasHubArchived
+            && parsed.data.lifecycleState === 'archived'
+            && parsed.data.archivedBy === 'hub') {
+            this.noteHubArchived()
+        }
+        this.metadataAppliedHandler?.()
+    }
+
+    private noteHubArchived(): void {
+        this.hubArchived = true
+        this.allowReconnect = false
+        try {
+            this.socket.io.opts.reconnection = false
+        } catch { /* socket may be mid-teardown */ }
+        this.emit('hub-archived')
+    }
+
+    /** Refresh Hub-owned metadata before an explicit tool action or after reconnect. */
+    async reportOpenCodeRewind(report: import('@hapi/protocol/apiTypes').OpenCodeRewindReport): Promise<import('@hapi/protocol/schemas').OpenCodeRewindOperation> {
+        const before = await this.readRewindMetadata()
+        if (!before) throw new Error('Cannot reconcile Hub rewind reservation')
+        const response = await axios.post(`${configuration.apiUrl}/cli/sessions/${encodeURIComponent(this.sessionId)}/opencode-rewind`,
+            { report, expectedVersion: before.version }, { headers: buildHubRequestHeaders({ Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' }), timeout: 15_000 })
+        const { OpenCodeRewindSchema } = await import('@hapi/protocol/schemas')
+        const operation = OpenCodeRewindSchema.parse(response.data?.operation)
+        if (!await this.readRewindMetadata()) throw new Error('Cannot confirm authoritative rewind state')
+        return operation
+    }
+
+    async refreshMetadata(): Promise<boolean> {
+        try {
+            const response = await axios.get(
+                `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(this.sessionId)}`,
+                {
+                    headers: buildHubRequestHeaders({
+                        Authorization: `Bearer ${this.token}`,
+                        'Content-Type': 'application/json'
+                    }),
+                    timeout: 15_000
+                }
+            )
+            const session = response.data?.session
+            if (!session || typeof session.metadataVersion !== 'number') return false
+            if (session.metadata !== null && !MetadataSchema.safeParse(session.metadata).success) return false
+            if (session.metadataVersion >= this.metadataVersion) {
+                this.applyRemoteMetadata(session.metadataVersion, session.metadata)
+            }
+            this.scheduleRewindBackfill()
+            return true
+        } catch (error) {
+            logger.debug('[API] Session metadata reconcile failed', error)
+            return false
+        }
+    }
+
+    /** Read the exact validated REST snapshot for rewind admission decisions. */
+    async readRewindMetadata(): Promise<{ metadata: Metadata; version: number } | null> {
+        if (this.state !== 'active') return null
+        try {
+            const response = await axios.get(`${configuration.apiUrl}/cli/sessions/${encodeURIComponent(this.sessionId)}`, {
+                headers: buildHubRequestHeaders({ Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' }),
+                timeout: 15_000
+            })
+            const session = response.data?.session
+            if (this.state !== 'active' || !session || !Number.isSafeInteger(session.metadataVersion) || session.metadataVersion < this.metadataVersion
+                || session.metadata === null) return null
+            const parsed = MetadataSchema.safeParse(session.metadata)
+            if (!parsed.success) return null
+            if (session.metadataVersion > this.metadataVersion) this.applyRemoteMetadata(session.metadataVersion, parsed.data)
+            return { metadata: parsed.data, version: session.metadataVersion }
+        } catch (error) {
+            logger.debug('[API] Strict rewind metadata reconcile failed', error)
+            return null
         }
     }
 
@@ -811,16 +1000,20 @@ export class ApiSessionClient extends EventEmitter {
             return
         }
 
-        const startSeq = this.incomingFilter.cursorSeq()
+        const startSeq = this.pendingRewindBackfill?.afterSeq ?? this.incomingFilter.cursorSeq()
         if (startSeq === null) {
             logger.debug('[API] Skipping backfill because no last-seen message sequence is available')
             return
         }
 
         const limit = 200
+        let attemptedEpoch = this.incomingCursorEpoch
         const run = async () => {
             let cursor = startSeq
+            let cursorEpoch = this.incomingCursorEpoch
             while (true) {
+                if (this.pendingRewindBackfill && this.rewindBackfillPaused()) return
+                attemptedEpoch = cursorEpoch
                 const response = await axios.get(
                     `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(this.sessionId)}/messages`,
                     {
@@ -832,6 +1025,13 @@ export class ApiSessionClient extends EventEmitter {
                         timeout: 15_000
                     }
                 )
+
+                if (this.pendingRewindBackfill && this.rewindBackfillPaused()) return
+                if (cursorEpoch !== this.incomingCursorEpoch) {
+                    cursor = this.pendingRewindBackfill?.afterSeq ?? this.incomingFilter.cursorSeq() ?? 0
+                    cursorEpoch = this.incomingCursorEpoch
+                    continue
+                }
 
                 const parsed = CliMessagesResponseSchema.safeParse(response.data)
                 if (!parsed.success) {
@@ -850,17 +1050,40 @@ export class ApiSessionClient extends EventEmitter {
                             maxSeq = message.seq
                         }
                     }
+                    if (this.pendingRewindBackfill && message.invokedAt != null
+                        && UserMessageSchema.safeParse(message.content).success) {
+                        // Hub's queued delivery state also includes durable
+                        // invocation ACKs. A backward rewind scan can outlive
+                        // the bounded ID LRU; never enqueue that input again.
+                        this.incomingFilter.accept({ id: message.id, seq: message.seq })
+                        continue
+                    }
                     this.handleIncomingMessage(message)
                 }
 
+                if (this.pendingRewindBackfill && this.rewindBackfillPaused()) return
+                if (cursorEpoch !== this.incomingCursorEpoch) {
+                    cursor = this.pendingRewindBackfill?.afterSeq ?? this.incomingFilter.cursorSeq() ?? 0
+                    cursorEpoch = this.incomingCursorEpoch
+                    continue
+                }
+
+                // Revisited IDs stay deduplicated, but their scanned positions
+                // still count as progress after a rewind reset the cursor.
+                if (this.pendingRewindBackfill) this.incomingFilter.accept({ seq: maxSeq })
                 const observedSeq = this.incomingFilter.cursorSeq() ?? maxSeq
-                const nextCursor = Math.max(maxSeq, observedSeq)
+                // Do not let a live high-seq delivery skip unread pages in the
+                // post-rewind prefix. The filter still retains that progress.
+                const nextCursor = this.pendingRewindBackfill !== null
+                    ? maxSeq
+                    : Math.max(maxSeq, observedSeq)
                 if (nextCursor <= cursor) {
                     logger.debug('[API] Backfill stopped due to non-advancing cursor', {
                         cursor,
                         maxSeq,
                         observedSeq
                     })
+                    if (this.pendingRewindBackfill) throw new Error('Rewind backfill did not advance')
                     break
                 }
 
@@ -869,10 +1092,18 @@ export class ApiSessionClient extends EventEmitter {
                     break
                 }
             }
+            if (this.pendingRewindBackfill?.epoch === cursorEpoch && !this.rewindBackfillPaused()) {
+                this.pendingRewindBackfill = null
+            }
         }
 
         this.backfillInFlight = run().finally(() => {
             this.backfillInFlight = null
+            // A failed old request must not consume the wake for a newer
+            // committed epoch. Retry that new epoch once, not the failed one.
+            if (this.pendingRewindBackfill && this.pendingRewindBackfill.epoch !== attemptedEpoch) {
+                this.scheduleRewindBackfill()
+            }
         })
 
         await this.backfillInFlight
@@ -880,18 +1111,18 @@ export class ApiSessionClient extends EventEmitter {
 
     sendClaudeSessionMessage(body: RawJSONLines): void {
         let content: MessageContent
-        // Origin timestamp (epoch ms) from the transcript entry's own `timestamp`,
-        // forwarded only for agent messages so the hub can stamp created_at/invoked_at
-        // with the jsonl entry's own time instead of hub-receive time (fixes chat
-        // order drifting from the PTY transcript during bursts/resume — see
-        // transcript ordering contract). The external-user-echo path is left
-        // unchanged: it has no localId either, but its existing arrival-time
-        // stamping already reflects when it was actually forwarded/consumed.
+        // Preserve transcript time for agent output and genuine local input.
+        // Replaying a historical user row must not promote the session as if
+        // the user just sent a new prompt. Hub prompt echoes are not input.
         let createdAt: number | undefined
 
         if (isExternalUserMessage(body)) {
             const text = extractRawUserTextContent(body.message.content) ?? ''
             const isTranscriptEcho = this.consumePendingHubPromptEcho(text)
+            if (!isTranscriptEcho && body.timestamp) {
+                const parsed = Date.parse(body.timestamp)
+                if (Number.isFinite(parsed)) createdAt = parsed
+            }
             content = {
                 role: 'user',
                 content: {
@@ -941,79 +1172,7 @@ export class ApiSessionClient extends EventEmitter {
         }
     }
 
-    sendAgySessionMessage(
-        entry: { type: string; content?: string; tool_calls?: { name: string; args: Record<string, unknown> }[]; step_index?: number; model?: string },
-        conversationId?: string,
-        // The tool CALL (name + args) that produced this action entry, paired by
-        // the launcher from the preceding PLANNER_RESPONSE. agy splits the
-        // invocation (name/args live on the planner step) from its result (the
-        // action entry's `content`), so without this the tool card has no input
-        // to show — just the raw result. Carrying it here lets the web render a
-        // command/path/args like the other flavors.
-        toolCall?: { name: string; args: Record<string, unknown> }
-    ): void {
-        const isUser = entry.type === 'USER_INPUT'
-        // agy appends its own sections (<ADDITIONAL_METADATA>, <USER_SETTINGS_CHANGE>)
-        // after the request block, so only the extracted request may be rendered.
-        const text = isUser ? (extractUserRequest(entry.content ?? '') ?? entry.content ?? '').trim() : undefined
-
-        if (isUser && text) {
-            this.socket.emit('message', {
-                sid: this.sessionId,
-                message: {
-                    role: 'user',
-                    content: { type: 'text', text },
-                    meta: { sentFrom: 'cli' }
-                }
-            })
-            return
-        }
-
-        // agy's structured entry types map to distinct chat renderings:
-        //  - PLANNER_RESPONSE → the agent's prose (agy_message). Its `tool_calls`
-        //    are only the model's INTENT and are immediately followed by the real
-        //    action entry below, so we intentionally don't render them separately
-        //    (that produced a duplicate "view_file" + "View file" card).
-        //  - every other type (VIEW_FILE, RUN_COMMAND, LIST_DIRECTORY, CODE_ACTION,
-        //    …) is a tool ACTION whose `content` is its result. Render it as a
-        //    collapsible tool card (agy_tool_action) instead of dumping the raw
-        //    (often huge) result text as a chat bubble.
-        let data: Record<string, unknown>
-        if (entry.type !== 'PLANNER_RESPONSE') {
-            // Key the tool card by conversationId:stepIdx — the SAME id the
-            // PreToolUse permission request uses — so a gated tool's approval card
-            // and its result merge into one card (no stuck "running" duplicate)
-            // while still showing the pending approval in real time.
-            const toolUseId = conversationId != null && entry.step_index != null
-                ? `${conversationId}:${entry.step_index}`
-                : undefined
-            data = {
-                type: 'agy_tool_action',
-                name: entry.type,
-                content: entry.content ?? '',
-                toolUseId,
-                // The invocation the web renders as the tool INPUT. `toolName` is
-                // agy's own tool id (run_command, view_file, …) which the web maps
-                // to a canonical presentation; `input` is the raw args.
-                toolName: toolCall?.name,
-                input: toolCall?.args
-            }
-        } else {
-            // Tag the agent response with the model that produced it (per-turn),
-            // enriched by the scanner from the conversation DB.
-            data = { type: 'agy_message', content: entry.content ?? '', model: entry.model }
-        }
-        this.socket.emit('message', {
-            sid: this.sessionId,
-            message: {
-                role: 'agent',
-                content: { type: 'output', data },
-                meta: { sentFrom: 'cli' }
-            }
-        })
-    }
-
-    sendUserMessage(text: string, meta?: MessageMeta): void {
+    sendUserMessage(text: string, meta?: MessageMeta, localId?: string): void {
         if (!text) {
             return
         }
@@ -1033,17 +1192,23 @@ export class ApiSessionClient extends EventEmitter {
         this.emitOrQueue(() => {
             this.socket.emit('message', {
                 sid: this.sessionId,
-                message: content
+                message: content,
+                localId
             })
+            if (localId) this.socket.emit('messages-consumed', { sid: this.sessionId, localIds: [localId] })
         })
         this.notifyUserActivity()
+    }
+
+    syncNativeQueuedMessage(localId: string, text: string | null): void {
+        this.emitOrQueue(() => this.socket.emit('native-queue-message', { sid: this.sessionId, localId, text }))
     }
 
     notifyUserActivity(): void {
         void this.materialize()
     }
 
-    sendAgentMessage(body: unknown): void {
+    sendAgentMessage(body: unknown, localId?: string): void {
         const content = {
             role: 'agent',
             content: {
@@ -1057,8 +1222,10 @@ export class ApiSessionClient extends EventEmitter {
         this.emitOrQueue(() => {
             this.socket.emit('message', {
                 sid: this.sessionId,
-                message: content
+                message: content,
+                localId
             })
+            if (localId) this.socket.emit('messages-consumed', { sid: this.sessionId, localIds: [localId] })
         })
     }
 
@@ -1087,8 +1254,20 @@ export class ApiSessionClient extends EventEmitter {
         type: 'compact-summary'
         summary: string
         tokensBefore?: number
+        tokensAfter?: number
         estimatedTokensAfter?: number
-    }, id?: string): void {
+    } | {
+        type: 'modelError'
+        kind: string
+        transient: boolean
+        rawSnippet: string
+        priorAssistantClaimsDone: boolean
+    } | {
+        type: 'modelErrorBridged'
+        kind: string
+        auto: boolean
+        eventId: string
+    }, id?: string, options?: { localId: string }): void {
         const content = {
             role: 'agent',
             content: {
@@ -1101,7 +1280,8 @@ export class ApiSessionClient extends EventEmitter {
         this.emitOrQueue(() => {
             this.socket.emit('message', {
                 sid: this.sessionId,
-                message: content
+                message: content,
+                ...(options?.localId ? { localId: options.localId } : {})
             })
         }, event.type === 'message' || event.type === 'error' || event.type === 'compact-summary' ? 'lossless' : 'droppable')
     }
@@ -1180,7 +1360,7 @@ export class ApiSessionClient extends EventEmitter {
 
     keepAlive(
         thinking: boolean,
-        mode: 'local' | 'remote',
+        mode: 'local' | 'remote' | undefined,
         runtime?: {
             permissionMode?: SessionPermissionMode
             model?: SessionModel
@@ -1191,15 +1371,14 @@ export class ApiSessionClient extends EventEmitter {
             copilotAgentMode?: import('@hapi/protocol').CopilotAgentMode
         }
     ): void {
-        if (this.state !== 'active') {
+        this.latestKeepAlive = { thinking, mode, ...(runtime ?? {}) }
+        if (this.state !== 'active' || !this.socket.connected) {
             return
         }
         this.socket.volatile.emit('session-alive', {
             sid: this.sessionId,
             time: Date.now(),
-            thinking,
-            mode,
-            ...(runtime ?? {})
+            ...this.latestKeepAlive
         })
     }
 
@@ -1264,16 +1443,19 @@ export class ApiSessionClient extends EventEmitter {
         }))
     }
 
-    sendSessionDeath(reason?: SessionEndReason): void {
+    sendSessionDeath(reason?: SessionEndReason, options?: { preserveUploads?: boolean }): void {
         if (this.state === 'active') {
-            void cleanupUploadDir(this.sessionId)
+            if (options?.preserveUploads) preserveUploadDirOnExit(this.sessionId)
+            else void cleanupUploadDir(this.sessionId)
         }
         this.emitOrQueue(() => {
             this.socket.emit('session-end', { sid: this.sessionId, time: Date.now(), reason })
         })
     }
 
-    updateMetadata(handler: (metadata: Metadata) => Metadata): void {
+    updateMetadata(handler: (metadata: Metadata) => Metadata, options?: { signal?: AbortSignal }): void {
+        const signal = options?.signal
+        if (signal?.aborted) return
         if (this.state !== 'active') {
             if (this.state === 'closed') return
             const current = this.metadata ?? ({} as Metadata)
@@ -1285,35 +1467,84 @@ export class ApiSessionClient extends EventEmitter {
         }
         this.metadataLock.inLock(async () => {
             await backoff(async () => {
+                if (signal?.aborted || this.isClosed()) return
+                // #1911 M1 criterion 6: hub-archived → EXIT (same as applyRemoteMetadata).
+                if (this.metadata?.lifecycleState === 'archived' && this.metadata.archivedBy === 'hub') {
+                    this.noteHubArchived()
+                    logger.debug('[API] Skipping metadata update; session hub-archived')
+                    return
+                }
+
                 const current = this.metadata ?? ({} as Metadata)
                 const updated = handler(current)
+                if (!this.socket.connected) {
+                    throw new Error('Socket not connected')
+                }
 
-                const answer = await this.socket.emitWithAck('update-metadata', {
-                    sid: this.sessionId,
-                    expectedVersion: this.metadataVersion,
-                    metadata: updated
-                }) as unknown
+                let answer: unknown
+                try {
+                    answer = await this.socket.timeout(UPDATE_METADATA_ACK_TIMEOUT_MS).emitWithAck('update-metadata', {
+                        sid: this.sessionId,
+                        expectedVersion: this.metadataVersion,
+                        metadata: updated
+                    })
+                } catch (error) {
+                    if (signal?.aborted || this.isClosed()) return
+                    throw error
+                }
+                if (signal?.aborted || this.isClosed()) return
 
-                applyVersionedAck(answer, {
-                    valueKey: 'metadata',
-                    parseValue: (value) => {
-                        const parsed = MetadataSchema.safeParse(value)
-                        return parsed.success ? parsed.data : null
-                    },
-                    applyValue: (value) => {
-                        this.metadata = value
-                    },
-                    applyVersion: (version) => {
-                        this.metadataVersion = version
-                    },
-                    logInvalidValue: (context, version) => {
-                        const suffix = context === 'success' ? 'ack' : 'version-mismatch ack'
-                        logger.debug(`[API] Ignoring invalid metadata value from ${suffix}`, { version })
-                    },
-                    invalidResponseMessage: 'Invalid update-metadata response',
-                    errorMessage: 'Metadata update failed',
-                    versionMismatchMessage: 'Metadata version mismatch'
-                })
+                try {
+                    applyVersionedAck(answer, {
+                        valueKey: 'metadata',
+                        parseValue: (value) => {
+                            const parsed = MetadataSchema.safeParse(value)
+                            return parsed.success ? parsed.data : null
+                        },
+                        applyValue: (value) => {
+                            // Route success+preserve (and mismatch) through the same
+                            // hub-archived detector as applyRemoteMetadata so the CLI
+                            // exits rather than booting against an archived row.
+                            const wasHubArchived = this.metadata?.lifecycleState === 'archived'
+                                && this.metadata?.archivedBy === 'hub'
+                            this.metadata = value
+                            this.reconcileCommittedRewindCursor(this.metadata)
+                            if (
+                                !wasHubArchived
+                                && value?.lifecycleState === 'archived'
+                                && value?.archivedBy === 'hub'
+                            ) {
+                                this.noteHubArchived()
+                            }
+                        },
+                        applyVersion: (version) => {
+                            this.metadataVersion = version
+                        },
+                        logInvalidValue: (context, version) => {
+                            const suffix = context === 'success' ? 'ack' : 'version-mismatch ack'
+                            logger.debug(`[API] Ignoring invalid metadata value from ${suffix}`, { version })
+                        },
+                        invalidResponseMessage: 'Invalid update-metadata response',
+                        errorMessage: 'Metadata update failed',
+                        versionMismatchMessage: 'Metadata version mismatch'
+                    })
+                } catch (error) {
+                    // True version races still throw; if hub archived mid-flight,
+                    // applied metadata is archived — exit, do not spin.
+                    if (this.metadata?.lifecycleState === 'archived' && this.metadata.archivedBy === 'hub') {
+                        this.noteHubArchived()
+                        return
+                    }
+                    throw error
+                }
+
+                // Success+preserve terminates backoff without throw; ensure EXIT
+                // if ack applied hub-archived (detector above already fired).
+                if (this.metadata?.lifecycleState === 'archived' && this.metadata.archivedBy === 'hub') {
+                    this.noteHubArchived()
+                    return
+                }
+                this.metadataAppliedHandler?.()
             })
         })
     }
@@ -1521,6 +1752,11 @@ export class ApiSessionClient extends EventEmitter {
         this.materializationRetryAbortController = null
         this.awaitingMaterializedConnection = false
         this.pendingOutboundEvents.length = 0
+        this.pendingMessages.length = 0
+        this.pendingHubPromptEchoes.length = 0
+        this.agentTerminalLocalBuffer = ''
+        this.agentTerminalActive = false
+        this.latestKeepAlive = null
         this.rpcHandlerManager.onSocketDisconnect()
         this.terminalManager.closeAll()
         this.socket.disconnect()

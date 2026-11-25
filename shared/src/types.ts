@@ -2,8 +2,18 @@ export type {
     AgentState,
     AgentStateCompletedRequest,
     AgentStateRequest,
+    AttachedJob,
+    AttachedJobPatch,
+    AttachedJobStatus,
+    AttachedJobUpsert,
     AttachmentMetadata,
+    BackgroundTask,
     DecryptedMessage,
+    ExternalRef,
+    GithubPrChecks,
+    GithubPrExternalRef,
+    GithubPrMerge,
+    GithubPrOpenState,
     Metadata,
     Machine,
     MachineHealth,
@@ -29,20 +39,13 @@ export type { SessionSummary, SessionSummaryMetadata, PendingRequest, PendingReq
 export { PENDING_REQUEST_SUMMARY_CAP } from './sessionSummary'
 export { AGENT_MESSAGE_PAYLOAD_TYPE } from './modes'
 
+export type { Flavors } from './flavors'
 export type {
     AgentFlavor,
-    AgyPermissionMode,
-    ClaudePermissionMode,
     CodexCollaborationMode,
     CodexCollaborationModeOption,
-    CodexPermissionMode,
-    CursorPermissionMode,
-    GeminiPermissionMode,
-    GrokPermissionMode,
-    KimiPermissionMode,
-    CopilotPermissionMode,
-    OpencodePermissionMode,
     PermissionMode,
+    PermissionModeOf,
     PermissionModeOption,
     PermissionModeTone
 } from './modes'

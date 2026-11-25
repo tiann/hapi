@@ -29,6 +29,7 @@ vi.mock('@/ui/logger', () => ({
 }));
 
 import { CodexAppServerClient, isIndeterminateError } from './codexAppServerClient';
+import { killProcessByChildProcess } from '@/utils/process';
 
 function fakeStream(): EventEmitter & { setEncoding: ReturnType<typeof vi.fn> } {
     return Object.assign(new EventEmitter(), { setEncoding: vi.fn() });
@@ -36,16 +37,59 @@ function fakeStream(): EventEmitter & { setEncoding: ReturnType<typeof vi.fn> } 
 
 function fakeChild() {
     return Object.assign(new EventEmitter(), {
-        stdin: { end: vi.fn(), write: vi.fn() },
+        exitCode: null as number | null,
+        signalCode: null as string | null,
+        stdin: Object.assign(new EventEmitter(), {
+            end: vi.fn(),
+            write: vi.fn(),
+            destroyed: false,
+            writable: true,
+            writableEnded: false
+        }),
         stdout: fakeStream(),
         stderr: fakeStream()
     });
+}
+
+function deferred<T>() {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    const promise = new Promise<T>((resolvePromise) => {
+        resolve = resolvePromise;
+    });
+    return { promise, resolve };
 }
 
 describe('CodexAppServerClient process cwd', () => {
     beforeEach(() => {
         execFileSyncMock.mockClear();
         spawnMock.mockReset();
+        vi.mocked(killProcessByChildProcess).mockClear();
+    });
+
+    it('lets a completed read/fork helper exit on stdin EOF without process-tree probing', async () => {
+        const child = fakeChild();
+        child.stdin.end.mockImplementation(() => { child.exitCode = 0; child.emit('exit', 0, null); });
+        spawnMock.mockReturnValue(child);
+        const client = new CodexAppServerClient();
+        await client.connect();
+        await client.disconnect({ gracefulTimeoutMs: 100 });
+        expect(child.stdin.end).toHaveBeenCalledTimes(1);
+        expect(killProcessByChildProcess).not.toHaveBeenCalled();
+        expect(client.isConnected()).toBe(false);
+    });
+
+    it('falls back to exact child cleanup if graceful helper shutdown does not finish', async () => {
+        vi.useFakeTimers();
+        try {
+            const child = fakeChild();
+            spawnMock.mockReturnValue(child);
+            const client = new CodexAppServerClient();
+            await client.connect();
+            const closing = client.disconnect({ gracefulTimeoutMs: 100 });
+            await vi.advanceTimersByTimeAsync(100);
+            await closing;
+            expect(killProcessByChildProcess).toHaveBeenCalledWith(child);
+        } finally { vi.useRealTimers(); }
     });
 
     it('passes an explicit neutral cwd to the app-server process', async () => {
@@ -60,6 +104,22 @@ describe('CodexAppServerClient process cwd', () => {
             expect.objectContaining({ cwd: '/neutral-home' })
         );
         await client.disconnect();
+    });
+
+    it('passes the explicit catalog to a single app-server without preparation processes', async () => {
+        const file = process.platform === 'win32' ? 'C:\\Models with spaces\\catalog.json' : '/Models with spaces/catalog.json';
+        vi.stubEnv('HAPI_CODEX_MODEL_CATALOG_JSON', file);
+        const client = new CodexAppServerClient();
+        try {
+            spawnMock.mockReturnValue(fakeChild());
+            await client.connect();
+            expect(spawnMock).toHaveBeenCalledTimes(1);
+            expect(spawnMock).toHaveBeenCalledWith('codex', ['app-server', '-c', `model_catalog_json=${JSON.stringify(file)}`],
+                expect.objectContaining({ shell: false }));
+        } finally {
+            await client.disconnect();
+            vi.unstubAllEnvs();
+        }
     });
 
     it('steerTurn resolves dispatch on stdin accept and completes with the turn response', async () => {
@@ -142,6 +202,131 @@ describe('CodexAppServerClient process cwd', () => {
         expect(dispatchedError).toBeInstanceOf(Error);
         expect(isIndeterminateError(dispatchedError)).toBe(true);
         await expect(steer.completed).rejects.toThrow('stdin closed');
+        await client.disconnect();
+    });
+
+    it('drops an incoming response when stdin closes while its handler is pending', async () => {
+        const child = fakeChild();
+        spawnMock.mockReturnValue(child);
+        const client = new CodexAppServerClient({ cwd: '/neutral-home' });
+        const handlerStarted = deferred<void>();
+        const handlerFinished = deferred<void>();
+
+        client.registerRequestHandler('slow/request', async () => {
+            handlerStarted.resolve();
+            await handlerFinished.promise;
+            return { ok: true };
+        });
+
+        await client.connect();
+        child.stdout.emit('data', Buffer.from(JSON.stringify({
+            id: 1,
+            method: 'slow/request',
+            params: {}
+        }) + '\n'));
+        await handlerStarted.promise;
+
+        child.stdin.destroyed = true;
+        child.stdin.writable = false;
+        handlerFinished.resolve();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(child.stdin.write).not.toHaveBeenCalled();
+        await client.disconnect();
+    });
+
+    it('does not leak late incoming handler failures as unhandled rejections', async () => {
+        const child = fakeChild();
+        child.stdin.write = vi.fn(() => {
+            throw new Error('Cannot call write after a stream was destroyed');
+        });
+        spawnMock.mockReturnValue(child);
+        const client = new CodexAppServerClient({ cwd: '/neutral-home' });
+        const handlerFinished = deferred<void>();
+        const unhandled: unknown[] = [];
+        const onUnhandled = (reason: unknown) => {
+            unhandled.push(reason);
+        };
+        process.on('unhandledRejection', onUnhandled);
+
+        client.registerRequestHandler('slow/request', async () => {
+            await handlerFinished.promise;
+            return { ok: true };
+        });
+
+        try {
+            await client.connect();
+            child.stdout.emit('data', Buffer.from(JSON.stringify({
+                id: 1,
+                method: 'slow/request',
+                params: {}
+            }) + '\n'));
+            await Promise.resolve();
+            handlerFinished.resolve();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+
+            expect(unhandled).toEqual([]);
+        } finally {
+            process.off('unhandledRejection', onUnhandled);
+            await client.disconnect();
+        }
+    });
+
+    it('handles an asynchronous stdin error after a writable response', async () => {
+        const child = fakeChild();
+        spawnMock.mockReturnValue(child);
+        const client = new CodexAppServerClient({ cwd: '/neutral-home' });
+
+        client.registerRequestHandler('ping', () => ({ ok: true }));
+        await client.connect();
+        child.stdout.emit('data', Buffer.from(JSON.stringify({
+            id: 1,
+            method: 'ping',
+            params: {}
+        }) + '\n'));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(child.stdin.write).toHaveBeenCalledTimes(1);
+
+        await new Promise<void>((resolve) => {
+            setTimeout(() => {
+                child.stdin.emit('error', new Error('EPIPE'));
+                resolve();
+            }, 0);
+        });
+
+        expect(client.isConnected()).toBe(true);
+        await client.disconnect();
+    });
+
+    it('drops a late response from an old app-server after reconnecting', async () => {
+        const oldChild = fakeChild();
+        const newChild = fakeChild();
+        spawnMock.mockReturnValueOnce(oldChild).mockReturnValueOnce(newChild);
+        const client = new CodexAppServerClient({ cwd: '/neutral-home' });
+        const handlerStarted = deferred<void>();
+        const handlerFinished = deferred<void>();
+
+        client.registerRequestHandler('slow/request', async () => {
+            handlerStarted.resolve();
+            await handlerFinished.promise;
+            return { ok: true };
+        });
+
+        await client.connect();
+        oldChild.stdout.emit('data', Buffer.from(JSON.stringify({
+            id: 1,
+            method: 'slow/request',
+            params: {}
+        }) + '\n'));
+        await handlerStarted.promise;
+
+        await client.disconnect();
+        await client.connect();
+        handlerFinished.resolve();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(oldChild.stdin.write).not.toHaveBeenCalled();
+        expect(newChild.stdin.write).not.toHaveBeenCalled();
         await client.disconnect();
     });
 });

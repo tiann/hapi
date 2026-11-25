@@ -1,3 +1,7 @@
+---
+description: "How a native client obtains and refreshes credentials for a HAPI hub, including pairing, JWTs and passkeys."
+---
+
 # Auth & pairing
 
 How a native client obtains and maintains credentials for one hub. A client may be paired with multiple hubs; everything below is **per hub URL**.
@@ -10,12 +14,13 @@ Source of truth: `hub/src/config/cliApiToken.ts`, `hub/src/web/routes/auth.ts`.
 |------------|----------|--------------------|---------------|
 | **Access token** | Long-lived (until the operator rotates `CLI_API_TOKEN`) | Pairing QR / deeplink, or typed in manually | Exchanged for a JWT via `POST /api/auth`; the client's durable secret |
 | **JWT** | 4 hours | Response of `POST /api/auth` | `Authorization: Bearer` on every `/api/*` request |
+| **Passkey session** (web and native) | 30 days, and only while its passkey is valid | Native login verification or browser code exchange | Exchanged for a JWT via `POST /api/auth`; never accepted as a bearer token |
 
 The hub's base token (`CLI_API_TOKEN`) is auto-generated on first run (32 random bytes, base64url, ~43 chars) and persisted in the hub's `settings.json`; an operator-provided env token overrides it. The configured base token never contains a `:` — the hub refuses to start otherwise (`validateCliApiToken`).
 
 ## Pairing
 
-Source of truth: `hub/src/startHub.ts` (lines ~317–366), `web/src/components/settings/CompanionPairing.tsx`.
+Source of truth: `hub/src/startHub.ts`, `web/src/components/settings/CompanionPairing.tsx`.
 
 The hub terminal (when started with `--relay`) prints two QR codes; the web app's Settings → Companion pairing screen renders the second one as well:
 
@@ -25,6 +30,18 @@ The hub terminal (when started with `--relay`) prints two QR codes; the web app'
 | Companion deeplink | `hapicompanion://bind?hub=<url>&code=<accessToken>` | `hub`, `code` |
 
 Native clients register the `hapicompanion://` scheme and parse `bind` links: `hub` is the hub base URL, `code` is the access token. Note the param-name mismatch: the web QR carries the same value under `token=`, the companion deeplink under `code=`. A robust scanner may accept both forms; the deeplink form is the canonical one for natives. Always provide a manual fallback (type hub URL + access token) for `--relay`-less local hubs.
+
+Both repository apps accept both QR forms in their in-app scanners. Android
+requires HTTPS for the hub and web-QR URL, and disables cleartext traffic in
+its manifest. iOS parses HTTP and HTTPS URLs, but transport remains subject
+to system network policy; its project has no ATS exceptions. Use HTTPS for
+the pairing examples. See [Native apps → Pairing](../../guide/native-apps.md#pair-with-your-hub).
+
+Both apps normalize hub identities to `scheme://host[:port]`, lowercasing
+scheme/host and removing default ports, paths, queries and fragments. Reverse
+proxies must expose the hub at that origin, not solely under a path prefix.
+Sources: iOS `HapiClient/Auth/HubRegistry.swift` (`HubURLNormalization`),
+Android `core/data/.../auth/HubUrls.kt` and `core/protocol/.../pairing/PairingLinks.kt`.
 
 ## Access-token grammar
 
@@ -79,24 +96,208 @@ Treat the token as opaque for auth purposes, but clients may base64url-decode th
 Source of truth: `hub/src/web/middleware/auth.ts`.
 
 - Every `/api/*` request: `Authorization: Bearer <JWT>`.
-- Exceptions: `/api/auth` and `/api/bind` are unauthenticated; `GET /health` is outside `/api` and unauthenticated.
+- Exceptions: `/api/auth`, `/api/bind`, `/api/passkey/login/verify`, `/api/passkey/browser/login/start`, `/api/passkey/browser/complete` and `/api/passkey/browser/exchange` are unauthenticated; `GET /health` is outside `/api` and unauthenticated.
 - `GET /api/events` (SSE) **additionally** accepts `?token=<JWT>` as a query param, for HTTP stacks whose EventSource cannot set headers. The header wins when both are present. No other endpoint accepts query-param auth.
 
 ## Silent re-auth (401 handling)
 
-Reference behavior: `web/src/api/client.ts` (`request()`), `web/src/hooks/useAuth.ts` (`refreshAuth`).
+Native implementations: iOS `HapiClient/Auth/AuthManager.swift` and
+`HapiClient/APIClient.swift`; Android `core/data/.../auth/TokenAuthenticator.kt`.
+Web reference: `web/src/api/client.ts` (`request()`),
+`web/src/hooks/useAuth.ts` (`refreshAuth`).
 
 The JWT expires every 4 hours, so 401s are routine, not exceptional. The contract:
 
-1. On any 401 from an `/api/*` call, re-exchange the **stored access token** via `POST /api/auth`.
+1. On a 401 from an authenticated client API request, re-exchange the **stored access token** via `POST /api/auth`. The auth exchange itself must not enter this loop.
 2. If the exchange succeeds, retry the original request **exactly once** with the new JWT.
-3. If the exchange fails (or the retry 401s again), surface "signed out" and require re-pairing — the access token was rotated or revoked.
+3. A 401 from the exchange, or another 401 on the retried request, is terminal: require re-pairing. An exchange rejected with 401 means the stored access token is invalid or revoked.
+4. A temporary exchange failure (network error or 5xx) fails the call without signing out or deleting paired credentials. Recover when connectivity returns; do not treat every refresh error as token revocation.
 
-Implementation notes (all present in the web reference and recommended for natives):
+Implementation notes:
 
-- **Single-flight** the refresh: concurrent 401s must share one in-flight `POST /api/auth` promise, not race N exchanges (`refreshPromiseRef` in `useAuth.ts`).
-- Throttle failed refresh attempts (web: 15 s between attempts) so a dead hub doesn't cause a refresh storm.
-- Optionally refresh proactively: the web schedules a refresh 60 s before `exp` and on app-foreground when remaining TTL < 60 s. This keeps the SSE connection (which authenticates once, at connect time) from dying mid-stream with a stale token on reconnect.
+- **Single-flight** the refresh: concurrent 401s share an exchange or reuse the JWT already refreshed by another caller. Both native clients implement this.
+- Both native clients proactively refresh within 10 minutes of expiry. iOS can retain a still-valid cached JWT after a failed proactive refresh and throttles those attempts for 15 s. Android refreshes before SSE connects and leaves transient failures recoverable.
+- The web schedules proactive refresh 60 s before `exp` and on foreground when remaining TTL < 60 s. These scheduling choices are client implementation details, not additional protocol-version requirements. SSE authenticates at connection time, so reconnects need a current token.
+
+## Passkeys (web) {#passkeys-web}
+
+Source of truth: `shared/src/passkey.ts`, `hub/src/web/routes/passkey.ts`,
+`web/src/lib/passkey.ts`, `web/src/passkey-site/`.
+
+Web and native clients use **one RP ID: `auth.hapi.run`**. A credential registered
+from either client can sign in to the other, for the **same Hub and namespace**.
+The public key and credential-to-namespace mapping stay in that Hub's database;
+the official authentication site is static, not an account server.
+
+Set `HAPI_PUBLIC_URL` to the Hub's canonical **HTTPS origin** (no path, query,
+credentials, or fragment). The configured origin, never an untrusted proxy Host
+header, identifies the Hub. The client must connect through that same origin.
+The web app must also use HTTPS and allow the authentication popup. Separately
+hosted web apps must have their exact origin in `CORS_ORIGINS`; `*` does not grant
+permission to receive authentication callbacks.
+
+### Browser ceremony
+
+1. The initiating tab generates a random state and PKCE verifier; it keeps the
+   verifier in memory. Call `POST /api/passkey/browser/login/start` with
+   `{codeChallenge, state, callbackOrigin}`. Use
+   `POST /api/passkey/browser/register/start` with a JWT for registration; it
+   additionally accepts `name`. PKCE is SHA-256/base64url, without padding.
+2. The Hub creates a one-time, five-minute transaction and returns `{url}`.
+   Open that URL on `https://auth.hapi.run/` in the popup. Its fragment contains
+   `{hub, operation, options}` only, never an access token/JWT/verifier.
+3. The static page checks the challenge/account's Hub binding, shows the Hub
+   address, and calls WebAuthn after user confirmation. It enforces user
+   verification and the fixed RP, ignoring untrusted extension choices.
+4. The page submits an `application/x-www-form-urlencoded` top-level form to
+   the challenge-bound Hub's fixed `POST /api/passkey/browser/complete`, with
+   `challenge` and JSON `response` (or `error=cancelled`). No cross-origin API
+   fetch or general CORS access from the authentication site is required.
+5. The Hub verifies the stored challenge, exact expected origin, signature,
+   namespace and token fingerprint. It redirects with 303 to the transaction's
+   fixed `<callbackOrigin>/passkey/callback#state=...&code=...` (or `error`).
+   Only the canonical Hub origin or an explicitly configured web origin may
+   receive this callback; arbitrary return URLs are not supported.
+6. The callback clears the fragment and sends the code/state to its opener at
+   its own exact origin. The opener checks origin, popup identity and state,
+   then calls `POST /api/passkey/browser/exchange {code, verifier}`. Codes expire
+   in 60 seconds and are atomically consumed after PKCE validation. Login
+   returns `{operation:"login", token, user, passkeySession}`; registration
+   returns `{operation:"register"}`. No long-lived token reaches the static site.
+
+Registration authorization is scoped to the JWT namespace and the current
+`CLI_API_TOKEN` fingerprint at transaction creation. Rotation during registration
+aborts it. Code exchange re-checks credential existence, namespace and token
+fingerprint; deletion/rotation cannot revive a pending authorization.
+
+The web stores `passkeySession` under `hapi_passkey_session::<baseUrl>` instead of
+an access token. Refresh remains `POST /api/auth {passkeySession}`. Sessions last
+30 days while the credential is valid. Deletion revokes them immediately;
+rotating `CLI_API_TOKEN` revokes all passkeys and their refresh sessions.
+
+### Shared-RP isolation
+
+The decoded challenge is `{v:1, hub, id, operation, channel, nonce}` with
+cryptographically random 32-byte `id` and `nonce` (base64url). `hub` is the
+canonical HTTPS Hub origin, `operation` is `login|register`, and `channel` is
+`browser|native`. Clients validate these fields **before opening the system
+sheet**; the Hub verifies its exact saved challenge and consumes it once.
+A malicious Hub cannot proxy another Hub's challenge through the shared RP.
+
+The v2 user handle is self-describing, at most 64 bytes:
+
+- Discoverable: `[2, N, authority (N ASCII bytes), accountTag (16 bytes)]`.
+  HTTPS is implicit; `authority` is the canonical, lowercase ASCII/IDNA hostname
+  (IPv6 includes brackets) with an optional non-default port. `N` is 1–46.
+- Long address: `[2, 0, SHA256(canonical HTTPS origin) (32 bytes), accountTag
+  (16 bytes)]`, exactly 50 bytes. These credentials work with a manually entered
+  Hub, but cannot discover its address.
+- `accountTag` is the first 16 bytes of
+  `HMAC-SHA256(jwtSecret, "hapi-passkey-user:" + namespace)`. It is stable per
+  namespace and never contains the access token.
+
+Registration clients validate the canonical origin encoded in the handle, or
+its hash for long addresses, **before system UI**. A malicious Hub cannot use
+another Hub's account handle to overwrite its passkey. Browser login options
+restrict `allowCredentials` to this Hub's currently valid shared-RP credentials.
+
+The authentication origin is part of the security boundary. It must contain no
+marketing app, third-party scripts, analytics, or service worker. Compromising
+that origin compromises the shared browser authentication surface. Existing
+credentials using other RP IDs are not supported; register new credentials.
+
+## Native passkeys {#passkeys-native}
+
+Native clients use the same RP/credentials, without a browser redirect:
+
+1. `POST /api/passkey/register/options {client:"native"}` (JWT required),
+   validate RP, connected Hub, operation/channel and user-handle origin, invoke
+   the platform API, then `POST /api/passkey/register/verify {response, name}`.
+2. Login is **one system interaction** and needs no Hub address in advance
+   (see [native sign-in](#passkeys-native-login)).
+3. Store `{token, passkeySession}` in secure per-Hub storage and use the normal
+   silent re-auth exchange. `401 passkey_session_invalid` is terminal.
+
+Native clients ignore unsupported WebAuthn extensions and enforce user
+verification before invoking the platform. iOS offers both platform and roaming
+security-key assertion providers, so web-created security-key passkeys are not
+restricted to the browser. A credential must be available through the device’s
+provider, a synced password manager, or an accessible authenticator.
+
+Direct options/verify routes are native-only; browser-channel challenges cannot
+be used there, and native-channel challenges cannot use the browser bridge.
+All binary fields are base64url without padding; user verification is required.
+
+## Managing passkeys {#passkeys-manage}
+
+Source of truth: `hub/src/web/routes/passkey.ts`, `shared/src/apiTypes.ts` (`PasskeySummary`).
+
+Both routes require a JWT and are scoped to its namespace.
+
+| Endpoint | Response |
+|----------|----------|
+| `GET /api/passkeys` | `{passkeys: [{id, name, rpId, createdAt, lastUsedAt, valid}]}`; `valid` is `false` once `CLI_API_TOKEN` was rotated after registration (or the RP ID is unsupported) |
+| `DELETE /api/passkeys/:id` | `{ok: true}`; `404 {"error":"Passkey not found"}` outside the namespace. Deleting a passkey also invalidates its passkey sessions at the next `POST /api/auth` refresh |
+
+User-facing overview: [Authentication](../../guide/authentication.md).
+
+### Native sign-in (single ceremony) {#passkeys-native-login}
+
+Source of truth: `shared/src/passkey.ts` (`parsePasskeyNativeLoginChallenge`),
+`hub/src/web/routes/passkey.ts`.
+
+The Hub is unknown until a credential is chosen, so the app issues its own
+challenge instead of asking a Hub first:
+
+1. Build the challenge bytes as UTF-8 JSON with exactly
+   `{v:2, operation:"login", channel:"native", iat, nonce}`: `iat` is the
+   current Unix time in integer milliseconds, `nonce` is base64url of 32 random
+   bytes (43 chars). Request a resident credential for `auth.hapi.run` with UV
+   required, **no allowlist and no extensions**. Never build this request from
+   Hub-supplied options.
+2. Read the Hub from the assertion's `userHandle` (v2 locator above). The system
+   sheet shows `account@hub-host`, so selecting the credential is the Hub
+   choice; there is no separate confirmation. If the user entered a Hub
+   explicitly, require the handle to match it before any request. A missing or
+   hash-bound (long address) handle needs manual Hub entry.
+   **Never post the assertion to any other Hub.** The challenge is not
+   Hub-bound, so a Hub receiving another Hub's assertion could replay it there
+   within the window. Pre-v2 handles cannot pass this check; re-register them.
+3. `GET /health` on that Hub, then `POST /api/passkey/login/verify {response}`.
+
+The Hub checks origin/RP/UV/signature/counter and that the credential belongs to
+it and the current `CLI_API_TOKEN`, as for any assertion. In place of a
+Hub-issued challenge it accepts `iat` only within `[now − 5 min, now + 1 min]`
+and each challenge only once (remembered for the full window; concurrent
+submissions cannot both succeed). Clients therefore need a roughly correct
+clock; an out-of-window or reused challenge answers
+`401 {"error":"Passkey challenge expired"}` — run a new ceremony. Browser
+ceremonies cannot produce this challenge format (the static page only signs
+Hub-issued challenges), and these challenges are refused by the browser bridge.
+
+Trade-off: freshness relies on the client clock plus Hub-side replay tracking
+rather than a Hub nonce. An attacker able to run code as the `auth.hapi.run`
+origin or the official apps could pre-sign assertions valid for at most a few
+minutes; that same position already compromises the shared RP.
+
+- iOS/macOS declares `webcredentials:auth.hapi.run`. The RP's static
+  `/.well-known/apple-app-site-association` lists `XJB862F92W.run.hapi.app`.
+  Expected client-data origin: `https://auth.hapi.run`.
+- Android uses Credential Manager. The RP's static `/.well-known/assetlinks.json`
+  grants `delegate_permission/common.get_login_creds` to `run.hapi.companion`
+  with the official signing-certificate fingerprint. Expected origin:
+  `android:apk-key-hash:<base64url SHA-256 certificate digest>`.
+- `HAPI_PASSKEY_NATIVE_ORIGINS` adds explicitly trusted Android signing-certificate
+  origins for debug builds. Arbitrary HTTPS origins and per-Hub RP overrides
+  are not accepted. Forks change the shared constant, static site and app
+  associations together.
+
+Static association sources: `web/passkey-site/.well-known/`. Build with
+`bun run build:passkey-site`; deploy **only `website/dist/auth/`** to
+`https://auth.hapi.run`, with the supplied security headers. The bridge uses `strict-origin` referrers
+(origin only, no request parameters); `no-referrer` would turn Chromium form
+POST origins into `null` and is not appropriate for this bridge. It is independent
+of the marketing site's `website/dist/public/` output.
 
 ## Namespaces
 
@@ -113,16 +314,19 @@ Every request executes in the JWT's namespace (`ns` claim, derived from the acce
 | `PUT /api/hub-settings` (write; read is open to all namespaces) | `hub/src/web/routes/hubSettings.ts` |
 | `GET`/`PUT /api/voice/transcription/credentials` | `hub/src/web/routes/voice.ts` |
 
-Clients should hide the usage/storage screens entirely when the paired namespace is not `default` (the namespace is known client-side: it's the part after the last `:` of the access token, or `default`).
+Both native apps gate usage/storage screens on the authenticated JWT's `ns`
+claim and hide them unless it is `default`; missing claims fail closed. Pass
+the access token unchanged during authentication rather than rewriting its
+namespace suffix. The hub remains authoritative for every owner-only request.
 
 ## Credential storage guidance
 
 - Store the **access token** in platform-secure storage: iOS Keychain, Android `EncryptedSharedPreferences` (behind an interface so the mechanism can be swapped). Never plain files, never logs.
 - Key credentials **per hub base URL** (normalized), since a client can pair with several hubs. Web reference: localStorage key `hapi_access_token::<baseUrl>` (`web/src/hooks/useAuth.ts`, `web/src/components/settings/CompanionPairing.tsx`).
-- The JWT is a cache, not a secret worth keeping: it is fine to hold it in memory only and re-exchange on cold start. If persisted (to save one round-trip at launch), store it alongside the access token with the same protection.
-- On unpair/sign-out: delete both credentials, and unregister FCM (`DELETE /api/devices/register`) first while you still hold a valid JWT.
+- The JWT is a sensitive bearer credential, but need not be persisted: hold it in memory and re-exchange on cold start. If persisted (to save one round-trip at launch), store it alongside the access token with the same protection.
+- On unpair/sign-out: delete both credentials, and unregister native push (`DELETE /api/devices/register`) first while you still hold a valid JWT.
 
-## 401 error bodies
+## 401 error bodies {#401-error-bodies}
 
 All are JSON with an `error` string; none carry a `code` field except Telegram's `not_bound` (which reuses `error` as the discriminator — natives never see it):
 
@@ -133,5 +337,8 @@ All are JSON with an `error` string; none carry a `code` field except Telegram's
 | Middleware, any `/api/*` | `{"error": "Invalid token payload"}` | JWT valid but payload not `{uid, ns}` (foreign/ancient token) |
 | `POST /api/auth` | `{"error": "Invalid access token"}` | Access token wrong or rotated → require re-pairing |
 | `POST /api/auth` (Telegram path) | `{"error": "not_bound"}` | Telegram-only; not reachable with `accessToken` auth |
+| `POST /api/auth` (passkey session) | `{"error": "passkey_session_invalid"}` | Passkey deleted, token rotated, or session expired → sign in again |
+| `POST /api/passkey/login/verify` | `{"error": "passkey_revoked"}` | Passkey registered under a rotated `CLI_API_TOKEN` |
+| `POST /api/passkey/login/verify` | `{"error": "Passkey challenge expired"}` / `"Unknown passkey"` / `"Passkey verification failed"` | Retry the ceremony; do not loop |
 
 The re-auth loop must distinguish the middleware 401s (recoverable via re-exchange) from the `/api/auth` 401 (terminal — do not loop).

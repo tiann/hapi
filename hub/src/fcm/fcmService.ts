@@ -13,15 +13,13 @@ export type FcmDataPayload = {
     /**
      * Visual urgency hint for the client. Drives the notification accent
      * color on Wear OS / phone, and may be used for sound channel routing
-     * later. Independent of `type` because `task-notification` is one
-     * type that splits across success and failure outcomes.
+     * later.
      *
-     *  - `info`     ready / ambient ('no action needed') -> blue
-     *  - `success`  task completed                       -> green
+     *  - `info`     ready / input request                -> blue
      *  - `warning`  permission request                   -> amber
-     *  - `error`    task failed / aborted                -> red
+     *  - `error`    model error (agent-side failure)     -> red
      */
-    severity?: 'info' | 'success' | 'warning' | 'error'
+    severity?: 'info' | 'warning' | 'error'
     /**
      * JSON-stringified `AGENT_NOTIFY_SUMMARY` object when the agent emitted
      * one as the trailing line of its last message. The companion app may
@@ -29,6 +27,11 @@ export type FcmDataPayload = {
      * when the agent did not emit a summary.
      */
     notifySummary?: string
+    /**
+     * Coalescing identity. Present on `model-error` as
+     * `model-error-<sessionId>-<eventId>` so distinct errors do not overwrite.
+     */
+    tag?: string
 }
 
 export type FcmSendPayload = {
@@ -38,10 +41,14 @@ export type FcmSendPayload = {
     data: FcmDataPayload
 }
 
-type FcmSendResult = {
+export type FcmSendResult = {
     sent: number
     failed: number
     invalidTokens: string[]
+}
+
+export interface AndroidPushSender {
+    sendToNamespace(namespace: string, payload: FcmSendPayload): Promise<FcmSendResult>
 }
 
 /**
@@ -70,7 +77,9 @@ export class FcmService {
     constructor(
         private readonly projectId: string,
         private readonly serviceAccount: ServiceAccount,
-        private readonly store: Store
+        private readonly store: Store,
+        /** Injectable for unit tests — avoids process-wide `mock.module('./fcmAuth')`. */
+        private readonly getAccessToken: typeof getFcmAccessToken = getFcmAccessToken
     ) {}
 
     /**
@@ -116,7 +125,7 @@ export class FcmService {
 
         let accessToken: string
         try {
-            accessToken = await getFcmAccessToken(this.serviceAccount)
+            accessToken = await this.getAccessToken(this.serviceAccount)
         } catch (e) {
             // Token-fetch failure (expired service account key, OAuth
             // outage, network) - count one health-failure (not one per
@@ -177,6 +186,11 @@ export class FcmService {
         }
         if (payload.data.notifySummary) {
             dataRecord.notifySummary = payload.data.notifySummary
+        }
+        if (payload.tag) {
+            dataRecord.tag = payload.tag
+        } else if (payload.data.tag) {
+            dataRecord.tag = payload.data.tag
         }
 
         // Data-only: if we also send `notification`, Android does not call

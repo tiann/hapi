@@ -12,7 +12,8 @@ import kotlinx.serialization.Serializable
 enum class PushType(val wire: String) {
     READY("ready"),
     PERMISSION_REQUEST("permission-request"),
-    TASK_NOTIFICATION("task-notification");
+    INPUT_REQUEST("input-request"),
+    MODEL_ERROR("model-error");
 
     companion object {
         fun fromWire(value: String): PushType? = entries.firstOrNull { it.wire == value }
@@ -22,7 +23,6 @@ enum class PushType(val wire: String) {
 /** `data.severity` — visual urgency accent (`hub/src/fcm/fcmService.ts`). */
 enum class PushSeverity(val wire: String) {
     INFO("info"),
-    SUCCESS("success"),
     WARNING("warning"),
     ERROR("error");
 
@@ -70,11 +70,13 @@ data class PushPayload(
     val url: String?,
     val title: String?,
     val body: String?,
-    /** Permission requests only: the id for approve/deny. */
+    /** Pending request id: approve/deny for permissions, correlation only for input requests. */
     val requestId: String?,
     val severity: PushSeverity?,
     val contractVersion: String?,
     val notifySummary: PushNotifySummary?,
+    /** Hub coalescing tag (`FcmSendPayload.tag`), when present on the data map. */
+    val tag: String?,
 ) {
 
     /**
@@ -94,31 +96,34 @@ data class PushPayload(
     val supportsActions: Boolean
         get() = isKnownContractVersion && when (type) {
             PushType.PERMISSION_REQUEST -> requestId != null
-            PushType.READY, PushType.TASK_NOTIFICATION -> true
-            null -> false
+            PushType.INPUT_REQUEST -> false // Answer in the session, not via approval or message Reply.
+            PushType.READY -> true
+            PushType.MODEL_ERROR, null -> false
         }
 
     /**
-     * Notification channel routing: `permission_requests` (HIGH) /
-     * `ready` (DEFAULT) / `task_notifications` (DEFAULT). Unknown types and
-     * unknown contract versions land in the default-importance
-     * `task_notifications` bucket — never in the heads-up channel.
+     * Notification channel routing: `permission_requests` / `input_requests` /
+     * [CHANNEL_MODEL_ERROR] (HIGH) / `ready` (DEFAULT) / [CHANNEL_OTHER]
+     * (DEFAULT). Unknown types and unknown contract versions land in the
+     * default-importance [CHANNEL_OTHER] bucket — never in the heads-up channel.
      */
     val channelId: String
         get() = when {
-            !isKnownContractVersion -> CHANNEL_TASK_NOTIFICATIONS
+            !isKnownContractVersion -> CHANNEL_OTHER
             type == PushType.PERMISSION_REQUEST -> CHANNEL_PERMISSION_REQUESTS
+            type == PushType.INPUT_REQUEST -> CHANNEL_INPUT_REQUESTS
+            type == PushType.MODEL_ERROR -> CHANNEL_MODEL_ERROR
             type == PushType.READY -> CHANNEL_READY
-            else -> CHANNEL_TASK_NOTIFICATIONS
+            else -> CHANNEL_OTHER
         }
 
     /**
-     * Coalescing tag `type-<sessionId>`: a newer push of the same type for
-     * the same session replaces the previous notification instead of
-     * stacking (mirrors the hub-side `tag` scheme it uses for Web Push).
+     * Coalescing tag: prefer the hub-supplied `data.tag` (event-specific
+     * for `model-error`) before falling back to `type-<sessionId>`.
      */
     val notificationTag: String
-        get() = "${rawType.ifBlank { "unknown" }}-$sessionId"
+        get() = tag?.takeIf { it.isNotBlank() }
+            ?: "${rawType.ifBlank { "unknown" }}-$sessionId"
 
     /** Title to render; falls back to the session name, then a constant. */
     val displayTitle: String
@@ -150,8 +155,15 @@ data class PushPayload(
         const val CONTRACT_VERSION = "1"
 
         const val CHANNEL_PERMISSION_REQUESTS = "permission_requests"
+        const val CHANNEL_INPUT_REQUESTS = "input_requests"
         const val CHANNEL_READY = "ready"
-        const val CHANNEL_TASK_NOTIFICATIONS = "task_notifications"
+        /**
+         * Fallback bucket for unknown types / contract versions. The ID is
+         * kept from the former task-notification channel so operators'
+         * per-channel system settings survive.
+         */
+        const val CHANNEL_OTHER = "task_notifications"
+        const val CHANNEL_MODEL_ERROR = "model_errors"
 
         private const val DEFAULT_TITLE = "HAPI"
 
@@ -175,6 +187,7 @@ data class PushPayload(
                 severity = PushSeverity.fromWire(data["severity"]),
                 contractVersion = data["contractVersion"]?.takeIf { it.isNotBlank() },
                 notifySummary = data["notifySummary"]?.let(::parseNotifySummary),
+                tag = data["tag"]?.takeIf { it.isNotBlank() },
             )
         }
 

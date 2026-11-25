@@ -19,15 +19,6 @@ fun interface PushTokenSource {
 }
 
 /**
- * Stable install id for `POST /api/devices/register` (`deviceId`): the hub
- * upserts on `(namespace, deviceId, platform)`, so the id must survive
- * re-registrations of the same install. `:app` persists a UUID in DataStore.
- */
-fun interface PushDeviceIdSource {
-    suspend fun deviceId(): String
-}
-
-/**
  * Deferred-retry seam for transient registration failures. `:app` backs this
  * with a WorkManager unique work item per hub (network-constrained,
  * exponential backoff); tests record invocations.
@@ -41,16 +32,16 @@ fun interface RegistrationRetryScheduler {
  * tests hermetic). Production adapter: [ApiPushDeviceGateway].
  */
 interface PushDeviceGateway {
-    suspend fun register(hubUrl: String, token: String, deviceId: String)
+    suspend fun register(hubUrl: String, token: String, identity: PushIdentity)
     suspend fun unregister(hubUrl: String, token: String)
 }
 
 /** [PushDeviceGateway] over on-demand authed sessions ([PushHubAccess]). */
 class ApiPushDeviceGateway(private val hubAccess: PushHubAccess) : PushDeviceGateway {
 
-    override suspend fun register(hubUrl: String, token: String, deviceId: String) {
+    override suspend fun register(hubUrl: String, token: String, identity: PushIdentity) {
         hubAccess.withApi(hubUrl) { api ->
-            api.registerDevice(token = token, deviceId = deviceId, platform = PLATFORM)
+            api.registerDevice(token = token, deviceId = identity.deviceId, pushKey = identity.pushKey, platform = PLATFORM)
         }
     }
 
@@ -87,7 +78,7 @@ class DeviceRegistrar(
     private val registry: HubRegistry,
     private val gateway: PushDeviceGateway,
     private val tokenSource: PushTokenSource,
-    private val deviceIds: PushDeviceIdSource,
+    private val identities: PushIdentitySource,
     private val retryScheduler: RegistrationRetryScheduler,
     private val scope: CoroutineScope,
 ) {
@@ -120,8 +111,8 @@ class DeviceRegistrar(
      */
     suspend fun registerHubOnce(hubUrl: String) {
         val token = tokenSource.currentToken() ?: return
-        val deviceId = deviceIds.deviceId()
-        gateway.register(hubUrl, token, deviceId)
+        val identity = identities.identity()
+        gateway.register(hubUrl, token, identity)
     }
 
     /**
@@ -143,10 +134,10 @@ class DeviceRegistrar(
 
     private suspend fun registerHubs(hubs: List<String>, presetToken: String? = null) {
         val token = presetToken ?: tokenSource.currentToken() ?: return // push unavailable
-        val deviceId = deviceIds.deviceId()
         for (hubUrl in hubs) {
             try {
-                gateway.register(hubUrl, token, deviceId)
+                val identity = identities.identity()
+                gateway.register(hubUrl, token, identity)
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (error: Exception) {

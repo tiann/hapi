@@ -14,18 +14,63 @@ import SwiftUI
 /// engine is present (A-M3a).
 struct UserTextBlockView: View {
     let block: UserTextBlock
+    private let preview: MessageTextPage
+    /// Preview of `translatedFrom` (what the user typed); nil when the hub
+    /// did not translate this prompt.
+    private let originalPreview: MessageTextPage?
+    /// Translated prompt: false shows what the user typed (web default),
+    /// true the English sent to the agent. Survives cell recycling.
+    @ChatStoredState private var showsSentText: Bool
 
     @Environment(\.chatInteractions) private var interactions
+    @Environment(\.hapiTypography) private var typography
+    @Environment(\.openChatMessage) private var openMessage
+
+    init(block: UserTextBlock) {
+        self.block = block
+        preview = .preview(block.text)
+        originalPreview = block.translatedFrom.map { .preview($0) }
+        _showsSentText = ChatStoredState(wrappedValue: false, id: block.id, field: "showsSentText")
+    }
+
+    /// The text the bubble shows — also what "View full message" opens.
+    private var visibleText: String {
+        if let original = block.translatedFrom, !showsSentText { return original }
+        return block.text
+    }
+
+    private var visiblePreview: MessageTextPage {
+        if let originalPreview, !showsSentText { return originalPreview }
+        return preview
+    }
 
     var body: some View {
+        let text = visibleText
+        let preview = visiblePreview
         HStack(alignment: .bottom, spacing: 0) {
             Spacer(minLength: 48)
             VStack(alignment: .trailing, spacing: 2) {
                 VStack(alignment: .leading, spacing: 8) {
-                    if !block.text.isEmpty {
-                        Text(block.text)
-                            .font(.subheadline)
+                    if !text.isEmpty {
+                        Text(verbatim: preview.text)
+                            .font(typography.bodyFont)
+                            .lineSpacing(typography.bodyLineSpacing)
+                            .lineLimit(preview.end < text.endIndex ? MessageTextPage.previewLines : nil)
+                            .fixedSize(horizontal: false, vertical: true)
                             .textSelection(.enabled)
+                        if preview.end < text.endIndex {
+                            Button {
+                                var shown = block
+                                shown.text = text
+                                openMessage?(shown)
+                            } label: {
+                                Label("View full message", systemImage: "doc.text")
+                                    .font(.footnote)
+                                    .frame(minHeight: 44)
+                                    .contentShape(Rectangle())
+                            }
+                            .accessibilityIdentifier("message-full-\(block.id)")
+                        }
                     }
                     if let attachments = block.attachments, !attachments.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
@@ -35,8 +80,8 @@ struct UserTextBlockView: View {
                         }
                     }
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
                 .background(.tint.opacity(0.16))
                 .clipShape(
                     .rect(
@@ -46,6 +91,24 @@ struct UserTextBlockView: View {
                         topTrailingRadius: 16
                     )
                 )
+                if block.translatedFrom != nil {
+                    // Web `HappyUserMessage` caption: what the agent got is
+                    // one tap away.
+                    Button {
+                        showsSentText.toggle()
+                    } label: {
+                        let action = showsSentText
+                            ? String(localized: "Show original")
+                            : String(localized: "Show English sent to agent")
+                        Text(verbatim: "\(String(localized: "Translated")) · \(action)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .padding(.trailing, 4)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(showsSentText ? .isSelected : [])
+                    .accessibilityIdentifier("message-translation-\(block.id)")
+                }
                 if block.status == "failed" {
                     if let interactions, let retryLocalId = block.localId {
                         Button {
@@ -76,7 +139,7 @@ struct AgentTextBlockView: View {
     let block: AgentTextBlock
 
     var body: some View {
-        MarkdownView(markdown: block.text)
+        CachedMarkdownView(markdown: block.text)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
@@ -85,7 +148,12 @@ struct AgentTextBlockView: View {
 /// the full reasoning markdown (still subdued — it is meta-content).
 struct AgentReasoningBlockView: View {
     let block: AgentReasoningBlock
-    @State private var expanded = false
+    @ChatStoredState private var expanded: Bool
+
+    init(block: AgentReasoningBlock) {
+        self.block = block
+        _expanded = ChatStoredState(wrappedValue: false, id: block.id, field: "expanded")
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -103,7 +171,7 @@ struct AgentReasoningBlockView: View {
             }
             .buttonStyle(.plain)
             if expanded {
-                MarkdownView(markdown: block.text)
+                CachedMarkdownView(markdown: block.text)
                     .opacity(0.75)
                     .padding(.leading, 8)
             }
@@ -118,17 +186,71 @@ struct AgentReasoningBlockView: View {
 /// switches, errors, turn duration, …); wording via `eventPresentation`.
 struct AgentEventBlockView: View {
     let block: AgentEventBlock
+    @ChatStoredState private var expanded: Bool
+
+    init(block: AgentEventBlock) {
+        self.block = block
+        _expanded = ChatStoredState(wrappedValue: false, id: block.id, field: "expanded")
+    }
 
     var body: some View {
-        let presentation = eventPresentation(block.event)
-        Text([presentation.icon, presentation.text].compactMap { $0 }.joined(separator: " "))
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .multilineTextAlignment(.center)
-            .lineLimit(3)
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, 24)
-            .padding(.vertical, 2)
+        if let compact = compactionPresentation(block.event), compact.hasSummary || compact.tokenDelta != nil {
+            CompactionSummaryCard(id: block.id, presentation: compact, expanded: $expanded)
+        } else {
+            let presentation = eventPresentation(block.event)
+            Text([presentation.icon, presentation.text].compactMap { $0 }.joined(separator: " "))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 24)
+                .padding(.vertical, 2)
+        }
+    }
+}
+
+struct CompactionSummaryCard: View {
+    let id: String
+    let presentation: CompactionPresentation
+    @Binding var expanded: Bool
+
+    private var header: some View {
+        HStack {
+            Text(verbatim: "📦 \(presentation.title)")
+                .fixedSize(horizontal: false, vertical: true)
+            if presentation.hasSummary {
+                Spacer(minLength: 4)
+                Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                    .accessibilityHidden(true)
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(Text(verbatim: "📦 \(presentation.title)"))
+        .accessibilityIdentifier("compaction-header-\(id)")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if presentation.hasSummary {
+                Button { expanded.toggle() } label: { header.frame(minHeight: 44) }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("compaction-toggle-\(id)")
+                    .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+            } else {
+                header
+            }
+            if presentation.hasSummary && expanded {
+                CachedMarkdownView(markdown: presentation.summary)
+                    .accessibilityIdentifier("compaction-summary-\(id)")
+            }
+        }
+        .padding(12)
+        .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(.secondary.opacity(0.2)))
     }
 }
 
@@ -150,11 +272,13 @@ struct TerminalTextView: View {
     var isError = false
 
     @Environment(\.hapiTheme) private var theme
+    @Environment(\.hapiTypography) private var typography
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             Text(text)
-                .font(.system(size: 12, design: .monospaced))
+                .font(typography.codeFont)
+                .lineSpacing(typography.codeLineSpacing)
                 .foregroundStyle(isError ? AnyShapeStyle(theme.danger) : AnyShapeStyle(theme.textPrimary))
                 .textSelection(.enabled)
                 .padding(.horizontal, 12)

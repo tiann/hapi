@@ -1,3 +1,7 @@
+---
+description: "Answers to common questions about installing, securing, connecting and troubleshooting HAPI."
+---
+
 # FAQ
 
 ## General
@@ -28,10 +32,19 @@ HAPI includes an embedded hub. Just run `hapi hub` on your machine - no external
 
 ### How do I access HAPI from my phone?
 
+Use the [native iOS / Android apps](./native-apps.md) or open the web app in
+your browser/PWA. Native apps pair with the hub's URL and access token; the
+guide covers building an app and scanning the companion QR.
+
 For local network access:
 ```
 http://<your-computer-ip>:3006
 ```
+
+That cleartext URL is for a browser/PWA on your trusted LAN. Use HTTPS for
+native pairing: Android rejects HTTP, and iOS HTTP input remains subject to
+system network policy. Run `hapi hub --relay` or place an HTTPS reverse
+proxy/tunnel in front of the hub.
 
 If your phone cannot connect, make sure the hub is not only listening on `127.0.0.1`. For LAN access, set `listenHost` to `0.0.0.0` in `~/.hapi/settings.json` or set `HAPI_LISTEN_HOST=0.0.0.0`, then restart `hapi hub`.
 
@@ -45,9 +58,12 @@ For internet access:
 The `CLI_API_TOKEN` is a shared secret that authenticates:
 - CLI connections to the hub
 - Web app logins
+- Native app pairing and authentication
 - Telegram account binding
 
 It's auto-generated on first hub start and saved to `~/.hapi/settings.json`.
+
+After signing in once with the token, you can add **passkeys** (Face ID, Touch ID, Windows Hello, or a security key) in Settings and use them to sign in to the web app and native apps. Passkeys are bound to the token that was current when you added them: rotating `CLI_API_TOKEN` disables every existing passkey, so sign in with the new token and add them again. See [Authentication](./authentication.md).
 
 ### Do you support multiple accounts?
 
@@ -55,7 +71,11 @@ Yes. We support lightweight multi-account access via namespaces for shared team 
 
 ### Can I use HAPI without Telegram?
 
-Yes. Telegram is optional. You can use the web app directly in any browser or install it as a PWA.
+Yes. Telegram is optional. You can open the free web app in a browser, install it as a PWA, or use the paid native apps from the [App Store](https://apps.apple.com/app/id6805699104) or [Google Play](https://play.google.com/store/apps/details?id=run.hapi.companion).
+
+### Are the apps free?
+
+HAPI's CLI, hub and Web/PWA client are open source and free. The Web/PWA is full-featured, including the remote terminal and voice assistant. The native iOS and Android apps are paid downloads that add a native interface and native push notifications; see [Native apps](./native-apps.md).
 
 ## Usage
 
@@ -68,23 +88,26 @@ Yes. Telegram is optional. You can use the web app directly in any browser or in
 
 ### How do I receive notifications?
 
-HAPI supports three methods:
+HAPI supports these notification channels:
 
-1. **PWA Push Notifications** - Enable when prompted, works even when app is closed
+1. **PWA Push Notifications** - Enable in Settings → General; works even when the app is closed
 2. **Telegram Bot** - See [Telegram Setup](./notifications.md#telegram-setup)
-3. **FCM native push** - Used by the Android/Wear OS companion apps; notifications are delivered via Firebase Cloud Messaging
+3. **Native app notifications** - App Store and Google Play apps use encrypted push delivery; pair your hub and allow notifications, with no push-provider setup required
+4. **ServerChan (Server酱)** - Send notifications to WeChat and other channels; see [ServerChan Setup](./notifications.md#serverchan-server酱-setup)
 
 ### Can I start sessions remotely?
 
 Yes, with runner mode:
 
 1. Run `hapi runner start` on your computer
-2. Your machine appears in the "Machines" list in the web app
-3. Tap to spawn new sessions from anywhere
+2. Open New Session in a native app or the web app
+3. Select the online machine, directory and available agent, then create the session
 
 ### How do I see what files were changed?
 
-In the session view, tap the "Files" tab to:
+In the web session view, open **Files**. In native apps, open **Session files**
+from the chat menu to:
+
 - Browse project files
 - View git status
 - See diffs of changed files
@@ -95,7 +118,14 @@ Yes. Open any session and use the chat interface to send messages directly to th
 
 ### Why did my session look idle when the agent woke itself?
 
-Some agents (especially Cursor) can resume after idle from harness signals such as background Shell `notify_on_output` or `/loop`, without you sending a new HAPI message. HAPI treats real ACP agent activity (and permission requests) as thinking again so the session list matches the agent - same keepalive path as a normal turn. This is different from session-attached jobs (`hapi job`), which show progress while the agent stays idle on purpose.
+Some agents (especially Cursor) can resume after idle from harness signals such as background Shell `notify_on_output` or `/loop`, without you sending a new HAPI message. HAPI updates the session's thinking indicator when the agent resumes work or requests permission, so the list reflects that activity.
+
+### How do I show progress for a long batch that outlives the agent?
+
+Use session-attached jobs (`hapi job run --progress …`). The CLI babysitter registers a job on the session, heartbeats while the child runs, and marks completed/failed on exit. The session list shows remaining / fraction / or an indeterminate "running" meter even when the agent is idle. See [Session-attached jobs](./session-jobs.md). This is Layer 0 list chrome - not an A2A Layer 1 work advertisement ([#1332](https://github.com/tiann/hapi/discussions/1332)).
+
+Exception: when the previous turn already closed with an `AGENT_NOTIFY_SUMMARY` line whose `status` is `done`, Cursor's finished-shell *"Briefly inform the user…"* wake does not open a second spoken reply (assistant text/reasoning and thinking bumps are dropped). Tool activity from a follow-up wake still surfaces. A new message from you re-opens normal speech.
+
 
 ### Can I access a terminal remotely?
 
@@ -105,16 +135,20 @@ Linux and macOS hosts use Bun's POSIX PTY support. Windows hosts use Bun's ConPT
 
 ### How do I use voice control?
 
-The voice assistant supports three backends: ElevenLabs, Gemini Live, and Qwen Realtime. Configure at least one, open a session in the web app, and click the microphone button. See [Voice Assistant](./voice-assistant.md) for setup details.
+The web voice assistant supports ElevenLabs, Gemini Live, and Qwen Realtime.
+Native apps support standard dictation: configure a transcription provider on
+the hub, record in the composer, then review and send the inserted text.
+See [Voice input and assistant](./voice-assistant.md) for setup details.
 
 ## Security
 
 ### Is my data safe?
 
-Yes. HAPI is local-first:
-- All data stays on your machine
-- Nothing is uploaded to external servers
-- The database is stored locally in `~/.hapi/`
+HAPI keeps session history on the hub you operate, in `~/.hapi/` by default,
+rather than on a central HAPI account server. Your devices connect to that hub.
+Coding agents still use their configured model providers; optional voice,
+title generation, and notification features also contact external services.
+See the [Privacy Policy](../privacy.md) for data handling and encrypted native push.
 
 ### How secure is the token authentication?
 
@@ -122,12 +156,23 @@ The auto-generated token is 256-bit (cryptographically secure). For external acc
 
 ### Can others access my HAPI instance?
 
-Only if they have your access token. For additional security:
+Only if they have your access token or one of the passkeys registered on your hub. For additional security:
 - Use a strong, unique token
+- Remove passkeys you no longer use in Settings; rotate the token to revoke all of them at once
 - Always use HTTPS for external access
 - Consider Tailscale for private networking
 
 ## Troubleshooting
+
+### Why does a session stop when its laptop host sleeps?
+
+Remote mode changes where you control the agent, not where it executes. The machine running the CLI or runner must remain awake. If the hub runs elsewhere, the web app may still load while that execution machine is unavailable. Running the hub on a server does not move an existing laptop session to that server.
+
+First verify a small request with the laptop open. If that fails too, check the agent's pending permissions, CLI connection, and network before changing power settings. Terminal disconnection and operating-system sleep are separate problems: preserving a process after an SSH disconnect does not let it execute while its host is asleep.
+
+For a MacBook that must work with the lid closed, use a supported external-display setup or a compatible closed-lid solution. Leaving the lid open with idle sleep managed is another option. Keep an active laptop powered and ventilated. After closing the lid, confirm new command output from the phone before relying on a long run.
+
+This [Apple Silicon MacBook setup guide](https://clamshell.dev/guides/keep-claude-code-running-lid-closed#phone-check) includes a two-minute timestamp check and an optional Clamshell setup. Clamshell is a separate paid app with a trial; HAPI does not require it.
 
 ### "Connection refused" error
 
@@ -156,6 +201,9 @@ Then restart `hapi hub` and open:
 ```bash
 http://<your-computer-ip>:3006
 ```
+
+This direct LAN URL is for browser/PWA access. The native Android companion
+requires HTTPS (`hapi hub --relay`, or your own HTTPS reverse proxy/tunnel).
 
 Also verify your OS firewall allows inbound connections on port `3006`.
 
@@ -244,7 +292,7 @@ hapi doctor clean
 | Design | Cloud-first | Local-first |
 | Users | Multi-user | Single user by default; lightweight multi-account isolation via [namespaces](./namespace.md) |
 | Deployment | Multiple services | Single binary |
-| Data | Encrypted on server | Never leaves your machine |
+| Session history | Encrypted on server | Stored on your own hub |
 
 See [Why HAPI](./why-hapi.md) for detailed comparison.
 

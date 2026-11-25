@@ -5,6 +5,7 @@ import AntigravityColor from '@lobehub/icons/es/Antigravity/components/Color'
 import ClaudeColor from '@lobehub/icons/es/Claude/components/Color'
 import CodexColor from '@lobehub/icons/es/Codex/components/Color'
 import CursorMono from '@lobehub/icons/es/Cursor/components/Mono'
+import DeepSeekColor from '@lobehub/icons/es/DeepSeek/components/Color'
 import GeminiColor from '@lobehub/icons/es/Gemini/components/Color'
 import GrokMono from '@lobehub/icons/es/Grok/components/Mono'
 import KimiMono from '@lobehub/icons/es/Kimi/components/Mono'
@@ -20,6 +21,7 @@ const FLAVOR_LOGOS: Record<string, IconType> = {
     agy: AntigravityColor,
     claude: ClaudeColor,
     codex: CodexColor,
+    dsh: DeepSeekColor,
     cursor: CursorMono,
     gemini: GeminiColor,
     grok: GrokMono,

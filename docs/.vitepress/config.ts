@@ -4,6 +4,9 @@ export default defineConfig({
   title: 'HAPI',
   description: 'Control your AI agents from anywhere',
   base: '/docs/',
+  sitemap: { hostname: 'https://hapi.run/docs/' },
+  // Developer notes for the native apps; linked from ios/ and android/ READMEs, not published.
+  srcExclude: ['native-chat-scrolling.md', 'native-chat-scroll-profile.md', 'performance/**'],
 
   head: [
     ['link', { rel: 'icon', href: '/docs/favicon.ico' }],
@@ -14,7 +17,7 @@ export default defineConfig({
 
     nav: [
       { text: 'Quick Start', link: '/guide/quick-start' },
-      { text: 'App', link: 'https://app.hapi.run', target: '_blank' }
+      { text: 'Web App', link: 'https://app.hapi.run', target: '_blank' }
     ],
 
     sidebar: [
@@ -23,6 +26,8 @@ export default defineConfig({
         items: [
           { text: 'Quick Start', link: '/guide/quick-start' },
           { text: 'Installation', link: '/guide/installation' },
+          { text: 'Authentication', link: '/guide/authentication' },
+          { text: 'Native Apps', link: '/guide/native-apps' },
           { text: 'PWA', link: '/guide/pwa' }
         ]
       },
@@ -30,6 +35,13 @@ export default defineConfig({
         text: 'Guide',
         items: [
           { text: 'How it Works', link: '/guide/how-it-works' },
+          { text: 'Session List', link: '/guide/session-list' },
+          { text: 'Composer', link: '/guide/composer' },
+          { text: 'Conversation History', link: '/guide/conversation-history' },
+          { text: 'Import Local Sessions', link: '/guide/import-local-sessions' },
+          { text: 'Peer Sessions', link: '/guide/peer-sessions' },
+          { text: 'Session-attached jobs', link: '/guide/session-jobs' },
+          { text: 'Usage & Quotas', link: '/guide/usage-and-quotas' },
           { text: 'Voice Assistant', link: '/guide/voice-assistant' },
           { text: 'Why HAPI', link: '/guide/why-hapi' },
           { text: 'FAQ', link: '/guide/faq' }
@@ -38,12 +50,15 @@ export default defineConfig({
       {
         text: 'Agents',
         items: [
-          { text: 'Agents', link: '/guide/agents' }
+          { text: 'Agents', link: '/guide/agents' },
+          { text: 'Codex Shared Sessions', link: '/guide/codex-shared-sessions' }
         ]
       },
       {
         text: 'Advanced',
         items: [
+          { text: 'CLI Reference', link: '/guide/cli-reference' },
+          { text: 'Configuration', link: '/guide/configuration' },
           { text: 'Namespace', link: '/guide/namespace' },
           { text: 'Deployment', link: '/guide/deployment' },
           { text: 'Notifications', link: '/guide/notifications' }
@@ -62,6 +77,7 @@ export default defineConfig({
               { text: 'SSE', link: '/api/client-contract/sse' },
               { text: 'Pagination', link: '/api/client-contract/pagination' },
               { text: 'Messages', link: '/api/client-contract/messages' },
+              { text: 'Read state', link: '/api/client-contract/read-state' },
               { text: 'Errors', link: '/api/client-contract/errors' }
             ]
           }

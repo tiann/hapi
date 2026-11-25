@@ -1,0 +1,299 @@
+{
+    "description": "Native confirmation completes the same local question card with actual answers; permission.id remains the original reply ID, not the tool_use ID.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "local-user",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Choose a database."
+            },
+            {
+                "createdAt": 1755000001000,
+                "id": "toolu_local_question",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "toolu_local_question",
+                    "input": {
+                        "questions": [
+                            {
+                                "header": "Database",
+                                "multiSelect": false,
+                                "options": [
+                                    {
+                                        "description": "Local file",
+                                        "label": "SQLite"
+                                    },
+                                    {
+                                        "description": "Server",
+                                        "label": "Postgres"
+                                    }
+                                ],
+                                "question": "Which database?"
+                            }
+                        ]
+                    },
+                    "name": "AskUserQuestion",
+                    "permission": {
+                        "answers": {
+                            "0": [
+                                "Postgres"
+                            ]
+                        },
+                        "status": "approved"
+                    },
+                    "result": {
+                        "answers": {
+                            "Which database?": "Postgres"
+                        },
+                        "questions": [
+                            {
+                                "header": "Database",
+                                "multiSelect": false,
+                                "options": [
+                                    {
+                                        "description": "Local file",
+                                        "label": "SQLite"
+                                    },
+                                    {
+                                        "description": "Server",
+                                        "label": "Postgres"
+                                    }
+                                ],
+                                "question": "Which database?"
+                            }
+                        ]
+                    },
+                    "state": "completed"
+                }
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "local-user",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Choose a database."
+            },
+            {
+                "createdAt": 1755000001000,
+                "id": "toolu_local_question",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "toolu_local_question",
+                    "input": {
+                        "questions": [
+                            {
+                                "header": "Database",
+                                "multiSelect": false,
+                                "options": [
+                                    {
+                                        "description": "Local file",
+                                        "label": "SQLite"
+                                    },
+                                    {
+                                        "description": "Server",
+                                        "label": "Postgres"
+                                    }
+                                ],
+                                "question": "Which database?"
+                            }
+                        ]
+                    },
+                    "name": "AskUserQuestion",
+                    "permission": {
+                        "answers": {
+                            "0": [
+                                "Postgres"
+                            ]
+                        },
+                        "status": "approved"
+                    },
+                    "result": {
+                        "answers": {
+                            "Which database?": "Postgres"
+                        },
+                        "questions": [
+                            {
+                                "header": "Database",
+                                "multiSelect": false,
+                                "options": [
+                                    {
+                                        "description": "Local file",
+                                        "label": "SQLite"
+                                    },
+                                    {
+                                        "description": "Server",
+                                        "label": "Postgres"
+                                    }
+                                ],
+                                "question": "Which database?"
+                            }
+                        ]
+                    },
+                    "state": "completed"
+                }
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": {
+            "completedRequests": {
+                "claude-local:reply-1": {
+                    "answers": {
+                        "0": [
+                            "Postgres"
+                        ]
+                    },
+                    "arguments": {
+                        "questions": [
+                            {
+                                "header": "Database",
+                                "multiSelect": false,
+                                "options": [
+                                    {
+                                        "description": "Local file",
+                                        "label": "SQLite"
+                                    },
+                                    {
+                                        "description": "Server",
+                                        "label": "Postgres"
+                                    }
+                                ],
+                                "question": "Which database?"
+                            }
+                        ]
+                    },
+                    "completedAt": 1755000004900,
+                    "createdAt": 1755000001100,
+                    "status": "approved",
+                    "tool": "AskUserQuestion",
+                    "toolCallId": "toolu_local_question"
+                }
+            },
+            "controlledByUser": true,
+            "requests": {}
+        },
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Choose a database.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "local-user",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "id": "toolu_local_question",
+                                        "input": {
+                                            "questions": [
+                                                {
+                                                    "header": "Database",
+                                                    "multiSelect": false,
+                                                    "options": [
+                                                        {
+                                                            "description": "Local file",
+                                                            "label": "SQLite"
+                                                        },
+                                                        {
+                                                            "description": "Server",
+                                                            "label": "Postgres"
+                                                        }
+                                                    ],
+                                                    "question": "Which database?"
+                                                }
+                                            ]
+                                        },
+                                        "name": "AskUserQuestion",
+                                        "type": "tool_use"
+                                    }
+                                ],
+                                "role": "assistant"
+                            },
+                            "parentUuid": null,
+                            "type": "assistant",
+                            "uuid": "local-tool-call"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000001000,
+                "id": "local-tool-call",
+                "localId": null,
+                "seq": 2
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "content": "The user answered: \"Which database?\"=\"Postgres\".",
+                                        "tool_use_id": "toolu_local_question",
+                                        "type": "tool_result"
+                                    }
+                                ],
+                                "role": "user"
+                            },
+                            "parentUuid": "local-tool-call",
+                            "toolUseResult": {
+                                "answers": {
+                                    "Which database?": "Postgres"
+                                },
+                                "questions": [
+                                    {
+                                        "header": "Database",
+                                        "multiSelect": false,
+                                        "options": [
+                                            {
+                                                "description": "Local file",
+                                                "label": "SQLite"
+                                            },
+                                            {
+                                                "description": "Server",
+                                                "label": "Postgres"
+                                            }
+                                        ],
+                                        "question": "Which database?"
+                                    }
+                                ]
+                            },
+                            "type": "user",
+                            "uuid": "local-result"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000005000,
+                "id": "local-result",
+                "localId": null,
+                "seq": 3
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "permission-local-question-completed"
+}

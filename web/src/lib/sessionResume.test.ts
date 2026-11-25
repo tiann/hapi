@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { Session } from '@/types/api'
 import {
     inactiveSessionCanResume,
+    inactiveSessionBannerKey,
     resolveAgentSessionIdFromMetadata,
     resolveCursorReopenGate,
 } from './sessionResume'
@@ -19,6 +20,13 @@ function makeSession(overrides: Partial<Session> = {}): Session {
 }
 
 describe('sessionResume', () => {
+    it('does not report a reconnect or unconfirmed disconnect as an archive', () => {
+        const session = makeSession()
+        expect(inactiveSessionBannerKey(session, true, true)).toBe('session.inactive.checking')
+        expect(inactiveSessionBannerKey(session, false, true)).toBe('session.inactive.disconnectedResume')
+        expect(inactiveSessionBannerKey({ ...session, active: true }, true, true)).toBeNull()
+        expect(inactiveSessionBannerKey(makeSession({ metadata: { path: '/', host: 'test', lifecycleState: 'archived' } }), false, true)).toBe('session.inactive.autoResume')
+    })
     it('resolveAgentSessionIdFromMetadata picks the id matching the session flavor', () => {
         expect(resolveAgentSessionIdFromMetadata({
             path: '/p',
@@ -191,6 +199,27 @@ describe('sessionResume', () => {
         expect(inactiveSessionCanResume(makeSession({
             metadata: { path: '/tmp/project', host: 'localhost' },
         }), 3)).toBe(true)
+    })
+
+    it('uses dshSessionId and ignores stale cross-flavor metadata', () => {
+        expect(resolveAgentSessionIdFromMetadata({
+            path: '/p',
+            host: 'h',
+            flavor: 'dsh',
+            claudeSessionId: 'stale-claude-id',
+            dshSessionId: 'dsh-session-1'
+        })).toBe('dsh-session-1')
+    })
+
+    it('allows inactive DSH sessions with a native resume id', () => {
+        expect(inactiveSessionCanResume(makeSession({
+            metadata: {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'dsh',
+                dshSessionId: 'dsh-session-1'
+            }
+        }), 4)).toBe(true)
     })
 
     it('inactiveSessionCanResume rejects non-recovering flavors with messages but no flavor-specific id', () => {

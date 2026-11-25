@@ -63,15 +63,29 @@ public struct ConversationHistoryCapabilities: Codable, Equatable, Sendable {
 
 /// Per-session capability flags advertised by the CLI.
 public struct SessionCapabilities: Codable, Equatable, Sendable {
+    public var concurrentClients: Bool?
     public var terminal: Bool?
     public var conversationHistory: ConversationHistoryCapabilities?
 
     public init(
         terminal: Bool? = nil,
+        concurrentClients: Bool? = nil,
         conversationHistory: ConversationHistoryCapabilities? = nil
     ) {
+        self.concurrentClients = concurrentClients
         self.terminal = terminal
         self.conversationHistory = conversationHistory
+    }
+}
+
+/// `metadata.piSelectedModel` and the Pi `{provider, modelId}` model switch.
+public struct PiModelReference: Codable, Equatable, Sendable {
+    public var provider: String
+    public var modelId: String
+
+    public init(provider: String, modelId: String) {
+        self.provider = provider
+        self.modelId = modelId
     }
 }
 
@@ -90,6 +104,8 @@ public struct SessionMetadata: Codable, Equatable, Sendable {
     public var host: String
     /// User-assigned session name.
     public var name: String?
+    /// Hub-generated title from the initial user prompt.
+    public var promptTitle: String?
     public var os: String?
     public var summary: SessionMetadataSummary?
     public var machineId: String?
@@ -122,11 +138,20 @@ public struct SessionMetadata: Codable, Equatable, Sendable {
     public var kimiSessionId: String?
     public var copilotSessionId: String?
     public var piSessionId: String?
+    public var dshSessionId: String?
+    /// Pi model with its provider (`session.model` holds only the id).
+    public var piSelectedModel: PiModelReference?
+    /// User-message `localId`s with a native fork/rewind point.
+    public var conversationHistoryPoints: [String: Bool]?
+    /// Hub-owned toggle: translate the user's prompts to English before
+    /// delivery (`PATCH /api/sessions/:id {translateInput}`). Absent = off.
+    public var translateInput: Bool?
 
     public init(
         path: String,
         host: String,
         name: String? = nil,
+        promptTitle: String? = nil,
         os: String? = nil,
         summary: SessionMetadataSummary? = nil,
         machineId: String? = nil,
@@ -148,11 +173,16 @@ public struct SessionMetadata: Codable, Equatable, Sendable {
         cursorSessionId: String? = nil,
         kimiSessionId: String? = nil,
         copilotSessionId: String? = nil,
-        piSessionId: String? = nil
+        piSessionId: String? = nil,
+        dshSessionId: String? = nil,
+        piSelectedModel: PiModelReference? = nil,
+        conversationHistoryPoints: [String: Bool]? = nil,
+        translateInput: Bool? = nil
     ) {
         self.path = path
         self.host = host
         self.name = name
+        self.promptTitle = promptTitle
         self.os = os
         self.summary = summary
         self.machineId = machineId
@@ -175,5 +205,9 @@ public struct SessionMetadata: Codable, Equatable, Sendable {
         self.kimiSessionId = kimiSessionId
         self.copilotSessionId = copilotSessionId
         self.piSessionId = piSessionId
+        self.dshSessionId = dshSessionId
+        self.piSelectedModel = piSelectedModel
+        self.conversationHistoryPoints = conversationHistoryPoints
+        self.translateInput = translateInput
     }
 }

@@ -15,18 +15,19 @@ struct MultipartEncoderTests {
             data: Data([0x01, 0x02])
         )
 
+        // Joined rather than `+`-chained: Swift 6.4 times out type-checking the chain.
         var expected = Data(
-            (
-                "--B\r\n"
-                    + "Content-Disposition: form-data; name=\"provider\"\r\n\r\n"
-                    + "openai\r\n"
-                    + "--B\r\n"
-                    + "Content-Disposition: form-data; name=\"mode\"\r\n\r\n"
-                    + "standard\r\n"
-                    + "--B\r\n"
-                    + "Content-Disposition: form-data; name=\"file\"; filename=\"clip.m4a\"\r\n"
-                    + "Content-Type: audio/mp4\r\n\r\n"
-            ).utf8
+            [
+                "--B\r\n",
+                "Content-Disposition: form-data; name=\"provider\"\r\n\r\n",
+                "openai\r\n",
+                "--B\r\n",
+                "Content-Disposition: form-data; name=\"mode\"\r\n\r\n",
+                "standard\r\n",
+                "--B\r\n",
+                "Content-Disposition: form-data; name=\"file\"; filename=\"clip.m4a\"\r\n",
+                "Content-Type: audio/mp4\r\n\r\n",
+            ].joined().utf8
         )
         expected.append(Data([0x01, 0x02]))
         expected.append(Data("\r\n--B--\r\n".utf8))

@@ -90,6 +90,60 @@ describe('SyncEngine.clearOpenCodeSession', () => {
         } finally { engine.stop() }
     })
 
+    it('transfers a running attached job to the clear replacement so source id PATCHes land', async () => {
+        const { store, engine } = createEngine()
+        try {
+            const source = engine.getOrCreateSession('job-clear-source', {
+                path: '/tmp/project', host: 'host', machineId: 'machine-1', flavor: 'opencode', startedBy: 'runner'
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: source.id, time: Date.now() })
+            const upserted = store.sessionJobs.upsert(source.id, 'beets', {
+                label: 'beets import',
+                status: 'running',
+                remaining: 11
+            })
+            expect(upserted.outcome).toBe('upserted')
+            const runId = upserted.outcome === 'upserted' ? upserted.job.runId : undefined
+            expect(runId).toBeTruthy()
+
+            const reserved = engine.reserveOpenCodeClearSession(source.id, 'default')
+            expect(reserved.type).toBe('success')
+            if (reserved.type !== 'success') throw new Error('reservation failed')
+            expect(engine.confirmOpenCodeClearCleanup(source.id, 'default', reserved.sessionId)).toMatchObject({
+                type: 'success'
+            })
+            const metadataBeforeEnd = engine.getSessionByNamespace(source.id, 'default')!.metadata!
+            engine.handleSessionEnd({ sid: source.id, time: Date.now(), reason: 'cleared' })
+            const storedAfterEnd = store.sessions.getSessionByNamespace(source.id, 'default')!
+            store.sessions.updateSessionMetadata(
+                source.id,
+                { ...metadataBeforeEnd, lifecycleState: 'archived', archiveReason: 'Cleared by /clear' },
+                storedAfterEnd.metadataVersion,
+                'default'
+            )
+            ;(engine as unknown as { sessionCache: { refreshSession(id: string): unknown } }).sessionCache.refreshSession(source.id)
+
+            const spawnSession = mock(async (...args: unknown[]) => ({ type: 'success' as const, sessionId: args[12] as string }))
+            setSpawn(engine, spawnSession)
+            await expect(engine.clearOpenCodeSession(source.id, 'default')).resolves.toEqual({
+                type: 'success',
+                sessionId: reserved.sessionId
+            })
+
+            expect(store.sessionJobs.getPrimaryRunning(source.id)).toBeNull()
+            expect(store.sessionJobs.getPrimaryRunning(reserved.sessionId)?.key).toBe('beets')
+            expect(engine.resolveAttachedJobSessionId(source.id, 'default')).toBe(reserved.sessionId)
+
+            const ownerId = engine.resolveAttachedJobSessionId(source.id, 'default')
+            const patched = store.sessionJobs.patch(ownerId, 'beets', {
+                remaining: 4,
+                expectedRunId: runId
+            })
+            expect(patched.outcome).toBe('patched')
+            expect(store.sessionJobs.get(reserved.sessionId, 'beets')?.remaining).toBe(4)
+        } finally { engine.stop() }
+    })
+
     it('atomically redirects messages arriving after reservation to the replacement', async () => {
         const { store, engine } = createEngine()
         try {
@@ -470,8 +524,13 @@ describe('SyncEngine.clearOpenCodeSession', () => {
                 }
                 return result
             }) as typeof store.abortOpenCodeClearOperation
-            expect(engine.abortOpenCodeClearSession(source.id, 'default', currentReplacementId(engine, source.id))).toEqual({ type: 'success', sessionId: source.id })
-            expect(engine.abortOpenCodeClearSession(source.id, 'default', currentReplacementId(engine, source.id))).toEqual({ type: 'success', sessionId: source.id })
+            const replacementId = currentReplacementId(engine, source.id)
+            expect(engine.getSessionByNamespace(replacementId, 'default')?.hasConversationContent).toBe(true)
+            expect(engine.abortOpenCodeClearSession(source.id, 'default', replacementId)).toEqual({ type: 'success', sessionId: source.id })
+            expect(engine.getSessionByNamespace(source.id, 'default')?.hasConversationContent).toBe(true)
+            expect(engine.getSessionByNamespace(replacementId, 'default')?.hasConversationContent).toBe(false)
+            expect(engine.abortOpenCodeClearSession(source.id, 'default', replacementId)).toEqual({ type: 'success', sessionId: source.id })
+            expect(engine.getSessionByNamespace(replacementId, 'default')?.hasConversationContent).toBe(false)
             expect(store.messages.getAllMessages(source.id)).toEqual([
                 expect.objectContaining({ localId: 'restore-once', invokedAt: null })
             ])
@@ -513,8 +572,12 @@ describe('SyncEngine.clearOpenCodeSession', () => {
             await engine.sendMessage(source.id, { text: 'held', localId: 'held' })
             expect(store.messages.getAllMessages(reserved.sessionId)).toHaveLength(1)
             expect(store.isOpenCodeClearDeliveryGated(reserved.sessionId)).toBe(true)
+            expect(engine.getSessionByNamespace(source.id, 'default')?.hasConversationContent).toBe(false)
+            expect(engine.getSessionByNamespace(reserved.sessionId, 'default')?.hasConversationContent).toBe(true)
             expect(engine.abortOpenCodeClearSession(source.id, 'default', currentReplacementId(engine, source.id))).toEqual({ type: 'success', sessionId: source.id })
             expect(store.isOpenCodeClearDeliveryGated(reserved.sessionId)).toBe(false)
+            expect(engine.getSessionByNamespace(source.id, 'default')?.hasConversationContent).toBe(true)
+            expect(engine.getSessionByNamespace(reserved.sessionId, 'default')?.hasConversationContent).toBe(false)
             expect(store.messages.getAllMessages(source.id).map((m) => m.localId)).toEqual(['held'])
             expect(engine.getSessionByNamespace(source.id, 'default')?.metadata?.opencodeClearOperation?.state).toBe('aborted')
             engine.handleSessionEnd({ sid: source.id, time: Date.now(), reason: 'error' })
@@ -632,6 +695,11 @@ describe('SyncEngine.clearOpenCodeSession', () => {
                 undefined,
                 undefined,
                 // startingMode — not applicable to an OpenCode clear replacement
+                undefined,
+                // forkSession / reservedSessionId — clear uses reopen existingSessionId
+                undefined,
+                undefined,
+                // resumeSessionAt — Claude-only history flag (drops guard not emitted)
                 undefined
             )
             expect(engine.getSessionByNamespace(replacementSessionId, 'default')?.metadata).toMatchObject({

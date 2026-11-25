@@ -22,6 +22,35 @@ data class NewSessionPrefsData(
     val lastMachineId: String? = null,
     /** Machine id → most-recent-first spawn directories (cap [NewSessionLogic.MAX_RECENT_PATHS]). */
     val recentPaths: Map<String, List<String>> = emptyMap(),
+    /**
+     * Machine id → agent flavor → remembered launch defaults (web
+     * `hapi:newSession:launchSettings:v1:<machine>:<agent>`). Written only
+     * after a successful spawn; stale shapes degrade field-by-field in
+     * [NewSessionLogic.resolvePreferredLaunchSettings], never crash.
+     */
+    val launchSettings: Map<String, Map<String, PreferredLaunchSettings>> = emptyMap(),
+)
+
+/**
+ * Remembered launch defaults for one `(machineId, agentFlavor)` pair — the
+ * DataStore port of web `PreferredLaunchSettings`
+ * (`web/src/components/NewSession/preferences.ts`). Field defaults mirror the
+ * [NewSessionForm] sentinels; `cursorSelectedBase` is deliberately absent
+ * (no Android picker — web-only field).
+ */
+@Serializable
+data class PreferredLaunchSettings(
+    /** `'auto'` = no explicit model. */
+    val model: String = "auto",
+    /** Claude launch effort; `'auto'` = omit. */
+    val effort: String = "auto",
+    /** Codex-family reasoning effort; `'default'` = omit. */
+    val modelReasoningEffort: String = "default",
+    /**
+     * Only written for shared-permission-mode flavors
+     * ([NewSessionLogic.usesSharedPermissionModeState]); null otherwise.
+     */
+    val permissionMode: String? = null,
 )
 
 interface NewSessionPrefs {

@@ -1,7 +1,7 @@
 import type { SessionSummary } from '@/types/api'
 import { normalizeSearch, prepareSidebarSessions, sessionMatchesQuery } from '@/components/SessionList'
 import { truncateGraphemes } from '@/lib/graphemes'
-import { getSessionTitle, hasSessionTitleSignal } from '@/lib/sessionTitle'
+import { getSessionTitle } from '@/lib/sessionTitle'
 import { SESSION_REFERENCE_STEER_SUFFIX } from '@hapi/protocol/sessionCitation'
 
 export function buildSessionReferencePath(sessionId: string): string {
@@ -53,22 +53,17 @@ function scoreMatchedSession(session: SessionSummary, query: string): number {
     return score * 1e13 + session.updatedAt
 }
 
-/**
- * Mention pool is stricter than sidebar visibility (#1506): require a real
- * title signal (`metadata.name` or summary text). Path last-segment fallback
- * and id-only labels are not @-targets — including husks sidebar still shows
- * via flattened `agentSessionId` / `claudeSessionId`.
- */
+/** Empty stubs are not reference targets, regardless of their display title. */
 export function isMentionableSession(session: SessionSummary): boolean {
-    return hasSessionTitleSignal(session)
+    return session.hasConversationContent === true
 }
 
 /**
  * Rank sessions for composer `@` autocomplete.
- * Pool is sidebar-visible rows (`prepareSidebarSessions`) that also have a
- * real title signal (#1506). Path husks stay out even if sidebar shows them.
+ * Pool is sidebar-visible rows (`prepareSidebarSessions`) that also have
+ * conversation content. Empty stubs stay out even if sidebar shows them.
  * Match filter then reuses share/sidebar `sessionMatchesQuery`.
- * Empty query → active/recent shortlist (excludes archived + untitled husks).
+ * Active sessions lead, with relevance and recency ordering within each group.
  */
 export function matchSessionsForMention(
     sessions: readonly SessionSummary[],
@@ -87,11 +82,7 @@ export function matchSessionsForMention(
         if (!isMentionableSession(session)) continue
 
         if (!normalized) {
-            // Empty / whitespace query: shortlist only — active first, then recent.
-            // Archived stay searchable once the user types (same as share: type to widen).
-            if (session.metadata?.lifecycleState === 'archived') continue
-            const score = session.active ? 1_000_000_000 + session.updatedAt : session.updatedAt
-            scored.push({ session, score })
+            scored.push({ session, score: session.updatedAt })
             continue
         }
 
@@ -100,7 +91,7 @@ export function matchSessionsForMention(
         scored.push({ session, score: scoreMatchedSession(session, normalized) })
     }
 
-    scored.sort((a, b) => b.score - a.score)
+    scored.sort((a, b) => Number(b.session.active) - Number(a.session.active) || b.score - a.score)
     return scored.slice(0, limit).map((entry) => entry.session)
 }
 

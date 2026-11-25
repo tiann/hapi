@@ -48,6 +48,29 @@ struct PushPayloadTests {
         #expect(payload.categoryIdentifier == nil)
     }
 
+    @Test func inputRequestShowsTheQuestionButNeverOffersApprovalOrReply() throws {
+        var fields = fullFields
+        fields["type"] = "input-request"
+        fields["title"] = "Codex needs your input"
+        fields["body"] = "需要检查安全性吗？\n+1 more question\n查看 PR #1842 的改动"
+        fields["severity"] = "info"
+        // Ready summaries must not override the question, even if one is present.
+        fields["notifySummary"] = #"{"summary":"Unrelated summary"}"#
+        for version in ["1", "2"] {
+            fields["contractVersion"] = version
+            let payload = try #require(PushPayload.parse(dictionary: fields))
+            #expect(payload.type == .inputRequest)
+            #expect(payload.requestId == "req-9")
+            #expect(payload.url == "/sessions/sess-1")
+            #expect(payload.displayTitle == fields["title"])
+            #expect(payload.displayBody == fields["body"])
+            #expect(!payload.supportsActions)
+            #expect(payload.categoryIdentifier == nil)
+            let plaintext = try JSONSerialization.data(withJSONObject: fields)
+            #expect(PushPayload.parse(plaintext: plaintext) == payload)
+        }
+    }
+
     @Test func unknownTypeDegradesToPlainNotification() throws {
         let payload = try #require(PushPayload.parse(dictionary: [
             "type": "hologram",
@@ -72,6 +95,34 @@ struct PushPayloadTests {
         #expect(!payload.supportsActions)
         #expect(payload.categoryIdentifier == nil)
         #expect(payload.displayTitle == "Permission needed")
+    }
+
+    @Test func modelErrorIsKnownTypeAndPrefersHubTag() throws {
+        let eventTag = "model-error-sess-1-evt-1710000000000"
+        let payload = try #require(PushPayload.parse(dictionary: [
+            "type": "model-error",
+            "sessionId": "sess-1",
+            "title": "Rate limited",
+            "body": "status 429",
+            "severity": "error",
+            "contractVersion": "1",
+            "tag": eventTag,
+        ]))
+        #expect(payload.type == .modelError)
+        #expect(payload.rawType == "model-error")
+        #expect(payload.notificationTag == eventTag)
+        #expect(!payload.supportsActions)
+        #expect(payload.categoryIdentifier == nil)
+        #expect(payload.severity == .error)
+    }
+
+    @Test func modelErrorWithoutHubTagFallsBackToTypeSessionId() throws {
+        let payload = try #require(PushPayload.parse(dictionary: [
+            "type": "model-error",
+            "sessionId": "sess-1",
+            "contractVersion": "1",
+        ]))
+        #expect(payload.notificationTag == "model-error-sess-1")
     }
 
     @Test func absentContractVersionCountsAsKnown() throws {

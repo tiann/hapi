@@ -1,5 +1,6 @@
 import { isObject, safeStringify } from '@hapi/protocol'
 import { getInputStringAny, truncate } from '@/lib/toolInputUtils'
+import { formatReasoningLabel } from '@/lib/codexStatusLabels'
 
 export const codexAgentToolNames = [
     'spawn_agent',
@@ -149,9 +150,7 @@ export function getCodexAgentReasoningEffort(input: unknown): string | null {
 }
 
 export function formatCodexAgentReasoningEffort(effort: string): string {
-    const normalized = effort.trim().toLowerCase()
-    if (!normalized || normalized === 'default') return 'reasoning default'
-    return `reasoning ${normalized}`
+    return formatReasoningLabel(effort)
 }
 
 export function getCodexAgentReasoningEffortLabel(input: unknown): string | null {

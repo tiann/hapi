@@ -37,10 +37,11 @@ describe('resume schemas', () => {
             updatedAt: 123,
             name: 'project work',
             summary: 'finish docs',
+            promptTitle: 'Resume UX',
             firstUserMessage: 'implement resume picker'
         })
 
-        expect(parsed.success).toBe(true)
+        expect(parsed).toMatchObject({ success: true, data: { promptTitle: 'Resume UX' } })
     })
 
     it('accepts handoff as a session end reason', () => {
@@ -79,6 +80,18 @@ describe('resume schemas', () => {
             localIds: ['local-1'],
             invokedAt: 123
         }).success).toBe(true)
+    })
+
+    it('accepts rewind details on messages-invalidated events', () => {
+        expect(SyncEventSchema.parse({
+            type: 'messages-invalidated',
+            sessionId: 'session-1',
+            reason: 'rewind',
+            truncateFromLocalId: 'user-message-1'
+        })).toMatchObject({
+            reason: 'rewind',
+            truncateFromLocalId: 'user-message-1'
+        })
     })
 
     it('validates structured session and machine update patches', () => {

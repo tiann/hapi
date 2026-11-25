@@ -255,6 +255,65 @@ describe('session model', () => {
         expect(survivors).toHaveLength(1)
     })
 
+    it('notifies onSessionMergedAway when dedup collapses a duplicate row', async () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const mergedAway: Array<[string, string]> = []
+        const cache = new SessionCache(store, createPublisher(events), {
+            onSessionMergedAway: (oldSessionId, newSessionId) => mergedAway.push([oldSessionId, newSessionId])
+        })
+
+        const oldSession = cache.getOrCreateSession(
+            'agy-merge-hook-old',
+            { path: '/tmp/project', host: 'localhost', flavor: 'agy', agySessionId: 'brain-uuid-hook' },
+            null,
+            'default'
+        )
+        const newSession = cache.getOrCreateSession(
+            'agy-merge-hook-new',
+            { path: '/tmp/project', host: 'localhost', flavor: 'agy', agySessionId: 'brain-uuid-hook' },
+            null,
+            'default'
+        )
+
+        await cache.deduplicateByAgentSessionId(newSession.id)
+
+        // The hub's enumeration cache keys entries per session id, so a dedup
+        // that silently removes a row would leak its cached catalogs — the
+        // hook must name the removed id and its merge target.
+        expect(mergedAway).toHaveLength(1)
+        expect(mergedAway[0][1]).toBe(newSession.id)
+        expect(mergedAway[0][0]).toBe(oldSession.id)
+        expect(cache.getSession(oldSession.id)).toBeUndefined()
+    })
+
+    it('does not notify onSessionMergedAway for mergeSessionHistory — the source row survives', async () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const mergedAway: Array<[string, string]> = []
+        const cache = new SessionCache(store, createPublisher(events), {
+            onSessionMergedAway: (oldSessionId, newSessionId) => mergedAway.push([oldSessionId, newSessionId])
+        })
+
+        const oldSession = cache.getOrCreateSession(
+            'merge-hook-hist-old',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+        const newSession = cache.getOrCreateSession(
+            'merge-hook-hist-new',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+
+        await cache.mergeSessionHistory(oldSession.id, newSession.id, 'default')
+
+        expect(mergedAway).toHaveLength(0)
+        expect(cache.getSession(oldSession.id)).toBeDefined()
+    })
+
     it('preserves service tier from old session when merging into resumed session', async () => {
         const store = new Store(':memory:')
         const events: SyncEvent[] = []
@@ -305,6 +364,289 @@ describe('session model', () => {
         expect(store.sessions.getSession(newSession.id)?.pinned).toBe(true)
         expect(store.sessions.getSession(newSession.id)?.globalPinned).toBe(false)
         expect(cache.getSession(newSession.id)?.pinned).toBe(true)
+    })
+
+    it('preserves target externalRefs updated during merge metadata retry', async () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const oldRefs = [{
+            kind: 'github_pr' as const,
+            repo: 'tiann/hapi',
+            number: 1,
+            url: 'https://github.com/tiann/hapi/pull/1',
+            role: 'primary' as const,
+            source: 'user' as const,
+            linkedAt: 1
+        }]
+        const healthRefs = [{
+            kind: 'github_pr' as const,
+            repo: 'tiann/hapi',
+            number: 1,
+            url: 'https://github.com/tiann/hapi/pull/1',
+            role: 'primary' as const,
+            source: 'agent' as const,
+            linkedAt: 1,
+            openState: 'open' as const,
+            checks: 'success' as const,
+            merge: 'clean' as const,
+            estateCode: 'babysit.green'
+        }]
+
+        const oldSession = cache.getOrCreateSession(
+            'session-merge-refs-old',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex', externalRefs: oldRefs },
+            null,
+            'default'
+        )
+        const newSession = cache.getOrCreateSession(
+            'session-merge-refs-new',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+
+        const originalUpdate = store.sessions.updateSessionMetadata.bind(store.sessions)
+        let metadataAttempts = 0
+        store.sessions.updateSessionMetadata = (...args) => {
+            metadataAttempts += 1
+            if (metadataAttempts === 1 && args[0] === newSession.id) {
+                const row = store.sessions.getSessionByNamespace(newSession.id, 'default')
+                if (row) {
+                    originalUpdate(
+                        newSession.id,
+                        { path: '/tmp/project', host: 'localhost', flavor: 'codex', externalRefs: healthRefs },
+                        row.metadataVersion,
+                        'default',
+                        { touchUpdatedAt: false }
+                    )
+                }
+                return {
+                    result: 'version-mismatch',
+                    version: row?.metadataVersion ?? 1,
+                    value: healthRefs
+                }
+            }
+            return originalUpdate(...args)
+        }
+
+        await cache.mergeSessions(oldSession.id, newSession.id, 'default')
+
+        const merged = store.sessions.getSessionByNamespace(newSession.id, 'default')
+        const refs = (merged?.metadata as { externalRefs?: unknown })?.externalRefs
+        expect(refs).toEqual(healthRefs)
+    })
+
+    it('retains source session when metadata merge exhausts version retries', async () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const oldRefs = [{
+            kind: 'github_pr' as const,
+            repo: 'tiann/hapi',
+            number: 2,
+            url: 'https://github.com/tiann/hapi/pull/2',
+            role: 'primary' as const,
+            source: 'user' as const,
+            linkedAt: 1
+        }]
+
+        const oldSession = cache.getOrCreateSession(
+            'session-merge-retry-old',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex', externalRefs: oldRefs },
+            null,
+            'default'
+        )
+        const newSession = cache.getOrCreateSession(
+            'session-merge-retry-new',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+
+        store.scratchlist.create(oldSession.id, 'keep on source', { entryId: 'merge-note', createdAt: 100 })
+        store.messages.addMessage(oldSession.id, { role: 'user', content: { type: 'text', text: 'keep me' } })
+
+        const originalUpdate = store.sessions.updateSessionMetadata.bind(store.sessions)
+        store.sessions.updateSessionMetadata = (...args) => {
+            if (args[0] === newSession.id) {
+                return { result: 'version-mismatch', version: 1, value: args[1] }
+            }
+            return originalUpdate(...args)
+        }
+
+        await expect(
+            cache.mergeSessions(oldSession.id, newSession.id, 'default')
+        ).rejects.toThrow('Failed to preserve session metadata during merge')
+
+        expect(store.sessions.getSessionByNamespace(oldSession.id, 'default')).not.toBeNull()
+        expect(store.messages.getMessages(oldSession.id).length).toBe(1)
+        expect(store.messages.getMessages(newSession.id).length).toBe(0)
+        expect(store.scratchlist.list(oldSession.id).length).toBe(1)
+        expect(store.scratchlist.list(newSession.id).length).toBe(0)
+    })
+
+    it('retains source data when metadata merge hits a store error', async () => {
+        const store = new Store(':memory:')
+        const cache = new SessionCache(store, createPublisher([]))
+
+        const oldSession = cache.getOrCreateSession(
+            'session-merge-store-err-old',
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'codex',
+                externalRefs: [{
+                    kind: 'github_pr' as const,
+                    repo: 'tiann/hapi',
+                    number: 3,
+                    url: 'https://github.com/tiann/hapi/pull/3',
+                    role: 'primary' as const,
+                    source: 'user' as const,
+                    linkedAt: 1
+                }]
+            },
+            null,
+            'default'
+        )
+        const newSession = cache.getOrCreateSession(
+            'session-merge-store-err-new',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+        store.messages.addMessage(oldSession.id, { role: 'user', content: { type: 'text', text: 'still here' } })
+
+        const originalUpdate = store.sessions.updateSessionMetadata.bind(store.sessions)
+        store.sessions.updateSessionMetadata = (...args) => {
+            if (args[0] === newSession.id) {
+                return { result: 'error' }
+            }
+            return originalUpdate(...args)
+        }
+
+        await expect(
+            cache.mergeSessions(oldSession.id, newSession.id, 'default')
+        ).rejects.toThrow('Failed to preserve session metadata during merge')
+
+        expect(store.sessions.getSessionByNamespace(oldSession.id, 'default')).not.toBeNull()
+        expect(store.messages.getMessages(oldSession.id).length).toBe(1)
+        expect(store.messages.getMessages(newSession.id).length).toBe(0)
+    })
+
+    it('preserves unparsed stored metadata fields when linking a PR', async () => {
+        const store = new Store(':memory:')
+        const cache = new SessionCache(store, createPublisher([]))
+
+        const session = cache.getOrCreateSession(
+            'session-unparsed-meta',
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'codex',
+                name: 'Keep Me'
+            },
+            null,
+            'default'
+        )
+        const row = store.sessions.getSessionByNamespace(session.id, 'default')
+        if (!row) throw new Error('expected session row')
+
+        // Poison path's runtime type so MetadataSchema fails while other fields remain.
+        const poisoned = store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: 123 as unknown as string,
+                host: 'localhost',
+                name: 'Keep Me',
+                summary: { text: 'saved', updatedAt: 1 }
+            },
+            row.metadataVersion,
+            'default',
+            { touchUpdatedAt: false }
+        )
+        expect(poisoned.result).toBe('success')
+        expect(cache.refreshSession(session.id)?.metadata).toBeNull()
+
+        const refs = await cache.mutateSessionExternalRefs(session.id, () => [{
+            kind: 'github_pr' as const,
+            repo: 'tiann/hapi',
+            number: 1163,
+            url: 'https://github.com/tiann/hapi/pull/1163',
+            role: 'primary' as const,
+            source: 'user' as const,
+            linkedAt: 1
+        }])
+        expect(refs).toHaveLength(1)
+
+        const after = store.sessions.getSessionByNamespace(session.id, 'default')
+        const meta = after?.metadata as Record<string, unknown>
+        expect(meta.name).toBe('Keep Me')
+        expect(meta.summary).toEqual({ text: 'saved', updatedAt: 1 })
+        expect(meta.externalRefs).toEqual(refs)
+    })
+
+    it('keeps machine-spawn stub adoptable after attaching a PR', async () => {
+        const store = new Store(':memory:')
+        const cache = new SessionCache(store, createPublisher([]))
+        const allocatedId = crypto.randomUUID()
+
+        const stub = store.sessions.getOrCreateSession(
+            `machine-spawn:${allocatedId}`,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                machineId: 'machine-1',
+                startedBy: 'runner',
+                startedFromRunner: true,
+            },
+            null,
+            'default',
+            undefined,
+            undefined,
+            undefined,
+            allocatedId
+        )
+        expect(stub.tag).toBe(`machine-spawn:${allocatedId}`)
+        cache.refreshSession(allocatedId)
+
+        await cache.setSessionExternalRefs(allocatedId, [{
+            kind: 'github_pr',
+            repo: 'tiann/hapi',
+            number: 1163,
+            url: 'https://github.com/tiann/hapi/pull/1163',
+            role: 'primary',
+            source: 'user',
+            linkedAt: 1,
+        }])
+
+        const afterLink = store.sessions.getSessionByNamespace(allocatedId, 'default')
+        expect(afterLink?.tag).toBe(`machine-spawn:${allocatedId}`)
+
+        const cliTag = crypto.randomUUID()
+        const adopted = store.sessions.adoptPreallocatedSession(
+            allocatedId,
+            cliTag,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                machineId: 'machine-1',
+                startedBy: 'runner',
+                startedFromRunner: true,
+                hostPid: 4242,
+            },
+            { controlledByUser: false },
+            'default'
+        )
+        expect(adopted.tag).toBe(cliTag)
+        const meta = adopted.metadata as { externalRefs?: unknown[]; hostPid?: number }
+        expect(meta.hostPid).toBe(4242)
+        expect(Array.isArray(meta.externalRefs)).toBe(true)
+        expect(meta.externalRefs).toHaveLength(1)
     })
 
     it('preserves global pin from old session when merging into resumed session', async () => {
@@ -580,21 +922,57 @@ describe('session model', () => {
                 _machineId: string,
                 _directory: string,
                 agent: string,
-                model?: string
+                model?: string,
+                _modelReasoningEffort?: string,
+                _yolo?: boolean,
+                _sessionType?: string,
+                _worktreeName?: string,
+                _resumeSessionId?: string,
+                _effort?: string,
+                _permissionMode?: string,
+                _serviceTier?: string,
+                existingSessionId?: string,
+                _collaborationMode?: string,
+                _copilotAgentMode?: string,
+                _startingMode?: string,
+                _forkSession?: boolean,
+                reservedSessionId?: string
             ) => {
                 capturedModel = model
-                return { type: 'success', sessionId: 'spawned-cursor-session' }
+                return {
+                    type: 'success',
+                    sessionId: reservedSessionId ?? existingSessionId ?? 'spawned-cursor-session',
+                }
             }
 
             const result = await engine.spawnSession(
                 'machine-cursor',
                 '/tmp/project',
                 'cursor',
-                'composer-2.5[fast=false]'
+                'composer-2.5[fast=false]',
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                'default'
             )
 
-            expect(result).toEqual({ type: 'success', sessionId: 'spawned-cursor-session' })
+            expect(result.type).toBe('success')
             expect(capturedModel).toBe('composer-2.5[fast=false]')
+            if (result.type === 'success') {
+                expect(typeof result.sessionId).toBe('string')
+                expect(result.sessionId.length).toBeGreaterThan(0)
+                const meta = store.sessions.getSession(result.sessionId)?.metadata as { flavor?: string } | null
+                expect(meta?.flavor).toBe('cursor')
+            }
         } finally {
             engine.stop()
         }
@@ -881,6 +1259,72 @@ describe('session model', () => {
         expect(activity).toHaveLength(1)
         expect(activity[0].sessionId).toBe(session.id)
         expect(activity[0].updatedAt).toBe(messages[0]?.createdAt)
+    })
+
+    it('sets background tasks from Claude background_tasks_changed snapshots', () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+        const session = cache.getOrCreateSession(
+            'session-cli-background-tasks',
+            { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
+            null,
+            'default'
+        )
+        const handlers = new Map<string, (payload: unknown) => void>()
+
+        registerSessionHandlers({
+            on: (event: string, handler: (payload: unknown) => void) => {
+                handlers.set(event, handler)
+            },
+            to: () => ({ emit: () => {} })
+        } as never, {
+            store,
+            resolveSessionAccess: (sessionId) => {
+                const stored = store.sessions.getSessionByNamespace(sessionId, 'default')
+                return stored ? { ok: true, value: stored } : { ok: false, reason: 'not-found' }
+            },
+            emitAccessError: () => {},
+            onBackgroundTasks: (sessionId, tasks) => cache.setBackgroundTasks(sessionId, tasks)
+        })
+        const send = (data: unknown) => handlers.get('message')?.({
+            sid: session.id,
+            message: JSON.stringify({ role: 'agent', content: { type: 'output', data } })
+        })
+        const snapshot = (taskIds: string[]) => send({
+            type: 'system',
+            subtype: 'background_tasks_changed',
+            uuid: `snapshot-${taskIds.length}`,
+            tasks: taskIds.map((task_id) => ({ task_id, task_type: 'local_bash', description: `run ${task_id}` }))
+        })
+
+        snapshot(['b1', 'b2'])
+        expect(cache.getSession(session.id)?.backgroundTaskCount).toBe(2)
+        expect(cache.getSession(session.id)?.backgroundTasks).toEqual([
+            { id: 'b1', type: 'local_bash', description: 'run b1' },
+            { id: 'b2', type: 'local_bash', description: 'run b2' }
+        ])
+
+        // The Bash tool result that announces a background task is not a count signal.
+        send({
+            type: 'user',
+            uuid: 'tool-result',
+            message: {
+                role: 'user',
+                content: [{ type: 'tool_result', tool_use_id: 't1', content: 'Command running in background with ID: b3.' }]
+            }
+        })
+        expect(cache.getSession(session.id)?.backgroundTaskCount).toBe(2)
+
+        snapshot([])
+        expect(cache.getSession(session.id)?.backgroundTaskCount).toBe(0)
+        // Snapshots are session state, not chat rows; only the tool result is stored.
+        expect(store.messages.getMessages(session.id)).toHaveLength(1)
+        expect(events
+            .filter((event) => event.type === 'session-updated' && event.sessionId === session.id)
+            .map((event) => (event as { data?: { backgroundTaskCount?: number } }).data?.backgroundTaskCount)
+            .filter((count) => count !== undefined)
+        ).toEqual([2, 0])
     })
 
     it('records activity only for the first messages-consumed transition while retaining duplicate acknowledgements', () => {
@@ -1676,6 +2120,7 @@ describe('session model', () => {
 
         expect(outcome.result).toEqual({ type: 'success', sessionId: outcome.after.id })
         expect(outcome.capturedResumeSessionIds).toEqual([rootThreadId])
+        expect(outcome.after.metadata).toMatchObject({ codexResumePending: { nativeSessionId: rootThreadId } })
         expect([
             outcome.persistedCodexSessionId,
             outcome.cachedCodexSessionId,
@@ -1684,7 +2129,7 @@ describe('session model', () => {
         ]).toEqual([
             rootThreadId,
             rootThreadId,
-            outcome.before.metadataVersion + 1,
+            outcome.before.metadataVersion + 2, // recovered identity + durable startup fence
             outcome.before.updatedAt
         ])
     })
@@ -1700,8 +2145,8 @@ describe('session model', () => {
         expect(outcome.result).toEqual({ type: 'success', sessionId: outcome.after.id })
         expect(outcome.capturedResumeSessionIds).toEqual([metadataThreadId])
         expect(outcome.after).toMatchObject({
-            metadata: { codexSessionId: metadataThreadId },
-            metadataVersion: outcome.before.metadataVersion,
+            metadata: { codexSessionId: metadataThreadId, codexResumePending: { nativeSessionId: metadataThreadId } },
+            metadataVersion: outcome.before.metadataVersion + 1,
             updatedAt: outcome.before.updatedAt
         })
     })
@@ -1770,7 +2215,7 @@ describe('session model', () => {
         ]).toEqual([
             concurrentThreadId,
             concurrentThreadId,
-            outcome.before.metadataVersion,
+            outcome.before.metadataVersion + 1,
             outcome.before.updatedAt
         ])
     })
@@ -1797,7 +2242,7 @@ describe('session model', () => {
             outcome.after.updatedAt
         ]).toEqual([
             messageThreadId,
-            outcome.before.metadataVersion + 1,
+            outcome.before.metadataVersion + 2,
             outcome.before.updatedAt
         ])
     })
@@ -2396,9 +2841,9 @@ describe('session model', () => {
             const result = await engine.reopenSession(session.id, 'default')
             expect(result).toMatchObject({ type: 'error', message: expect.stringContaining('still active') })
             expect(engine.getSessionByNamespace(session.id, 'default')?.active).toBe(true)
-            // Pi keeps the persisted archive snapshot until bootstrap succeeds,
-            // so a failed stop never needs to reconstruct it from memory.
-            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.lifecycleState).toBe('archived')
+            // #1911 M1: reopen clears archive before spawn; a live Pi child that
+            // failed stop stays active and must not be re-archived from memory.
+            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.lifecycleState).not.toBe('archived')
             expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.piResumeAttempt?.state).toBe('quarantined')
             expect(await engine.reopenSession(session.id, 'default')).toMatchObject({ type: 'error', message: 'Pi resume is already in progress' })
 
@@ -2450,7 +2895,11 @@ describe('session model', () => {
                 type: 'error', message: 'webhook timeout'
             })
             expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.piResumeAttempt?.state).toBe('quarantined')
-            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.lifecycleState).toBe('archived')
+            // #1911 M1: archive cleared before spawn; quarantine refuses reopen
+            // rollback (rollbackSafe:false). Snapshot lives on the attempt.
+            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.lifecycleState).not.toBe('archived')
+            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.piResumeAttempt?.archiveSnapshot)
+                .toMatchObject({ lifecycleState: 'archived', archivedBy: 'cli' })
             expect(await engine.reopenSession(session.id, 'default')).toMatchObject({
                 type: 'error', message: 'Pi resume is already in progress'
             })
@@ -3132,6 +3581,88 @@ describe('session model', () => {
         }
     })
 
+    it('uses the DSH native resume target instead of stale Claude metadata', () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'local-resume-dsh-fresh-only',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'dsh',
+                    claudeSessionId: 'stale-claude-id',
+                    dshSessionId: 'dsh-session-1'
+                },
+                null,
+                'default'
+            )
+
+            expect(engine.resolveLocalResumeTarget(session.id, 'default')).toMatchObject({
+                type: 'success',
+                target: {
+                    flavor: 'dsh',
+                    agentSessionId: 'dsh-session-1'
+                }
+            })
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('passes the DSH native session id to the runner on resume', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'session-dsh-resume',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'dsh',
+                    dshSessionId: 'dsh-session-1'
+                },
+                null,
+                'default'
+            )
+            engine.getOrCreateMachine(
+                'machine-1',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+
+            let capturedResumeSessionId: string | undefined
+            ;(engine as any).rpcGateway.spawnSession = async (...args: Parameters<SyncEngine['spawnSession']>) => {
+                capturedResumeSessionId = args[8]
+                return { type: 'success', sessionId: session.id }
+            }
+            ;(engine as any).waitForSessionActive = async () => true
+
+            const result = await engine.resumeSession(session.id, 'default')
+
+            expect(result).toEqual({ type: 'success', sessionId: session.id })
+            expect(capturedResumeSessionId).toBe('dsh-session-1')
+        } finally {
+            engine.stop()
+        }
+    })
+
     it('returns resume_unavailable when a cursor session lacks cursorSessionId', () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(
@@ -3159,6 +3690,48 @@ describe('session model', () => {
                 message: 'Resume session ID unavailable. Start a new session in this directory, or retry after the agent has initialized.',
                 code: 'resume_unavailable'
             })
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('fresh-spawns Cursor when the recorded thread never persisted a store', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        try {
+            const session = engine.getOrCreateSession(
+                'cursor-empty-store',
+                {
+                    path: '/tmp/project',
+                    host: 'cursor-host',
+                    machineId: 'cursor-machine',
+                    flavor: 'cursor',
+                    cursorSessionId: 'cursor-thread-empty',
+                    cursorSessionProtocol: 'acp'
+                },
+                null,
+                'default'
+            )
+            engine.getOrCreateMachine(
+                'cursor-machine',
+                { host: 'cursor-host', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'cursor-machine', time: Date.now() })
+
+            let resumeArg: unknown = 'unset'
+            ;(engine as any).rpcGateway.getCursorChatStoreStatus = async () => ({ onDisk: true, store: 'empty' })
+            ;(engine as any).rpcGateway.spawnSession = async (...args: Parameters<SyncEngine['spawnSession']>) => {
+                resumeArg = args[8]
+                return { type: 'success', sessionId: session.id }
+            }
+            ;(engine as any).waitForSessionActive = async () => true
+
+            const result = await engine.resumeSession(session.id, 'default')
+
+            expect(result).toEqual({ type: 'success', sessionId: session.id })
+            expect(resumeArg).toBeUndefined()
         } finally {
             engine.stop()
         }
@@ -3506,6 +4079,116 @@ describe('session model', () => {
         }
     })
 
+    it('does not resume a native OpenCode session on a same-host machine when its recorded machine is offline', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'opencode-offline-recorded-machine-resume',
+                {
+                    path: '/remote/project',
+                    host: 'shared-host-label',
+                    machineId: 'recorded-machine-offline',
+                    flavor: 'opencode',
+                    opencodeSessionId: 'opencode-native-offline',
+                    lifecycleState: 'archived'
+                },
+                null,
+                'default'
+            )
+            engine.getOrCreateMachine(
+                'recorded-machine-offline',
+                { host: 'shared-host-label', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.getOrCreateMachine(
+                'wrong-same-host-machine',
+                { host: 'shared-host-label', platform: 'linux', happyCliVersion: '0.1.0' },
+                { status: 'running' },
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'wrong-same-host-machine', time: Date.now() })
+
+            let spawnCalled = false
+            ;(engine as any).rpcGateway.spawnSession = async () => {
+                spawnCalled = true
+                return { type: 'success', sessionId: session.id }
+            }
+
+            expect(await engine.reopenSession(session.id, 'default')).toEqual({
+                type: 'error',
+                message: 'No machine online',
+                code: 'no_machine_online'
+            })
+            expect(spawnCalled).toBe(false)
+            expect(engine.getSession(session.id)?.metadata?.lifecycleState).toBe('archived')
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('does not resume a native DSH session on a same-host machine when its recorded machine is offline', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'dsh-offline-recorded-machine-resume',
+                {
+                    path: '/remote/project',
+                    host: 'shared-host-label',
+                    machineId: 'recorded-machine-offline',
+                    flavor: 'dsh',
+                    dshSessionId: 'dsh-native-offline',
+                    lifecycleState: 'archived'
+                },
+                null,
+                'default'
+            )
+            engine.getOrCreateMachine(
+                'recorded-machine-offline',
+                { host: 'shared-host-label', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.getOrCreateMachine(
+                'wrong-same-host-machine',
+                { host: 'shared-host-label', platform: 'linux', happyCliVersion: '0.1.0' },
+                { status: 'running' },
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'wrong-same-host-machine', time: Date.now() })
+
+            let spawnCalled = false
+            ;(engine as any).rpcGateway.spawnSession = async () => {
+                spawnCalled = true
+                return { type: 'success', sessionId: session.id }
+            }
+
+            expect(await engine.reopenSession(session.id, 'default')).toEqual({
+                type: 'error',
+                message: 'No machine online',
+                code: 'no_machine_online'
+            })
+            expect(spawnCalled).toBe(false)
+            expect(engine.getSession(session.id)?.metadata?.lifecycleState).toBe('archived')
+        } finally {
+            engine.stop()
+        }
+    })
+
     it('resumeSession fresh-spawns when inactive cursor session has no agent id and no user messages', async () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(
@@ -3561,7 +4244,7 @@ describe('session model', () => {
         }
     })
 
-    it('includes first user message in local resumable sessions', () => {
+    it('includes title metadata and the first user message in local resumable sessions', () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(
             store,
@@ -3579,7 +4262,8 @@ describe('session model', () => {
                     machineId: 'machine-1',
                     flavor: 'codex',
                     codexSessionId: 'codex-thread-1',
-                    name: 'Generated title'
+                    name: 'Generated title',
+                    promptTitle: 'Build the picker'
                 },
                 null,
                 'default'
@@ -3597,6 +4281,7 @@ describe('session model', () => {
 
             expect(sessions.find((item) => item.sessionId === session.id)).toMatchObject({
                 name: 'Generated title',
+                promptTitle: 'Build the picker',
                 firstUserMessage: 'Build the picker with search'
             })
         } finally {
@@ -3823,6 +4508,105 @@ describe('session model', () => {
             expect(cache.getSession(s2.id)).toBeDefined()
             store.close()
         })
+
+        it('does not merge the same OpenCode session id across different machines', async () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+            const s1 = cache.getOrCreateSession(
+                'opencode-tag-1',
+                { path: '/tmp/project', host: 'one', machineId: 'machine-1', flavor: 'opencode', opencodeSessionId: 'native-opencode-id' },
+                null,
+                'default'
+            )
+            const s2 = cache.getOrCreateSession(
+                'opencode-tag-2',
+                { path: '/tmp/project', host: 'two', machineId: 'machine-2', flavor: 'opencode', opencodeSessionId: 'native-opencode-id' },
+                null,
+                'default'
+            )
+
+            await cache.deduplicateByAgentSessionId(s2.id)
+
+            expect(cache.getSession(s1.id)).toBeDefined()
+            expect(cache.getSession(s2.id)).toBeDefined()
+            store.close()
+        })
+
+        for (const [flavor, field] of [['codex', 'codexSessionId'], ['claude', 'claudeSessionId']] as const) {
+            it(`does not merge the same ${flavor} session id across different machines`, async () => {
+                const store = new Store(':memory:')
+                const events: SyncEvent[] = []
+                const cache = new SessionCache(store, createPublisher(events))
+                const s1 = cache.getOrCreateSession(
+                    `${flavor}-tag-1`,
+                    { path: '/tmp/project', host: 'one', machineId: 'machine-1', flavor, [field]: 'native-id' },
+                    null,
+                    'default'
+                )
+                const s2 = cache.getOrCreateSession(
+                    `${flavor}-tag-2`,
+                    { path: '/tmp/project', host: 'two', machineId: 'machine-2', flavor, [field]: 'native-id' },
+                    null,
+                    'default'
+                )
+
+                await cache.deduplicateByAgentSessionId(s2.id)
+
+                expect(cache.getSession(s1.id)).toBeDefined()
+                expect(cache.getSession(s2.id)).toBeDefined()
+                store.close()
+            })
+
+            it(`still merges the same ${flavor} session id when one side has no machine`, async () => {
+                const store = new Store(':memory:')
+                const events: SyncEvent[] = []
+                const cache = new SessionCache(store, createPublisher(events))
+                const s1 = cache.getOrCreateSession(
+                    `${flavor}-tag-1`,
+                    { path: '/tmp/project', host: 'one', flavor, [field]: 'native-id' },
+                    null,
+                    'default'
+                )
+                const s2 = cache.getOrCreateSession(
+                    `${flavor}-tag-2`,
+                    { path: '/tmp/project', host: 'two', machineId: 'machine-2', flavor, [field]: 'native-id' },
+                    null,
+                    'default'
+                )
+
+                await cache.deduplicateByAgentSessionId(s2.id)
+
+                expect([cache.getSession(s1.id), cache.getSession(s2.id)].filter(Boolean)).toHaveLength(1)
+                store.close()
+            })
+
+            it(`runs a ${flavor} dedup triggered on another machine while one pass is in flight`, async () => {
+                const store = new Store(':memory:')
+                const events: SyncEvent[] = []
+                const cache = new SessionCache(store, createPublisher(events))
+                const create = (tag: string, machineId: string) => cache.getOrCreateSession(
+                    tag,
+                    { path: '/tmp/project', host: machineId, machineId, flavor, [field]: 'native-id' },
+                    null,
+                    'default'
+                )
+                const a1 = create(`${flavor}-a1`, 'machine-a')
+                const a2 = create(`${flavor}-a2`, 'machine-a')
+                const b1 = create(`${flavor}-b1`, 'machine-b')
+                const b2 = create(`${flavor}-b2`, 'machine-b')
+
+                // Machine A's pass is still merging when machine B's trigger
+                // arrives; the follow-up pass must cover machine B's pair.
+                const first = cache.deduplicateByAgentSessionId(a2.id)
+                const second = cache.deduplicateByAgentSessionId(b2.id)
+                await Promise.all([first, second])
+
+                expect([cache.getSession(a1.id), cache.getSession(a2.id)].filter(Boolean)).toHaveLength(1)
+                expect([cache.getSession(b1.id), cache.getSession(b2.id)].filter(Boolean)).toHaveLength(1)
+                store.close()
+            })
+        }
 
         it('does not merge across namespaces', async () => {
             const store = new Store(':memory:')

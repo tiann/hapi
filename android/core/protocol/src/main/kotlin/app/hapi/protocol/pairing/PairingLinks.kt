@@ -23,8 +23,8 @@ object PairingLinks {
     fun parse(raw: String): BindLink? = BindLink.parse(raw) ?: parseWebUrl(raw)
 
     /**
-     * Parses the web direct-access QR: any absolute http(s) URL whose query
-     * carries non-blank `hub` (itself an http(s) URL) and `token` params. The
+     * Parses the web direct-access QR: any absolute HTTPS URL whose query
+     * carries non-blank `hub` (itself an HTTPS URL) and `token` params. The
      * host is deliberately not pinned to `app.hapi.run` — self-hosters may
      * serve the web app from their own origin. Returns null otherwise.
      */
@@ -35,13 +35,13 @@ object PairingLinks {
             return null
         }
         val scheme = uri.scheme?.lowercase() ?: return null
-        if (scheme != "http" && scheme != "https") return null
+        if (scheme != "https") return null
         if ((uri.host ?: uri.authority).isNullOrBlank()) return null
 
         val params = BindLink.parseFormQuery(uri.rawQuery ?: return null) ?: return null
         val hub = params["hub"]?.takeIf { it.isNotBlank() } ?: return null
         val token = params["token"]?.takeIf { it.isNotBlank() } ?: return null
-        if (!BindLink.isHttpUrl(hub)) return null
+        if (!BindLink.isHttpsUrl(hub)) return null
         return BindLink(hubUrl = hub, accessToken = token)
     }
 }

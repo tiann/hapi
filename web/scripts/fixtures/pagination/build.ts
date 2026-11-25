@@ -14,7 +14,7 @@ const PAGE_DIRECTIONS = new Set(['latest', 'before', 'after'])
 const PAGE_KEYS = [
     'direction', 'limit', 'epoch', 'reset',
     'nextBeforeAt', 'nextBeforeSeq', 'nextAfterAt', 'nextAfterSeq',
-    'snapshotHeadAt', 'snapshotHeadSeq', 'hasMore'
+    'snapshotHeadAt', 'snapshotHeadSeq', 'hasMore', 'readThroughRevision'
 ] as const
 
 function fail(label: string, reason: string): never {
@@ -67,6 +67,9 @@ function validateResponse(response: MessagesResponse, label: string): void {
     }
     if (typeof page.reset !== 'boolean') fail(label, 'page.reset must be a boolean')
     if (typeof page.hasMore !== 'boolean') fail(label, 'page.hasMore must be a boolean')
+    if (page.readThroughRevision !== undefined && (!Number.isSafeInteger(page.readThroughRevision) || (page.readThroughRevision as number) < 0)) {
+        fail(label, 'page.readThroughRevision must be a non-negative safe integer')
+    }
     for (const key of ['nextBeforeAt', 'nextBeforeSeq', 'nextAfterAt', 'nextAfterSeq', 'snapshotHeadAt', 'snapshotHeadSeq'] as const) {
         if (!isNullableNumber(page[key])) fail(label, `page.${key} must be a number or null`)
     }

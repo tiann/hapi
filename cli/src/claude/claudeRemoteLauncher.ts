@@ -1,18 +1,22 @@
-import React from "react";
 import { Session } from "./session";
-import { RemoteModeDisplay } from "@/ui/ink/RemoteModeDisplay";
-import { claudeRemote } from "./claudeRemote";
+import { claudeRemote, type ClaudeSteerTarget, type CompactSummaryPayload } from "./claudeRemote";
+import { convertAgentMessage } from "@/agent/messageConverter";
 import { PermissionHandler } from "./utils/permissionHandler";
 import { Future } from "@/utils/future";
+import { hashObject } from "@/utils/deterministicJson";
 import { SDKAssistantMessage, SDKMessage, SDKUserMessage } from "./sdk";
 import { formatClaudeMessageForInk } from "@/ui/messageFormatterInk";
 import { logger } from "@/ui/logger";
 import { SDKToLogConverter } from "./utils/sdkToLogConverter";
 import { PLAN_FAKE_REJECT } from "./sdk/prompts";
-import { EnhancedMode } from "./loop";
+import { claudeProcessModeKey, claudeBatchModeHash, EnhancedMode } from "./loop";
 import { OutgoingMessageQueue } from "./utils/OutgoingMessageQueue";
-import type { ClaudePermissionMode } from "@hapi/protocol/types";
-import { applySessionTitleFallback } from './utils/sessionTitleFallback';
+import type { PermissionModeOf, Flavors } from "@hapi/protocol/types";
+import { RPC_METHODS } from "@hapi/protocol/rpcMethods";
+import { getClaudeNativeSlashCommand, parseSpecialCommand } from "@/parsers/specialCommands";
+import { deriveSpawnArgs, isSessionMaterialized } from './conversationHistory';
+import { ClaudeToolResultImages } from './utils/toolResultImages';
+import { applySessionTitleFallback, readNativeSessionTitle, stripAttachmentReferences } from './utils/sessionTitleFallback';
 import {
     RemoteLauncherBase,
     type RemoteLauncherDisplayContext,
@@ -22,7 +26,7 @@ import {
 interface PermissionsField {
     date: number;
     result: 'approved' | 'denied';
-    mode?: ClaudePermissionMode;
+    mode?: PermissionModeOf<typeof Flavors.claude>;
     allowedTools?: string[];
 }
 
@@ -51,13 +55,21 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
     private abortFuture: Future<void> | null = null;
     private permissionHandler: PermissionHandler | null = null;
     private handleSessionFound: ((sessionId: string) => void) | null = null;
+    /** The running plain turn that can take a steered queue row, if any. */
+    // One-shot respawn requested by a history RPC (rewind): abort the current
+    // attempt so the main loop relaunches Claude with the fresh flags.
+    private restartRequested = false;
+    private steerTarget: { target: ClaudeSteerTarget; modeHash: string | null; signal: AbortSignal } | null = null;
 
     constructor(session: Session) {
         super(process.env.DEBUG ? session.logPath : undefined);
         this.session = session;
     }
 
-    protected createDisplay(context: RemoteLauncherDisplayContext): React.ReactElement {
+    protected async createDisplay(context: RemoteLauncherDisplayContext): Promise<React.ReactElement> {
+        const [{ default: React }, { RemoteModeDisplay }] = await Promise.all([
+            import('react'), import('@/ui/ink/RemoteModeDisplay')
+        ]);
         return React.createElement(RemoteModeDisplay, context);
     }
 
@@ -114,6 +126,17 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
         await this.handleSwitchRequest();
     }
 
+    /**
+     * Abort the current SDK attempt (without an exit reason) so the main loop
+     * respawns Claude with fresh one-shot args. Used by history RPCs that need
+     * a process restart to apply --resume-session-at.
+     */
+    public async requestRestart(): Promise<void> {
+        logger.debug('[remote]: doRestart');
+        this.restartRequested = true;
+        await this.abort();
+    }
+
     public async launch(): Promise<RemoteLauncherExitReason> {
         return this.start({
             onExit: () => this.handleExitFromUi(),
@@ -128,6 +151,8 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
         const session = this.session;
         const messageBuffer = this.messageBuffer;
 
+        session.requestRemoteRestart = () => this.requestRestart();
+
         this.setupAbortHandlers(session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbortRequest(),
             onSwitch: () => this.handleSwitchRequest()
@@ -136,13 +161,135 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
         const permissionHandler = new PermissionHandler(session);
         this.permissionHandler = permissionHandler;
 
+        const toolResultImages = new ClaudeToolResultImages();
         const messageQueue = new OutgoingMessageQueue(
-            (logMessage) => session.client.sendClaudeSessionMessage(logMessage)
+            (logMessage) => toolResultImages.send(session.client, logMessage)
         );
 
         permissionHandler.setOnPermissionRequest((toolCallId: string) => {
             messageQueue.releaseToolCall(toolCallId);
         });
+
+        const recordHistoryPoint = (localId: string | undefined, nativePromptUuid: string) => {
+            if (!localId || !nativePromptUuid) return;
+            session.client.updateMetadata((metadata) => ({
+                ...metadata,
+                conversationHistoryPoints: {
+                    ...metadata?.conversationHistoryPoints,
+                    [localId]: true
+                },
+                conversationHistoryEntryIds: {
+                    ...metadata?.conversationHistoryEntryIds,
+                    [localId]: nativePromptUuid
+                }
+            }));
+            session.onNativeInputSubmitted?.(nativePromptUuid);
+        };
+
+        // Per-message steer from the waiting queue (web "Steer" button), the
+        // same as Ctrl+X Ctrl+S in the Claude TUI: the row is written to the
+        // running process and Claude folds it in at its next tool boundary.
+        session.client.rpcHandlerManager.registerHandler(
+            RPC_METHODS.SteerQueuedMessage,
+            async (payload: unknown) => {
+                const localId = typeof (payload as { localId?: unknown } | null)?.localId === 'string'
+                    ? (payload as { localId: string }).localId
+                    : '';
+                if (!localId) {
+                    return { steered: false, error: 'Missing localId' };
+                }
+                const active = this.steerTarget;
+                if (!active || active.signal.aborted) {
+                    return { steered: false, error: 'No active steerable turn' };
+                }
+                const taken = session.queue.takeByLocalId(localId);
+                if (!taken) {
+                    return { steered: false, error: 'Message not in queue' };
+                }
+                if (taken.item.isolate || parseSpecialCommand(taken.item.message).type !== null) {
+                    session.queue.restoreReservation(taken);
+                    return { steered: false, error: 'Control commands cannot be steered' };
+                }
+                if (taken.item.modeHash !== active.modeHash) {
+                    session.queue.restoreReservation(taken);
+                    return { steered: false, error: 'Queued message mode differs from the active turn' };
+                }
+                if (!session.queue.beginReservationDispatch(taken)) {
+                    return { steered: false, error: 'Steer cancelled' };
+                }
+                const dispatchStatePersisted = await session.client.setSteerDeliveryState([localId], 'dispatching');
+                if (!dispatchStatePersisted) {
+                    session.queue.markReservationIndeterminate(taken);
+                    session.client.emitSteerIndeterminate([localId]);
+                    return { steered: false, error: 'Steer state is indeterminate' };
+                }
+                const restoreQueuedReservation = async (): Promise<boolean> => {
+                    if (!taken.originIndeterminate) {
+                        const persisted = await session.client.setSteerDeliveryState([localId], 'queued');
+                        if (!persisted) {
+                            session.queue.markReservationIndeterminate(taken);
+                            session.client.emitSteerIndeterminate([localId]);
+                            return false;
+                        }
+                    }
+                    if (taken.state !== 'dispatching' || !session.queue.restoreReservation(taken)) {
+                        session.client.emitSteerIndeterminate([localId]);
+                        return false;
+                    }
+                    return true;
+                };
+                if (taken.state !== 'dispatching') {
+                    session.client.emitSteerIndeterminate([localId]);
+                    return { steered: false, error: 'Steer cancelled' };
+                }
+                if (this.steerTarget !== active || active.signal.aborted) {
+                    await restoreQueuedReservation();
+                    return { steered: false, error: 'Active turn changed' };
+                }
+
+                const deliveredText = session.expandSkillReference(taken.item.message);
+                session.client.notePendingHubPromptEcho(deliveredText, [localId]);
+                const delivery = active.target.steer(deliveredText);
+                if (!delivery) {
+                    session.client.discardPendingHubPromptEcho(localId);
+                    await restoreQueuedReservation();
+                    return { steered: false, error: 'Active turn changed' };
+                }
+                permissionHandler.denyPendingForSteer();
+                void delivery.delivered.then(async (delivered) => {
+                    if (delivered) {
+                        // Agent output preceding the pickup is already in the
+                        // outgoing queue; send it first so the steered row is
+                        // stamped after it, not above it.
+                        await messageQueue.flush();
+                        session.queue.commitReservation(taken);
+                        messageBuffer.addMessage(taken.item.message, 'user');
+                        // Steered messages become real native user turns only
+                        // once Claude echoes pickup; publish history locators
+                        // and run rewind branch proof then.
+                        recordHistoryPoint(localId, delivery.uuid);
+                        session.client.emitMessagesConsumed([localId], { steered: true });
+                        return;
+                    }
+                    session.client.discardPendingHubPromptEcho(localId);
+                    if (active.signal.aborted) {
+                        // Abort killed the process with the row unacknowledged:
+                        // hold it for explicit Retry/Cancel instead of replaying
+                        // it into a turn the user just stopped.
+                        if (session.queue.markReservationIndeterminate(taken)) {
+                            session.client.emitSteerIndeterminate([localId]);
+                        }
+                        return;
+                    }
+                    // Claude exited before it ever picked the row up, so it was
+                    // never part of the conversation: queue it again.
+                    await restoreQueuedReservation();
+                }).catch((error) => {
+                    logger.debug('[remote]: steered message settlement failed', error);
+                });
+                return { steered: true };
+            }
+        );
 
         const sdkToLogConverter = new SDKToLogConverter({
             sessionId: session.sessionId || 'unknown',
@@ -316,7 +463,21 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                 isolate: boolean;
                 hash: string;
                 items: Array<{ message: string; localId?: string }>;
-            } | null = null;
+            } | null = null as {
+                message: string;
+                mode: EnhancedMode;
+                isolate: boolean;
+                hash: string;
+                items: Array<{ message: string; localId?: string }>;
+            } | null;
+
+            // The full mode of the last batch actually handed to the SDK in any
+            // attempt (fresh delivery or parked-batch replay). A resume-at
+            // respawn is promptless, so claudeRemote's first-mode overwrite
+            // never runs and bootstrapMode is the entire launch configuration;
+            // the process-affecting fields have no session getter, so they are
+            // re-supplied from here.
+            let lastDeliveredMode: EnhancedMode | null = null;
 
             let previousSessionId: string | null = null;
             let immediateFailureCount = 0;
@@ -336,11 +497,15 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                 }
 
                 previousSessionId = session.sessionId;
+                // A restart flag only concerns the attempt that was aborted; the
+                // fresh attempt must classify its own aborts normally.
+                this.restartRequested = false;
                 const controller = new AbortController();
                 this.abortController = controller;
                 this.abortFuture = new Future<void>();
                 let modeHash: string | null = null;
                 let mode: EnhancedMode | null = null;
+                let applyEffort: ((effort: string | null) => Promise<boolean>) | null = null;
                 // True once onReady() has fired at least once during this
                 // attempt. Used to distinguish an immediate/deterministic
                 // failure (never reached ready) from a failure after real
@@ -380,15 +545,97 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                 // typecheck with "Property 'isolate' does not exist on type
                 // 'never'" (verified against `bun run typecheck`).
                 let inFlightMessage: InFlightMessage | null = null as InFlightMessage | null;
+                const restoreInFlightMessage = () => {
+                    if (!inFlightMessage) return;
+                    session.queue.unshiftBatch(inFlightMessage);
+                    inFlightMessage = null;
+                };
+                // A resume-at respawn (rewind restart or crash re-arm) starts
+                // query() before any prompt exists, so the first-mode
+                // overwrite inside claudeRemote() never runs and bootstrapMode
+                // is the entire launch configuration. Seed it with the mode of
+                // the batch the respawn will deliver: a parked batch first,
+                // else the queue head (mode fields like customSystemPrompt AND
+                // the RPC-tracked permissionMode/model/effort ride the
+                // message, and the live getters may have changed since the
+                // batch was queued). With an empty queue the getters own the
+                // tracked fields on top of the last delivered mode's
+                // process-affecting ones, so a rewind or crash cannot strip
+                // the launch configuration.
+                // Spawn-time boundary derivation (deriveSpawnArgs): the
+                // durable rewind intent plus a fresh transcript evaluation
+                // decide the boundary; a fork-at-message request's boundary
+                // applies only while the child is unbuilt. session.claudeArgs
+                // is only read, never mutated for the boundary.
+                const { args: spawnArgs, boundary: spawnBoundary } = deriveSpawnArgs({
+                    claudeArgs: session.claudeArgs,
+                    sessionId: session.sessionId,
+                    intent: session.client.getMetadata()?.claudeRewind,
+                    workingDirectory: session.path,
+                    startupBoundary: session.startupResumeSessionAt
+                });
+                const resumeAtArmed = spawnBoundary != null;
+                const resumeAtBootstrapMode: EnhancedMode | null = !resumeAtArmed ? null
+                    : pending?.mode
+                        ?? session.queue.peekNextBatchMode()?.mode
+                        ?? {
+                            ...(lastDeliveredMode ?? {}),
+                            permissionMode: session.getPermissionMode() ?? 'default',
+                            model: session.getModel() ?? undefined,
+                            effort: session.getEffort() ?? undefined,
+                        };
+                if (resumeAtBootstrapMode) {
+                    // The spawned process runs this configuration from its
+                    // first prompt, so the first arriving batch must be gated
+                    // against it exactly like later batches. Without the seed,
+                    // modeHash stays null until the first delivery and a
+                    // config-changed batch arriving on an empty-queue respawn
+                    // is handed straight into the stale-config process.
+                    modeHash = claudeBatchModeHash(resumeAtBootstrapMode);
+                    mode = resumeAtBootstrapMode;
+                }
+                const resetSession = () => {
+                    logger.debug('[remote]: Session reset');
+                    session.clearSessionId();
+                    permissionHandler.reset();
+                    sdkToLogConverter.resetParentChain();
+                    session.consumeOneTimeFlags();
+                    session.onConversationReset?.();
+                };
+                let clearHookSessionId: string | undefined;
+                let awaitingLateClearHook = false;
+                session.handleRemoteClearHook = (sessionId) => {
+                    const clearInFlight = inFlightMessage && getClaudeNativeSlashCommand(inFlightMessage.deliveredText) === 'clear';
+                    if (!clearInFlight && !awaitingLateClearHook) return false;
+                    if (sessionId !== session.sessionId) {
+                        resetSession();
+                        session.onSessionFound(sessionId);
+                        clearHookSessionId = sessionId;
+                        awaitingLateClearHook = false;
+                        inFlightMessage = null;
+                    }
+                    return true;
+                };
                 try {
                     await claudeRemote({
                         sessionId: session.sessionId,
                         path: session.path,
+                        claudeArgs: spawnArgs,
                         allowedTools: session.allowedTools ?? [],
                         mcpServers: session.mcpServers,
                         hookSettingsPath: session.hookSettingsPath,
                         canCallTool: permissionHandler.handleToolCall,
-                        bootstrapMode: {
+                        setPermissionModeListener: session.setPermissionModeListener,
+                        setEffortApplier: (applier) => {
+                            applyEffort = applier;
+                        },
+                        onPermissionModeRejected: (mode, reason) => {
+                            session.setPermissionMode(mode);
+                            session.pushKeepAlive();
+                            session.client.sendSessionEvent({ type: 'permission-mode-changed', mode });
+                            session.client.sendSessionEvent({ type: 'message', message: reason });
+                        },
+                        bootstrapMode: resumeAtBootstrapMode ?? {
                             permissionMode: session.getPermissionMode() ?? 'default',
                             model: session.getModel() ?? undefined,
                             effort: session.getEffort() ?? undefined,
@@ -396,14 +643,30 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         isAborted: (toolCallId: string) => {
                             return permissionHandler.isAborted(toolCallId);
                         },
-                        nextMessage: async () => {
+                        onInputSubmitted: (nativePromptUuid: string) => {
+                            // The submitted batch becomes one native user entry;
+                            // the hub transcript's first localId maps to it, so
+                            // fork-at-message and rewind can resolve boundaries
+                            // and the web can show the per-message affordances.
+                            const localId = inFlightMessage?.items.find((item) => item.localId)?.localId;
+                            recordHistoryPoint(localId, nativePromptUuid);
+                        },
+                        onInputUndelivered: restoreInFlightMessage,
+                        nextMessage: async (correlatesResults, streamSignal) => {
                             // Flush any pending outgoing messages before consuming the next user
                             // turn. Without this, scheduleProcessing()'s setTimeout(fn,0) fires
                             // after the microtask that sends messages-consumed, causing the hub
                             // to stamp invokedAt on the next user message before it stores the
                             // current turn's queued agent messages — making them sort permanently
                             // below the next user message.
+                            // The result summary is enqueued by onMessage immediately before onReady.
+                            // Drain it before ready so live clients receive the round metadata before
+                            // they close out the running turn.
                             await messageQueue.flush();
+                            const dequeueSignal = streamSignal
+                                ? AbortSignal.any([controller.signal, streamSignal])
+                                : controller.signal;
+                            if (dequeueSignal.aborted) return null;
 
                             if (pending) {
                                 let p = pending;
@@ -415,6 +678,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 // --permission-mode (e.g. auto silently running as default).
                                 modeHash = p.hash;
                                 mode = p.mode;
+                                lastDeliveredMode = p.mode;
                                 permissionHandler.handleModeChange(p.mode.permissionMode);
                                 // Re-resolve the selected-model seed hint for every turn, not
                                 // just the first: a single claudeRemote() call keeps accepting
@@ -432,10 +696,37 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 return { ...p, message: deliveredText };
                             }
 
-                            let msg = await session.queue.waitForMessagesAndGetAsString(controller.signal);
+                            const msg = await session.queue.waitForMessagesAndGetAsString(dequeueSignal);
 
                             if (msg) {
-                                if ((modeHash && msg.hash !== modeHash) || msg.isolate) {
+                                if (dequeueSignal.aborted) {
+                                    session.queue.unshiftBatch(msg);
+                                    return null;
+                                }
+                                const command = msg.isolate ? parseSpecialCommand(msg.message).type : null;
+                                const canRunIsolatedInProcess = deliveredMessageThisAttempt
+                                    && correlatesResults
+                                    && !spawnArgs?.includes('--disable-slash-commands')
+                                    && (command === 'compact' || command === 'clear');
+                                const requiresIsolationRestart = msg.isolate && !canRunIsolatedInProcess;
+                                // An effort-only change is applied to the running process.
+                                // The batch is already dequeued, so park it first: if Claude
+                                // refuses, times out or exits meanwhile, it stays in `pending`
+                                // and the next attempt starts with the new effort instead.
+                                const effortOnlyChange = Boolean(modeHash && msg.hash !== modeHash && !requiresIsolationRestart && mode
+                                    && hashObject(claudeProcessModeKey(msg.mode)) === hashObject(claudeProcessModeKey(mode)));
+                                let effortApplied = false;
+                                if (effortOnlyChange && applyEffort !== null) {
+                                    const parked = msg;
+                                    pending = parked;
+                                    effortApplied = await applyEffort(parked.mode.effort ?? null) && pending === parked;
+                                    if (!effortApplied) {
+                                        logger.debug('[remote]: live effort change not applied, pending message');
+                                        return null;
+                                    }
+                                    pending = null;
+                                }
+                                if (((modeHash && msg.hash !== modeHash) || requiresIsolationRestart) && !effortApplied) {
                                     // Parked into `pending`, not handed to the
                                     // SDK -- deliberately NOT tracked as
                                     // inFlightMessage. `pending` is declared
@@ -455,6 +746,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 }
                                 modeHash = msg.hash;
                                 mode = msg.mode;
+                                lastDeliveredMode = msg.mode;
                                 permissionHandler.handleModeChange(mode.permissionMode);
                                 sdkToLogConverter.updateSelectedModel(mode.model ?? null);
                                 deliveredMessageThisAttempt = true;
@@ -474,43 +766,99 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         },
                         onSessionFound: (sessionId) => {
                             session.onSessionFound(sessionId);
-                            // The one-time --resume flag must only be dropped once we know
-                            // Claude actually captured a session id from it. If claudeRemote()
-                            // bails out before this fires (e.g. the initial nextMessage() came
-                            // back null because a relaunch trigger arrived before any turn was
-                            // ever processed), the flag stays in session.claudeArgs so the next
-                            // launch attempt can still resume the original session.
-                            session.consumeOneTimeFlags();
+                            // The one-time --resume/--fork-session flags must only
+                            // be dropped once the launched session materialized on
+                            // disk. If claudeRemote() exits before the transcript
+                            // exists, the flags stay in session.claudeArgs so the
+                            // next attempt can still resume or fork the source.
+                            if (isSessionMaterialized(sessionId, session.path)) {
+                                session.consumeOneTimeFlags();
+                            }
                         },
                         onThinkingChange: session.onThinkingChange,
                         claudeEnvVars: session.claudeEnvVars,
-                        claudeArgs: session.claudeArgs,
                         onMessage,
+                        onDroppedResult: (message) => sdkToLogConverter.consumeResultForAccounting(message),
+                        onSpawn: (fresh) => {
+                            if (fresh) sdkToLogConverter.startFreshProcessBaseline();
+                        },
+                        onContextUsage: (usage) => sdkToLogConverter.applyContextUsage(usage.model, usage.maxTokens),
+                        onAccountIdentity: (identity) => sdkToLogConverter.updateAccountIdentity?.(identity),
                         onFirstResult: (initialMessage) => {
-                            applySessionTitleFallback(session.client, initialMessage);
+                            // SDK streams omit Claude Code's native ai-title; it is only in the transcript.
+                            const sessionId = session.sessionId;
+                            void (sessionId ? readNativeSessionTitle(session.path, sessionId) : Promise.resolve(null))
+                                .then((nativeTitle) => applySessionTitleFallback(
+                                    session.client,
+                                    nativeTitle ?? stripAttachmentReferences(initialMessage)
+                                ));
+                        },
+                        onResultAccepted: (keepClearHookPending = false) => {
+                            // The input has completed at the SDK boundary even
+                            // if ready is deferred (compact summary lookup, or
+                            // a steer follow-up turn). A later stream failure
+                            // must not replay it.
+                            reachedReadyThisAttempt = true;
+                            inFlightMessage = null;
+                            clearHookSessionId = undefined;
+                            awaitingLateClearHook = keepClearHookPending;
                         },
                         onCompletionEvent: (message: string) => {
                             logger.debug(`[remote]: Completion event: ${message}`);
                             session.client.sendSessionEvent({ type: 'message', message });
                         },
-                        onSessionReset: () => {
-                            logger.debug('[remote]: Session reset');
-                            session.clearSessionId();
-                            // /clear discards the resume anchor along with the
-                            // context. Without this, the flag would outlive the
-                            // reset (claudeRemote() returns before spawning
-                            // Claude, so onSessionFound never fires) and the
-                            // next launch would resume the session the user
-                            // just asked to clear.
-                            session.consumeOneTimeFlags();
+                        getClearHookSessionId: () => clearHookSessionId,
+                        onSessionReset: (sessionId) => {
+                            if (sessionId === undefined || sessionId !== session.sessionId) {
+                                resetSession();
+                            }
                         },
-                        onReady: () => {
+                        onReady: async (completionEvent?: string, compactSummary?: CompactSummaryPayload, compactContextTokens?: number) => {
                             // Reaching ready at all means this attempt is not an
                             // immediate/deterministic failure -- reset the
                             // respawn-storm guard. The turn that led here is no
                             // longer "in flight" either.
                             reachedReadyThisAttempt = true;
                             inFlightMessage = null;
+                            clearHookSessionId = undefined;
+                            session.consumeStartupResumeSessionAt?.();
+
+                            await messageQueue.flush();
+
+                            if (completionEvent) {
+                                logger.debug(`[remote]: Completion event: ${completionEvent}`);
+                                session.client.sendSessionEvent({ type: 'message', message: completionEvent });
+                            }
+                            if (compactSummary) {
+                                logger.debug(`[remote]: Compact summary promoted (${compactSummary.summary.length} chars)`);
+                                session.client.sendSessionEvent({
+                                    type: 'compact-summary',
+                                    summary: compactSummary.summary,
+                                    tokensBefore: compactSummary.tokensBefore,
+                                    tokensAfter: compactSummary.tokensAfter
+                                });
+                            }
+                            if (compactContextTokens !== undefined) {
+                                // The status bar keeps the last pre-compaction
+                                // usage until the next model response; refresh
+                                // it with the boundary's post-tokens the same
+                                // way the Pi launcher does. Carry the resolved
+                                // context window along: the reducer replaces
+                                // latestUsage wholesale, so a context-only
+                                // sample would otherwise drop a known window
+                                // (e.g. 1M) and fall back to the heuristic.
+                                const convertedUsage = convertAgentMessage(
+                                    {
+                                        type: 'usage',
+                                        inputTokens: 0,
+                                        outputTokens: 0,
+                                        contextTokens: compactContextTokens,
+                                        contextWindow: sdkToLogConverter.currentContextWindow()
+                                    },
+                                    session.getModel()
+                                );
+                                if (convertedUsage) session.client.sendAgentMessage(convertedUsage);
+                            }
 
                             logger.debug(
                                 `[claudeRemoteLauncher][async-debug] onReady callback ` +
@@ -523,11 +871,21 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 logger.debug('[claudeRemoteLauncher][async-debug] ready event suppressed (pending input exists)');
                             }
                         },
+                        onSteerTargetChange: (target) => {
+                            this.steerTarget = target
+                                ? { target, modeHash, signal: controller.signal }
+                                : null;
+                            session.client.updateAgentState((state) => ({ ...state, steeringActive: target !== null }));
+                        },
                         signal: controller.signal,
                     });
 
                     if (!this.exitReason && controller.signal.aborted) {
-                        session.client.sendSessionEvent({ type: 'message', message: 'Aborted by user' });
+                        if (this.restartRequested) {
+                            this.restartRequested = false;
+                        } else {
+                            session.client.sendSessionEvent({ type: 'message', message: 'Aborted by user' });
+                        }
                     }
 
                     // A full attempt completed without throwing. Clear the
@@ -554,34 +912,10 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     // never fire (livelock).
                     if (reachedReadyThisAttempt || deliveredMessageThisAttempt) {
                         immediateFailureCount = 0;
+                        session.consumeStartupResumeSessionAt?.();
                     }
                 } catch (e) {
                     logger.debug('[remote]: launch error', e);
-
-                    // Restores a message batch that was already
-                    // dequeued+acked from the queue (see
-                    // MessageQueue2.collectBatch: the ack fires at dequeue
-                    // time, before the SDK ever sees the message) but never
-                    // got a chance to be processed, so it is retried instead
-                    // of lost. Each original item is unshifted individually,
-                    // in reverse order, so per-item localId is preserved
-                    // (reconnecting the retried prompt to its hub row instead
-                    // of a localId-less orphan) and the original relative
-                    // order is restored -- collectBatch() joins same-mode
-                    // items into a single `message` string for the SDK, but
-                    // still returns the pre-join `items` breakdown for this.
-                    const restoreInFlightMessage = () => {
-                        if (!inFlightMessage) return;
-                        const { items, mode, isolate } = inFlightMessage;
-                        for (const item of [...items].reverse()) {
-                            if (isolate) {
-                                session.queue.unshiftIsolated(item.message, mode, item.localId);
-                            } else {
-                                session.queue.unshift(item.message, mode, item.localId);
-                            }
-                        }
-                        inFlightMessage = null;
-                    };
 
                     if (!this.exitReason) {
                         const detail = e instanceof Error ? e.message : String(e);
@@ -592,7 +926,22 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             immediateFailureCount += 1;
                         }
 
-                        if (immediateFailureCount >= MAX_IMMEDIATE_RESPAWN_FAILURES) {
+                        if (this.restartRequested) {
+                            // Intentional restart (history RPC): the aborted
+                            // in-flight turn belongs to the pre-rewind history.
+                            // Re-delivering it into the respawned process would
+                            // diverge native history from the hub transcript.
+                            for (const item of inFlightMessage?.items ?? []) {
+                                if (item.localId) {
+                                    session.client.discardPendingHubPromptEcho(item.localId)
+                                }
+                            }
+                            if (inFlightMessage?.deliveredText) {
+                                session.client.discardPendingHubPromptEchoText(inFlightMessage.deliveredText)
+                            }
+                            inFlightMessage = null;
+                            this.restartRequested = false;
+                        } else if (immediateFailureCount >= MAX_IMMEDIATE_RESPAWN_FAILURES) {
                             // Give up on retrying *this message*, not the
                             // whole session. Restoring it here would feed it
                             // straight back into another immediate failure on
@@ -603,15 +952,31 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             // Reset the streak and keep the loop (and this OS
                             // process) alive so an unrelated later message
                             // gets its own fresh budget.
-                            for (const item of inFlightMessage?.items ?? []) {
-                                if (item.localId) {
-                                    session.client.discardPendingHubPromptEcho(item.localId)
+                            if (inFlightMessage) {
+                                for (const item of inFlightMessage.items) {
+                                    if (item.localId) {
+                                        session.client.discardPendingHubPromptEcho(item.localId);
+                                    }
+                                }
+                                if (inFlightMessage.deliveredText) {
+                                    session.client.discardPendingHubPromptEchoText(inFlightMessage.deliveredText);
+                                }
+                                inFlightMessage = null;
+                            } else if (pending) {
+                                for (const item of pending.items) {
+                                    if (item.localId) {
+                                        session.client.discardPendingHubPromptEcho(item.localId);
+                                    }
+                                }
+                                pending = null;
+                            } else if (session.queue.size() > 0) {
+                                const dropped = await session.queue.waitForMessagesAndGetAsString(controller.signal);
+                                for (const item of dropped?.items ?? []) {
+                                    if (item.localId) {
+                                        session.client.discardPendingHubPromptEcho(item.localId);
+                                    }
                                 }
                             }
-                            if (inFlightMessage?.deliveredText) {
-                                session.client.discardPendingHubPromptEchoText(inFlightMessage.deliveredText)
-                            }
-                            inFlightMessage = null;
                             session.client.sendSessionEvent({
                                 type: 'message',
                                 message: `Process exited unexpectedly ${MAX_IMMEDIATE_RESPAWN_FAILURES} times in a row: ${detail}. Dropping the queued message; resolve the issue and resend it.`
@@ -631,6 +996,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         restoreInFlightMessage();
                     }
                 } finally {
+                    session.handleRemoteClearHook = null;
                     logger.debug('[remote]: launch finally');
 
                     for (let [toolCallId, { parentToolCallId }] of ongoingToolCalls) {
@@ -656,6 +1022,17 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     mode = null;
                 }
             }
+            if (pending) {
+                const { items, mode, isolate } = pending;
+                for (const item of [...items].reverse()) {
+                    if (isolate) {
+                        session.queue.unshiftIsolated(item.message, mode, item.localId);
+                    } else {
+                        session.queue.unshift(item.message, mode, item.localId);
+                    }
+                }
+                pending = null;
+            }
         } finally {
             if (this.permissionHandler) {
                 this.permissionHandler.reset();
@@ -665,6 +1042,8 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
 
     protected async cleanup(): Promise<void> {
         this.clearAbortHandlers(this.session.client.rpcHandlerManager);
+        this.session.requestRemoteRestart = null;
+        this.steerTarget = null;
 
         if (this.handleSessionFound) {
             this.session.removeSessionFoundCallback(this.handleSessionFound);

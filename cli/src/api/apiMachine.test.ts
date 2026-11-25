@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdtempSync, rmSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const ioMock = vi.hoisted(() => vi.fn())
 const listOpencodeModelsForCwdMock = vi.hoisted(() => vi.fn())
+const listOpencodeModelVariantsMock = vi.hoisted(() => vi.fn())
 const listGrokModelsForCwdMock = vi.hoisted(() => vi.fn())
 const listCopilotModelsForCwdMock = vi.hoisted(() => vi.fn())
+const listKimiModelsForCwdMock = vi.hoisted(() => vi.fn())
 const inspectCursorChatStoreMock = vi.hoisted(() => vi.fn())
 
 vi.mock('socket.io-client', () => ({
@@ -21,6 +23,10 @@ vi.mock('../modules/common/opencodeModels', () => ({
     listOpencodeModelsForCwd: listOpencodeModelsForCwdMock
 }))
 
+vi.mock('../modules/common/opencodeModelVariants', () => ({
+    listOpencodeModelVariants: listOpencodeModelVariantsMock
+}))
+
 vi.mock('../modules/common/grokModels', () => ({
     listGrokModelsForCwd: listGrokModelsForCwdMock
 }))
@@ -29,11 +35,24 @@ vi.mock('../modules/common/copilotModels', () => ({
     listCopilotModelsForCwd: listCopilotModelsForCwdMock
 }))
 
+vi.mock('../modules/common/kimiModels', () => ({
+    listKimiModelsForCwd: listKimiModelsForCwdMock
+}))
+
 vi.mock('@/cursor/cursorChatStoreStatus', () => ({
     inspectCursorChatStore: inspectCursorChatStoreMock
 }))
 
+vi.mock('../modules/common/opencodeSessions', () => ({
+    listLocalOpencodeSessionSummaries: vi.fn().mockResolvedValue([
+        { id: 'opencode-wired', title: 'Wired opencode session', lastUserMessage: null, cwd: '/tmp/wired', file: '/tmp/wired.db', modifiedAt: 1 }
+    ]),
+    listLocalOpencodeSessionsWithMessagesByIds: vi.fn().mockResolvedValue([])
+}))
+
 import { ApiMachineClient, normalizeWindowsDriveRoot } from './apiMachine'
+import { registerLocalSessionSource } from '../modules/common/localSessions/registry'
+import { codexLocalSessionSource } from '../modules/common/localSessions/sources/codex'
 import type { Machine } from './types'
 
 function makeMachine(id: string): Machine {
@@ -51,6 +70,84 @@ function makeMachine(id: string): Machine {
         runnerStateVersion: 0
     }
 }
+
+function callListLocalSessions(client: ApiMachineClient, machineId: string, params: { flavor: string; cwd?: string | null; sessionIds?: string[] }): Promise<unknown> {
+    const manager = (client as unknown as { rpcHandlerManager: { handleRequest: (req: { method: string; params: string }) => Promise<string> } }).rpcHandlerManager
+    return manager.handleRequest({
+        method: `${machineId}:listLocalSessions`,
+        params: JSON.stringify(params)
+    }).then((raw) => JSON.parse(raw) as unknown)
+}
+
+describe('ApiMachineClient ListLocalSessions wiring', () => {
+    it('routes every flavor through the registry handler', async () => {
+        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-lls-codex-'))
+        const piSessions = mkdtempSync(join(tmpdir(), 'hapi-lls-pi-'))
+        const claudeHome = mkdtempSync(join(tmpdir(), 'hapi-lls-claude-'))
+        const original = {
+            CODEX_HOME: process.env.CODEX_HOME,
+            PI_CODING_AGENT_SESSION_DIR: process.env.PI_CODING_AGENT_SESSION_DIR,
+            CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR
+        }
+        process.env.CODEX_HOME = codexHome
+        process.env.PI_CODING_AGENT_SESSION_DIR = piSessions
+        process.env.CLAUDE_CONFIG_DIR = claudeHome
+        writeCodexTranscript(codexHome, 'wired.jsonl', { id: 'codex-wired', cwd: '/tmp/wired' }, 'wired prompt')
+        writePiTranscript(piSessions, 'wired.jsonl', 'pi-wired', '/tmp/wired', 'wired pi')
+        const projectDir = join(claudeHome, 'projects', '-tmp-wired')
+        mkdirSync(projectDir, { recursive: true })
+        writeFileSync(join(projectDir, 'claude-wired.jsonl'), [
+            JSON.stringify({ type: 'user', uuid: 'u1', timestamp: '2026-11-13T00:00:00.000Z', cwd: '/tmp/wired', message: { role: 'user', content: 'wired claude' } })
+        ].join('\n'))
+
+        const machine = makeMachine('wiring-machine')
+        const client = new ApiMachineClient('cli-token', machine)
+        try {
+            const codex = await callListLocalSessions(client, machine.id, { flavor: 'codex' }) as { success: boolean; sessions: Array<Record<string, unknown>> }
+            expect(codex.success).toBe(true)
+            expect(codex.sessions[0]).toMatchObject({ id: 'codex-wired', flavor: 'codex' })
+
+            const pi = await callListLocalSessions(client, machine.id, { flavor: 'pi' }) as { success: boolean; sessions: Array<Record<string, unknown>> }
+            expect(pi.success).toBe(true)
+            expect(pi.sessions[0]).toMatchObject({ id: 'pi-wired', flavor: 'pi' })
+
+            const claude = await callListLocalSessions(client, machine.id, { flavor: 'claude' }) as { success: boolean; sessions: Array<Record<string, unknown>> }
+            expect(claude.success).toBe(true)
+            expect(claude.sessions[0]).toMatchObject({ id: 'claude-wired', flavor: 'claude' })
+
+            const opencode = await callListLocalSessions(client, machine.id, { flavor: 'opencode' }) as { success: boolean; sessions: Array<Record<string, unknown>> }
+            expect(opencode.success).toBe(true)
+            expect(opencode.sessions[0]).toMatchObject({ id: 'opencode-wired', flavor: 'opencode' })
+        } finally {
+            client.shutdown()
+            if (original.CODEX_HOME === undefined) delete process.env.CODEX_HOME
+            else process.env.CODEX_HOME = original.CODEX_HOME
+            if (original.PI_CODING_AGENT_SESSION_DIR === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR
+            else process.env.PI_CODING_AGENT_SESSION_DIR = original.PI_CODING_AGENT_SESSION_DIR
+            if (original.CLAUDE_CONFIG_DIR === undefined) delete process.env.CLAUDE_CONFIG_DIR
+            else process.env.CLAUDE_CONFIG_DIR = original.CLAUDE_CONFIG_DIR
+            rmSync(codexHome, { recursive: true, force: true })
+            rmSync(piSessions, { recursive: true, force: true })
+            rmSync(claudeHome, { recursive: true, force: true })
+        }
+    })
+
+    it('maps a thrown source error to a failed ListLocalSessions response', async () => {
+        const machine = makeMachine('throwing-machine')
+        const client = new ApiMachineClient('cli-token', machine)
+        registerLocalSessionSource({
+            flavor: 'codex',
+            list: async () => { throw new Error('disk on fire') }
+        } as typeof codexLocalSessionSource)
+        try {
+            const result = await callListLocalSessions(client, machine.id, { flavor: 'codex' }) as { success?: boolean; error?: string }
+            expect(result).toMatchObject({ success: false, error: 'disk on fire' })
+        } finally {
+            registerLocalSessionSource(codexLocalSessionSource)
+            client.shutdown()
+        }
+    })
+})
 
 describe('normalizeWindowsDriveRoot', () => {
     it('restores the trailing separator when Windows realpath returns a bare drive', () => {
@@ -75,6 +172,15 @@ async function callListOpencodeModels(client: ApiMachineClient, machineId: strin
     return JSON.parse(raw) as unknown
 }
 
+async function callListOpencodeModelVariants(client: ApiMachineClient, machineId: string, cwd: string): Promise<unknown> {
+    const manager = (client as unknown as { rpcHandlerManager: { handleRequest: (req: { method: string; params: string }) => Promise<string> } }).rpcHandlerManager
+    const raw = await manager.handleRequest({
+        method: `${machineId}:listOpencodeModelVariants`,
+        params: JSON.stringify({ cwd })
+    })
+    return JSON.parse(raw) as unknown
+}
+
 async function callListGrokModels(client: ApiMachineClient, machineId: string, cwd: string): Promise<unknown> {
     const manager = (client as unknown as { rpcHandlerManager: { handleRequest: (req: { method: string; params: string }) => Promise<string> } }).rpcHandlerManager
     const raw = await manager.handleRequest({
@@ -88,6 +194,15 @@ async function callListCopilotModels(client: ApiMachineClient, machineId: string
     const manager = (client as unknown as { rpcHandlerManager: { handleRequest: (req: { method: string; params: string }) => Promise<string> } }).rpcHandlerManager
     const raw = await manager.handleRequest({
         method: `${machineId}:listCopilotModelsForCwd`,
+        params: JSON.stringify({ cwd })
+    })
+    return JSON.parse(raw) as unknown
+}
+
+async function callListKimiModels(client: ApiMachineClient, machineId: string, cwd: string): Promise<unknown> {
+    const manager = (client as unknown as { rpcHandlerManager: { handleRequest: (req: { method: string; params: string }) => Promise<string> } }).rpcHandlerManager
+    const raw = await manager.handleRequest({
+        method: `${machineId}:listKimiModelsForCwd`,
         params: JSON.stringify({ cwd })
     })
     return JSON.parse(raw) as unknown
@@ -311,6 +426,56 @@ describe('ApiMachineClient listOpencodeModelsForCwd handler', () => {
     })
 })
 
+describe('ApiMachineClient listOpencodeModelVariants handler', () => {
+    let workspaceRoot: string
+
+    beforeEach(() => {
+        ioMock.mockReset()
+        listOpencodeModelVariantsMock.mockReset()
+        workspaceRoot = mkdtempSync(join(tmpdir(), 'hapi-opencode-variants-ws-'))
+    })
+
+    afterEach(() => {
+        rmSync(workspaceRoot, { recursive: true, force: true })
+    })
+
+    it('rejects cwd outside workspace roots before running the variant probe', async () => {
+        const machine = makeMachine('opencode-variants-machine-1')
+        const client = new ApiMachineClient('cli-token', machine, [workspaceRoot])
+        const outsideCwd = mkdtempSync(join(tmpdir(), 'hapi-opencode-variants-outside-'))
+
+        try {
+            expect(await callListOpencodeModelVariants(client, machine.id, outsideCwd)).toEqual({
+                success: false,
+                error: 'Path is outside workspace roots'
+            })
+            expect(listOpencodeModelVariantsMock).not.toHaveBeenCalled()
+        } finally {
+            rmSync(outsideCwd, { recursive: true, force: true })
+            client.shutdown()
+        }
+    })
+
+    it('rejects a workspace symlink that escapes the configured roots', async () => {
+        const machine = makeMachine('opencode-variants-machine-2')
+        const client = new ApiMachineClient('cli-token', machine, [workspaceRoot])
+        const outsideCwd = mkdtempSync(join(tmpdir(), 'hapi-opencode-variants-symlink-outside-'))
+        const escape = join(workspaceRoot, 'escape')
+        symlinkSync(outsideCwd, escape, 'dir')
+
+        try {
+            expect(await callListOpencodeModelVariants(client, machine.id, escape)).toEqual({
+                success: false,
+                error: 'Path is outside workspace roots'
+            })
+            expect(listOpencodeModelVariantsMock).not.toHaveBeenCalled()
+        } finally {
+            rmSync(outsideCwd, { recursive: true, force: true })
+            client.shutdown()
+        }
+    })
+})
+
 describe('ApiMachineClient listCopilotModelsForCwd handler', () => {
     let workspaceRoot: string
 
@@ -409,6 +574,64 @@ describe('ApiMachineClient listGrokModelsForCwd handler', () => {
                 currentModelId: 'grok-4.5'
             })
             expect(listGrokModelsForCwdMock).toHaveBeenCalledWith(realpathSync.native(workspaceRoot))
+        } finally {
+            client.shutdown()
+        }
+    })
+})
+
+describe('ApiMachineClient listKimiModelsForCwd handler', () => {
+    let workspaceRoot: string
+
+    beforeEach(() => {
+        ioMock.mockReset()
+        listKimiModelsForCwdMock.mockReset()
+        workspaceRoot = mkdtempSync(join(tmpdir(), 'hapi-kimi-machine-ws-'))
+    })
+
+    afterEach(() => {
+        rmSync(workspaceRoot, { recursive: true, force: true })
+    })
+
+    it('rejects cwd outside workspace roots before running the Kimi model probe', async () => {
+        const machine = makeMachine('kimi-machine-1')
+        const client = new ApiMachineClient('cli-token', machine, [workspaceRoot])
+        const outsideCwd = mkdtempSync(join(tmpdir(), 'hapi-kimi-outside-'))
+
+        try {
+            expect(await callListKimiModels(client, machine.id, outsideCwd)).toEqual({
+                success: false,
+                error: 'Path is outside workspace roots'
+            })
+            expect(listKimiModelsForCwdMock).not.toHaveBeenCalled()
+        } finally {
+            rmSync(outsideCwd, { recursive: true, force: true })
+            client.shutdown()
+        }
+    })
+
+    it('forwards a resolved workspace cwd to the Kimi model probe', async () => {
+        const machine = makeMachine('kimi-machine-2')
+        const client = new ApiMachineClient('cli-token', machine, [workspaceRoot])
+        listKimiModelsForCwdMock.mockResolvedValueOnce({
+            success: true,
+            availableModels: [
+                { modelId: 'GLM-5.3-flash', name: 'thehive / GLM-5.3-flash', provider: 'thehive' },
+                { modelId: 'hyper-glm-5.3-flash', name: 'charm-hyper / Hyper · GLM-5.3-Flash', provider: 'charm-hyper' }
+            ],
+            currentModelId: 'GLM-5.3-flash'
+        })
+
+        try {
+            expect(await callListKimiModels(client, machine.id, workspaceRoot)).toEqual({
+                success: true,
+                availableModels: [
+                    { modelId: 'GLM-5.3-flash', name: 'thehive / GLM-5.3-flash', provider: 'thehive' },
+                    { modelId: 'hyper-glm-5.3-flash', name: 'charm-hyper / Hyper · GLM-5.3-Flash', provider: 'charm-hyper' }
+                ],
+                currentModelId: 'GLM-5.3-flash'
+            })
+            expect(listKimiModelsForCwdMock).toHaveBeenCalledWith(realpathSync.native(workspaceRoot))
         } finally {
             client.shutdown()
         }
@@ -610,6 +833,35 @@ describe('ApiMachineClient SpawnHappySession handler', () => {
             client.shutdown()
         }
     })
+
+    it('returns childStarted:false on outside_workspace_roots so hub deletes the stub', async () => {
+        const machine = makeMachine('machine-spawn-outside')
+        const client = new ApiMachineClient('cli-token', machine, [workspaceRoot])
+        const spawnSession = vi.fn()
+
+        client.setRPCHandlers({
+            spawnSession,
+            stopSession: vi.fn(async () => 'stopped' as const),
+            requestShutdown: vi.fn()
+        })
+
+        try {
+            const result = await callSpawnHappySession(client, machine.id, {
+                directory: '/tmp/definitely-outside-roots',
+                agent: 'claude',
+            })
+
+            expect(result).toEqual({
+                type: 'error',
+                errorMessage: "Directory is outside this machine's workspace roots",
+                code: 'outside_workspace_roots',
+                childStarted: false,
+            })
+            expect(spawnSession).not.toHaveBeenCalled()
+        } finally {
+            client.shutdown()
+        }
+    })
 })
 
 describe('ApiMachineClient keepAlive lifecycle', () => {
@@ -701,6 +953,46 @@ describe('ApiMachineClient list-directory handler', () => {
         return entries.map((entry) => entry.name).sort()
     }
 
+    it('browses outside the home directory when no workspace roots are configured', async () => {
+        const machine = makeMachine('machine-ls-unrestricted')
+        const client = new ApiMachineClient('cli-token', machine)
+        try {
+            const result = await callListDirectory(client, machine.id, { path: workspaceRoot })
+            expect((result as { success: boolean }).success).toBe(true)
+            expect(entryNames(result)).toEqual(['plain.txt', 'visible-dir'])
+        } finally {
+            client.shutdown()
+        }
+    })
+
+    it('lists in-root directory links and rejects links escaping explicit workspace roots', async () => {
+        const outside = mkdtempSync(join(tmpdir(), 'hapi-machine-ls-outside-'))
+        mkdirSync(join(workspaceRoot, 'visible-dir', '.git'))
+        symlinkSync(join(workspaceRoot, 'visible-dir'), join(workspaceRoot, 'linked-repo'), 'dir')
+        symlinkSync(outside, join(workspaceRoot, 'escape'), 'dir')
+        const machine = makeMachine('machine-ls-links')
+        const client = new ApiMachineClient('cli-token', machine, [workspaceRoot])
+        try {
+            const result = await callListDirectory(client, machine.id, { path: workspaceRoot })
+            expect(result).toMatchObject({
+                success: true,
+                entries: expect.arrayContaining([
+                    expect.objectContaining({ name: 'linked-repo', type: 'directory', isGitRepo: true }),
+                ]),
+            })
+            expect(entryNames(result)).not.toContain('escape')
+            expect(await callListDirectory(client, machine.id, { path: join(workspaceRoot, 'escape') }))
+                .toEqual({ success: false, error: 'Path is outside workspace roots' })
+            expect(await callListDirectory(client, machine.id, { path: join(workspaceRoot, '..') }))
+                .toEqual({ success: false, error: 'Path is outside workspace roots' })
+            expect(await callListDirectory(client, machine.id, { path: join(workspaceRoot, 'linked-repo') }))
+                .toMatchObject({ success: true })
+        } finally {
+            client.shutdown()
+            rmSync(outside, { recursive: true, force: true })
+        }
+    })
+
     it('filters dot-prefixed entries by default', async () => {
         const machine = makeMachine('machine-ls-1')
         const client = new ApiMachineClient('cli-token', machine, [workspaceRoot])
@@ -764,6 +1056,43 @@ describe('ApiMachineClient connect runner-state advertisement', () => {
                     capabilities: expect.objectContaining({ piExistingSessionResume: true })
                 })
             }))
+        } finally {
+            client.shutdown()
+        }
+    })
+})
+
+describe('ApiMachineClient child-exit notices', () => {
+    beforeEach(() => {
+        ioMock.mockReset()
+    })
+
+    it('reports a dead child on the machine socket with its process generation', () => {
+        const machine = makeMachine('machine-child-exit')
+        const socket = {
+            on: vi.fn(),
+            emit: vi.fn(),
+            emitWithAck: vi.fn().mockResolvedValue({ result: 'success', version: 1 }),
+            close: vi.fn()
+        }
+        ioMock.mockReturnValue(socket)
+
+        const client = new ApiMachineClient('cli-token', machine)
+        try {
+            client.connect()
+            client.reportSessionChildExited({
+                sid: 'session-1',
+                pid: 4321,
+                processStartMarker: 'Mon Jan  1 00:00:00 2024'
+            })
+
+            expect(socket.emit).toHaveBeenCalledWith('session-child-exited', {
+                machineId: machine.id,
+                sid: 'session-1',
+                pid: 4321,
+                processStartMarker: 'Mon Jan  1 00:00:00 2024',
+                time: expect.any(Number)
+            })
         } finally {
             client.shutdown()
         }

@@ -438,6 +438,24 @@ export const eventCases: FixtureCase[] = [
             })
         ]
     },
+    ...([
+        ['event-compact-summary-exact', 'event', { summary: 'A native checkpoint.', tokensBefore: 34492, tokensAfter: 2082 }],
+        ['event-compact-summary-empty', 'event', { summary: '' }],
+        ['codex-compact-summary-estimated-after', 'codex', { summary: '', compactionId: 'compact-after', estimatedTokensAfter: 18335 }],
+        ['codex-compact-summary-exact-after', 'codex', { summary: '', compactionId: 'compact-exact', tokensBefore: 100, tokensAfter: 0, estimatedTokensAfter: 2 }]
+    ] as const).map(([name, type, facts]) => ({
+        name,
+        description: 'Compaction summary facts preserve exact and estimated counts independently across event envelopes.',
+        messages: [wireMessage({
+            id: name,
+            seq: 1,
+            createdAt: T0,
+            content: {
+                role: 'agent',
+                content: { type, data: { type: 'compact-summary', ...facts } }
+            }
+        })]
+    })),
     {
         name: 'event-abort-restore',
         description: 'Event family: abort-restore (composer side-effect carrying the aborted prompt text) is consumed by the reducer and must NOT surface as a chat block.',

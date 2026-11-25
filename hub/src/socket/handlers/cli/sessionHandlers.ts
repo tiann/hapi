@@ -2,17 +2,29 @@ import type { ClientToServerEvents } from '@hapi/protocol'
 import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
 import type { CopilotAgentMode } from '@hapi/protocol'
-import type { AgentState, CodexCollaborationMode, Metadata, PermissionMode } from '@hapi/protocol/types'
-import { getReasoningStreamId, isRedundantGoalStatusEventContent } from '@hapi/protocol/messages'
+import type { AgentState, BackgroundTask, CodexCollaborationMode, Metadata, PermissionMode } from '@hapi/protocol/types'
+import { getToolCallId, isRedundantGoalStatusEventContent } from '@hapi/protocol/messages'
 import type { Store, StoredSession } from '../../../store'
 import type { SyncEvent } from '../../../sync/syncEngine'
 import { extractTodoWriteTodosFromMessageContent } from '../../../sync/todos'
 import { extractTeamStateFromMessageContent, applyTeamStateDelta } from '../../../sync/teams'
-import { extractBackgroundTaskDelta } from '../../../sync/backgroundTasks'
+import { extractBackgroundTasks } from '../../../sync/backgroundTasks'
 import { shouldRecordSessionActivity } from '../../../sync/sessionActivity'
 import type { CliSocketWithData } from '../../socketTypes'
 import type { SessionEndReason } from '@hapi/protocol'
 import type { AccessErrorReason, AccessResult } from './types'
+import { getConfiguration } from '../../../configuration'
+import { stripExternalRefsWhenAwarenessDisabled, externalRefsInMetadataValid } from '../../../sync/externalRefsPolicy'
+
+function gateExternalRefs(metadata: unknown): unknown {
+    let awarenessEnabled = false
+    try {
+        awarenessEnabled = getConfiguration().githubPrAwareness
+    } catch {
+        awarenessEnabled = false
+    }
+    return stripExternalRefsWhenAwarenessDisabled(metadata, awarenessEnabled)
+}
 
 type SessionAlivePayload = {
     sid: string
@@ -39,7 +51,7 @@ type SessionReadyPayload = {
     time: number
 }
 
-type ResolveSessionAccess = (sessionId: string) => AccessResult<StoredSession>
+type ResolveSessionAccess = (sessionId: string, opts?: { fresh?: boolean }) => AccessResult<StoredSession>
 
 type EmitAccessError = (scope: 'session' | 'machine', id: string, reason: AccessErrorReason) => void
 
@@ -68,7 +80,22 @@ const updateStateSchema = z.object({
     agentState: z.unknown().nullable()
 })
 
-const HUB_OWNED_METADATA_KEYS = ['supersededBySessionId', 'opencodeClearOperation'] as const
+// Hub-only merge/clear/title links. CLI update-metadata must not forge or erase them
+// (same strip/restore as supersededBySessionId — see sessionHandlers.test.ts).
+const HUB_OWNED_METADATA_KEYS = [
+    'codexImportedAt',
+    'opencodeRewind',
+    'supersededBySessionId',
+    'opencodeClearOperation',
+    'opencodeForkPending',
+    'titleSuggestionAutoAttemptedAt',
+    'titleSuggestionTurn',
+    'jobsAcceptedFromSessionIds',
+    'jobsTransferredToSessionId',
+    'jobKeyRedirects',
+    'promptTitle',
+    'translateInput'
+] as const
 
 function preserveHubOwnedMetadata(incoming: unknown, current: unknown): unknown {
     if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) return incoming
@@ -79,6 +106,10 @@ function preserveHubOwnedMetadata(incoming: unknown, current: unknown): unknown 
     for (const key of HUB_OWNED_METADATA_KEYS) {
         if (Object.prototype.hasOwnProperty.call(existing, key)) next[key] = existing[key]
         else delete next[key]
+    }
+    const rewind = existing.opencodeRewind as { phase?: string } | undefined
+    if (rewind && ['reserved', 'prepared', 'unknown'].includes(rewind.phase ?? '')) {
+        for (const key of ['opencodeHistoryCheckpoint', 'conversationHistoryIndexes', 'conversationHistoryPoints']) next[key] = existing[key]
     }
     return next
 }
@@ -91,8 +122,10 @@ export type SessionHandlersDeps = {
     onSessionReady?: (payload: SessionReadyPayload) => void
     onSessionEnd?: (payload: SessionEndPayload) => void
     onWebappEvent?: (event: SyncEvent) => void
-    onBackgroundTaskDelta?: (sessionId: string, delta: { started: number; completed: number }) => void
+    onBackgroundTasks?: (sessionId: string, tasks: BackgroundTask[]) => void
     onSessionActivity?: (sessionId: string, updatedAt: number) => void
+    /** tiann/hapi#1820: any message is agent progress, either direction. */
+    onAgentProgress?: (sessionId: string, at: number) => void
     /** Delegates session-end immediate-queue sweep to the MessageService layer. */
     onSweepImmediateQueued?: (sessionId: string, now: number) => void
     /** Drops the queued-thinking grace so synchronous CLI handlers (e.g. slash
@@ -101,7 +134,31 @@ export type SessionHandlersDeps = {
 }
 
 export function registerSessionHandlers(socket: CliSocketWithData, deps: SessionHandlersDeps): void {
-    const { store, resolveSessionAccess, emitAccessError, onSessionAlive, onSessionReady, onSessionEnd, onWebappEvent, onBackgroundTaskDelta, onSessionActivity, onSweepImmediateQueued, onMessagesConsumed } = deps
+    const { store, resolveSessionAccess, emitAccessError, onSessionAlive, onSessionReady, onSessionEnd, onWebappEvent, onBackgroundTasks, onSessionActivity, onAgentProgress, onSweepImmediateQueued, onMessagesConsumed } = deps
+
+    socket.on('native-queue-message', data => {
+        const parsed = z.object({ sid: z.string(), localId: z.string().min(1), text: z.string().nullable() }).safeParse(data)
+        if (!parsed.success) return
+        const { sid, localId, text } = parsed.data
+        // Fresh resolve: the capabilities gate below decides whether the
+        // queue ledger is written, and capabilities can change via metadata
+        // writes (e.g. a merge copying capabilities onto this session) — a
+        // memo snapshot could silently drop or wrongly accept the entry.
+        // Queued input is human-paced, not a stream hot path.
+        const access = resolveSessionAccess(sid, { fresh: true })
+        if (!access.ok) { emitAccessError('session', sid, access.reason); return }
+        const metadata = access.value.metadata as Metadata | null
+        if (!metadata?.capabilities?.concurrentClients) return
+        if (text === null) {
+            const prior = store.messages.lookupQueuedMessage(sid, localId)
+            if ('resolvedId' in prior && store.messages.deleteQueuedMessageById(sid, localId)) {
+                onWebappEvent?.({ type: 'message-cancelled', sessionId: sid, messageId: prior.resolvedId, localId })
+            }
+        } else {
+            const message = store.messages.syncNativeQueuedMessage(sid, localId, text)
+            onWebappEvent?.({ type: 'message-received', sessionId: sid, message })
+        }
+    })
 
     socket.on('message', (data: unknown) => {
         const parsed = messageSchema.safeParse(data)
@@ -133,19 +190,57 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             return
         }
 
-        const msg = store.messages.addMessage(sid, content, localId, undefined, createdAt)
+        // A background-task snapshot is session state, not chat: apply it
+        // without storing a hidden row.
+        const backgroundTasks = extractBackgroundTasks(content)
+        if (backgroundTasks !== null) {
+            onBackgroundTasks?.(sid, backgroundTasks)
+            return
+        }
+
+        const wasStored = Boolean(localId && store.messages.lookupQueuedMessage(sid, localId).status !== 'absent')
+        // ACP agents re-emit one tool call under a stable callId for every
+        // state tick. When that callId is still live in the session tail, fold
+        // the tick into the call's existing row instead of appending another
+        // one, and broadcast the merged row under its original id/seq so
+        // clients upsert it in place. Peer CLIs in the session room dedupe
+        // that re-emit by message id, harmlessly: only user rows reach a
+        // consumer there (onUserMessage), agent rows do not.
+        const callId = getToolCallId(content)
+        const stored = callId !== null && !wasStored
+            ? store.messages.upsertToolCallMessage(sid, content, callId, localId, createdAt)
+            : store.messages.addMessageSweepingLiveSnapshots(sid, content, localId, undefined, createdAt)
+        const msg = stored.message
+        // A merged row keeps its first snapshot's createdAt for stable
+        // ordering, but derived todo/team versions must strictly advance
+        // (setSessionTodos/setSessionTeamState gate on *_updated_at < candidate),
+        // so stamp them at merge time instead.
+        const derivedAt = stored.updated ? Math.max(Date.now(), msg.createdAt + 1) : msg.createdAt
+        // A merged row keeps its first snapshot's createdAt for stable
+        // ordering, but each repeated tick must still advance the
+        // keepalive-idle clock: feeding onAgentProgress the frozen
+        // first-snapshot timestamp lets an ACP call with thinking=false and
+        // no background task be marked idle despite fresh updates.
+        const progressAt = stored.updated ? Date.now() : msg.createdAt
+        // The durable row already exists; replay must not be mistaken for
+        // fresh agent progress or trigger another round of UI updates.
+        if (wasStored) return
 
         // A reasoning stream arrives as a series of growing snapshots under one
         // stable id, so a stream should cost one row rather than one per
-        // interval. Retire the earlier snapshots only once their replacement is
-        // stored: these are separate transactions, and clearing first would let
-        // a crash in between take the whole stream. Only rows marked live are
-        // eligible, so the settled message that closes a stream survives and
-        // also sweeps up its own leftovers.
-        const reasoningStreamId = getReasoningStreamId(content)
-        if (reasoningStreamId) {
-            store.messages.deleteLiveReasoningSnapshots(sid, reasoningStreamId, msg.id)
-        }
+        // interval. The addMessageSweepingLiveSnapshots call above already
+        // retired the earlier live snapshots of the incoming message's own
+        // reasoning/text streams in the same transaction (INSERT first, then
+        // DELETE — a crash rolls back both, so the stream never loses its
+        // newest row). Tool-call content never carries a stream id, so the
+        // upsert branch needs no sweep. Only rows marked live are eligible;
+        // the settled message that closes a stream survives and also sweeps
+        // up its own leftovers.
+
+        // tiann/hapi#1820: every stored message proves the agent is doing
+        // something, so it refreshes the keepalive-idle clock. Only human
+        // turns additionally bump `updatedAt` (list ordering).
+        onAgentProgress?.(sid, progressAt)
 
         if (shouldRecordSessionActivity(content)) {
             onSessionActivity?.(sid, msg.createdAt)
@@ -153,7 +248,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
 
         const todos = extractTodoWriteTodosFromMessageContent(content)
         if (todos) {
-            const updated = store.sessions.setSessionTodos(sid, todos, msg.createdAt, session.namespace)
+            const updated = store.sessions.setSessionTodos(sid, todos, derivedAt, session.namespace)
             if (updated) {
                 const stored = store.sessions.getSession(sid)
                 onWebappEvent?.({
@@ -175,7 +270,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             const existingSession = store.sessions.getSession(sid)
             const existingTeamState = existingSession?.teamState as import('@hapi/protocol/types').TeamState | null | undefined
             const newTeamState = applyTeamStateDelta(existingTeamState ?? null, teamDelta)
-            const updated = store.sessions.setSessionTeamState(sid, newTeamState, msg.createdAt, session.namespace)
+            const updated = store.sessions.setSessionTeamState(sid, newTeamState, derivedAt, session.namespace)
             if (updated) {
                 const stored = store.sessions.getSession(sid)
                 // Versioned clear: value null = TeamDelete. Consumers gate on
@@ -193,11 +288,6 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
                     }
                 })
             }
-        }
-
-        const bgDelta = extractBackgroundTaskDelta(content)
-        if (bgDelta) {
-            onBackgroundTaskDelta?.(sid, bgDelta)
         }
 
         const update = {
@@ -227,7 +317,8 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
                 localId: msg.localId,
                 content: msg.content,
                 createdAt: msg.createdAt,
-                invokedAt: msg.invokedAt
+                invokedAt: msg.invokedAt,
+                ...(msg.contentRevision ? { contentRevision: msg.contentRevision } : {})
             }
         })
     })
@@ -240,15 +331,25 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         }
 
         const { sid, metadata, expectedVersion } = parsed.data
-        const sessionAccess = resolveSessionAccess(sid)
+        // Fresh resolve: preserveHubOwnedMetadata below merges against
+        // sessionAccess.value.metadata, so the base must be the live row.
+        // A memo-stale base would drop a concurrently-set hub-owned key or
+        // resurrect a concurrently-cleared one in this very write.
+        const sessionAccess = resolveSessionAccess(sid, { fresh: true })
         if (!sessionAccess.ok) {
             cb({ result: 'error', reason: sessionAccess.reason })
             return
         }
 
+        const gatedMetadata = gateExternalRefs(metadata)
+        if (!externalRefsInMetadataValid(gatedMetadata)) {
+            cb({ result: 'error' })
+            return
+        }
+
         const result = store.sessions.updateSessionMetadata(
             sid,
-            preserveHubOwnedMetadata(metadata, sessionAccess.value.metadata),
+            preserveHubOwnedMetadata(gatedMetadata, sessionAccess.value.metadata),
             expectedVersion,
             sessionAccess.value.namespace
         )
@@ -474,8 +575,10 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
                 sessionAccess.value.namespace
             )
             reply({ ok })
-            if (ok && data.state === 'queued') {
-                onWebappEvent?.({ type: 'messages-requeued', sessionId: data.sid, localIds })
+            if (ok) {
+                onWebappEvent?.(data.state === 'queued'
+                    ? { type: 'messages-requeued', sessionId: data.sid, localIds }
+                    : { type: 'messages-indeterminate', sessionId: data.sid, localIds, dispatching: true })
             }
         } catch (err) {
             console.error('recordSteerDeliveryState failed', err)
@@ -487,7 +590,11 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         if (!data || typeof data.sid !== 'string' || typeof data.time !== 'number') {
             return
         }
-        const sessionAccess = resolveSessionAccess(data.sid)
+        // Fresh resolve: the shared-Codex capability gate below decides
+        // whether the queue ledger is swept, and capabilities can change via
+        // metadata writes. Session end fires once per session — not a hot
+        // path — so read the live row rather than a memo snapshot.
+        const sessionAccess = resolveSessionAccess(data.sid, { fresh: true })
         if (!sessionAccess.ok) {
             emitAccessError('session', data.sid, sessionAccess.reason)
             return
@@ -505,7 +612,11 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         // rows after the CLI exits — there is no longer an ack path, so they would
         // stay queued forever.  The 5-second tick in syncEngine.expireInactive
         // emits scheduled rows when they mature, regardless of session end.
-        if (data.reason !== 'cleared') {
+        // Shared Codex execution exit is suspension, not consumption. Its native
+        // queue ledger proves which messages can be replayed on ordinary resume.
+        // Never stamp pending/uncertain input as executed, including on archive.
+        const sharedCodex = (sessionAccess.value.metadata as Metadata | null)?.capabilities?.concurrentClients
+        if (data.reason !== 'cleared' && !sharedCodex) {
             try {
                 onSweepImmediateQueued?.(data.sid, Date.now())
             } catch (err) {

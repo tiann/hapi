@@ -3,6 +3,7 @@ import type {
     CopilotAgentMode,
     DecryptedMessage as ProtocolDecryptedMessage,
     Machine,
+    Metadata,
     RunnerState,
     Session,
     SessionSummary,
@@ -12,7 +13,17 @@ import type {
 
 export type {
     AgyModelsResponse,
+    AbortChunkedUploadResponse,
+    AgentAvailabilityResponse,
+    AgentAvailabilityEntry,
+    AgentQuotaAccount,
+    AgentQuotaBucket,
+    AgentQuotasResponse,
     AgyModelSummary,
+    InitChunkedUploadRequest,
+    InitChunkedUploadResponse,
+    UploadChunkResponse,
+    UploadErrorCode,
     CodexModelsResponse,
     CodexModelSummary,
     CommandResponse,
@@ -21,23 +32,33 @@ export type {
     CursorChatStoreStatus,
     DeleteUploadResponse,
     DirectoryEntry,
+    DshModelsResponse,
+    DshModelSummary,
     FileReadResponse,
     GitCommandResponse,
     GrokModelsResponse,
     GrokModelSummary,
+    KimiModelsResponse,
+    KimiModelSummary,
     CopilotModelsResponse,
     CopilotModelSummary,
     GrokReasoningEffortResponse,
+    CopilotReasoningEffortResponse,
+    KimiReasoningEffortResponse,
     GrokReasoningEffortOption,
     ListDirectoryResponse,
     MachineDirectoryEntry,
     MachineListDirectoryResponse,
     MachinePathsExistsResponse,
     AuthResponse,
+    ClaudeModelSummary,
+    ClaudeModelsResponse,
     MachinesResponse,
+    MessageContextResponse,
     MessagesResponse,
     OpencodeModelsResponse,
     OpencodeModelSummary,
+    OpencodeModelVariantsResponse,
     PathExistsResponse,
     PiModelSummary,
     PiModelsResponse,
@@ -45,16 +66,28 @@ export type {
     SlashCommand,
     SlashCommandsResponse,
     SessionResponse,
+    SessionContentMatch,
+    SessionContentMatchesResponse,
     SessionTitleSuggestionResponse,
+    ScratchlistSessionIdsResponse,
     SessionsResponse,
+    SessionContentSearchResponse,
     SpawnResponse,
-    UploadFileResponse
+    UploadFileResponse,
+    UsageMachineQuotasEntry,
+    UsageQuotasResponse
 } from '@hapi/protocol/apiTypes'
 
 export type {
     AgentState,
     AttachmentMetadata,
+    BackgroundTask,
     CodexCollaborationMode,
+    ExternalRef,
+    GithubPrChecks,
+    GithubPrExternalRef,
+    GithubPrMerge,
+    GithubPrOpenState,
     CopilotAgentMode,
     Metadata,
     PermissionMode,
@@ -83,6 +116,8 @@ export type {
     HapiSessionExportWarning
 } from '@hapi/protocol/sessionExport'
 
+export type { ForkBoundary, ForkPreviewResponse } from '@hapi/protocol/forkBoundary'
+
 export type SessionMetadataSummary = {
     path: string
     host: string
@@ -102,10 +137,12 @@ export type SessionMetadataSummary = {
             rewindToMessage?: boolean
         }
     }
+    conversationBranch?: NonNullable<Session['metadata']>['conversationBranch']
     conversationHistoryPoints?: Record<string, true>
     conversationHistoryIndexes?: Record<string, number>
     conversationHistoryTurns?: Record<string, string>
     conversationHistoryEntryIds?: Record<string, string>
+    claudeRewind?: Metadata['claudeRewind']
     conversationHistoryDiverged?: boolean
     worktree?: WorktreeMetadata
 }
@@ -125,6 +162,12 @@ export type DecryptedMessage = ProtocolDecryptedMessage & {
     status?: MessageStatus
     originalText?: string
     invokedAt?: number | null
+    /**
+     * Client-only: user force-dismissed an indeterminate queued row while the
+     * hub still reported busy. Hidden from QueuedMessagesBar but retained so a
+     * later messages-consumed SSE can mark it sent in the thread.
+     */
+    queueDismissed?: boolean
 }
 
 export type FileSearchItem = {
@@ -140,6 +183,7 @@ export type FileSearchResponse = {
     success: boolean
     files?: FileSearchItem[]
     error?: string
+    pathSearch?: boolean
 }
 
 export type GitFileStatus = {
@@ -270,6 +314,118 @@ export type PiImportResult = {
 export type PiImportSessionsResponse = {
     success: boolean
     results: PiImportResult[]
+    machineId?: string
+    error?: string
+}
+
+export type ClaudeLocalSessionSummary = {
+    id: string
+    title: string
+    lastUserMessage?: string | null
+    cwd?: string | null
+    file: string
+    modifiedAt: number
+    messageCount?: number
+    hapiSessionId?: string
+}
+
+export type ClaudeLocalSessionsResponse = {
+    success: true
+    sessions: ClaudeLocalSessionSummary[]
+    machineId: string
+} | {
+    success: false
+    error: string
+    sessions: []
+    machineId?: string
+}
+
+export type ClaudeImportResult = {
+    claudeSessionId: string
+    hapiSessionId?: string
+    action?: 'created' | 'updated' | 'unchanged'
+    appended?: number
+    error?: { code: string; message: string }
+}
+
+export type ClaudeImportSessionsResponse = {
+    success: boolean
+    results: ClaudeImportResult[]
+    machineId?: string
+    error?: string
+}
+
+export type CursorLocalSessionSummary = {
+    id: string
+    title: string
+    lastUserMessage?: string | null
+    cwd?: string | null
+    file: string
+    modifiedAt: number
+    messageCount?: number
+    hapiSessionId?: string
+    sourceFormat?: string | null
+    sizeBytes?: number | null
+}
+
+export type CursorLocalSessionsResponse = {
+    success: true
+    sessions: CursorLocalSessionSummary[]
+    machineId: string
+} | {
+    success: false
+    error: string
+    sessions: []
+    machineId?: string
+}
+
+export type CursorImportResult = {
+    cursorSessionId: string
+    hapiSessionId?: string
+    action?: 'created' | 'updated' | 'unchanged'
+    appended?: number
+    error?: { code: string; message: string }
+}
+
+export type CursorImportSessionsResponse = {
+    success: boolean
+    results: CursorImportResult[]
+    machineId?: string
+    error?: string
+}
+
+export type OpencodeLocalSessionSummary = {
+    id: string
+    title: string
+    lastUserMessage?: string | null
+    cwd?: string | null
+    file: string
+    modifiedAt: number
+    hapiSessionId?: string
+}
+
+export type OpencodeLocalSessionsResponse = {
+    success: true
+    sessions: OpencodeLocalSessionSummary[]
+    machineId: string
+} | {
+    success: false
+    error: string
+    sessions: []
+    machineId?: string
+}
+
+export type OpencodeImportResult = {
+    opencodeSessionId: string
+    hapiSessionId?: string
+    action?: 'created' | 'updated' | 'unchanged'
+    appended?: number
+    error?: { code: string; message: string }
+}
+
+export type OpencodeImportSessionsResponse = {
+    success: boolean
+    results: OpencodeImportResult[]
     machineId?: string
     error?: string
 }

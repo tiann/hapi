@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { getModelOptionsForFlavor, getNextModelForFlavor } from './modelOptions'
+import { getClaudeLaunchModelOptions, getModelOptionsForFlavor, getNextModelForFlavor } from './modelOptions'
 
 describe('getModelOptionsForFlavor', () => {
     it('never offers the unsupported default reset in an active AGY session', () => {
@@ -14,6 +14,42 @@ describe('getModelOptionsForFlavor', () => {
         expect(options.some((option) => option.value === null)).toBe(false)
     })
 
+    it('offers the machine catalog in an AGY session instead of the built-in mirror', () => {
+        const live = [
+            { value: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)' },
+            { value: 'gemini-3.8-flash-low', label: 'Gemini 3.8 Flash (Low)' }
+        ]
+
+        const options = getModelOptionsForFlavor('agy', 'gemini-3.8-flash-high', live)
+
+        expect(options).toEqual(live)
+        expect(options.some((option) => option.value === null)).toBe(false)
+    })
+
+    it('keeps the running AGY model selectable, and readable, when the machine catalog no longer lists it', () => {
+        const live = [{ value: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)' }]
+
+        const options = getModelOptionsForFlavor('agy', 'gemini-3.5-flash-medium', live)
+
+        expect(options[0]).toEqual({ value: 'gemini-3.5-flash-medium', label: 'Gemini 3.5 Flash (Medium)' })
+        expect(options.some((option) => option.value === 'gemini-3.8-flash-high')).toBe(true)
+    })
+
+    it('falls back to the wire id for a running AGY model nobody has a label for', () => {
+        const options = getModelOptionsForFlavor('agy', 'gemini-9.9-experimental', [
+            { value: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)' }
+        ])
+
+        expect(options[0]).toEqual({ value: 'gemini-9.9-experimental', label: 'gemini-9.9-experimental' })
+    })
+
+    it('falls back to the built-in AGY mirror until the machine catalog arrives', () => {
+        const withoutCatalog = getModelOptionsForFlavor('agy', null, [])
+
+        expect(withoutCatalog).toEqual(getModelOptionsForFlavor('agy', null))
+        expect(withoutCatalog.length).toBeGreaterThan(0)
+    })
+
     it('returns Gemini model options for gemini flavor', () => {
         const options = getModelOptionsForFlavor('gemini')
         expect(options[0]).toEqual({ value: null, label: 'Default' })
@@ -23,41 +59,74 @@ describe('getModelOptionsForFlavor', () => {
 
     it('returns Claude model options for claude flavor', () => {
         const options = getModelOptionsForFlavor('claude')
-        expect(options[0]).toEqual({ value: null, label: 'Default' })
-        expect(options.some((o) => o.value === 'sonnet')).toBe(true)
-        expect(options.some((o) => o.value === 'opus')).toBe(true)
-    })
-
-    it('keeps Claude presets when explicit options only include Sonnet models', () => {
-        const options = getModelOptionsForFlavor('claude', null, [
-            { value: null, label: 'Default' },
-            { value: 'sonnet', label: 'Sonnet' },
-            { value: 'sonnet[1m]', label: 'Sonnet 1M' }
-        ])
         expect(options).toEqual([
             { value: null, label: 'Default' },
-            { value: 'sonnet', label: 'Sonnet' },
-            { value: 'sonnet[1m]', label: 'Sonnet 1M' },
             { value: 'opus', label: 'Opus' },
-            { value: 'opus[1m]', label: 'Opus 1M' },
             { value: 'fable', label: 'Fable' },
-            { value: 'fable[1m]', label: 'Fable 1M' }
+            { value: 'sonnet', label: 'Sonnet' },
+            { value: 'haiku', label: 'Haiku' },
         ])
     })
 
-    it('adds non-preset Claude options without hiding Opus presets', () => {
+    it('uses the Claude catalog as the whole list, as the CLI picker shows it', () => {
         const options = getModelOptionsForFlavor('claude', null, [
-            { value: 'claude-opus-4-1-20250805', label: 'Claude Opus 4.1' }
+            { value: 'opus', label: 'Opus 5.5' },
+            { value: 'claude-opus-4-7', label: 'Opus 4.7' },
+            { value: 'sonnet', label: 'Sonnet 5' },
         ])
         expect(options).toEqual([
             { value: null, label: 'Default' },
-            { value: 'claude-opus-4-1-20250805', label: 'Claude Opus 4.1' },
+            { value: 'opus', label: 'Opus 5.5' },
+            { value: 'claude-opus-4-7', label: 'Opus 4.7' },
+            { value: 'sonnet', label: 'Sonnet 5' },
+        ])
+    })
+
+    it('offers a 1M variant the CLI lists as its own row', () => {
+        const options = getModelOptionsForFlavor('claude', null, [
+            { value: 'opus[1m]', label: 'Opus (1M context)' },
+            { value: 'claude-fable-5[1m]', label: 'Fable' },
             { value: 'sonnet', label: 'Sonnet' },
-            { value: 'sonnet[1m]', label: 'Sonnet 1M' },
-            { value: 'opus', label: 'Opus' },
-            { value: 'opus[1m]', label: 'Opus 1M' },
-            { value: 'fable', label: 'Fable' },
-            { value: 'fable[1m]', label: 'Fable 1M' }
+        ])
+        expect(options).toEqual([
+            { value: null, label: 'Default' },
+            { value: 'opus[1m]', label: 'Opus (1M context)' },
+            { value: 'claude-fable-5[1m]', label: 'Fable' },
+            { value: 'sonnet', label: 'Sonnet' },
+        ])
+    })
+
+    it('keeps the group of each Claude catalog option', () => {
+        const options = getModelOptionsForFlavor('claude', null, [
+            { value: 'opus', label: 'Opus 5.5' },
+            { value: 'claude-opus-4-7', label: 'Opus 4.7', group: 'Other models' },
+        ])
+        expect(options).toEqual([
+            { value: null, label: 'Default' },
+            { value: 'opus', label: 'Opus 5.5' },
+            { value: 'claude-opus-4-7', label: 'Opus 4.7', group: 'Other models' },
+        ])
+    })
+
+    it('keeps a saved 1M alias the catalog does not list as the current model', () => {
+        const options = getModelOptionsForFlavor('claude', 'opus[1m]', [
+            { value: 'opus', label: 'Opus 5.5' },
+        ])
+        expect(options).toEqual([
+            { value: null, label: 'Default' },
+            { value: 'opus[1m]', label: 'opus[1m]' },
+            { value: 'opus', label: 'Opus 5.5' },
+        ])
+    })
+
+    it('keeps a pinned Claude model the catalog no longer lists selected', () => {
+        const options = getModelOptionsForFlavor('claude', 'claude-opus-4-1', [
+            { value: 'opus', label: 'Opus 5.5' },
+        ])
+        expect(options.slice(0, 3)).toEqual([
+            { value: null, label: 'Default' },
+            { value: 'claude-opus-4-1', label: 'claude-opus-4-1' },
+            { value: 'opus', label: 'Opus 5.5' },
         ])
     })
 
@@ -98,10 +167,28 @@ describe('getModelOptionsForFlavor', () => {
         expect(options).toEqual([])
     })
 
+    it('returns an empty list for dsh flavor before the ACP catalog arrives (no claude fallback)', () => {
+        // Covers pending, failed, and empty discovery — all three leave
+        // customOptions undefined/empty and must not surface Claude presets.
+        expect(getModelOptionsForFlavor('dsh', null)).toEqual([])
+        expect(getModelOptionsForFlavor('dsh', '["deepseek-official","deepseek-flash"]', [])).toEqual([])
+    })
+
+    it('keeps the supplied dsh catalog options including the Default reset entry', () => {
+        const options = getModelOptionsForFlavor('dsh', null, [
+            { value: null, label: 'Default' },
+            { value: '["deepseek-official","deepseek-flash"]', label: 'DeepSeek-V41-Flash' }
+        ])
+        expect(options).toEqual([
+            { value: null, label: 'Default' },
+            { value: '["deepseek-official","deepseek-flash"]', label: 'DeepSeek-V41-Flash' }
+        ])
+    })
+
     it('returns only default/current for cursor before models are discovered (no claude fallback)', () => {
         const options = getModelOptionsForFlavor('cursor', 'composer-2.5')
         expect(options).toEqual([
-            { value: null, label: 'Auto' },
+            { value: 'auto', label: 'Auto' },
             { value: 'composer-2.5', label: 'composer-2.5' }
         ])
     })
@@ -120,12 +207,12 @@ describe('getModelOptionsForFlavor', () => {
     it('does not inject raw wire id when dual picker base is already listed', () => {
         const wire = 'claude-opus-4-8[thinking=true,context=300k,effort=high,fast=false]'
         const options = getModelOptionsForFlavor('cursor', wire, [
-            { value: null, label: 'Auto' },
+            { value: 'auto', label: 'Auto' },
             { value: 'claude-opus-4-8', label: 'Claude Opus 4.8' },
             { value: 'composer-2.5', label: 'Composer 2.5' },
         ])
         expect(options).toEqual([
-            { value: null, label: 'Auto' },
+            { value: 'auto', label: 'Auto' },
             { value: 'claude-opus-4-8', label: 'Claude Opus 4.8' },
             { value: 'composer-2.5', label: 'Composer 2.5' },
         ])
@@ -134,11 +221,11 @@ describe('getModelOptionsForFlavor', () => {
     it('injects unknown wire id only when catalog lacks base and wire', () => {
         const wire = 'claude-opus-4-9[effort=high,fast=false]'
         const options = getModelOptionsForFlavor('cursor', wire, [
-            { value: null, label: 'Auto' },
+            { value: 'auto', label: 'Auto' },
             { value: 'composer-2.5', label: 'Composer 2.5' },
         ])
         expect(options).toEqual([
-            { value: null, label: 'Auto' },
+            { value: 'auto', label: 'Auto' },
             { value: wire, label: wire },
             { value: 'composer-2.5', label: 'Composer 2.5' },
         ])
@@ -191,6 +278,41 @@ describe('getModelOptionsForFlavor', () => {
     })
 })
 
+describe('getClaudeLaunchModelOptions', () => {
+    const catalog = [
+        { value: 'default', displayName: 'Default (recommended)' },
+        { value: 'opus', displayName: 'Opus 5.5' },
+        { value: 'claude-opus-4-7', displayName: 'Opus 4.7' },
+    ]
+
+    it('offers the catalog choices with Default as auto and earlier versions under Other models', () => {
+        expect(getClaudeLaunchModelOptions(catalog, 'auto', 'no longer listed', 'Other models')).toEqual([
+            { value: 'auto', label: 'Default' },
+            { value: 'opus', label: 'Opus 5.5' },
+            { value: 'claude-opus-4-7', label: 'Opus 4.7', group: 'Other models' },
+        ])
+    })
+
+    it('marks a saved model the catalog no longer lists instead of dropping it', () => {
+        const options = getClaudeLaunchModelOptions(catalog, 'claude-opus-4-1', 'no longer listed', 'Other models')
+        expect(options[1]).toEqual({ value: 'claude-opus-4-1', label: 'claude-opus-4-1 (no longer listed)' })
+    })
+
+    it('marks a saved 1M alias the catalog no longer lists, like any other model', () => {
+        const options = getClaudeLaunchModelOptions(catalog, 'opus[1m]', 'no longer listed', 'Other models')
+        expect(options[1]).toEqual({ value: 'opus[1m]', label: 'opus[1m] (no longer listed)' })
+    })
+
+    it('keeps a saved model selectable before the catalog arrives, without claiming it is gone', () => {
+        const options = getClaudeLaunchModelOptions([], 'claude-opus-4-1', 'no longer listed', 'Other models')
+        expect(options.slice(0, 3)).toEqual([
+            { value: 'auto', label: 'Default' },
+            { value: 'claude-opus-4-1', label: 'claude-opus-4-1' },
+            { value: 'opus', label: 'Opus' },
+        ])
+    })
+})
+
 describe('getNextModelForFlavor', () => {
     it('cycles AGY null, auto, and unknown current values only to concrete models', () => {
         const firstConcrete = getModelOptionsForFlavor('agy').find((option) => option.value !== null)?.value
@@ -198,6 +320,17 @@ describe('getNextModelForFlavor', () => {
         expect(getNextModelForFlavor('agy', null)).toBe(firstConcrete)
         expect(getNextModelForFlavor('agy', 'auto')).toBe(firstConcrete)
         expect(getNextModelForFlavor('agy', 'agy-custom-model')).toBe(firstConcrete)
+    })
+
+    it('cycles through the machine catalog in an AGY session', () => {
+        const live = [
+            { value: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)' },
+            { value: 'gemini-3.8-flash-low', label: 'Gemini 3.8 Flash (Low)' }
+        ]
+
+        expect(getNextModelForFlavor('agy', null, live)).toBe('gemini-3.8-flash-high')
+        expect(getNextModelForFlavor('agy', 'gemini-3.8-flash-high', live)).toBe('gemini-3.8-flash-low')
+        expect(getNextModelForFlavor('agy', 'gemini-3.8-flash-low', live)).toBe('gemini-3.8-flash-high')
     })
 
     it('cycles Gemini models', () => {
@@ -210,12 +343,13 @@ describe('getNextModelForFlavor', () => {
         expect(next).not.toBeNull()
     })
 
-    it('cycles through Claude presets when explicit options only include Sonnet models', () => {
-        const next = getNextModelForFlavor('claude', 'sonnet[1m]', [
-            { value: 'sonnet', label: 'Sonnet' },
-            { value: 'sonnet[1m]', label: 'Sonnet 1M' }
-        ])
-        expect(next).toBe('opus')
+    it('cycles through the Claude catalog only', () => {
+        const catalogOptions = [
+            { value: 'opus', label: 'Opus 5.5' },
+            { value: 'sonnet', label: 'Sonnet 5.5' }
+        ]
+        expect(getNextModelForFlavor('claude', 'opus', catalogOptions)).toBe('sonnet')
+        expect(getNextModelForFlavor('claude', 'sonnet', catalogOptions)).toBeNull()
     })
 
     it('cycles explicit model options', () => {
@@ -247,6 +381,12 @@ describe('getNextModelForFlavor', () => {
     it('returns null for opencode without a current model and without dynamic options (no Claude fallback)', () => {
         const next = getNextModelForFlavor('opencode', null, [])
         expect(next).toBeNull()
+    })
+
+    it('keeps the current dsh model when the ACP catalog has not loaded (no Claude fallback)', () => {
+        const flash = '["deepseek-official","deepseek-flash"]'
+        expect(getNextModelForFlavor('dsh', flash)).toBe(flash)
+        expect(getNextModelForFlavor('dsh', flash, [])).toBe(flash)
     })
 
     it('keeps the current cursor model when the dynamic list has not loaded', () => {
@@ -304,6 +444,24 @@ describe('getNextModelForFlavor', () => {
     it('keeps a kimi current model on cycle (no Claude fallback)', () => {
         expect(getNextModelForFlavor('kimi', 'kimi-k2-0711')).toBe('kimi-k2-0711')
         expect(getNextModelForFlavor('kimi', null)).toBeNull()
+    })
+
+    it('serves dynamic Kimi options to a running session with Default and aliases', () => {
+        const options = getModelOptionsForFlavor('kimi', 'GLM-5.3-flash', [
+            { value: null, label: 'Default' },
+            { value: 'GLM-5.3-flash', label: 'thehive — thehive / GLM-5.3-flash' },
+            { value: 'deepseek-v4.1-flash', label: 'thehive — thehive / hive-deepseek' }
+        ])
+
+        expect(options[0]).toEqual({ value: null, label: 'Default' })
+        expect(options.map((option) => option.value)).toEqual([null, 'GLM-5.3-flash', 'deepseek-v4.1-flash'])
+
+        // Cycling with a dynamic catalog moves through the discovered aliases.
+        expect(getNextModelForFlavor('kimi', 'GLM-5.3-flash', [
+            { value: null, label: 'Default' },
+            { value: 'GLM-5.3-flash', label: 'thehive — GLM-5.3-flash' },
+            { value: 'deepseek-v4.1-flash', label: 'thehive — deepseek-v4.1-flash' }
+        ])).toBe('deepseek-v4.1-flash')
     })
 
     it('keeps a cursor current model on cycle (no Claude fallback)', () => {

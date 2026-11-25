@@ -1,8 +1,8 @@
 package app.hapi.data.push
 
+import app.hapi.data.HubSession
 import app.hapi.data.auth.HubCredentials
 import app.hapi.data.auth.HubRegistry
-import app.hapi.data.auth.HubUrls
 import app.hapi.data.auth.InMemoryCredentialStore
 import app.hapi.data.auth.InMemoryHubRegistryStorage
 import app.hapi.data.fakeJwt
@@ -36,12 +36,24 @@ class PushActionRunnerTest {
     fun setUp() {
         serverA = MockWebServer().also { it.start() }
         serverB = MockWebServer().also { it.start() }
-        hubA = HubUrls.normalize(serverA.url("/").toString())!!
-        hubB = HubUrls.normalize(serverB.url("/").toString())!!
+        hubA = "https://hub-a.example"
+        hubB = "https://hub-b.example"
 
         val credentials = InMemoryCredentialStore().apply {
-            set(HubCredentials(hubUrl = hubA, accessToken = "token-a", jwt = jwt))
-            set(HubCredentials(hubUrl = hubB, accessToken = "token-b", jwt = jwt))
+            set(
+                HubCredentials(
+                    hubUrl = serverA.url("/").toString().removeSuffix("/"),
+                    accessToken = "token-a",
+                    jwt = jwt,
+                )
+            )
+            set(
+                HubCredentials(
+                    hubUrl = serverB.url("/").toString().removeSuffix("/"),
+                    accessToken = "token-b",
+                    jwt = jwt,
+                )
+            )
         }
         registry = HubRegistry(InMemoryHubRegistryStorage())
         runBlocking {
@@ -49,7 +61,12 @@ class PushActionRunnerTest {
             registry.addHub(hubA) // active
             registry.addHub(hubB, makeActive = false)
         }
-        runner = PushActionRunner(PushHubAccess(registry, credentials))
+        val serverUrls = mapOf(hubA to serverA.url("/"), hubB to serverB.url("/"))
+        runner = PushActionRunner(
+            PushHubAccess(registry) { hubUrl ->
+                HubSession(checkNotNull(serverUrls[hubUrl]), credentials)
+            }
+        )
     }
 
     @AfterTest

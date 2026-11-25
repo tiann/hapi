@@ -55,7 +55,8 @@ export function parseCursorAskQuestionInput(input: unknown): { questions: AskUse
             header: header.length > 0 ? header : (requestTitle.length > 0 ? requestTitle : null),
             question,
             options,
-            multiSelect
+            multiSelect,
+            allowFreeText: true
         })
     }
 

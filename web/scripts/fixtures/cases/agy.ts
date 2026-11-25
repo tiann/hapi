@@ -6,7 +6,7 @@ import { T0, wireMessage } from './support'
  * Claude-style output envelope (content.type === 'output') with
  * data.type === 'agy_message' (planner prose) and 'agy_tool_action' (a DONE
  * tool action whose content is its result). See normalizeAgent.ts (agy
- * branches) and cli/src/api/apiSession.ts sendAgySessionMessage.
+ * branches).
  */
 export const agyCases: FixtureCase[] = [
     {

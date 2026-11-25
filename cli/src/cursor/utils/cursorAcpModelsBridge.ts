@@ -3,6 +3,8 @@ import type { CursorModelSummary } from '@hapi/protocol/apiTypes';
 export type CursorModelsSnapshot = {
     availableModels: CursorModelSummary[];
     currentModelId: string | null;
+    /** ACP advertised the parameterized picker (bare bases + fast/thought_level options). */
+    parameterized?: boolean;
 };
 
 let snapshot: CursorModelsSnapshot | null = null;

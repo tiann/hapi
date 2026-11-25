@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { AGENT_FLAVORS, type AgentFlavor, type PermissionMode } from './modes'
+import { AGENT_FLAVORS, type AgentFlavor } from './modes'
 
 export const AgentConfigFieldIdSchema = z.enum([
     'model',
@@ -57,7 +57,11 @@ function fields(...fields: AgentConfigFieldDescriptor[]): AgentConfigFieldDescri
 }
 
 const BUILTIN_DESCRIPTORS: Record<AgentFlavor, AgentConfigFieldDescriptor[]> = {
-    agy: fields({ ...MODEL, optionSource: 'machine' }, PERMISSION),
+    agy: fields(
+        { ...MODEL, optionSource: 'machine' },
+        { id: 'effort', section: 'effort', kind: 'select', optionSource: 'model', availability: 'both' },
+        PERMISSION
+    ),
     claude: fields(MODEL, { id: 'effort', section: 'effort', kind: 'select', optionSource: 'static', availability: 'both' }, PERMISSION),
     codex: fields(
         { ...MODEL, optionSource: 'machine' },
@@ -66,6 +70,7 @@ const BUILTIN_DESCRIPTORS: Record<AgentFlavor, AgentConfigFieldDescriptor[]> = {
         { id: 'serviceTier', section: 'settings', kind: 'select', optionSource: 'model', availability: 'both' },
         { id: 'collaborationMode', section: 'settings', kind: 'select', optionSource: 'static', availability: 'both' }
     ),
+    dsh: fields(MANAGED_PERMISSION),
     copilot: fields({ ...MODEL, optionSource: 'directory' }, PERMISSION),
     cursor: fields({ id: 'model', section: 'model', kind: 'dependent-select', optionSource: 'machine', availability: 'both' }, PERMISSION),
     gemini: fields(MODEL, PERMISSION),
@@ -74,7 +79,7 @@ const BUILTIN_DESCRIPTORS: Record<AgentFlavor, AgentConfigFieldDescriptor[]> = {
         { id: 'effort', section: 'effort', kind: 'select', optionSource: 'model', availability: 'both' },
         PERMISSION
     ),
-    kimi: fields(MODEL, PERMISSION),
+    kimi: fields({ ...MODEL, optionSource: 'directory' }, PERMISSION),
     opencode: fields(
         { ...MODEL, optionSource: 'directory' },
         { id: 'effort', section: 'effort', kind: 'select', optionSource: 'model', availability: 'both' },
@@ -93,23 +98,4 @@ export function getAgentConfigDescriptor(flavor: AgentFlavor): AgentConfigDescri
 
 export function getBuiltinAgentConfigDescriptors(): AgentConfigDescriptor[] {
     return AGENT_FLAVORS.map(getAgentConfigDescriptor)
-}
-
-export function resolveHapiYoloPermissionMode(flavor: AgentFlavor): PermissionMode | null {
-    switch (flavor) {
-        case 'claude':
-        case 'grok':
-            return 'bypassPermissions'
-        case 'agy':
-            return 'always-proceed'
-        case 'codex':
-        case 'copilot':
-        case 'cursor':
-        case 'gemini':
-        case 'kimi':
-        case 'opencode':
-            return 'yolo'
-        case 'pi':
-            return null
-    }
 }

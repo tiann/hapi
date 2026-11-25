@@ -117,9 +117,10 @@ enum class DictationErrorKind {
 }
 
 /**
- * Press-to-toggle dictation (B-M3ce): first [toggle] discovers a provider
- * (`GET /providers`, first entry supporting `standard`; memoized) and starts
- * the recorder; the second stops it and posts the audio to
+ * Press-to-toggle dictation (B-M3ce): [refreshAvailability] discovers a provider
+ * on chat entry (`GET /providers`, first entry supporting `standard`). The first
+ * [toggle] reuses it (or discovers one) and starts the recorder; the second
+ * stops it and posts the audio to
  * `POST /api/voice/transcription`, emitting [DictationEvent.Transcribed]
  * with the hub's text. [cancel] abandons the take without uploading.
  *
@@ -138,13 +139,32 @@ class DictationController(
     private val _state = MutableStateFlow<DictationState>(DictationState.Idle)
     val state: StateFlow<DictationState> = _state.asStateFlow()
 
+    /** Hidden until the hub confirms a standard-capable provider. */
+    private val _isAvailable = MutableStateFlow(false)
+    val isAvailable: StateFlow<Boolean> = _isAvailable.asStateFlow()
+
     private val _events = MutableSharedFlow<DictationEvent>(extraBufferCapacity = 8)
     val events: SharedFlow<DictationEvent> = _events.asSharedFlow()
 
-    /** First successful discovery wins for the session (web keeps a provider setting; v1 has none). */
+    /** Reused across takes; refreshed when the composer appears. */
     private var cachedProviderId: String? = null
 
     private var job: Job? = null
+    private var refreshingAvailability = false
+
+    /** Silent preflight; no microphone access or notices on chat entry. */
+    suspend fun refreshAvailability() {
+        if (_state.value != DictationState.Idle || refreshingAvailability) return
+        refreshingAvailability = true
+        cachedProviderId = null
+        _isAvailable.value = false
+        try {
+            cachedProviderId = discoverProvider(reportErrors = false)
+            _isAvailable.value = cachedProviderId != null
+        } finally {
+            refreshingAvailability = false
+        }
+    }
 
     /** Mic button press: Idle → record, Recording → stop + transcribe. */
     fun toggle() {
@@ -164,7 +184,7 @@ class DictationController(
     }
 
     private fun startRecording() {
-        if (job?.isActive == true) return
+        if (job?.isActive == true || refreshingAvailability) return
         _state.value = DictationState.Starting
         job = scope.launch {
             val provider = cachedProviderId ?: discoverProvider() ?: run {
@@ -172,6 +192,7 @@ class DictationController(
                 return@launch
             }
             cachedProviderId = provider
+            _isAvailable.value = true
             try {
                 recorder.start()
                 _state.value = DictationState.Recording(now())
@@ -184,21 +205,23 @@ class DictationController(
         }
     }
 
-    /** @return the chosen provider id, or null after emitting the failure event. */
-    private suspend fun discoverProvider(): String? {
+    /** @return the chosen provider id, or null; preflight suppresses failure events. */
+    private suspend fun discoverProvider(reportErrors: Boolean = true): String? {
         val providers = try {
             api.transcriptionProviders().providers
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (error: Exception) {
-            _events.tryEmit(DictationEvent.Error(DictationErrorKind.HubUnreachable, error.message))
+            if (reportErrors) {
+                _events.tryEmit(DictationEvent.Error(DictationErrorKind.HubUnreachable, error.message))
+            }
             return null
         }
         // First provider supporting standard (uploaded-file) transcription —
         // the hub lists them in its own preference order. `browser-local`
         // (realtime-only) never qualifies.
         val chosen = providers.firstOrNull { it.modes.contains("standard") }
-        if (chosen == null) {
+        if (chosen == null && reportErrors) {
             _events.tryEmit(DictationEvent.NoProvider)
         }
         return chosen?.id

@@ -113,7 +113,7 @@ struct FileViewerView: View {
                     }
                 }
                 if hasDiff && model.mode == .diff {
-                    Text("·").foregroundStyle(.secondary)
+                    Text(verbatim: "·").foregroundStyle(.secondary)
                     ModeChip(label: String(localized: "Unstaged"), selected: !model.staged) {
                         model.setStaged(false)
                     }
@@ -123,7 +123,7 @@ struct FileViewerView: View {
                 }
                 if isMarkdownText && model.mode == .file {
                     if hasDiff {
-                        Text("·").foregroundStyle(.secondary)
+                        Text(verbatim: "·").foregroundStyle(.secondary)
                     }
                     ModeChip(label: String(localized: "Source"), selected: !model.markdownPreview) {
                         model.setMarkdownPreview(false)
@@ -133,7 +133,7 @@ struct FileViewerView: View {
                     }
                 }
                 if let line = model.focusLine {
-                    Text("Line \(line)")
+                    Text("Line \(line, specifier: "%lld")")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .padding(.leading, 4)
@@ -194,7 +194,8 @@ struct FileViewerView: View {
         case .text(let text, let language, let isMarkdown):
             if isMarkdown && model.markdownPreview {
                 MarkdownView(markdown: text)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    // The outer viewer already supplies 12pt on each side.
+                    .hapiReadingColumn(horizontalInset: 4)
             } else {
                 CodeBlockView(language: language, code: text)
                     .frame(maxWidth: .infinity, alignment: .leading)

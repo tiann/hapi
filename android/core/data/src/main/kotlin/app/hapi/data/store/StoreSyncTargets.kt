@@ -6,6 +6,7 @@ import app.hapi.protocol.wire.SyncEvent
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 
 /**
@@ -40,6 +41,8 @@ class StoreSyncTargets(
     private val onToastEvent: (SyncEvent.Toast) -> Unit = {},
     /** Handshake hook (subscription id per pipe) — feeds visibility reporting. */
     private val onHandshakeEvent: (SseSubscriptionKey, String?) -> Unit = { _, _ -> },
+    /** Resync lifecycle hook (true = started, false = finished) — feeds the Syncing banner. */
+    private val onResyncEvent: (Boolean) -> Unit = {},
 ) : SyncTargets {
 
     private val windowEvents: Channel<Pair<SseSubscriptionKey, SyncEvent>>? =
@@ -107,33 +110,58 @@ class StoreSyncTargets(
 
     override fun requestFullResync(scope: SseSubscriptionKey) {
         this.scope.launch {
+            onResyncEvent(true)
             try {
-                sessions.fullResync()
-            } catch (cancellation: CancellationException) {
-                throw cancellation
-            } catch (_: Exception) {
-                // Offline: snapshot state stays; the next reconnect retries.
-            }
-            try {
-                machines.refresh()
-            } catch (cancellation: CancellationException) {
-                throw cancellation
-            } catch (_: Exception) {
-            }
-            // A session-pipe gap means that window's replay is unproven:
-            // catch up past any in-flight sync (web `resyncMessages`) AND
-            // reconcile queued optimistic sends against the hub verdict
-            // (web `queued-state-reconciliation` — the drain includes the
-            // ensureAfterCurrent tail sync).
-            if (scope is SseSubscriptionKey.Session) {
-                val store = messageWindows?.peek(scope.sessionId) ?: return@launch
                 try {
-                    store.reconcileQueuedState()
+                    sessions.fullResync()
                 } catch (cancellation: CancellationException) {
                     throw cancellation
                 } catch (_: Exception) {
-                    // Failure lands in the window's warning state.
+                    // Offline: snapshot state stays; the next reconnect retries.
                 }
+                try {
+                    machines.refresh()
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (_: Exception) {
+                }
+                // A session-pipe gap means that window's replay is unproven:
+                // run the window's gap recovery (web
+                // `recoverWindowAfterGapResume`: cursor catch-up + latest-page
+                // upsert) AND reconcile queued optimistic sends against the
+                // hub verdict (web `queued-state-reconciliation` — the drain
+                // includes the ensureAfterCurrent tail sync). The two steps
+                // run concurrently like web's two post-gap calls; the queued
+                // reconciliation's drain joins the recovery's run.
+                if (scope is SseSubscriptionKey.Session) {
+                    val store = messageWindows?.peek(scope.sessionId) ?: return@launch
+                    try {
+                        coroutineScope {
+                            launch {
+                                try {
+                                    store.recoverAfterGapResume()
+                                } catch (cancellation: CancellationException) {
+                                    throw cancellation
+                                } catch (_: Exception) {
+                                    // Failure lands in the window's warning state.
+                                }
+                            }
+                            try {
+                                store.reconcileQueuedState()
+                            } catch (cancellation: CancellationException) {
+                                throw cancellation
+                            } catch (_: Exception) {
+                                // Failure lands in the window's warning state.
+                            }
+                        }
+                    } catch (cancellation: CancellationException) {
+                        throw cancellation
+                    } catch (_: Exception) {
+                        // Failures land in the window's warning state.
+                    }
+                }
+            } finally {
+                onResyncEvent(false)
             }
         }
     }

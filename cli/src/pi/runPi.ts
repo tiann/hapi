@@ -7,6 +7,7 @@ import { registerLocalHandoffHandler } from '@/agent/localHandoff';
 import { createRunnerLifecycle, createModeChangeHandler, setControlledByUser } from '@/agent/runnerLifecycle';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import { PiTransport } from './piTransport';
+import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand';
 import { PiSession } from './session';
 import { PiConversationHistory, PiHistoryRestoreError } from './conversationHistory';
 import { parsePiModels, parsePiCommands, PiRpcTimeoutError, sendPiRpcAndWait, wireTransportEvents } from './loop';
@@ -16,6 +17,9 @@ import type { PiImageContent, PiThinkingLevel } from './types';
 import { parsePiSpecialCommand, parseLeadingSlashName, type PiSpecialCommand } from './specialCommands';
 import { PiPromptQueue, isPiSpecialQueued, type PiPreparedPrompt } from './promptQueue';
 import { PiSteerDispatcher } from './steerDispatcher';
+import { materializePiExtension } from './hapiExtension';
+import { startHappyServer } from '@/claude/utils/startHappyServer';
+import { isPeerToolsDisabled } from '@/modules/common/peerTools';
 import { getBuiltinSlashCommands, mergeSlashCommands } from '@hapi/protocol/slashCommands';
 import type { ListPiModelsResponse, PiCommandSummary, PiModelSummary, SlashCommand, SlashCommandsResponse } from '@hapi/protocol/apiTypes';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
@@ -191,6 +195,8 @@ export async function runPi(opts: {
     effort?: string;
     resumeSessionId?: string;
     existingSessionId?: string;
+    /** Fresh machine-spawn stub (`--hapi-session-id`); adopt via bootstrapSession. */
+    reservedSessionId?: string;
     workingDirectory?: string;
 } = {}): Promise<void> {
     const workingDirectory = opts.workingDirectory ?? getInvokedCwd();
@@ -221,7 +227,8 @@ export async function runPi(opts: {
             // handleSessionAlive persists every non-undefined keepAlive model, so
             // passing it here would store/show a model Pi may reject. PiSession
             // carries opts.model as initialModel and applies it once confirmed.
-            model: undefined
+            model: undefined,
+            reservedSessionId: opts.reservedSessionId
         });
     const { session: apiSession } = bootstrap;
 
@@ -238,15 +245,28 @@ export async function runPi(opts: {
         expectedNativeSessionId: opts.resumeSessionId,
     });
 
-    const transportArgs = ['--mode', 'rpc'];
+    const extensionPath = await materializePiExtension();
+    const peerMcpServer = isPeerToolsDisabled()
+        ? null
+        : await startHappyServer(apiSession, {
+            enableChangeTitle: false,
+            enabledTools: ['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer'],
+        });
+    const transportArgs = ['--mode', 'rpc', '--extension', extensionPath];
     if (opts.resumeSessionId) {
         transportArgs.push('--session', opts.resumeSessionId);
     }
+    const transportEnv = { ...process.env };
+    if (peerMcpServer) {
+        transportEnv.HAPI_PI_MCP_URL = peerMcpServer.url;
+    } else {
+        delete transportEnv.HAPI_PI_MCP_URL;
+    }
     const transport = new PiTransport({
-        command: 'pi',
+        command: getAgentLaunchCommand('pi'),
         args: transportArgs,
         cwd: workingDirectory,
-        env: { ...process.env, PI_RPC_EMIT_TITLE: '1' },
+        env: transportEnv,
     });
     const conversationHistory = new PiConversationHistory(
         piSession,
@@ -299,7 +319,7 @@ export async function runPi(opts: {
     });
 
     lifecycle.registerProcessHandlers();
-    registerKillSessionHandler(apiSession.rpcHandlerManager, lifecycle);
+    registerKillSessionHandler(apiSession.rpcHandlerManager, lifecycle, apiSession);
     registerLocalHandoffHandler(apiSession.rpcHandlerManager, lifecycle);
 
     let cleanupInitiated = false;
@@ -309,6 +329,7 @@ export async function runPi(opts: {
         cleanupInitiated = true;
         steerDispatcher?.stop();
         piSession.cancelReadyGate();
+        peerMcpServer?.stop();
         await lifecycle.cleanupAndExit();
     };
 

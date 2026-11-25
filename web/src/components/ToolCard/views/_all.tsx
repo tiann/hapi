@@ -1,5 +1,5 @@
 import type { ComponentType } from 'react'
-import type { ToolCallBlock } from '@/chat/types'
+import type { ChatToolCall, ToolCallBlock } from '@/chat/types'
 import type { SessionMetadataSummary } from '@/types/api'
 import { CodexDiffCompactView, CodexDiffFullView } from '@/components/ToolCard/views/CodexDiffView'
 import { CodexPatchView } from '@/components/ToolCard/views/CodexPatchView'
@@ -12,6 +12,8 @@ import { MultiEditFullView, MultiEditView } from '@/components/ToolCard/views/Mu
 import { TodoWriteView } from '@/components/ToolCard/views/TodoWriteView'
 import { UpdatePlanView } from '@/components/ToolCard/views/UpdatePlanView'
 import { WriteView } from '@/components/ToolCard/views/WriteView'
+import { GoalView } from '@/components/ToolCard/views/GoalView'
+import { canShowGoalPreview, isGoalToolName } from '@/components/ToolCard/goalTools'
 import { getInputStringAny } from '@/lib/toolInputUtils'
 import {
     getCodexAgentFieldRows,
@@ -126,7 +128,8 @@ export const toolFullViewRegistry: Record<string, ToolViewComponent> = {
     request_user_input: RequestUserInputView
 }
 
-export function getToolViewComponent(toolName: string): ToolViewComponent | null {
+export function getToolViewComponent(toolName: string, tool?: Pick<ChatToolCall, 'input' | 'result' | 'state'>): ToolViewComponent | null {
+    if (isGoalToolName(toolName)) return tool && canShowGoalPreview(tool) ? GoalView : null
     return toolViewRegistry[toolName] ?? null
 }
 

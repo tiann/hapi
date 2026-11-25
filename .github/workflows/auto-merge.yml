@@ -1,0 +1,46 @@
+name: Auto Merge
+
+# Squash-merges open PRs that the repository owner approved at their current
+# head once every check on that head has passed. Re-evaluated whenever an
+# approval or a PR check workflow completes, with a periodic sweep as fallback.
+on:
+  workflow_run:
+    workflows: [Auto Merge Signal, Test, android, ios, fixtures, Push Relay Image, Codex PR Review]
+    types: [completed]
+  schedule:
+    - cron: '7,37 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: auto-merge
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    if: |
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.event != 'push' && github.event.workflow_run.conclusion != 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      # The merge script runs with the owner's token, so always load it from
+      # the default branch; workflow_dispatch would otherwise check out
+      # whichever ref the caller selected.
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Merge approved PRs
+        uses: actions/github-script@v7
+        env:
+          AUTO_MERGE_TOKEN_CONFIGURED: ${{ secrets.AUTO_MERGE_TOKEN != '' }}
+          AUTO_MERGE_APPROVER: ${{ vars.AUTO_MERGE_APPROVER }}
+          AUTO_MERGE_REQUIRED_CHECKS: ${{ vars.AUTO_MERGE_REQUIRED_CHECKS }}
+        with:
+          # A user token so merges trigger push workflows on main.
+          github-token: ${{ secrets.AUTO_MERGE_TOKEN || github.token }}
+          script: |
+            const { autoMerge } = require('./.github/scripts/auto-merge.cjs');
+            await autoMerge({ github, context, core });

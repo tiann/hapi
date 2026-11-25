@@ -1,30 +1,9 @@
 import chalk from 'chalk'
-import { agyCommand } from './agy'
-import { authCommand } from './auth'
-import { claudeCommand } from './claude'
-import { codexCommand } from './codex'
-import { cursorCommand } from './cursor'
-import { connectCommand } from './connect'
-import { runnerCommand } from './runner'
-import { resumeCommand } from './resume'
-import { doctorCommand } from './doctor'
-import { kimiCommand } from './kimi'
-import { copilotCommand } from './copilot'
-import { grokCommand } from './grok'
-import { opencodeCommand } from './opencode'
-import { piCommand } from './pi'
-import { hookForwarderCommand } from './hookForwarder'
-import { mcpCommand } from './mcp'
-import { notifyCommand } from './notify'
-import { hubCommand } from './hub'
-import { pingPeerCommand } from './pingPeer'
-import { inspectPeerCommand } from './inspectPeer'
 import type { CommandContext, CommandDefinition } from './types'
 
 // Gemini CLI was sunset (Google stopped serving the consumer Gemini CLI on
 // 2026-06-18) so the agent is no longer launchable. Keep an explicit tombstone
-// command so `hapi gemini` reports a clear error instead of falling through to
-// the default Claude command with "gemini" as a forwarded argument.
+// command so `hapi gemini` explains why the agent is no longer available.
 const removedGeminiCommand: CommandDefinition = {
     name: 'gemini',
     requiresRuntimeAssets: false,
@@ -37,47 +16,53 @@ const removedGeminiCommand: CommandDefinition = {
     }
 }
 
-const COMMANDS: CommandDefinition[] = [
-    agyCommand,
-    authCommand,
-    connectCommand,
-    codexCommand,
-    cursorCommand,
-    removedGeminiCommand,
-    grokCommand,
-    kimiCommand,
-    copilotCommand,
-    opencodeCommand,
-    piCommand,
-    mcpCommand,
-    hubCommand,
-    { ...hubCommand, name: 'server' },
-    hookForwarderCommand,
-    doctorCommand,
-    resumeCommand,
-    runnerCommand,
-    notifyCommand,
-    pingPeerCommand,
-    inspectPeerCommand
-]
+const commandMap = new Map<string, () => Promise<CommandDefinition>>([
+    ['agy', async () => (await import('./agy')).agyCommand],
+    ['auth', async () => (await import('./auth')).authCommand],
+    ['attach', async () => (await import('./attach')).attachCommand],
+    ['detach', async () => (await import('./attach')).detachCommand],
+    ['codex-desktop', async () => (await import('./codexDesktop')).codexDesktopCommand],
+    ['claude', async () => (await import('./claude')).claudeCommand],
+    ['connect', async () => (await import('./connect')).connectCommand],
+    ['codex', async () => (await import('./codex')).codexCommand],
+    ['dsh', async () => (await import('./dsh')).dshCommand],
+    ['cursor', async () => (await import('./cursor')).cursorCommand],
+    ['gemini', async () => removedGeminiCommand],
+    ['grok', async () => (await import('./grok')).grokCommand],
+    ['kimi', async () => (await import('./kimi')).kimiCommand],
+    ['copilot', async () => (await import('./copilot')).copilotCommand],
+    ['opencode', async () => (await import('./opencode')).opencodeCommand],
+    ['pi', async () => (await import('./pi')).piCommand],
+    ['mcp', async () => (await import('./mcp')).mcpCommand],
+    ['mcp-proxy', async () => (await import('./mcpProxy')).mcpProxyCommand],
+    ['hub', async () => (await import('./hub')).hubCommand],
+    ['server', async () => ({ ...(await import('./hub')).hubCommand, name: 'server' })],
+    ['hook-forwarder', async () => (await import('./hookForwarder')).hookForwarderCommand],
+    ['doctor', async () => (await import('./doctor')).doctorCommand],
+    ['resume', async () => (await import('./resume')).resumeCommand],
+    ['runner', async () => (await import('./runner')).runnerCommand],
+    ['notify', async () => (await import('./notify')).notifyCommand],
+    ['link-pr', async () => (await import('./linkPr')).linkPrCommand],
+    ['ping-peer', async () => (await import('./pingPeer')).pingPeerCommand],
+    ['inspect-peer', async () => (await import('./inspectPeer')).inspectPeerCommand],
+    ['spawn-peer', async () => (await import('./spawnPeer')).spawnPeerCommand],
+    ['set-mode', async () => (await import('./setMode')).setModeCommand],
+    ['job', async () => (await import('./job')).jobCommand],
+    ['usage', async () => (await import('./usage')).usageCommand]
+])
 
-const commandMap = new Map<string, CommandDefinition>()
-for (const command of COMMANDS) {
-    commandMap.set(command.name, command)
-}
-
-export function resolveCommand(args: string[]): { command: CommandDefinition; context: CommandContext } {
+export async function resolveCommand(args: string[]): Promise<{ command: CommandDefinition; context: CommandContext } | null> {
     const subcommand = args[0]
-    const command = subcommand ? commandMap.get(subcommand) : undefined
-    const resolvedCommand = command ?? claudeCommand
-    const commandArgs = command ? args.slice(1) : args
+    const loadCommand = subcommand ? commandMap.get(subcommand) : undefined
+    if (!loadCommand) return null
+    const command = await loadCommand()
 
     return {
-        command: resolvedCommand,
+        command,
         context: {
             args,
             subcommand,
-            commandArgs
+            commandArgs: args.slice(1)
         }
     }
 }

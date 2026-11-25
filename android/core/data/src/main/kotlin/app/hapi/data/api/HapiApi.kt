@@ -1,11 +1,16 @@
 package app.hapi.data.api
 
+import app.hapi.protocol.wire.SessionReadStateRequest
+import app.hapi.protocol.wire.SessionReadStateResponse
 import app.hapi.data.auth.HubUrls
+import app.hapi.protocol.wire.AgentAvailabilityResponse
 import app.hapi.protocol.wire.ApprovePermissionRequest
 import app.hapi.protocol.wire.AuthRequest
 import app.hapi.protocol.wire.AuthResponse
 import app.hapi.protocol.wire.CancelMessageResponse
+import app.hapi.protocol.wire.MessageContextResponse
 import app.hapi.protocol.wire.RetryIndeterminateMessageResponse
+import app.hapi.protocol.wire.RestartRunnerResponse
 import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.DeleteUploadRequest
 import app.hapi.protocol.wire.DeleteUploadResponse
@@ -13,6 +18,7 @@ import app.hapi.protocol.wire.DenyPermissionRequest
 import app.hapi.protocol.wire.FileReadResponse
 import app.hapi.protocol.wire.FileSearchResponse
 import app.hapi.protocol.wire.GitCommandResponse
+import app.hapi.protocol.wire.GrokModelsResponse
 import app.hapi.protocol.wire.HapiJson
 import app.hapi.protocol.wire.HubHealthResponse
 import app.hapi.protocol.wire.ListDirectoryResponse
@@ -22,11 +28,19 @@ import app.hapi.protocol.wire.MachinePathsExistsRequest
 import app.hapi.protocol.wire.MachinePathsExistsResponse
 import app.hapi.protocol.wire.MachinesResponse
 import app.hapi.protocol.wire.MessagesResponse
+import app.hapi.protocol.wire.PasskeyListResponse
+import app.hapi.protocol.wire.PasskeyLoginResponse
+import app.hapi.protocol.wire.PasskeyLoginVerifyRequest
+import app.hapi.protocol.wire.PasskeyOptionsRequest
+import app.hapi.protocol.wire.PasskeyRegisterVerifyRequest
 import app.hapi.protocol.wire.QueuedStateRequest
 import app.hapi.protocol.wire.QueuedStateResponse
 import app.hapi.protocol.wire.RegisterDeviceRequest
 import app.hapi.protocol.wire.RenameMachineRequest
 import app.hapi.protocol.wire.RenameSessionRequest
+import app.hapi.protocol.wire.SetSessionTranslateInputRequest
+import app.hapi.protocol.wire.FeaturesResponse
+import app.hapi.protocol.wire.HubSettingsResponse
 import app.hapi.protocol.wire.ReopenSessionResponse
 import app.hapi.protocol.wire.ResumeSessionRequest
 import app.hapi.protocol.wire.ResumeSessionResponse
@@ -61,6 +75,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -110,17 +125,33 @@ class ScratchlistAttachmentFile(
  * `{success: false}` — callers must check the envelope
  * (`docs/api/client-contract/errors.md#rpc-wrapped-endpoints`).
  */
-class HapiApi(
-    hubUrl: String,
+class HapiApi internal constructor(
+    baseUrl: HttpUrl,
     private val client: OkHttpClient,
     private val imageClient: OkHttpClient = client,
     private val authClient: OkHttpClient = client,
 ) : ChatSessionApi {
-    /** Normalized hub origin this instance talks to. */
-    val hubUrl: String = HubUrls.normalize(hubUrl)
-        ?: throw IllegalArgumentException("Invalid hub URL: $hubUrl")
+    /** Public production entry point: cleartext hub origins are rejected. */
+    constructor(
+        hubUrl: String,
+        client: OkHttpClient,
+        imageClient: OkHttpClient = client,
+        authClient: OkHttpClient = client,
+    ) : this(
+        baseUrl = requireHttpsBaseUrl(hubUrl),
+        client = client,
+        imageClient = imageClient,
+        authClient = authClient,
+    )
 
-    private val baseUrl: HttpUrl = this.hubUrl.toHttpUrl()
+    private val baseUrl: HttpUrl = baseUrl.newBuilder()
+        .encodedPath("/")
+        .query(null)
+        .fragment(null)
+        .build()
+
+    /** Normalized hub origin this instance talks to. */
+    val hubUrl: String = baseUrl.toString().removeSuffix("/")
 
     // ---------------------------------------------------------------- core --
 
@@ -142,6 +173,21 @@ class HapiApi(
             val text = response.body?.string().orEmpty()
             if (!response.isSuccessful) throw ApiError.from(response.code, text)
             if (T::class == Unit::class) Unit as T else HapiJson.decodeFromString(text)
+        }
+    }
+
+    /** [request] without decoding: the 2xx body text verbatim (WebAuthn options pass-through). */
+    private suspend fun requestText(
+        method: String,
+        url: HttpUrl,
+        body: RequestBody? = null,
+        client: OkHttpClient = this.client,
+    ): String {
+        val request = Request.Builder().url(url).method(method, body).build()
+        return client.newCall(request).await().use { response ->
+            val text = response.body?.string().orEmpty()
+            if (!response.isSuccessful) throw ApiError.from(response.code, text)
+            text
         }
     }
 
@@ -167,7 +213,57 @@ class HapiApi(
      * `TokenAuthenticator`. 401 here means the token was rejected (re-pair).
      */
     suspend fun authenticate(accessToken: String): AuthResponse =
-        request("POST", url("api", "auth").build(), AuthRequest(accessToken).toJsonBody(), authClient)
+        request("POST", url("api", "auth").build(), AuthRequest(accessToken = accessToken).toJsonBody(), authClient)
+
+    // ------------------------------------------------------------ passkeys --
+    // Native passkeys use the shared RP ID `auth.hapi.run`; every call sends
+    // `{"client":"native"}` and exchanges base64url WebAuthn JSON with the
+    // platform credential provider. Hub: `hub/src/web/routes/passkey.ts`.
+
+    /**
+     * `POST /api/passkey/register/options` (JWT required) — `PublicKeyCredentialCreationOptionsJSON`.
+     * Returned verbatim: Credential Manager takes it as `requestJson`.
+     */
+    suspend fun passkeyRegisterOptions(): String =
+        requestText(
+            "POST",
+            url("api", "passkey", "register", "options").build(),
+            PasskeyOptionsRequest.Native.toJsonBody(),
+        )
+
+    /**
+     * `POST /api/passkey/register/verify` — stores the credential under the
+     * caller's namespace. Errors: 400 `Passkey challenge expired` /
+     * `Passkey verification failed`, 409 `Passkey already registered`.
+     */
+    suspend fun passkeyRegisterVerify(response: JsonObject, name: String?): Unit =
+        request<Unit>(
+            "POST",
+            url("api", "passkey", "register", "verify").build(),
+            PasskeyRegisterVerifyRequest(response = response, name = name).toJsonBody(),
+        )
+
+    /**
+     * `POST /api/passkey/login/verify` (no JWT) — JWT + passkey session. The
+     * assertion signs a client-generated challenge
+     * (`NativePasskeys.nativeLoginOptions`); there is no options request.
+     */
+    suspend fun passkeyLoginVerify(response: JsonObject): PasskeyLoginResponse =
+        request(
+            "POST",
+            url("api", "passkey", "login", "verify").build(),
+            PasskeyLoginVerifyRequest(response = response).toJsonBody(),
+            authClient,
+        )
+
+    /** `GET /api/passkeys` — the caller's namespace passkeys, native and web. */
+    suspend fun getPasskeys(): PasskeyListResponse =
+        request("GET", url("api", "passkeys").build())
+
+    /** `DELETE /api/passkeys/:id` — revokes the passkey and its sessions; 404 when gone. */
+    suspend fun deletePasskey(id: String) {
+        request<Unit>("DELETE", url("api", "passkeys", id).build())
+    }
 
     // ------------------------------------------------------------ sessions --
 
@@ -181,6 +277,9 @@ class HapiApi(
     }
 
     /** `GET /api/sessions/:id`. */
+    suspend fun updateSessionReadState(sessionId: String, state: SessionReadStateRequest): SessionReadStateResponse =
+        request("PUT", url("api", "sessions", sessionId, "read-state").build(), state.toJsonBody())
+
     suspend fun getSession(sessionId: String): SessionResponse =
         request("GET", url("api", "sessions", sessionId).build())
 
@@ -236,6 +335,15 @@ class HapiApi(
     }
 
     /**
+     * `GET /api/sessions/:id/messages/:messageId/context` — a bounded history
+     * window centered on one message, or null when it does not resolve
+     * ([MessagesApi] seam over the same call — the recovery sweep's
+     * transport).
+     */
+    override suspend fun getMessageContext(sessionId: String, messageId: String): MessageContextResponse? =
+        request("GET", url("api", "sessions", sessionId, "messages", messageId, "context").build())
+
+    /**
      * `POST /api/sessions/:id/messages` — responds `{ok: true}` only; the
      * message itself arrives via SSE (`message-received`), reconciled by
      * `localId`.
@@ -262,6 +370,19 @@ class HapiApi(
             url("api", "sessions", sessionId, "messages", "queued-state").build(),
             QueuedStateRequest(localIds).toJsonBody(),
         )
+
+    /** `POST /api/sessions/:id/clear` — shared sessions; returns an independent root. */
+    override suspend fun clearConversation(sessionId: String): ResumeSessionResponse =
+        request("POST", url("api", "sessions", sessionId, "clear").build(), EMPTY_JSON)
+
+    /** CLI validates the proposal, switches to Default, then queues implementation. */
+    override suspend fun implementCodexPlan(sessionId: String, planId: String) {
+        request<Unit>(
+            "POST",
+            url("api", "sessions", sessionId, "codex", "plan", "implement").build(),
+            jsonBody(buildJsonObject { put("planId", planId) }),
+        )
+    }
 
     /** `POST /api/sessions/:id/abort` — active sessions only. */
     override suspend fun abortSession(sessionId: String) {
@@ -302,6 +423,23 @@ class HapiApi(
     suspend fun renameSession(sessionId: String, name: String) {
         request<Unit>("PATCH", url("api", "sessions", sessionId).build(), RenameSessionRequest(name).toJsonBody())
     }
+
+    /** `PATCH /api/sessions/:id {translateInput}` — hub-owned per-session input translation. */
+    override suspend fun setSessionTranslateInput(sessionId: String, enabled: Boolean) {
+        request<Unit>(
+            "PATCH",
+            url("api", "sessions", sessionId).build(),
+            SetSessionTranslateInputRequest(enabled).toJsonBody(),
+        )
+    }
+
+    /** `GET /api/features`. */
+    override suspend fun getFeatures(): FeaturesResponse =
+        request("GET", url("api", "features").build())
+
+    /** `GET /api/hub-settings`. */
+    override suspend fun getHubSettings(): HubSettingsResponse =
+        request("GET", url("api", "hub-settings").build())
 
     /** `PATCH /api/sessions/:id/summary` (1–255 chars). */
     suspend fun updateSessionSummary(sessionId: String, text: String) {
@@ -465,11 +603,24 @@ class HapiApi(
     }
 
     /**
+     * `POST /api/machines/:id/restart-runner` — the skew banner's manual
+     * exit: the hub stops a supervised runner so its supervisor relaunches it
+     * with the newer on-disk CLI. Fails (HTTP error) when the runner is not
+     * supervised or not newer-on-disk.
+     */
+    suspend fun restartMachineRunner(machineId: String): RestartRunnerResponse =
+        request("POST", url("api", "machines", machineId, "restart-runner").build(), EMPTY_JSON)
+
+    /**
      * `POST /api/machines/:id/spawn`. The response discriminates on `type`,
      * not HTTP status — a failed spawn is still HTTP 200 with `type: 'error'`.
      */
     suspend fun spawnSession(machineId: String, spawn: SpawnSessionRequest): SpawnResponse =
         request("POST", url("api", "machines", machineId, "spawn").build(), spawn.toJsonBody())
+
+    /** Installed/static-configured Agents reported by the selected runner. */
+    suspend fun getMachineAgentAvailability(machineId: String): AgentAvailabilityResponse =
+        request("GET", url("api", "machines", machineId, "agent-availability").build())
 
     /** `POST /api/machines/:id/list-directory` (RPC-wrapped: check `success`). */
     suspend fun listMachineDirectory(
@@ -499,6 +650,19 @@ class HapiApi(
      */
     suspend fun getMachineCodexModels(machineId: String): CodexModelsResponse =
         request("GET", url("api", "machines", machineId, "codex-models").build())
+
+    /**
+     * `GET /api/machines/:id/grok-models?cwd=` — directory-scoped Grok probe
+     * (RPC-wrapped). Consumed for `autoPermissionModeSupported` (create-form
+     * Auto gate, web ref: `useGrokModelsForCwd`); the cwd must exist.
+     */
+    suspend fun getMachineGrokModelsForCwd(machineId: String, cwd: String): GrokModelsResponse =
+        request(
+            "GET",
+            url("api", "machines", machineId, "grok-models")
+                .apply { addQueryParameter("cwd", cwd) }
+                .build(),
+        )
 
     // --------------------------------------------------------- git & files --
     // RAW-stdout contract (`docs/api/client-contract/rest.md` "Git & files"):
@@ -533,7 +697,7 @@ class HapiApi(
     }
 
     /** `GET /api/sessions/:id/files?query=&limit=` — ripgrep-backed search (limit 1–500, default 200). */
-    suspend fun searchSessionFiles(sessionId: String, query: String, limit: Int? = null): FileSearchResponse {
+    override suspend fun searchSessionFiles(sessionId: String, query: String, limit: Int?): FileSearchResponse {
         val target = url("api", "sessions", sessionId, "files").apply {
             if (query.isNotEmpty()) addQueryParameter("query", query)
             limit?.let { addQueryParameter("limit", it.toString()) }
@@ -719,11 +883,11 @@ class HapiApi(
     // ------------------------------------------------------------- devices --
 
     /** `POST /api/devices/register` (upsert) — FCM contract (`native-companion-contract.md`). */
-    suspend fun registerDevice(token: String, deviceId: String, platform: String = "phone") {
+    suspend fun registerDevice(token: String, deviceId: String, pushKey: String, platform: String = "phone") {
         request<Unit>(
             "POST",
             url("api", "devices", "register").build(),
-            RegisterDeviceRequest(token = token, platform = platform, deviceId = deviceId).toJsonBody(),
+            RegisterDeviceRequest(token = token, platform = platform, deviceId = deviceId, pushKey = pushKey).toJsonBody(),
         )
     }
 
@@ -772,6 +936,10 @@ class HapiApi(
     }
 
     private companion object {
+        fun requireHttpsBaseUrl(raw: String): HttpUrl = HubUrls.normalize(raw)
+            ?.toHttpUrl()
+            ?: throw IllegalArgumentException("Invalid HTTPS hub URL: $raw")
+
         val JSON_MEDIA_TYPE = "application/json".toMediaType()
 
         /** Reusable `{}` body for POSTs whose zod schema is an empty object. */

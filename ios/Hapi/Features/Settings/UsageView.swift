@@ -161,7 +161,7 @@ struct UsageView: View {
             UsageBarList(rows: summary.byModel)
         }
 
-        Text("Sessions with usage: \(summary.totals.sessions)")
+        Text("Sessions with usage: \(summary.totals.sessions, specifier: "%lld")")
             .font(.footnote)
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)

@@ -3,8 +3,6 @@ import { DEFAULT_SESSION_PREVIEW_LIMIT } from '@/hooks/useSessionPreviewLimit'
 import {
     normalizeSearch,
     sessionMatchesQuery,
-    sessionMatchesTimeRange,
-    type SessionTimeRange,
 } from '@/components/SessionList'
 
 export type SharePickerMachineLabelResolver = (machineId: string | null) => string
@@ -15,30 +13,24 @@ function sortByUpdatedAtDesc(sessions: SessionSummary[]): SessionSummary[] {
 
 /**
  * Share-target session picker filter.
- * Empty query (and no date range): recent active sessions (capped).
- * Non-empty query and/or date range: all sessions matching those filters.
+ * Empty query: recent active sessions (capped).
+ * Non-empty query: all sessions matching it.
  */
 export function filterSharePickerSessions(
     sessions: SessionSummary[],
     query: string,
     resolveMachineLabel: SharePickerMachineLabelResolver,
-    timeRange: SessionTimeRange | null = null,
     previewLimit: number = DEFAULT_SESSION_PREVIEW_LIMIT,
 ): SessionSummary[] {
     const normalizedQuery = normalizeSearch(query)
     const sorted = sortByUpdatedAtDesc(sessions)
-    const inRange = (session: SessionSummary) => sessionMatchesTimeRange(session, timeRange)
 
-    if (normalizedQuery || timeRange) {
-        return sorted.filter((session) => {
-            if (!inRange(session)) return false
-            if (!normalizedQuery) return true
-            return sessionMatchesQuery(
-                session,
-                normalizedQuery,
-                resolveMachineLabel(session.metadata?.machineId ?? null),
-            )
-        })
+    if (normalizedQuery) {
+        return sorted.filter((session) => sessionMatchesQuery(
+            session,
+            normalizedQuery,
+            resolveMachineLabel(session.metadata?.machineId ?? null),
+        ))
     }
 
     return sorted.filter((session) => session.active).slice(0, previewLimit)

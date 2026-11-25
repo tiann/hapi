@@ -67,6 +67,11 @@ export function compressSseResponse(response: Response, acceptEncoding: string |
     // reader, which is the whole lifetime of the connection.
     const reader = source.getReader()
     let resumeRead: (() => void) | null = null
+    // Set once the stream is closed, errored or cancelled. zlib can still emit
+    // output it buffered while the client was behind (pull() resumes it on a
+    // later tick), and touching a closed controller throws from inside the
+    // zlib event handler, which nothing catches.
+    let finished = false
 
     const compressed = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -84,15 +89,26 @@ export function compressSseResponse(response: Response, acceptEncoding: string |
             }
 
             gzip.on('data', (chunk: Buffer) => {
+                if (finished) {
+                    return
+                }
                 controller.enqueue(new Uint8Array(chunk))
                 if ((controller.desiredSize ?? 1) <= 0) {
                     gzip.pause()
                 }
             })
             gzip.on('end', () => {
+                if (finished) {
+                    return
+                }
+                finished = true
                 controller.close()
             })
             gzip.on('error', (error) => {
+                if (finished) {
+                    return
+                }
+                finished = true
                 controller.error(error)
             })
 
@@ -123,6 +139,7 @@ export function compressSseResponse(response: Response, acceptEncoding: string |
             resume?.()
         },
         cancel(reason) {
+            finished = true
             gzip.destroy()
             resumeRead?.()
             resumeRead = null

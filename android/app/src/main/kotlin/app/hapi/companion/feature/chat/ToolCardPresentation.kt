@@ -1,7 +1,9 @@
 package app.hapi.companion.feature.chat
 
 import android.content.res.Resources
+import androidx.annotation.DrawableRes
 import app.hapi.companion.R
+import app.hapi.companion.feature.chat.blocks.toolPresentationName
 import app.hapi.protocol.chat.ChatToolCall
 import app.hapi.protocol.chat.getInputStringAny
 import app.hapi.protocol.chat.isAskUserQuestionToolName
@@ -16,31 +18,30 @@ import kotlinx.serialization.json.JsonPrimitive
  * Collapsed tool-card header: icon glyph + title + optional subtitle. Port of
  * the presentation registry in `web/src/components/ToolCard/knownTools.tsx`
  * (the read-only subset — the web's `minimal` flag maps to "no inline body by
- * default" and is a per-card expansion default here). Icons are text glyphs in
- * the same family as the event-row emoji the shared protocol presentation
- * already emits.
+ * default" and is a per-card expansion default here). Icons are monochrome
+ * Material Symbols mirroring the iOS SF Symbol choices, tinted at the call site.
  */
 data class ToolCardPresentation(
-    val icon: String,
+    @param:DrawableRes val icon: Int,
     val title: String,
     val subtitle: String?,
 )
 
 private object ToolIcons {
-    const val TERMINAL = "💻"
-    const val READ = "📖"
-    const val SEARCH = "🔍"
-    const val EDIT = "✏️"
-    const val WEB = "🌐"
-    const val AGENT = "🚀"
-    const val QUESTION = "❓"
-    const val PLAN = "📋"
-    const val IDEA = "💡"
-    const val PUZZLE = "🧩"
-    const val MESSAGE = "💬"
-    const val TEAM = "👥"
-    const val WARNING = "⚠️"
-    const val WRENCH = "🔧"
+    val TERMINAL = R.drawable.ic_sym_terminal
+    val READ = R.drawable.ic_sym_visibility
+    val SEARCH = R.drawable.ic_sym_search
+    val EDIT = R.drawable.ic_sym_edit
+    val WEB = R.drawable.ic_sym_language
+    val AGENT = R.drawable.ic_sym_send
+    val QUESTION = R.drawable.ic_sym_help
+    val PLAN = R.drawable.ic_sym_assignment
+    val IDEA = R.drawable.ic_sym_lightbulb
+    val PUZZLE = R.drawable.ic_sym_extension
+    val MESSAGE = R.drawable.ic_sym_chat_bubble
+    val TEAM = R.drawable.ic_sym_group
+    val WARNING = R.drawable.ic_sym_warning
+    val WRENCH = R.drawable.ic_sym_build
 }
 
 // ---------------------------------------------------------------- helpers --
@@ -175,7 +176,7 @@ fun toolCardPresentation(
     res: Resources,
 ): ToolCardPresentation {
     val input = tool.input
-    val name = tool.name
+    val name = toolPresentationName(tool.name)
     val description = tool.description
 
     if (name.startsWith("mcp__")) {
@@ -432,4 +433,35 @@ fun toolCardPresentation(
         title,
         subtitle?.takeIf { it != title }?.let { truncate(it, 80) },
     )
+}
+
+
+/** Transcript labels have a layout budget independent of recorded input size. */
+internal fun toolSummaryPresentation(tool: ChatToolCall, basePath: String?, res: Resources): ToolCardPresentation {
+    val name = toolPresentationName(tool.name)
+    val fileAction = when (name) {
+        "Read", "NotebookRead" -> R.string.tool_read_file
+        "Edit", "MultiEdit", "NotebookEdit" -> R.string.tool_edit_file
+        "Write" -> R.string.tool_write_file
+        "LS" -> R.string.tool_list_files
+        "view_image", "mcp__hapi__display_image", "hapi__display_image", "hapi_display_image" -> R.string.chat_show_image
+        else -> null
+    }
+    if (fileAction != null) {
+        val path = getInputStringAny(tool.input, listOf("file_path", "path", "file", "notebook_path", "image_path"))
+        return ToolCardPresentation(if (name in setOf("Edit", "MultiEdit", "NotebookEdit", "Write")) ToolIcons.EDIT else ToolIcons.READ,
+            res.getString(fileAction) + (path?.let { " · " + basename(it.takeLast(240)) } ?: ""), null)
+    }
+    // Bound all textual preview inputs BEFORE title parsing (shell splitting, regexes,
+    // question descriptions). The inspector always uses the original tool instead.
+    fun bounded(value: JsonElement?, depth: Int = 0): JsonElement? = when {
+        depth > 3 -> null
+        value is JsonPrimitive && value.isString -> JsonPrimitive(value.content.take(240))
+        value is JsonObject -> JsonObject(value.entries.take(32).mapNotNull { (key, item) -> bounded(item, depth + 1)?.let { key to it } }.toMap())
+        value is JsonArray -> JsonArray(value.take(8).mapNotNull { bounded(it, depth + 1) })
+        else -> value
+    }
+    val presentation = toolCardPresentation(tool.copy(input = bounded(tool.input), description = tool.description?.take(240), result = null), basePath, res)
+    return presentation.copy(title = presentation.title.take(240),
+        subtitle = presentation.subtitle?.take(240)?.split(Regex("\\s+"))?.joinToString(" ")?.takeIf { it != presentation.title })
 }

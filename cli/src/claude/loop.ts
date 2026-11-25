@@ -1,15 +1,15 @@
 import { ApiSessionClient } from "@/api/apiSession"
 import { MessageQueue2 } from "@/utils/MessageQueue2"
 import { logger } from "@/ui/logger"
+import { hashObject } from "@/utils/deterministicJson"
 import { runLocalRemoteSession } from "@/agent/loopBase"
 import { Session } from "./session"
-import { claudeLocalLauncher } from "./claudeLocalLauncher"
 import { claudeRemoteLauncher } from "./claudeRemoteLauncher"
 import { ApiClient } from "@/lib"
 import type { SessionEffort, SessionModel } from "@/api/types"
-import type { ClaudePermissionMode } from "@hapi/protocol/types"
+import type { PermissionModeOf, Flavors } from "@hapi/protocol/types"
 
-export type PermissionMode = ClaudePermissionMode;
+export type PermissionMode = PermissionModeOf<typeof Flavors.claude>;
 
 export interface EnhancedMode {
     permissionMode: PermissionMode;
@@ -20,6 +20,34 @@ export interface EnhancedMode {
     appendSystemPrompt?: string;
     allowedTools?: string[];
     disallowedTools?: string[];
+}
+
+/**
+ * Mode fields that only take effect in a fresh Claude process. 'plan' and
+ * 'auto' are enforced inside Claude itself (not emulated via canCallTool like
+ * acceptEdits/bypassPermissions), so switching to/from them needs a matching
+ * --permission-mode flag. Effort is left out: it can change live.
+ */
+export function claudeProcessModeKey(mode: EnhancedMode) {
+    return {
+        agentEnforcedMode: mode.permissionMode === 'plan' || mode.permissionMode === 'auto' ? mode.permissionMode : null,
+        model: mode.model,
+        fallbackModel: mode.fallbackModel,
+        customSystemPrompt: mode.customSystemPrompt,
+        appendSystemPrompt: mode.appendSystemPrompt,
+        allowedTools: mode.allowedTools,
+        disallowedTools: mode.disallowedTools
+    };
+}
+
+/**
+ * Hash identifying a message batch's launch configuration: the
+ * process-affecting mode key plus effort (batches split on both). Shared by
+ * the message queue's batch hashing (runClaude's constructor) and the remote
+ * launcher's resume-at spawn gate so their hashes compare directly.
+ */
+export function claudeBatchModeHash(mode: EnhancedMode): string {
+    return hashObject({ ...claudeProcessModeKey(mode), effort: mode.effort });
 }
 
 interface LoopOptions {
@@ -35,12 +63,14 @@ interface LoopOptions {
     api: ApiClient,
     claudeEnvVars?: Record<string, string>
     claudeArgs?: string[]
+    startupResumeSessionAt?: string
     messageQueue: MessageQueue2<EnhancedMode>
     allowedTools?: string[]
     onSessionReady?: (session: Session) => void
     hookSettingsPath: string
     localHookSettingsPath?: string
     resumeSessionId?: string
+    beforeLocalLaunch?: () => Promise<boolean>
 }
 
 export async function loop(opts: LoopOptions) {
@@ -56,6 +86,7 @@ export async function loop(opts: LoopOptions) {
         sessionId: opts.resumeSessionId ?? null,
         claudeEnvVars: opts.claudeEnvVars,
         claudeArgs: opts.claudeArgs,
+        startupResumeSessionAt: opts.startupResumeSessionAt,
         mcpServers: opts.mcpServers,
         logPath: logPath,
         messageQueue: opts.messageQueue,
@@ -68,14 +99,18 @@ export async function loop(opts: LoopOptions) {
         localHookSettingsPath: opts.localHookSettingsPath,
         permissionMode: opts.permissionMode ?? 'default',
         model: opts.model,
-        effort: opts.effort
+        effort: opts.effort,
+        beforeLocalLaunch: opts.beforeLocalLaunch
     });
 
     await runLocalRemoteSession({
         session,
         startingMode: opts.startingMode,
         logTag: 'loop',
-        runLocal: claudeLocalLauncher,
+        runLocal: async (instance) => {
+            const { claudeLocalLauncher } = await import('./claudeLocalLauncher');
+            return claudeLocalLauncher(instance);
+        },
         runRemote: claudeRemoteLauncher,
         onSessionReady: opts.onSessionReady
     });

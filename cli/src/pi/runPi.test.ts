@@ -1,6 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-type TransportOptions = { command: string; args: string[]; cwd: string };
+type TransportOptions = { command: string; args: string[]; cwd: string; env?: NodeJS.ProcessEnv };
 type LifecycleOptions = { stopKeepAlive: () => void };
 
 const harness = vi.hoisted(() => ({
@@ -12,6 +12,9 @@ const harness = vi.hoisted(() => ({
     rpcHandlers: new Map<string, (payload: unknown) => Promise<unknown>>(),
     killCount: 0,
     cleanupCount: 0,
+    happyServerStartCount: 0,
+    happyServerStopCount: 0,
+    happyServerOptions: null as Record<string, unknown> | null,
     session: {
         sessionId: 'hapi-session-test',
         keepAlive: vi.fn(),
@@ -24,6 +27,7 @@ const harness = vi.hoisted(() => ({
         updateMetadata: vi.fn(),
         getMetadata: vi.fn(() => null),
         emitSessionReady: vi.fn(),
+        on: vi.fn(),
         rpcHandlerManager: { registerHandler: vi.fn() },
     },
 }));
@@ -57,6 +61,24 @@ vi.mock('@/ui/logger', () => ({
         debug: vi.fn(),
         getLogPath: vi.fn(() => '/tmp/hapi.log'),
     },
+}));
+
+vi.mock('./hapiExtension', () => ({
+    materializePiExtension: vi.fn(async () => '/materialized/hapi-extension.ts'),
+}));
+
+vi.mock('@/claude/utils/startHappyServer', () => ({
+    startHappyServer: vi.fn(async (_session: unknown, options: Record<string, unknown>) => {
+        harness.happyServerStartCount += 1;
+        harness.happyServerOptions = options;
+        return {
+            url: 'http://127.0.0.1:45678/',
+            toolNames: ['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer'],
+            stop: () => {
+                harness.happyServerStopCount += 1;
+            },
+        };
+    }),
 }));
 
 vi.mock('./piTransport', () => ({
@@ -94,7 +116,34 @@ import { buildPiCommandInventory, failPiHistoryOnRestoreError, formatPiUserMessa
 import { bootstrapExistingSession } from '@/agent/sessionFactory';
 import { PiSession } from './session';
 import { PiHistoryRestoreError } from './conversationHistory';
+import { startHappyServer } from '@/claude/utils/startHappyServer';
+
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
+
+const originalDisablePeerTools = process.env.HAPI_DISABLE_PEER_TOOLS;
+const originalPiMcpUrl = process.env.HAPI_PI_MCP_URL;
+
+beforeEach(() => {
+    delete process.env.HAPI_DISABLE_PEER_TOOLS;
+    delete process.env.HAPI_PI_MCP_URL;
+    harness.happyServerStartCount = 0;
+    harness.happyServerStopCount = 0;
+    harness.happyServerOptions = null;
+    vi.mocked(startHappyServer).mockClear();
+});
+
+afterAll(() => {
+    if (originalDisablePeerTools === undefined) {
+        delete process.env.HAPI_DISABLE_PEER_TOOLS;
+    } else {
+        process.env.HAPI_DISABLE_PEER_TOOLS = originalDisablePeerTools;
+    }
+    if (originalPiMcpUrl === undefined) {
+        delete process.env.HAPI_PI_MCP_URL;
+    } else {
+        process.env.HAPI_PI_MCP_URL = originalPiMcpUrl;
+    }
+});
 
 async function replyToHistoryCommand(type: 'get_entries' | 'get_fork_messages', occurrence: number, data: unknown): Promise<void> {
     await vi.waitFor(() => {
@@ -177,6 +226,10 @@ describe('runPi startup', () => {
         harness.session.updateMetadata.mockReset();
         harness.killCount = 0;
         harness.cleanupCount = 0;
+        harness.happyServerStartCount = 0;
+        harness.happyServerStopCount = 0;
+        harness.happyServerOptions = null;
+        vi.mocked(startHappyServer).mockClear();
         vi.useRealTimers();
     });
 
@@ -185,15 +238,37 @@ describe('runPi startup', () => {
 
         expect(harness.transportOptions).toMatchObject({
             command: 'pi',
-            args: ['--mode', 'rpc'],
+            args: ['--mode', 'rpc', '--extension', '/materialized/hapi-extension.ts'],
             cwd: '/work',
-            env: { PI_RPC_EMIT_TITLE: '1' },
         });
         expect(harness.sent).toEqual([
             { type: 'get_state' },
             { type: 'get_available_models' },
             { type: 'get_commands' },
         ]);
+    });
+
+    it('starts a peer-only HAPI MCP server and passes its URL to Pi', async () => {
+        await runPi({ workingDirectory: '/work' });
+
+        expect(startHappyServer).toHaveBeenCalledWith(harness.session, {
+            enableChangeTitle: false,
+            enabledTools: ['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer'],
+        });
+        expect(harness.transportOptions?.env).toMatchObject({
+            HAPI_PI_MCP_URL: 'http://127.0.0.1:45678/',
+        });
+        expect(harness.happyServerStopCount).toBe(1);
+    });
+
+    it('does not start the peer MCP server when HAPI_DISABLE_PEER_TOOLS is set', async () => {
+        process.env.HAPI_DISABLE_PEER_TOOLS = '1';
+        process.env.HAPI_PI_MCP_URL = 'http://127.0.0.1:1/stale';
+        await runPi({ workingDirectory: '/work' });
+
+        expect(startHappyServer).not.toHaveBeenCalled();
+        expect(harness.transportOptions?.env?.HAPI_PI_MCP_URL).toBeUndefined();
+        expect(harness.happyServerStopCount).toBe(0);
     });
 
     it('resumes with --session and keeps the session selected by Pi', async () => {
@@ -204,9 +279,8 @@ describe('runPi startup', () => {
 
         expect(harness.transportOptions).toMatchObject({
             command: 'pi',
-            args: ['--mode', 'rpc', '--session', 'pi-session-123'],
+            args: ['--mode', 'rpc', '--extension', '/materialized/hapi-extension.ts', '--session', 'pi-session-123'],
             cwd: '/work',
-            env: { PI_RPC_EMIT_TITLE: '1' },
         });
         expect(harness.sent).toEqual([
             { type: 'get_state' },
@@ -277,7 +351,11 @@ describe('runPi startup', () => {
         vi.useFakeTimers();
         harness.throwOnGetCommands = false;
         const running = runPi({ workingDirectory: '/work' });
-        await Promise.resolve();
+        // Flush enough microtasks for bootstrap + title-extension materialization
+        // to settle so the session has registered its onUserMessage handler.
+        for (let i = 0; i < 8; i += 1) {
+            await Promise.resolve();
+        }
         const onUserMessage = harness.session.onUserMessage.mock.calls.at(-1)![0] as (
             message: { role: 'user'; content: { type: 'text'; text: string } },
             localId: string

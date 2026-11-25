@@ -24,18 +24,24 @@ import app.hapi.protocol.chat.ToolGroupBlock
 import app.hapi.protocol.chat.UserTextBlock
 import app.hapi.protocol.chat.VisibleChatBlock
 import coil.ImageLoader
+import java.io.File
 
 /**
- * Hub-scoped media plumbing for chat blocks: the authed Coil loader plus the
- * generated-image URL builder (both from `HubGraph`). Null loader (previews,
- * tests) degrades to a filename placeholder.
+ * Hub-scoped media plumbing for chat blocks: the authed Coil loader, the
+ * generated-image URL builder (both from `HubGraph`) and the raw byte
+ * fetcher used by non-image generated media (video/audio/file download to
+ * the media cache). Null loader/fetcher (previews, tests) degrade: images
+ * to a filename placeholder, gated media to the unavailable error line.
  */
 data class ChatMedia(
     val imageLoader: ImageLoader?,
     val generatedImageUrl: (imageId: String) -> String?,
+    val fetchGeneratedMedia: (suspend (url: String, imageId: String, fileName: String) -> File)? = null,
 )
 
-val LocalChatMedia = staticCompositionLocalOf { ChatMedia(imageLoader = null) { null } }
+val LocalChatMedia = staticCompositionLocalOf {
+    ChatMedia(imageLoader = null, generatedImageUrl = { null })
+}
 
 /** Stable LazyColumn key. */
 val VisibleChatBlock.stableId: String
@@ -62,6 +68,7 @@ fun ChatBlockCard(
     block: VisibleChatBlock,
     basePath: String?,
     modifier: Modifier = Modifier,
+    processSteps: Int? = null,
 ) {
     when (block) {
         is UserTextBlock -> UserTextBlockView(block, modifier)
@@ -71,7 +78,7 @@ fun ChatBlockCard(
         is CliOutputBlock -> CliOutputBlockView(block, modifier)
         is GeneratedImageBlock -> GeneratedImageBlockView(block, modifier)
         is CodexReviewBlock -> CodexReviewBlockView(block, modifier)
-        is ToolCallBlock -> ToolCallBlockView(block, basePath, modifier)
+        is ToolCallBlock -> ToolCallBlockView(block, basePath, modifier, processSteps)
         is ToolGroupBlock -> ToolGroupBlockView(block, basePath, modifier)
     }
 }

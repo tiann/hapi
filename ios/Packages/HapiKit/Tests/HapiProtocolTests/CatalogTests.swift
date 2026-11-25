@@ -78,7 +78,7 @@ struct CatalogTests {
 
     @Test func codexFamilyFlavorsShareTheCodexModeSet() {
         let expected: [PermissionMode] = [.default, .readOnly, .safeYolo, .yolo]
-        #expect(permissionModes(forFlavor: "codex") == expected)
+        #expect(permissionModes(forFlavor: "codex") == [.default, .readOnly, .autoReview, .yolo])
         #expect(permissionModes(forFlavor: "gemini") == expected)
         #expect(permissionModes(forFlavor: "kimi") == expected)
         #expect(permissionModes(forFlavor: "copilot") == expected)
@@ -94,7 +94,7 @@ struct CatalogTests {
     @Test func remainingFlavorsMatchTheirDeclaredSets() {
         #expect(permissionModes(forFlavor: "grok") == [.default, .auto, .plan, .bypassPermissions])
         #expect(permissionModes(forFlavor: "opencode") == [.default, .plan, .yolo])
-        #expect(permissionModes(forFlavor: "agy") == [.requestReview, .alwaysProceed])
+        #expect(permissionModes(forFlavor: "agy") == [.requestReview, .acceptEdits, .plan, .alwaysProceed])
         #expect(permissionModes(forFlavor: "cursor") == [.default, .plan, .ask, .debug, .autoReview, .yolo])
         // Pi has no runtime permission switching (always auto-approve).
         #expect(permissionModes(forFlavor: "pi") == [])
@@ -117,7 +117,7 @@ struct CatalogTests {
         #expect(PermissionMode.default.label == "Default")
         #expect(PermissionMode.acceptEdits.label == "Accept Edits")
         #expect(PermissionMode.bypassPermissions.label == "Yolo")
-        #expect(PermissionMode.autoReview.label == "Auto-review")
+        #expect(PermissionMode.autoReview.label == "Auto")
         #expect(PermissionMode.readOnly.label == "Read Only")
         #expect(PermissionMode.plan.label == "Plan Mode")
         #expect(PermissionMode.alwaysProceed.label == "Always Proceed")
@@ -154,13 +154,13 @@ struct CatalogTests {
 
     @Test func knownFlavorsMatchAgentFlavorsOrder() {
         #expect(AgentFlavor.knownFlavors.map(\.rawValue) == [
-            "agy", "claude", "codex", "copilot", "cursor",
+            "agy", "claude", "codex", "dsh", "copilot", "cursor",
             "gemini", "grok", "kimi", "opencode", "pi",
         ])
     }
 
     @Test func creatableFlavorsExcludeOnlyGemini() {
-        #expect(AgentFlavor.creatableFlavors.count == 9)
+        #expect(AgentFlavor.creatableFlavors.count == 10)
         #expect(!AgentFlavor.creatableFlavors.contains(.gemini))
         #expect(AgentFlavor.creatableFlavors.contains(.claude))
     }
@@ -180,6 +180,7 @@ struct CatalogTests {
         #expect(AgentFlavor.agy.displayLabel == "Antigravity")
         #expect(AgentFlavor.grok.displayLabel == "Grok Build")
         #expect(AgentFlavor.opencode.displayLabel == "OpenCode")
+        #expect(AgentFlavor.dsh.displayLabel == "DeepSeek Harness")
         #expect(AgentFlavor.other("x").displayLabel == "Unknown")
         #expect(flavorLabel(forFlavor: "pi") == "Pi")
         #expect(flavorLabel(forFlavor: nil) == "Unknown")
@@ -196,10 +197,11 @@ struct CatalogTests {
         #expect(!supportsEffort(forFlavor: nil))
     }
 
-    @Test func modelChangeIsSupportedByEveryKnownFlavor() {
-        for flavor in AgentFlavor.knownFlavors {
+    @Test func modelChangeIsSupportedByEveryModelConfigFlavor() {
+        for flavor in AgentFlavor.knownFlavors where flavor != .dsh {
             #expect(flavor.supportsModelChange, "\(flavor.rawValue) should support model change")
         }
+        #expect(!AgentFlavor.dsh.supportsModelChange)
         #expect(!AgentFlavor.other("x").supportsModelChange)
         #expect(!supportsModelChange(forFlavor: nil))
     }
@@ -211,6 +213,7 @@ struct CatalogTests {
         #expect(isCodexFamilyFlavor("kimi"))
         #expect(isCodexFamilyFlavor("copilot"))
         #expect(isCodexFamilyFlavor("opencode"))
+        #expect(!isCodexFamilyFlavor("dsh"))
         #expect(!isCodexFamilyFlavor("claude"))
         #expect(!isCodexFamilyFlavor("cursor"))
         #expect(!isCodexFamilyFlavor("pi"))
@@ -243,12 +246,10 @@ struct CatalogTests {
     @Test func newSessionCatalogsMatchTheWebOptionLists() {
         #expect(NewSessionCatalogs.claudeModels == [
             NewSessionOption(value: "auto", label: "Default"),
-            NewSessionOption(value: "sonnet", label: "Sonnet"),
-            NewSessionOption(value: "sonnet[1m]", label: "Sonnet 1M"),
             NewSessionOption(value: "opus", label: "Opus"),
-            NewSessionOption(value: "opus[1m]", label: "Opus 1M"),
             NewSessionOption(value: "fable", label: "Fable"),
-            NewSessionOption(value: "fable[1m]", label: "Fable 1M"),
+            NewSessionOption(value: "sonnet", label: "Sonnet"),
+            NewSessionOption(value: "haiku", label: "Haiku"),
         ])
         #expect(NewSessionCatalogs.claudeEfforts == [
             NewSessionOption(value: "auto", label: "Auto"),

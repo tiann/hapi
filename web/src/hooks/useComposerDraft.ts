@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { getDraft, saveDraft } from '@/lib/composer-drafts'
+import { getDraft, markDraftEdited, saveDraft } from '@/lib/composer-drafts'
 import {
     getDraftAttachments,
     getRestoredUploadMetadata,
@@ -7,6 +7,12 @@ import {
     type AttachmentDraftInput,
 } from '@/lib/composer-attachment-drafts'
 import { persistInactiveComposerAttachments, composerDraftWasHandedOff } from '@/lib/composer-draft-transfer'
+
+const liveComposers = new Map<string, { getText: () => string; setText: (text: string) => void }>()
+
+export function getLiveComposerDraft(sessionId: string) {
+    return liveComposers.get(sessionId)
+}
 
 export type ComposerDraftHydration = {
     /** Session represented by this status; prevents a previous session's ready state leaking across a key change. */
@@ -23,7 +29,12 @@ export type ComposerDraftHydration = {
  *
  * - On mount: restores saved draft via `setText` (deferred by one animation frame)
  * - On mount: restores saved attachment files through the composer adapter
- * - On unmount: saves current text and attachment files as a draft
+ * - On unmount, and whenever the page is hidden: saves current text and
+ *   attachment files as a draft. The page-hidden save matters separately from
+ *   unmount — an in-app remount (switching sessions) reliably runs React's
+ *   cleanup, but a real top-level page navigation (e.g. an installed PWA's
+ *   own out-of-scope-link overlay closing) does not guarantee cleanup runs
+ *   before the state is gone (hapi#1882).
  * - The `draftReady` guard prevents saving before the initial restore completes,
  *   avoiding the case where the runtime's empty initial text overwrites a real draft.
  *
@@ -39,8 +50,25 @@ export function useComposerDraft(
     setText: (text: string) => void,
     addAttachment: (file: File) => Promise<void>,
 ): ComposerDraftHydration {
+    const textRevisionRef = useRef({ sessionId, text: composerText })
     const composerTextRef = useRef(composerText)
     composerTextRef.current = composerText
+    const setTextRef = useRef(setText)
+    setTextRef.current = setText
+    useEffect(() => {
+        if (!sessionId) return
+        const composer = {
+            getText: () => draftReadyRef.current ? composerTextRef.current : (composerTextRef.current || getDraft(sessionId)),
+            setText: (text: string) => {
+                composerTextRef.current = text
+                setTextRef.current(text)
+            },
+        }
+        liveComposers.set(sessionId, composer)
+        return () => {
+            if (liveComposers.get(sessionId) === composer) liveComposers.delete(sessionId)
+        }
+    }, [sessionId])
     const attachmentsRef = useRef(attachments)
     attachmentsRef.current = attachments
 
@@ -86,6 +114,8 @@ export function useComposerDraft(
                     restoredAny: true,
                     hasStoredAttachments: false,
                 })
+                textRevisionRef.current = { sessionId, text: draft }
+                composerTextRef.current = draft!
                 setText(draft!)
             }
             draftReadyRef.current = true
@@ -169,16 +199,10 @@ export function useComposerDraft(
             })
         })
 
-        return () => {
-            disposed = true
-            cancelAnimationFrame(frame)
-            // Cross-session resume already moved this draft; do not recreate the
-            // obsolete source id after the route change unmounts the composer.
-            if (composerDraftWasHandedOff(sessionId)) {
-                draftReadyRef.current = false
-                attachmentsReadyRef.current = false
-                return
-            }
+        // Cross-session resume already moved this draft; do not recreate the
+        // obsolete source id after the route change unmounts the composer.
+        const persistNow = () => {
+            if (composerDraftWasHandedOff(sessionId)) return
             if (draftReadyRef.current) {
                 saveDraft(sessionId, composerTextRef.current)
             }
@@ -195,10 +219,35 @@ export function useComposerDraft(
                     console.warn('[composer-draft] inactive persistence failed', error)
                 })
             }
+        }
+
+        // A real top-level page navigation (see the doc comment above) doesn't
+        // guarantee this effect's own cleanup runs before the state is gone —
+        // save proactively whenever the page is hidden, not only on unmount.
+        const handleVisibilityChange = () => {
+            if (document.visibilityState === 'hidden') {
+                persistNow()
+            }
+        }
+        document.addEventListener('visibilitychange', handleVisibilityChange)
+
+        return () => {
+            disposed = true
+            cancelAnimationFrame(frame)
+            document.removeEventListener('visibilitychange', handleVisibilityChange)
+            persistNow()
             draftReadyRef.current = false
             attachmentsReadyRef.current = false
         }
     }, [sessionId, canRestoreAttachments]) // eslint-disable-line react-hooks/exhaustive-deps
+
+    useEffect(() => {
+        const previous = textRevisionRef.current
+        if (sessionId && previous.sessionId === sessionId && previous.text !== composerText) {
+            markDraftEdited(sessionId)
+        }
+        textRevisionRef.current = { sessionId, text: composerText }
+    }, [sessionId, composerText])
 
     return hydration
 }

@@ -4,7 +4,7 @@
  */
 
 import type { Readable } from 'node:stream'
-import type { ClaudePermissionMode } from '@hapi/protocol/types'
+import type { PermissionModeOf, Flavors } from '@hapi/protocol/types'
 
 /**
  * SDK message types
@@ -24,6 +24,10 @@ export interface SDKUserMessage extends SDKMessage {
      */
     isSynthetic?: boolean
     isMeta?: boolean
+    /** Stdin messages may set it; `--replay-user-messages` echoes it back. */
+    uuid?: string
+    /** Set on the `--replay-user-messages` echo of a stdin message. */
+    isReplay?: boolean
     message: {
         role: 'user'
         content: string | Array<{
@@ -61,6 +65,7 @@ export interface SDKSystemMessage extends SDKMessage {
     tools?: string[]
     skills?: string[]
     slash_commands?: string[]
+    permissionMode?: string
     /**
      * Present on `subtype: 'status'` messages that report a /compact outcome.
      * Claude emits a `status: 'compacting'` message first, then a second one
@@ -96,6 +101,18 @@ export interface SDKResultMessage extends SDKMessage {
     duration_api_ms: number
     is_error: boolean
     session_id: string
+    /**
+     * Set in-process by claudeRemote on the result of a manual /compact turn,
+     * so the log converter can skip tok/s fields for it: a compaction call is
+     * not an assistant round. Never present on the wire from Claude itself.
+     */
+    hapi_compact_turn?: boolean
+    /**
+     * Set in-process on a result forwarded for display whose cumulative
+     * counters belong to another session than the active one, so the log
+     * converter must not diff or rebase usage with it.
+     */
+    hapi_skip_usage?: boolean
 }
 
 export interface SDKControlResponse extends SDKMessage {
@@ -124,6 +141,16 @@ export interface ControlRequest {
 
 export interface InterruptRequest extends ControlRequest {
     subtype: 'interrupt'
+}
+
+export interface SetPermissionModeRequest extends ControlRequest {
+    subtype: 'set_permission_mode'
+    mode: PermissionModeOf<typeof Flavors.claude>
+}
+
+export interface ApplyFlagSettingsRequest extends ControlRequest {
+    subtype: 'apply_flag_settings'
+    settings: Record<string, unknown>
 }
 
 export interface CanUseToolRequest extends ControlRequest {
@@ -192,7 +219,7 @@ export interface QueryOptions {
     maxTurns?: number
     mcpServers?: Record<string, unknown>
     pathToClaudeCodeExecutable?: string
-    permissionMode?: ClaudePermissionMode
+    permissionMode?: PermissionModeOf<typeof Flavors.claude>
     continue?: boolean
     resume?: string
     /**
@@ -200,11 +227,21 @@ export interface QueryOptions {
      * existing Claude session id.
      */
     forkSession?: boolean
+    /**
+     * Resume the session truncated to the entry with this uuid (everything
+     * after it is discarded, no drops guard). Requires Claude Code v2.1.223+.
+     */
+    resumeSessionAt?: string
     model?: string
     effort?: string
     fallbackModel?: string
     settingsPath?: string
     strictMcpConfig?: boolean
+    /**
+     * Echo every stdin user message back (`isReplay: true`, same uuid) when
+     * Claude starts processing it. Requires a streaming prompt.
+     */
+    replayUserMessages?: boolean
     canCallTool?: CanCallToolCallback
     promptFailureCleanupTimeoutMs?: number
 }

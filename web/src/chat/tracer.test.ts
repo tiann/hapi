@@ -156,6 +156,26 @@ function makeSidechainChildMsg(
 }
 
 describe('traceMessages — parentToolUseId direct grouping (broken subagent case)', () => {
+    it('groups a sidechain turn summary without an assistant-message uuid', () => {
+        const agentMsg = makeToolCallMsg('msg-agent', 'Agent', 'investigate background task')
+        const summary: NormalizedMessage = {
+            id: 'sc-summary',
+            localId: null,
+            createdAt: 1_700_000_003_000,
+            role: 'event',
+            isSidechain: true,
+            parentToolUseId: 'tc-msg-agent',
+            content: {
+                type: 'turn-summary',
+                summary: { modelUsage: { 'claude-opus-5': { inputTokens: 10, outputTokens: 2 } } }
+            }
+        } as NormalizedMessage
+
+        const result = traceMessages([agentMsg, summary])
+
+        expect(result.find(m => m.id === 'sc-summary')?.sidechainId).toBe('msg-agent')
+    })
+
     it('groups an orphaned sidechain child directly via parentToolUseId when no prompt-root sidechain message exists', () => {
         const agentMsg = makeToolCallMsg('msg-agent', 'Agent', 'investigate background task')
         // No sidechain root carrying the prompt — SDK dropped it as system/task_started

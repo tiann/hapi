@@ -13,6 +13,7 @@ import {
 import type { CursorSession } from './session';
 import type { EnhancedMode } from './loop';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
+import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand';
 // TODO(cursor-acp): remove legacy stream-json resume path after migration window.
 // New Cursor sessions use ACP only. This path exists because pre-ACP Cursor
 // session_id values are not loadable via ACP session/load.
@@ -20,6 +21,16 @@ import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import type { CursorStreamEvent } from './utils/cursorLegacyEventConverter';
 import { parseCursorEvent, convertCursorEventToAgentMessage } from './utils/cursorLegacyEventConverter';
 import { cursorPassThroughStatusMessage, parseCursorSpecialCommand } from './cursorSpecialCommands';
+// NOTE: model-error detection (cursorAgentMessageClassifier) is intentionally
+// NOT wired into the legacy launcher. The hub auto-migrates legacy stream-json
+// sessions to ACP at resume time via maybeAutoMigrateLegacyCursorSession (PR
+// #844). The legacy launcher is reached only when migration soft-fails — a
+// degraded fallback path, not a supported flow. Carrying duplicate
+// model-error logic here would (a) double the surface for bugs in the
+// model-error contract, (b) imply legacy is a real path that needs feature
+// parity, and (c) be dead code in practice. New cursor sessions are ACP from
+// inception. If you find yourself wanting model-error detection on this
+// path, fix the migration failure case instead.
 
 // Transient `agent` failures (auth expiry, rate limits, transient network) come back
 // as exit code 1 with a recognisable stderr signature. We requeue and retry instead
@@ -137,7 +148,9 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         this.setupAbortHandlers(session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbort(),
             onSwitch: () => this.handleSwitchRequest()
-        });
+        }, () => this.abortController.abort(),
+        // A rejected cancel must not leave the loop on the aborted signal.
+        () => { if (this.abortController.signal.aborted) this.abortController = new AbortController(); });
 
         session.client.rpcHandlerManager.registerHandler(
             RPC_METHODS.SteerQueuedMessage,
@@ -157,6 +170,8 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         }
 
         while (!this.shouldExit) {
+            await this.waitForAbortBarrier();
+            if (this.shouldExit) break;
             const waitSignal = this.abortController.signal;
             const batch = await session.queue.waitForMessagesAndGetAsString(waitSignal);
             if (!batch) {
@@ -266,7 +281,7 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         onEvent: (event: ReturnType<typeof parseCursorEvent> & object) => void
     ): Promise<{ exitCode: number | null; stderr: string }> {
         return new Promise((resolve, reject) => {
-            const child = spawn('agent', args, {
+            const child = spawn(getAgentLaunchCommand('cursor'), args, {
                 cwd,
                 env: process.env,
                 stdio: ['ignore', 'pipe', 'pipe'],
@@ -411,8 +426,12 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         this.abortController.abort();
     }
 
-    private async handleAbort(): Promise<void> {
-        this.session.queue.reset();
+    private async handleAbort(leavingRemote = false): Promise<void> {
+        // Plain Stop preserves the pending queue for the next drain; only
+        // terminal cleanup (exit / switch-to-local) resets it.
+        if (leavingRemote) {
+            this.session.queue.reset();
+        }
         this.session.onThinkingChange(false);
         this.abortController.abort();
         this.abortController = new AbortController();
@@ -420,15 +439,15 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async handleExitFromUi(): Promise<void> {
-        await this.requestExit('exit', () => this.handleAbort());
+        await this.requestExit('exit', () => this.handleAbort(true));
     }
 
     private async handleSwitchFromUi(): Promise<void> {
-        await this.requestExit('switch', () => this.handleAbort());
+        await this.requestExit('switch', () => this.handleAbort(true));
     }
 
     private async handleSwitchRequest(): Promise<void> {
-        await this.requestExit('switch', () => this.handleAbort());
+        await this.requestExit('switch', () => this.handleAbort(true));
     }
 }
 

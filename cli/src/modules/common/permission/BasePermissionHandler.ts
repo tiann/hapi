@@ -39,17 +39,47 @@ const AUTO_APPROVE_EXACT_TOOL_NAMES = new Set([
     // ACP permission requests often surface MCP tool title, not the snake_case name.
     'list peer sessions'
 ]);
-// ping_peer / inspect_peer intentionally omitted from always-approve: they can
-// resume+inject into another session or read peer histories, so permission
-// modes must still gate them. Treat both as write-like in read-only so ACP
-// titles such as "Ping Peer Session" / "Inspect Peer Session" also require
-// approval. list_peers is discovery-only and is auto-approved above.
+export type AutoApprovalContext = {
+    /** Set only from trusted transport metadata (e.g. MCP elicitation envelope), never from tool args. */
+    trustedHapiMcp?: boolean;
+};
+
+const HAPI_LINK_PR_TOOL_NAMES = new Set([
+    'link_pr',
+    'link pull request',
+    'happy__link_pr',
+    'hapi_link_pr',
+    'hapi__link_pr',
+    'mcp__hapi__link_pr',
+    'mcp__happy__link_pr'
+]);
+
+function isVerifiedHapiLinkPrTool(toolName: string, context?: AutoApprovalContext): boolean {
+    if (!HAPI_LINK_PR_TOOL_NAMES.has(toolName.toLowerCase())) {
+        return false
+    }
+    if (context?.trustedHapiMcp) {
+        return true
+    }
+    return false
+}
+// session_job is intentionally NOT in this name-only allowlist: ACP titles are
+// spoofable (tool-name derivation prefers backend title). Auto-approve only via
+// trusted HAPI bridge config (Codex tools map / Claude --allowedTools).
+// ping_peer / inspect_peer / spawn_peer intentionally omitted from always-approve:
+// they can resume+inject into another session, read peer histories, or create a
+// new session with an injected remit, so permission modes must still gate them.
+// Treat them as write-like in read-only so ACP titles such as "Ping Peer Session"
+// / "Inspect Peer Session" / "Spawn Peer Session" also require approval.
+// list_peers is discovery-only and is auto-approved above.
 const AUTO_APPROVE_TOOL_ID_HINTS = ['change_title', 'save_memory'];
 const SENSITIVE_TOOL_NAME_HINTS = [
     'ping_peer',
     'ping peer',
     'inspect_peer',
     'inspect peer',
+    'spawn_peer',
+    'spawn peer',
 ];
 const AUTO_APPROVE_WRITE_TOOL_HINTS = [
     'write',
@@ -65,7 +95,8 @@ export function resolveToolAutoApprovalDecision(
     mode: PermissionMode | undefined,
     toolName: string,
     toolCallId: string,
-    ruleOverrides?: AutoApprovalRuleSet
+    ruleOverrides?: AutoApprovalRuleSet,
+    context?: AutoApprovalContext
 ): AutoApprovalDecision | null {
     const rules = {
         alwaysToolNameHints: ruleOverrides?.alwaysToolNameHints ?? AUTO_APPROVE_TOOL_NAME_HINTS,
@@ -76,6 +107,16 @@ export function resolveToolAutoApprovalDecision(
     const lowerTool = toolName.toLowerCase();
     const lowerId = toolCallId.toLowerCase();
     const decisionForMode: AutoApprovalDecision = (mode === 'yolo' || mode === 'always-proceed') ? 'approved_for_session' : 'approved';
+
+    // link_pr mutates session metadata — never auto-approve in read-only,
+    // even when the call arrives on a trusted HAPI MCP transport.
+    if (HAPI_LINK_PR_TOOL_NAMES.has(lowerTool) && mode === 'read-only') {
+        return null;
+    }
+
+    if (isVerifiedHapiLinkPrTool(lowerTool, context)) {
+        return decisionForMode;
+    }
 
     if (
         AUTO_APPROVE_EXACT_TOOL_NAMES.has(lowerTool)
@@ -141,6 +182,13 @@ export type CancelPendingRequestOptions = {
 
 export abstract class BasePermissionHandler<TResponse extends { id: string }, TResult> {
     protected readonly pendingRequests = new Map<string, PendingPermissionRequest<TResult>>();
+    /**
+     * Request ids whose first answer is mid-flight through handlePermissionResponse.
+     * pendingRequests is cleared before that await, so a overlapping second answer
+     * must not treat these as orphans and cancel agentState out from under the
+     * first finalize (tiann/hapi#2415 review).
+     */
+    private readonly inFlightResponses = new Set<string>();
     protected readonly client: PermissionHandlerClient;
 
     protected constructor(client: PermissionHandlerClient) {
@@ -165,16 +213,18 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
         mode: PermissionMode | undefined,
         toolName: string,
         toolCallId: string,
-        ruleOverrides?: AutoApprovalRuleSet
+        ruleOverrides?: AutoApprovalRuleSet,
+        context?: AutoApprovalContext
     ): AutoApprovalDecision | null {
-        return resolveToolAutoApprovalDecision(mode, toolName, toolCallId, ruleOverrides);
+        return resolveToolAutoApprovalDecision(mode, toolName, toolCallId, ruleOverrides, context);
     }
 
     protected addPendingRequest(
         id: string,
         toolName: string,
         input: unknown,
-        handlers: { resolve: (value: TResult) => void; reject: (error: Error) => void }
+        handlers: { resolve: (value: TResult) => void; reject: (error: Error) => void },
+        toolCallId?: string
     ): void {
         this.pendingRequests.set(id, { ...handlers, toolName, input });
         this.onRequestRegistered(id, toolName, input);
@@ -184,6 +234,7 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
                 ...currentState.requests,
                 [id]: {
                     tool: toolName,
+                    ...(toolCallId ? { toolCallId } : {}),
                     arguments: input,
                     createdAt: Date.now()
                 }
@@ -193,8 +244,16 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
 
     protected finalizeRequest(id: string, completion: PermissionCompletion): void {
         this.client.updateAgentState((currentState) => {
-            const request = currentState.requests?.[id];
+            const fromPending = currentState.requests?.[id];
+            const fromCompleted = currentState.completedRequests?.[id];
+            // Prefer the live pending entry; fall back to a canceled placeholder so a
+            // racing orphan/hub clear cannot make a successful answer disappear
+            // (tiann/hapi#2415 review).
+            const request = fromPending ?? fromCompleted;
             if (!request) return currentState;
+            if (!fromPending && fromCompleted && fromCompleted.status !== 'canceled') {
+                return currentState;
+            }
 
             const nextRequests = { ...currentState.requests };
             delete nextRequests[id];
@@ -255,20 +314,77 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
         });
     }
 
+    /**
+     * Move agentState.requests entries that are not in this.pendingRequests into
+     * completedRequests as canceled. Used when a late answer arrives for a
+     * request the CLI no longer tracks (tiann/hapi#2414). Skips ids still being
+     * processed so overlapping answers cannot cancel a successful finalize.
+     */
+    protected finalizeOrphanedAgentStateRequests(reason: string, onlyId?: string): void {
+        this.client.updateAgentState((currentState) => {
+            const pendingIds = this.pendingRequests;
+            const inFlight = this.inFlightResponses;
+            const requests = currentState.requests ?? {};
+            const completedRequests = { ...currentState.completedRequests };
+            const nextRequests: typeof requests = {};
+            let changed = false;
+
+            for (const [id, request] of Object.entries(requests)) {
+                if (onlyId !== undefined && id !== onlyId) {
+                    nextRequests[id] = request;
+                    continue;
+                }
+                if (pendingIds.has(id) || inFlight.has(id)) {
+                    nextRequests[id] = request;
+                    continue;
+                }
+                changed = true;
+                completedRequests[id] = {
+                    ...request,
+                    completedAt: Date.now(),
+                    status: 'canceled',
+                    reason,
+                    decision: 'abort'
+                };
+            }
+
+            if (!changed) return currentState;
+            return {
+                ...currentState,
+                requests: nextRequests,
+                completedRequests
+            };
+        });
+    }
+
     private setupRpcHandler(): void {
         this.client.rpcHandlerManager.registerHandler<TResponse, void>(RPC_METHODS.Permission, async (response) => {
             const pending = this.pendingRequests.get(response.id);
 
             if (!pending) {
+                // Clear the sticky hub/web badge before surfacing the error —
+                // otherwise StatusBar keeps "permission required" after 409
+                // (tiann/hapi#2414, follow-on to #1735). Skip ids still in
+                // flight: another answer already owns finalize for them.
+                if (!this.inFlightResponses.has(response.id)) {
+                    this.finalizeOrphanedAgentStateRequests(
+                        'Permission request not found or already resolved',
+                        response.id
+                    );
+                }
                 this.handleMissingPendingResponse(response);
                 return;
             }
 
             this.onResponseReceived(response);
             this.pendingRequests.delete(response.id);
-
-            const completion = await this.handlePermissionResponse(response, pending);
-            this.finalizeRequest(response.id, completion);
+            this.inFlightResponses.add(response.id);
+            try {
+                const completion = await this.handlePermissionResponse(response, pending);
+                this.finalizeRequest(response.id, completion);
+            } finally {
+                this.inFlightResponses.delete(response.id);
+            }
         });
     }
 }

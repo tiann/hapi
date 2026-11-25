@@ -1,10 +1,15 @@
+import type { SessionReadState } from '@hapi/protocol'
+
 export type StoredSession = {
+    contentRevision?: number
+    readState?: SessionReadState
     id: string
     tag: string | null
     namespace: string
     machineId: string | null
     createdAt: number
     updatedAt: number
+    lastUserMessageAt?: number
     pinned: boolean
     globalPinned: boolean
     metadata: unknown | null
@@ -41,6 +46,8 @@ export type StoredMachine = {
 export type MessageDeliveryState = 'indeterminate'
 
 export type StoredMessage = {
+    deliveryPending?: true
+    contentRevision?: number
     id: string
     sessionId: string
     content: unknown
@@ -81,8 +88,8 @@ export type StoredFcmDevice = {
     deviceId: string
     /**
      * base64 of the device-generated 32-byte E2E push encryption key.
-     * Required for `ios` rows (PUSH SPEC v1 envelope); always null for
-     * phone/wear rows.
+     * Required for `ios`, optional for `phone` (relay capable clients),
+     * null for legacy phone/Wear registrations.
      */
     pushKey: string | null
     createdAt: number
@@ -96,6 +103,27 @@ export type StoredScratchlistEntry = {
     createdAt: number
     updatedAt: number
     attachments: import('@hapi/protocol').ScratchlistAttachmentMetadata[]
+}
+
+export type StoredSessionJob = {
+    sessionId: string
+    key: string
+    label: string
+    status: import('@hapi/protocol').AttachedJobStatus
+    done?: number
+    total?: number
+    remaining?: number
+    unit?: string
+    detail?: string
+    runId?: string
+    /** Opt-in terminal wake (#1489). */
+    wakeOnTerminal: boolean
+    wakePrompt?: string
+    /** Dedup: runId for which a wake was already claimed. */
+    wakeEmittedRunId?: string
+    heartbeatAt: number
+    startedAt: number
+    updatedAt: number
 }
 
 export type VersionedUpdateResult<T> =

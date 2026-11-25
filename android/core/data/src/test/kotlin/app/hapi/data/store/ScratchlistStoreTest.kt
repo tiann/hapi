@@ -230,6 +230,51 @@ class ScratchlistStoreTest {
         assertTrue(store.currentState("s1").entries.isEmpty())
     }
 
+    // ----------------------------------------------------------------- move --
+
+    @Test
+    fun `move reorders the cache locally without a protocol request`() =
+        runScratchlistTest { store, server ->
+            server.enqueueJson(
+                entriesJson(entryJson("e1", "one"), entryJson("e2", "two"), entryJson("e3", "three"))
+            )
+            store.refresh("s1")
+
+            store.moveEntry("s1", "e3", ScratchlistMoveDirection.UP)
+
+            assertEquals(listOf("e1", "e3", "e2"), store.currentState("s1").entries.map { it.entryId })
+            // Local-only in v2 (web parity): no hub call, the hub has no position column.
+            assertEquals(1, server.requestCount)
+        }
+
+    @Test
+    fun `edge and unknown moves leave the cache untouched`() =
+        runScratchlistTest { store, server ->
+            server.enqueueJson(entriesJson(entryJson("e1", "one"), entryJson("e2", "two")))
+            store.refresh("s1")
+
+            store.moveEntry("s1", "e1", ScratchlistMoveDirection.UP)
+            store.moveEntry("s1", "e2", ScratchlistMoveDirection.DOWN)
+            store.moveEntry("s1", "missing", ScratchlistMoveDirection.UP)
+
+            assertEquals(listOf("e1", "e2"), store.currentState("s1").entries.map { it.entryId })
+            assertEquals(1, server.requestCount)
+        }
+
+    @Test
+    fun `the next refresh restores hub order over a local reorder`() =
+        runScratchlistTest { store, server ->
+            server.enqueueJson(entriesJson(entryJson("e1", "one"), entryJson("e2", "two")))
+            store.refresh("s1")
+
+            store.moveEntry("s1", "e2", ScratchlistMoveDirection.UP)
+            assertEquals(listOf("e2", "e1"), store.currentState("s1").entries.map { it.entryId })
+
+            server.enqueueJson(entriesJson(entryJson("e1", "one"), entryJson("e2", "two")))
+            store.refresh("s1")
+            assertEquals(listOf("e1", "e2"), store.currentState("s1").entries.map { it.entryId })
+        }
+
     // ------------------------------------------------------ SSE invalidation --
 
     @Test

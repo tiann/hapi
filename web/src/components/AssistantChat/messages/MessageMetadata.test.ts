@@ -54,6 +54,11 @@ describe('buildMessageMetadataLabels', () => {
         expect(parts).toContain('Duration: 0.0s')
     })
 
+    it('uses compact units for long legacy durations', () => {
+        expect(buildMessageMetadataLabels({ durationMs: 60_000 })).toContain('Duration: 1m')
+        expect(buildMessageMetadataLabels({ durationMs: 3_600_000 })).toContain('Duration: 1h')
+    })
+
     // Proof of Invariance — single-turn inputs (turnCount omitted, or < 2)
     // must produce byte-identical output to the pre-aggregate footer so
     // existing single-turn cards do not regress visually.
@@ -119,5 +124,244 @@ describe('buildMessageMetadataLabels', () => {
             turnCount: 2
         })
         expect(parts.some(p => p.startsWith('Duration:'))).toBe(false)
+    })
+
+    it('renders the exact Claude round summary hierarchy', () => {
+        const parts = buildMessageMetadataLabels({
+            model: 'derived-model-that-must-not-win',
+            usage: { input_tokens: 1, output_tokens: 1 },
+            roundSummary: {
+                modelUsage: {
+                    'claude-opus-5': {
+                        inputTokens: 80,
+                        cacheCreationInputTokens: 20,
+                        cacheReadInputTokens: 100_000,
+                        outputTokens: 500
+                    },
+                    'claude-haiku-4-5': {}
+                },
+                totalCostUsd: 0.028029,
+                numTurns: 9,
+                durationMs: 8163
+            }
+        } as any)
+
+        expect(parts).toEqual([
+            'Models: claude-opus-5, claude-haiku-4-5',
+            'Tokens: 100.6k (100.1k in · 500 out)',
+            'Cached input: 99.9% · Cost: $0.028',
+            'Round: 8.2s · 9 turns'
+        ])
+    })
+
+    it('formats long round durations with minutes and hours', () => {
+        const summary = (durationMs: number) => buildMessageMetadataLabels({
+            roundSummary: {
+                modelUsage: {},
+                durationMs,
+                numTurns: 1
+            }
+        })
+
+        expect(summary(59_900)).toContain('Round: 59.9s · 1 turn')
+        expect(summary(60_000)).toContain('Round: 1m · 1 turn')
+        expect(summary(537_000)).toContain('Round: 8m 57s · 1 turn')
+        expect(summary(3_661_000)).toContain('Round: 1h 1m 1s · 1 turn')
+    })
+
+    it('labels a top-level Codex turn with Round', () => {
+        expect(buildMessageMetadataLabels({
+            roundSummary: {
+                provider: 'codex',
+                modelUsage: {
+                    'gpt-5.4': { inputTokens: 100, outputTokens: 10 }
+                },
+                numTurns: 1
+            }
+        })).toEqual([
+            'Model: gpt-5.4',
+            'Tokens: 110 (100 in · 10 out)',
+            'Round: 1 turn'
+        ])
+    })
+
+    it('keeps the existing formatter byte-identical when no result summary is present', () => {
+        expect(buildMessageMetadataLabels({
+            durationMs: 1234,
+            model: 'claude-sonnet-4-6',
+            usage: { input_tokens: 3, output_tokens: 19, service_tier: 'standard' }
+        } as any)).toEqual([
+            'Duration: 1.2s',
+            'Model: claude-sonnet-4-6',
+            'Tokens: 22 total (3 in / 19 out)'
+        ])
+    })
+
+    it('uses the normalized valid model fields when other model counters are absent', () => {
+        expect(buildMessageMetadataLabels({
+            roundSummary: {
+                modelUsage: {
+                    'claude-opus-5': { outputTokens: 10 },
+                    'claude-haiku-4-5': { inputTokens: 10, outputTokens: 4 },
+                    'claude-empty-5': {}
+                },
+                totalCostUsd: 0.00002,
+                durationMs: 12.5
+            }
+        })).toEqual([
+            'Models: claude-opus-5, claude-haiku-4-5, claude-empty-5',
+            'Tokens: 24 (10 in · 14 out)',
+            'Cost: <$0.0001',
+            'Round: 0s'
+        ])
+    })
+})
+
+
+describe('Codex cached input metadata', () => {
+    const labels = (input: number, cached?: number) => buildMessageMetadataLabels({
+        roundSummary: {
+            provider: 'codex',
+            usage: { input_tokens: input, output_tokens: 10, cache_read_input_tokens: cached },
+            modelUsage: { 'gpt-5.4': { inputTokens: input, outputTokens: 10 } },
+            numTurns: 1
+        }
+    })
+
+    it('uses cache-inclusive input without adding cached tokens again', () => {
+        expect(labels(100, 80)).toEqual([
+            'Model: gpt-5.4',
+            'Tokens: 110 (100 in · 10 out)',
+            'Cached input: 80%',
+            'Round: 1 turn'
+        ])
+    })
+
+    it('uses token totals rather than averaging cache percentages', () => {
+        expect(buildMessageMetadataLabels({
+            roundSummary: {
+                provider: 'codex',
+                modelUsage: {
+                    'model-a': { inputTokens: 100, cacheReadInputTokens: 80, outputTokens: 5 },
+                    'model-b': { inputTokens: 900, cacheReadInputTokens: 90, outputTokens: 5 }
+                }
+            }
+        })).toContain('Cached input: 17%')
+    })
+
+    it('distinguishes missing cache usage from an explicit zero', () => {
+        expect(labels(100).some(label => label.startsWith('Cached input:'))).toBe(false)
+        expect(labels(100, 0)).toContain('Cached input: 0%')
+        expect(labels(100, 100)).toContain('Cached input: 100%')
+    })
+
+    it.each([-1, NaN, Infinity, 1.5])('omits invalid Codex output counts (%s)', output => {
+        expect(buildMessageMetadataLabels({ roundSummary: {
+            provider: 'codex', modelUsage: {},
+            usage: { input_tokens: 100, output_tokens: output, cache_read_input_tokens: 80 }
+        } }).some(label => label.startsWith('Tokens:') || label.startsWith('Cached input:'))).toBe(false)
+    })
+
+    it.each([
+        [0, 0], [-1, 0], [100, -1], [100, 101], [100, NaN],
+        [100, Infinity], [Infinity, 80], [NaN, 80], [100.5, 80],
+        [100, 1.5], [Number.MAX_SAFE_INTEGER + 1, 80]
+    ])('omits an invalid cache ratio for input=%s cached=%s', (input, cached) => {
+        expect(labels(input, cached).some(label => label.startsWith('Cached input:'))).toBe(false)
+        expect(labels(input, cached).join(' ')).not.toMatch(/NaN|Infinity/)
+    })
+})
+
+
+describe('provider throughput metadata', () => {
+    const summary = {
+        modelUsage: { 'fixture/model': { outputTokens: 1_000 } },
+        durationMs: 9_000, numTurns: 2, generationMs: 1_500, generationOutputTokens: 30
+    }
+    it('uses provider time and assistant-only output instead of wall time or compaction usage', () => {
+        expect(buildMessageMetadataLabels({ roundSummary: summary })).toContain('Round: 9s · 2 turns · 20.0 tok/s')
+    })
+    it.each([undefined, 0, -1, NaN, Infinity, Number.MIN_VALUE])('hides invalid or overflowing duration %s', (generationMs) => {
+        expect(buildMessageMetadataLabels({ roundSummary: { ...summary, generationMs } }).join(' ')).not.toContain('tok/s')
+    })
+    it.each([undefined, 0, -1, NaN, Infinity, 1.5])('hides invalid output %s', (generationOutputTokens) => {
+        expect(buildMessageMetadataLabels({ roundSummary: { ...summary, generationOutputTokens } }).join(' ')).not.toContain('tok/s')
+    })
+    it('renders the agy usage breakdown, cache share and round time', () => {
+        const parts = buildMessageMetadataLabels({
+            roundSummary: {
+                provider: 'agy',
+                modelUsage: { 'gemini-3-flash-low': {} },
+                agyUsage: { input_tokens: 30_458, output_tokens: 58, thinking_tokens: 120, cache_read_tokens: 10_000, total_tokens: 30_636 },
+                durationMs: 9_500
+            }
+        })
+
+        expect(parts).toEqual([
+            'Model: gemini-3-flash-low',
+            'Tokens: 30.6k (30.5k in · 58 out · 120 thinking)',
+            'Cached input: 24.7%',
+            'Round: 9.5s'
+        ])
+    })
+
+    it('adds agy tok/s to the Round line when the summary carries generation time', () => {
+        const parts = buildMessageMetadataLabels({
+            roundSummary: {
+                provider: 'agy',
+                modelUsage: {},
+                agyUsage: { input_tokens: 4_422, output_tokens: 58, thinking_tokens: 12, total_tokens: 35_530 },
+                durationMs: 14_900,
+                generationMs: 2_500,
+                generationOutputTokens: 70
+            }
+        })
+        expect(parts.at(-1)).toBe('Round: 14.9s · 28.0 tok/s')
+    })
+
+    it('adds Claude tok/s to the Round line from the duration_api_ms pair', () => {
+        const parts = buildMessageMetadataLabels({
+            roundSummary: {
+                modelUsage: { 'claude-opus-5': { inputTokens: 4_422, outputTokens: 70, cacheReadInputTokens: 900, cacheCreationInputTokens: 100 } },
+                usage: { input_tokens: 4_422, output_tokens: 70, cache_read_input_tokens: 900, cache_creation_input_tokens: 100 },
+                numTurns: 3,
+                durationMs: 14_900,
+                generationMs: 2_500,
+                generationOutputTokens: 70
+            }
+        })
+        expect(parts.at(-1)).toBe('Round: 14.9s · 3 turns · 28.0 tok/s')
+    })
+
+    it('omits the agy cache share without cache reads and shows partial usage as reported', () => {
+        expect(buildMessageMetadataLabels({
+            model: 'fallback-model',
+            roundSummary: { provider: 'agy', modelUsage: {}, agyUsage: { input_tokens: 15_172, output_tokens: 44, cache_read_tokens: 0 } }
+        })).toEqual(['Model: fallback-model', 'Tokens: 15.2k in · 44 out'])
+    })
+
+    it('adds the agy turn count to the agy Round line (google-antigravity/antigravity-cli#1045)', () => {
+        const parts = buildMessageMetadataLabels({
+            roundSummary: {
+                provider: 'agy',
+                modelUsage: {},
+                agyUsage: { input_tokens: 4_422, output_tokens: 58 },
+                durationMs: 14_900,
+                numTurns: 3
+            }
+        })
+        expect(parts.at(-1)).toBe('Round: 14.9s · 3 turns')
+        for (const numTurns of [undefined, 0, -2]) {
+            const hidden = buildMessageMetadataLabels({
+                roundSummary: {
+                    provider: 'agy',
+                    modelUsage: {},
+                    agyUsage: { input_tokens: 4_422, output_tokens: 58 },
+                    durationMs: 14_900,
+                    numTurns
+                }
+            })
+            expect(hidden.at(-1)).toBe('Round: 14.9s')
+        }
     })
 })

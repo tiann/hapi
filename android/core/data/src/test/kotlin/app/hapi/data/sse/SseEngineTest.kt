@@ -63,6 +63,61 @@ private fun TestScope.harness(
 class SseEngineTest {
 
     @Test
+    fun `route changes reconnect once preserve cursor and defer while backgrounded`() = runTest {
+        val h = harness()
+        val key = SseSubscriptionKey.Global
+        val wifi = NetworkRoute(1, "wlan0", addresses = setOf("10.0.0.2/24"))
+        h.engine.networkChanged(wifi)
+        h.engine.events(key).test {
+            h.engine.subscribe(key)
+            val first = h.awaitOpen()
+            first.handshake()
+            awaitItem()
+            first.event("cursor-1", SESSION_REMOVED)
+            awaitItem()
+            runCurrent()
+            h.engine.networkChanged(wifi)
+            runCurrent()
+            h.assertNoOpen()
+            // DHCP can change the socket's source IP without changing the
+            // default network, interface, or gateway route.
+            h.engine.networkChanged(wifi.copy(addresses = setOf("10.0.0.3/24")))
+            val second = h.awaitOpen()
+            assertTrue(first.closed)
+            assertEquals("cursor-1", second.lastEventId)
+            second.handshake()
+            awaitItem()
+            h.engine.setLifecycleForeground(false)
+            h.engine.networkChanged(NetworkRoute(3))
+            runCurrent()
+            assertTrue(second.closed)
+            h.assertNoOpen()
+            h.engine.setLifecycleForeground(true)
+            val third = h.awaitOpen()
+            assertEquals("cursor-1", third.lastEventId)
+            h.engine.unsubscribe(key)
+            runCurrent()
+            assertTrue(third.closed)
+            assertEquals(ConnectionState.Phase.Idle, h.engine.connectionState(key).value.phase)
+        }
+    }
+
+    @Test
+    fun `manual reconnect interrupts backoff without clearing ongoing outage`() = runTest {
+        val h = harness()
+        val key = SseSubscriptionKey.Global
+        h.engine.subscribe(key)
+        h.awaitOpen().fail(503)
+        h.awaitOpen().fail(503)
+        runCurrent()
+        val outage = h.engine.connectionState(key).value.outageStartedAtMs
+        assertEquals(0L, outage)
+        h.engine.requestReconnect(key)
+        h.awaitOpen()
+        assertEquals(outage, h.engine.connectionState(key).value.outageStartedAtMs)
+    }
+
+    @Test
     fun `handshake emits resume verdict and subscription id after connection-changed`() = runTest {
         val h = harness()
         h.engine.events(SseSubscriptionKey.Global).test {
@@ -419,6 +474,163 @@ class SseEngineTest {
         h.engine.subscribe(SseSubscriptionKey.Global)
         val conn2 = h.awaitOpen()
         assertEquals("e-1", conn2.lastEventId, "per-key cursor survives unsubscribe/resubscribe")
+    }
+
+    // ------------------------------------------------- failure attribution --
+    // The banner labels an outage with why the attempt ended
+    // (`ConnectionFailure`; web `ReconnectingBanner.tsx` reason strings).
+
+    @Test
+    fun `transport failure attributes TransportError with the http code and clears on recovery`() = runTest {
+        val h = harness()
+        val key = SseSubscriptionKey.Global
+        h.engine.subscribe(key)
+        h.awaitOpen().fail(502)
+        runCurrent()
+        assertEquals(ConnectionFailure(DisconnectReason.TransportError, 502), h.engine.connectionState(key).value.lastFailure)
+
+        h.awaitOpen().handshake()
+        runCurrent()
+        assertNull(h.engine.connectionState(key).value.lastFailure, "a successful handshake clears the failure label")
+    }
+
+    @Test
+    fun `clean server EOF attributes Closed without an http code`() = runTest {
+        val h = harness()
+        val key = SseSubscriptionKey.Global
+        h.engine.subscribe(key)
+        val conn = h.awaitOpen()
+        conn.handshake()
+        runCurrent()
+        conn.finish()
+        runCurrent()
+        assertEquals(ConnectionFailure(DisconnectReason.Closed), h.engine.connectionState(key).value.lastFailure)
+    }
+
+    @Test
+    fun `a missed connect deadline attributes ConnectTimeout`() = runTest {
+        val h = harness()
+        val key = SseSubscriptionKey.Global
+        h.engine.subscribe(key)
+        h.awaitOpen() // never handshakes
+        advanceTimeBy(ReconnectPolicy.CONNECT_TIMEOUT_MS)
+        runCurrent()
+        assertEquals(ConnectionFailure(DisconnectReason.ConnectTimeout), h.engine.connectionState(key).value.lastFailure)
+        h.awaitOpen() // absorb the retry so the loop parks in backoff
+    }
+
+    @Test
+    fun `staleness attributes HeartbeatTimeout`() = runTest {
+        val h = harness()
+        val key = SseSubscriptionKey.Global
+        h.engine.subscribe(key)
+        val conn = h.awaitOpen()
+        conn.handshake()
+        runCurrent()
+        advanceTimeBy(ReconnectPolicy.STALE_MS)
+        runCurrent()
+        assertEquals(ConnectionFailure(DisconnectReason.HeartbeatTimeout), h.engine.connectionState(key).value.lastFailure)
+        assertTrue(conn.closed)
+        h.awaitOpen() // absorb the retry
+    }
+
+    @Test
+    fun `a stale foreground resume attributes VisibilityRecovery`() = runTest {
+        val h = harness()
+        val key = SseSubscriptionKey.Global
+        h.engine.subscribe(key)
+        val conn = h.awaitOpen()
+        conn.handshake()
+        runCurrent()
+
+        h.engine.setLifecycleForeground(false)
+        runCurrent()
+        advanceTimeBy(ReconnectPolicy.RESUME_STALE_MS)
+        runCurrent()
+        h.engine.setLifecycleForeground(true)
+        runCurrent()
+        assertEquals(ConnectionFailure(DisconnectReason.VisibilityRecovery), h.engine.connectionState(key).value.lastFailure)
+        assertTrue(conn.closed)
+        h.awaitOpen() // absorb the retry
+    }
+
+    @Test
+    fun `a codeless failure is attributed TransportError and the failure survives backoff republishes`() = runTest {
+        // DNS/TLS/socket errors carry no HTTP code (mobile's dominant outage
+        // shape); the web maps any onerror to transport-error, so a null-code
+        // Failure must not degrade to a "connection closed" label.
+        val h = harness()
+        val key = SseSubscriptionKey.Global
+        h.engine.subscribe(key)
+        h.awaitOpen().fail(null)
+        runCurrent()
+        assertEquals(ConnectionFailure(DisconnectReason.TransportError, null), h.engine.connectionState(key).value.lastFailure)
+
+        // The label rides along while the outage continues ( Connecting →
+        // Backoff republishes), until a handshake succeeds.
+        h.awaitOpen().connect()
+        runCurrent()
+        assertEquals(ConnectionFailure(DisconnectReason.TransportError, null), h.engine.connectionState(key).value.lastFailure)
+    }
+
+    // ----------------------------------------------------- outage visibility --
+    // The banner's visibility is independent of the reason label.
+
+    @Test
+    fun `repeated null-token retries keep the reconnecting notice visible`() = runTest {
+        // Auth-side outage: a stale JWT whose refresh keeps failing cycles
+        // Backoff forever without a transport attempt ever running, so
+        // nothing attributes a failure reason — the notice must still surface
+        // after the grace (reason-less), not collapse to "no banner".
+        val h = harness(supplyToken = { null })
+        val key = SseSubscriptionKey.Global
+        h.engine.connectionOutageNotice(key).test {
+            assertNull(awaitItem())
+            h.engine.subscribe(key)
+            runCurrent()
+            advanceTimeBy(3_999)
+            expectNoEvents()
+            advanceTimeBy(1)
+            runCurrent()
+            assertEquals(OutageNotice(null), awaitItem())
+
+            // More backoff cycles keep republishing the same outage: the
+            // notice stays up (no re-emit, no collapse).
+            advanceTimeBy(30_000)
+            runCurrent()
+            expectNoEvents()
+        }
+        h.assertNoOpen() // pure auth-side outage: no transport ever opened
+    }
+
+    @Test
+    fun `the outage notice hides while backgrounded and returns with the foreground`() = runTest {
+        val h = harness(supplyToken = { null })
+        val key = SseSubscriptionKey.Global
+        h.engine.connectionOutageNotice(key).test {
+            assertNull(awaitItem())
+            h.engine.subscribe(key)
+            runCurrent()
+            advanceTimeBy(4_000)
+            runCurrent()
+            assertEquals(OutageNotice(null), awaitItem())
+
+            // Backgrounding suspends the pipe — the banner host is
+            // invisible, so the notice hides.
+            h.engine.setLifecycleForeground(false)
+            runCurrent()
+            assertNull(awaitItem())
+
+            // Returning to the foreground releases the deferred retries; the
+            // still-ongoing outage re-shows, re-graced from the return.
+            h.engine.setLifecycleForeground(true)
+            runCurrent()
+            advanceTimeBy(3_999)
+            expectNoEvents()
+            advanceTimeBy(1)
+            runCurrent()
+            assertEquals(OutageNotice(null), awaitItem())
+        }
     }
 
     @Test

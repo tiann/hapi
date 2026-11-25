@@ -7,7 +7,7 @@ import {
 } from '@hapi/protocol'
 import type { PermissionModeTone } from '@hapi/protocol'
 import * as Popover from '@radix-ui/react-popover'
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import type { AgentState, CodexCollaborationMode, PermissionMode } from '@/types/api'
 import type { ConversationStatus } from '@/realtime/types'
 import { getContextBudgetTokens } from '@/chat/modelConfig'
@@ -18,8 +18,15 @@ import {
     shouldShowReasoningStatusLabel
 } from '@/lib/codexStatusLabels'
 import { isFastServiceTier } from './codexFastMode'
+import { AgentQuotaStatus } from './AgentQuotaStatus'
 import { useTranslation } from '@/lib/use-translation'
 import { useSessionHeaderMetadata } from '@/hooks/useSessionHeaderMetadata'
+import {
+    getPendingRequestDetail,
+    getPendingRequestEntries,
+    getPendingRequestStatusText,
+    type PendingRequestEntry
+} from '@/lib/pendingRequests'
 
 // Vibing messages for thinking state
 const VIBING_MESSAGES = [
@@ -53,20 +60,19 @@ const CONTEXT_DANGER_THRESHOLD_PERCENT = 90
 function getConnectionStatus(
     active: boolean,
     thinking: boolean,
-    agentState: AgentState | null | undefined,
+    pendingRequests: readonly PendingRequestEntry[],
     voiceStatus: ConversationStatus | undefined,
     backgroundTaskCount: number,
     t: (key: string) => string
-): { text: string; color: string; dotColor: string; isPulsing: boolean } {
-    const hasPermissions = agentState?.requests && Object.keys(agentState.requests).length > 0
-
+): { text: string; color: string; dotColor: string; isPulsing: boolean; hasPendingRequests: boolean } {
     // Voice connecting takes priority
     if (voiceStatus === 'connecting') {
         return {
             text: t('voice.connecting'),
             color: 'text-[#007AFF]',
             dotColor: 'bg-[#007AFF]',
-            isPulsing: true
+            isPulsing: true,
+            hasPendingRequests: false
         }
     }
 
@@ -75,16 +81,19 @@ function getConnectionStatus(
             text: t('misc.offline'),
             color: 'text-[#999]',
             dotColor: 'bg-[#999]',
-            isPulsing: false
+            isPulsing: false,
+            hasPendingRequests: false
         }
     }
 
-    if (hasPermissions) {
+    const pendingText = getPendingRequestStatusText(pendingRequests, t)
+    if (pendingText) {
         return {
-            text: t('misc.permissionRequired'),
-            color: 'text-[#FF9500]',
-            dotColor: 'bg-[#FF9500]',
-            isPulsing: true
+            text: pendingText,
+            color: 'text-[var(--app-badge-warning-text)]',
+            dotColor: 'bg-[var(--app-badge-warning-text)]',
+            isPulsing: true,
+            hasPendingRequests: true
         }
     }
 
@@ -94,7 +103,8 @@ function getConnectionStatus(
             text: vibingMessage,
             color: 'text-[#007AFF]',
             dotColor: 'bg-[#007AFF]',
-            isPulsing: true
+            isPulsing: true,
+            hasPendingRequests: false
         }
     }
 
@@ -103,7 +113,8 @@ function getConnectionStatus(
             text: `${backgroundTaskCount} background task${backgroundTaskCount > 1 ? 's' : ''} running`,
             color: 'text-[#007AFF]',
             dotColor: 'bg-[#007AFF]',
-            isPulsing: true
+            isPulsing: true,
+            hasPendingRequests: false
         }
     }
 
@@ -111,7 +122,8 @@ function getConnectionStatus(
         text: t('misc.online'),
         color: 'text-[#34C759]',
         dotColor: 'bg-[#34C759]',
-        isPulsing: false
+        isPulsing: false,
+        hasPendingRequests: false
     }
 }
 
@@ -191,8 +203,58 @@ export function shouldShowCodexFastBadge(
     return agentFlavor === 'codex' && isFastServiceTier(serviceTier)
 }
 
+export type StatusBarInputTranslation = {
+    enabled: boolean
+    /** State comes from the hub-wide default, not a per-session choice. */
+    fromDefault: boolean
+    pending: boolean
+    onToggle: () => void
+}
+
+function TranslateGlyph() {
+    return (
+        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24"
+            fill="none" stroke="currentColor" strokeWidth="2.2"
+            strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="m5 8 6 6" />
+            <path d="m4 14 6-6 2-3" />
+            <path d="M2 5h12" />
+            <path d="M7 2h1" />
+            <path d="m22 22-5-10-5 10" />
+            <path d="M14 18h6" />
+        </svg>
+    )
+}
+
+function InputTranslationChip(props: StatusBarInputTranslation) {
+    const { t } = useTranslation()
+    const title = props.enabled
+        ? t(props.fromDefault ? 'composer.translate.onDefaultTitle' : 'composer.translate.onTitle')
+        : t('composer.translate.offTitle')
+    return (
+        <button
+            type="button"
+            data-testid="composer-translate-toggle"
+            aria-pressed={props.enabled}
+            aria-label={title}
+            title={title}
+            disabled={props.pending}
+            onClick={props.onToggle}
+            className={`relative top-0.5 inline-flex shrink-0 cursor-pointer items-center gap-0.5 self-center rounded-sm bg-transparent p-0 text-xs leading-none outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-link)] disabled:cursor-default disabled:opacity-60 ${
+                props.enabled ? 'text-[var(--app-link)]' : 'text-[var(--app-hint)] opacity-70 hover:opacity-100'
+            }`}
+        >
+            <TranslateGlyph />
+            <span>EN</span>
+        </button>
+    )
+}
+
 export function StatusBar(props: {
+    inputTranslation?: StatusBarInputTranslation
     active: boolean
+    /** Session machine; enables the plan-quota readout next to the context meter. */
+    machineId?: string | null
     thinking: boolean
     agentState: AgentState | null | undefined
     backgroundTaskCount?: number
@@ -215,12 +277,18 @@ export function StatusBar(props: {
     copilotAgentMode?: import('@hapi/protocol').CopilotAgentMode
     agentFlavor?: string | null
     voiceStatus?: ConversationStatus
+    onPendingRequestClick?: (requestId: string) => void
 }) {
     const { t } = useTranslation()
     const { preferences: headerMetadata } = useSessionHeaderMetadata()
+    const [pendingMenuOpen, setPendingMenuOpen] = useState(false)
+    const pendingRequests = useMemo(
+        () => getPendingRequestEntries(props.agentState?.requests),
+        [props.agentState?.requests]
+    )
     const connectionStatus = useMemo(
-        () => getConnectionStatus(props.active, props.thinking, props.agentState, props.voiceStatus, props.backgroundTaskCount ?? 0, t),
-        [props.active, props.thinking, props.agentState, props.voiceStatus, props.backgroundTaskCount, t]
+        () => getConnectionStatus(props.active, props.thinking, pendingRequests, props.voiceStatus, props.backgroundTaskCount ?? 0, t),
+        [props.active, props.thinking, pendingRequests, props.voiceStatus, props.backgroundTaskCount, t]
     )
 
     const contextHeuristicModel = props.contextModel ?? props.model
@@ -294,14 +362,106 @@ export function StatusBar(props: {
     return (
         <div className="flex min-w-0 items-baseline justify-between gap-2 px-2 pb-1">
             <div className="flex min-w-0 items-baseline gap-2">
-                <div className="relative top-px sm:top-0.5 flex shrink-0 items-center gap-1.5">
-                    <span
-                        className={`h-2 w-2 rounded-full ${connectionStatus.dotColor} ${connectionStatus.isPulsing ? 'animate-pulse' : ''}`}
-                    />
-                    <span className={`whitespace-nowrap text-xs ${connectionStatus.color}`}>
-                        {connectionStatus.text}
-                    </span>
-                </div>
+                {connectionStatus.hasPendingRequests && props.onPendingRequestClick ? (
+                    pendingRequests.length === 1 ? (
+                        <button
+                            type="button"
+                            className="relative top-px flex shrink-0 cursor-pointer items-center gap-1.5 rounded-sm bg-transparent p-0 text-left outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-link)] sm:top-0.5"
+                            aria-label={connectionStatus.text}
+                            title={connectionStatus.text}
+                            onClick={() => props.onPendingRequestClick?.(pendingRequests[0]!.id)}
+                        >
+                            <span
+                                aria-hidden="true"
+                                className={`h-2 w-2 rounded-full ${connectionStatus.dotColor} ${connectionStatus.isPulsing ? 'animate-pulse' : ''}`}
+                            />
+                            <span className={`whitespace-nowrap text-xs ${connectionStatus.color}`}>
+                                {connectionStatus.text}
+                            </span>
+                        </button>
+                    ) : (
+                        <Popover.Root open={pendingMenuOpen} onOpenChange={setPendingMenuOpen}>
+                            <Popover.Trigger asChild>
+                                <button
+                                    type="button"
+                                    className="relative top-px flex shrink-0 cursor-pointer items-center gap-1.5 rounded-sm bg-transparent p-0 text-left outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-link)] sm:top-0.5"
+                                    aria-label={connectionStatus.text}
+                                    title={connectionStatus.text}
+                                >
+                                    <span
+                                        aria-hidden="true"
+                                        className={`h-2 w-2 rounded-full ${connectionStatus.dotColor} ${connectionStatus.isPulsing ? 'animate-pulse' : ''}`}
+                                    />
+                                    <span className={`whitespace-nowrap text-xs ${connectionStatus.color}`}>
+                                        {connectionStatus.text}
+                                    </span>
+                                </button>
+                            </Popover.Trigger>
+                            <Popover.Portal>
+                                <Popover.Content
+                                    side="top"
+                                    align="start"
+                                    alignOffset={-8}
+                                    sideOffset={6}
+                                    collisionPadding={12}
+                                    className="z-50 w-[calc(100vw-1.5rem)] rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] p-1 shadow-lg sm:w-fit sm:min-w-[14rem] sm:max-w-[28rem]"
+                                >
+                                    <div className="flex flex-col">
+                                        {pendingRequests.map((request) => {
+                                            const detail = getPendingRequestDetail(request)
+                                            const label = request.kind === 'input'
+                                                ? t('misc.inputRequired')
+                                                : t('misc.permissionRequired')
+                                            const moreLabel = detail.moreCount > 0
+                                                ? t('misc.moreQuestions', { count: detail.moreCount })
+                                                : null
+                                            const accessibleDetail = moreLabel
+                                                ? `${detail.text} ${moreLabel}`
+                                                : detail.text
+                                            return (
+                                                <button
+                                                    key={request.id}
+                                                    type="button"
+                                                    aria-label={`${label} ${accessibleDetail}`}
+                                                    title={accessibleDetail}
+                                                    className="flex min-h-12 w-full min-w-0 items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--app-subtle-bg)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-link)]"
+                                                    onClick={() => {
+                                                        setPendingMenuOpen(false)
+                                                        props.onPendingRequestClick?.(request.id)
+                                                    }}
+                                                >
+                                                    <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                                                        <span className="font-medium text-[var(--app-fg)]">
+                                                            {label}
+                                                        </span>
+                                                        <span className="flex min-w-0 items-baseline gap-1.5 text-[11px] text-[var(--app-hint)]">
+                                                            <span className={`min-w-0 truncate ${request.kind === 'permission' ? 'font-mono' : ''}`}>
+                                                                {detail.text}
+                                                            </span>
+                                                            {moreLabel ? (
+                                                                <span className="shrink-0 whitespace-nowrap">{moreLabel}</span>
+                                                            ) : null}
+                                                        </span>
+                                                    </span>
+                                                    <span aria-hidden="true" className="shrink-0 text-base text-[var(--app-hint)]">›</span>
+                                                </button>
+                                            )
+                                        })}
+                                    </div>
+                                </Popover.Content>
+                            </Popover.Portal>
+                        </Popover.Root>
+                    )
+                ) : (
+                    <div className="relative top-px sm:top-0.5 flex shrink-0 items-center gap-1.5">
+                        <span
+                            className={`h-2 w-2 rounded-full ${connectionStatus.dotColor} ${connectionStatus.isPulsing ? 'animate-pulse' : ''}`}
+                        />
+                        <span className={`whitespace-nowrap text-xs ${connectionStatus.color}`}>
+                            {connectionStatus.text}
+                        </span>
+                    </div>
+                )}
                 {contextUsageLabel ? (
                     <Popover.Root>
                         <Popover.Trigger asChild>
@@ -362,9 +522,13 @@ export function StatusBar(props: {
                         </Popover.Portal>
                     </Popover.Root>
                 ) : null}
+                {props.machineId ? (
+                    <AgentQuotaStatus machineId={props.machineId} agentFlavor={props.agentFlavor} />
+                ) : null}
             </div>
 
             <div className="flex min-w-0 shrink-0 items-baseline gap-2">
+                {props.inputTranslation ? <InputTranslationChip {...props.inputTranslation} /> : null}
                 {reasoningLabel ? (
                     <span className="whitespace-nowrap text-xs text-[var(--app-hint)]">
                         <span className="sm:hidden">{compactReasoningLabel}</span>

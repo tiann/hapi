@@ -1,7 +1,7 @@
 import http2 from 'node:http2'
 import * as jose from 'jose'
 
-import type { IosPushRequest, IosPushSendOutcome, IosPushTransport } from './transport'
+import type { EncryptedPushRequest, NativePushSendOutcome, EncryptedPushTransport } from '../push-native/transport'
 
 export const APNS_PRODUCTION_HOST = 'https://api.push.apple.com'
 export const APNS_SANDBOX_HOST = 'https://api.sandbox.push.apple.com'
@@ -20,7 +20,7 @@ export const APNS_JWT_MAX_AGE_MS = 45 * 60 * 1000
  * Header: `{ alg: "ES256", kid: <keyId> }`; claims: `{ iss: <teamId>, iat }`.
  */
 export class ApnsJwtProvider {
-    private cached: { token: string; issuedAtMs: number } | null = null
+    private cached: { token: Promise<string>; issuedAtMs: number } | null = null
 
     constructor(
         /** PKCS8 PEM contents of the .p8 APNs auth key. */
@@ -33,14 +33,27 @@ export class ApnsJwtProvider {
         if (this.cached && nowMs - this.cached.issuedAtMs < APNS_JWT_MAX_AGE_MS) {
             return this.cached.token
         }
+        // Share the signing work across concurrent device fan-out, including
+        // on startup and when the previous JWT needs refreshing.
+        const token = this.signToken(nowMs)
+        this.cached = { token, issuedAtMs: nowMs }
+        try {
+            return await token
+        } catch (error) {
+            if (this.cached?.token === token) {
+                this.cached = null
+            }
+            throw error
+        }
+    }
+
+    private async signToken(nowMs: number): Promise<string> {
         const key = await jose.importPKCS8(this.keyP8, 'ES256')
-        const token = await new jose.SignJWT({})
+        return new jose.SignJWT({})
             .setProtectedHeader({ alg: 'ES256', kid: this.keyId })
             .setIssuer(this.teamId)
             .setIssuedAt(Math.floor(nowMs / 1000))
             .sign(key)
-        this.cached = { token, issuedAtMs: nowMs }
-        return token
     }
 }
 
@@ -84,7 +97,7 @@ export type ApnsClientOptions = {
  * per minute at most, so connection reuse buys nothing and a persistent
  * APNs session would need ping/goaway lifecycle management.
  */
-export class ApnsClient implements IosPushTransport {
+export class ApnsClient implements EncryptedPushTransport {
     private readonly jwtProvider: ApnsJwtProvider
     private readonly bundleId: string
     private readonly host: string
@@ -97,7 +110,7 @@ export class ApnsClient implements IosPushTransport {
         this.requestTimeoutMs = options.requestTimeoutMs ?? APNS_REQUEST_TIMEOUT_MS
     }
 
-    async send(request: IosPushRequest): Promise<IosPushSendOutcome> {
+    async send(request: EncryptedPushRequest): Promise<NativePushSendOutcome> {
         let jwt: string
         try {
             jwt = await this.jwtProvider.getToken()
@@ -107,10 +120,10 @@ export class ApnsClient implements IosPushTransport {
             return 'failed'
         }
 
-        return await new Promise<IosPushSendOutcome>((resolve) => {
+        return await new Promise<NativePushSendOutcome>((resolve) => {
             let settled = false
             let client: http2.ClientHttp2Session
-            const finish = (outcome: IosPushSendOutcome) => {
+            const finish = (outcome: NativePushSendOutcome) => {
                 if (settled) return
                 settled = true
                 clearTimeout(timer)
@@ -192,7 +205,7 @@ export class ApnsClient implements IosPushTransport {
      * live devices on a blip would be the same bug FCM's handler guards
      * against.
      */
-    private classifyResponse(status: number, body: string): IosPushSendOutcome {
+    private classifyResponse(status: number, body: string): NativePushSendOutcome {
         if (status >= 200 && status < 300) {
             return 'sent'
         }

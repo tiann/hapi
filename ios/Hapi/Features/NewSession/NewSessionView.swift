@@ -42,6 +42,20 @@ struct NewSessionView: View {
             .onChange(of: session.machineStore.listRevision) {
                 model.machinesChanged()
             }
+            // Directory-scoped catalogs wait for the typed path to exist.
+            .onChange(of: model.agentModelsRequest) {
+                model.refreshAgentModelsIfNeeded()
+            }
+        }
+        .sheet(isPresented: directoryBrowserPresented) {
+            RemoteDirectoryBrowserView(
+                model: model.directoryBrowser,
+                onSelect: model.selectBrowsedDirectory
+            )
+            .macSheetSizing()
+        }
+        .onDisappear {
+            model.stopDirectoryWork()
         }
     }
 
@@ -56,6 +70,9 @@ struct NewSessionView: View {
                     .foregroundStyle(.secondary)
             } else {
                 Picker("Machine", selection: machineBinding) {
+                    if model.machineUnavailable, let machineId = model.form.machineId {
+                        Text("Selected machine is offline").tag(machineId)
+                    }
                     ForEach(model.machines) { machine in
                         Text(machine.label).tag(machine.id)
                     }
@@ -65,6 +82,11 @@ struct NewSessionView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+            }
+            if model.machineUnavailable {
+                Text(NewSessionModel.msgMachineOffline)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
             }
             if let error = model.runnerSpawnError {
                 Text("Runner last spawn error: \(error)")
@@ -90,13 +112,26 @@ struct NewSessionView: View {
 
     private var directorySection: some View {
         Section {
-            TextField(
-                "/path/to/project",
-                text: Binding(get: { model.form.directory }, set: { model.setDirectory($0) })
-            )
-            .autocorrectionDisabled()
-            .textInputAutocapitalization(.never)
-            .font(.system(.callout, design: .monospaced))
+            HStack(spacing: 8) {
+                TextField(
+                    "/path/to/project",
+                    text: Binding(get: { model.form.directory }, set: { model.setDirectory($0) })
+                )
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .font(.system(.callout, design: .monospaced))
+
+                Button {
+                    model.openDirectoryBrowser()
+                } label: {
+                    Image(systemName: "folder.badge.plus")
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Browse")
+                .disabled(model.machineUnavailable || model.form.machineId == nil)
+            }
+
+            directoryLookupStatus
 
             // Server-side autocomplete (list-directory on the parent path).
             ForEach(model.suggestions, id: \.self) { suggestion in
@@ -130,12 +165,61 @@ struct NewSessionView: View {
         } header: {
             Text("Directory")
         } footer: {
-            if let status = model.directoryStatus {
-                Text(status.message)
-                    .foregroundStyle(status.isError ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+            if model.directoryInput.isCheckingExistence {
+                Text("Checking directory…")
+            } else if let status = model.directoryStatus {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(LocalizedNoticeMapper.map(status.message))
+                        .foregroundStyle(status.isError ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+                    if model.directoryInput.existenceError != nil {
+                        Button("Retry") { model.directoryInput.retry() }
+                    }
+                }
             }
         }
         .disabled(model.isSpawning)
+    }
+
+    @ViewBuilder
+    private var directoryLookupStatus: some View {
+        switch model.directoryInput.lookupState {
+        case .idle:
+            EmptyView()
+        case .loading:
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Searching directories…").foregroundStyle(.secondary)
+            }
+            .font(.footnote)
+        case .loaded:
+            if model.suggestions.isEmpty {
+                Text("No matching directories")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        case .outsideRoots:
+            Text(NewSessionModel.msgDirectoryOutsideWorkspaceRoots)
+                .font(.footnote)
+                .foregroundStyle(.red)
+        case .failed(let error):
+            HStack(alignment: .firstTextBaseline) {
+                Text(LocalizedNoticeMapper.map(error)).foregroundStyle(.red)
+                Spacer()
+                Button("Retry") { model.directoryInput.retry() }
+            }
+            .font(.footnote)
+        }
+    }
+
+    private var directoryBrowserPresented: Binding<Bool> {
+        Binding(
+            get: { model.directoryBrowser.isPresented },
+            set: { presented in
+                if !presented {
+                    model.directoryBrowser.close()
+                }
+            }
+        )
     }
 
     // MARK: - Session type
@@ -204,8 +288,32 @@ struct NewSessionView: View {
                     }
                 }
             }
+            .disabled(
+                model.isSpawning
+                    || model.agentAvailabilityLoading
+                    || model.agentAvailabilityError != nil
+            )
+            if model.agentAvailabilityLoading {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Checking installed Agents…")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if let error = model.agentAvailabilityError {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(error)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                    Spacer()
+                    Button("Retry") {
+                        model.retryAgentAvailability()
+                    }
+                    .font(.footnote)
+                }
+            }
         }
-        .disabled(model.isSpawning)
     }
 
     private var agentBinding: Binding<String> {
@@ -239,7 +347,7 @@ struct NewSessionView: View {
                             .foregroundStyle(.red)
                         Spacer()
                         Button("Retry") {
-                            model.retryCodexModels()
+                            model.retryModels()
                         }
                         .font(.footnote)
                     }

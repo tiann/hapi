@@ -49,6 +49,7 @@ func parseMessageAsEvent(_ msg: NormalizedMessage) -> AgentEvent? {
 /// title-changed title.
 public func dedupeAgentEvents(_ blocks: [ChatBlock]) -> [ChatBlock] {
     var result: [ChatBlock] = []
+    var compactions: [String: Int] = [:]
     var prevEventKey: String?
     var prevTitleChangedTo: String?
 
@@ -61,6 +62,27 @@ public func dedupeAgentEvents(_ blocks: [ChatBlock]) -> [ChatBlock] {
         }
 
         let event = eventBlock.event
+        if event.type == "compact-summary", let id = event["compactionId"]?.stringValue, !id.isEmpty {
+            if let index = compactions[id] {
+                if case .agentEvent(var previous) = result[index] {
+                    var merged = previous.event.object
+                    if let summary = event["summary"]?.stringValue, !summary.jsTrimmed.isEmpty {
+                        merged["summary"] = .string(summary)
+                    }
+                    for field in ["tokensBefore", "tokensAfter", "estimatedTokensAfter"] {
+                        if let value = asNumber(event[field]), value.isFinite, value >= 0,
+                           value <= 9_007_199_254_740_991, value.rounded(.towardZero) == value {
+                            merged[field] = .number(value)
+                        }
+                    }
+                    previous.event = AgentEvent(object: merged)
+                    result[index] = .agentEvent(previous)
+                }
+                continue
+            }
+            compactions[id] = result.count
+        }
+
         if event.type == "title-changed", let title = event["title"]?.stringValue {
             let trimmed = title.jsTrimmed
             let key = "title-changed:\(trimmed)"

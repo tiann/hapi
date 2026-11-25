@@ -24,20 +24,19 @@ const registerSchema = z.object({
     platform: z.enum(['phone', 'wear', 'ios']),
     deviceId: z.string().min(1).max(128),
     /**
-     * iOS only (PUSH SPEC v1): base64 of 32 device-generated random bytes,
-     * the E2E envelope key. Required when platform is "ios"; ignored for
-     * phone/wear.
+     * Base64 of 32 device-generated random bytes. Required for iOS;
+     * optional for phone (old direct-FCM clients), ignored for Wear.
      */
     pushKey: z.string().optional()
 }).superRefine((data, ctx) => {
-    if (data.platform !== 'ios') {
+    if (data.platform === 'wear' || (data.platform === 'phone' && data.pushKey === undefined)) {
         return
     }
     if (!data.pushKey || decodePushKey(data.pushKey) === null) {
         ctx.addIssue({
             code: 'custom',
             path: ['pushKey'],
-            message: 'platform "ios" requires pushKey: base64 of exactly 32 bytes'
+            message: 'pushKey must be base64 of exactly 32 bytes (required for ios)'
         })
     }
 })
@@ -58,7 +57,7 @@ export function createDevicesRoutes(store: Store): Hono<WebAppEnv> {
 
         const namespace = c.get('namespace')
         const { token, platform, deviceId, pushKey } = parsed.data
-        if (platform === 'ios') {
+        if (platform !== 'wear' && pushKey !== undefined) {
             // Store the canonical re-encoding so the send path always
             // decodes cleanly regardless of the client's padding style.
             const decoded = decodePushKey(pushKey ?? '')!

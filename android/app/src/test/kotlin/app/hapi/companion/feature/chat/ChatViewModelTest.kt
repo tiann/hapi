@@ -7,6 +7,8 @@ import app.hapi.data.sse.SseEngine
 import app.hapi.data.sse.SseRawEvent
 import app.hapi.data.sse.SseTransport
 import app.hapi.data.sse.TransportEvent
+import app.hapi.data.store.ChatHistoryPagingState
+import app.hapi.protocol.window.MessageViewMode
 import app.hapi.data.store.LastSeenStore
 import app.hapi.data.store.MachineListStore
 import app.hapi.data.store.MessageWindowStores
@@ -18,6 +20,7 @@ import app.hapi.protocol.wire.ApprovePermissionRequest
 import app.hapi.protocol.wire.CancelMessageResponse
 import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.DecryptedMessage
+import app.hapi.protocol.wire.MessageContextResponse
 import app.hapi.protocol.wire.HapiJson
 import app.hapi.protocol.wire.ResumeSessionResponse
 import app.hapi.protocol.wire.RetryIndeterminateMessageResponse
@@ -32,10 +35,23 @@ import app.hapi.protocol.wire.SessionSummary
 import app.hapi.protocol.wire.SessionSummaryMetadata
 import app.hapi.protocol.wire.SyncEvent
 import java.io.File
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
@@ -48,6 +64,8 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
@@ -121,13 +139,25 @@ private class FakeMachineStore : MachineListStore {
 }
 
 /** Scripted [ChatSessionApi]: `latest`/`after` serve [tailResponses] in order, `before` serves [beforePage]. */
-private class FakeMessagesApi : ChatSessionApi {
+private open class FakeMessagesApi : ChatSessionApi {
     val queries = MutableStateFlow<List<MessagesQuery>>(emptyList())
     val tailResponses = ArrayDeque<MessagesResponse>()
     var beforePage: MessagesResponse? = null
+    var tailFailure = false
+    var tailGate: CompletableDeferred<Unit>? = null
+    var beforeGate: CompletableDeferred<Unit>? = null
 
     override suspend fun getMessages(sessionId: String, query: MessagesQuery): MessagesResponse {
         queries.value = queries.value + query
+        if (query is MessagesQuery.Before) {
+            val response = beforePage ?: emptyLatest(direction = "before")
+            beforeGate?.await()
+            return response
+        }
+        if (query !is MessagesQuery.Before) {
+            tailGate?.await()
+            if (tailFailure) error("offline")
+        }
         return when (query) {
             is MessagesQuery.Before -> beforePage ?: emptyLatest(direction = "before")
             // A drained script answers per query direction: an "after" query
@@ -141,6 +171,8 @@ private class FakeMessagesApi : ChatSessionApi {
     override suspend fun getQueuedState(sessionId: String, localIds: List<String>): QueuedStateResponse =
         QueuedStateResponse(queuedLocalIds = emptyList(), invokedLocalMessages = emptyList())
 
+    override suspend fun getMessageContext(sessionId: String, messageId: String): MessageContextResponse? = null
+
     // Interaction endpoints are exercised by ChatViewModelInteractionTest.
     override suspend fun sendMessage(sessionId: String, message: SendMessageRequest) {}
     override suspend fun cancelMessage(sessionId: String, messageId: String): CancelMessageResponse =
@@ -151,6 +183,14 @@ private class FakeMessagesApi : ChatSessionApi {
     override suspend fun steerMessage(sessionId: String, messageId: String): SteerQueuedMessageResponse =
         SteerQueuedMessageResponse(status = "steered", localId = messageId)
     override suspend fun abortSession(sessionId: String) {}
+    override suspend fun clearConversation(sessionId: String): ResumeSessionResponse = error("Unexpected clear")
+    override suspend fun implementCodexPlan(sessionId: String, planId: String) = error("Unexpected plan implementation")
+    override suspend fun getFeatures(): app.hapi.protocol.wire.FeaturesResponse =
+        app.hapi.protocol.wire.FeaturesResponse()
+    override suspend fun getHubSettings(): app.hapi.protocol.wire.HubSettingsResponse =
+        app.hapi.protocol.wire.HubSettingsResponse()
+    override suspend fun setSessionTranslateInput(sessionId: String, enabled: Boolean) {}
+
     override suspend fun resumeSession(sessionId: String, permissionMode: String?): ResumeSessionResponse =
         ResumeSessionResponse(sessionId = sessionId)
     override suspend fun approvePermission(sessionId: String, requestId: String, options: ApprovePermissionRequest) {}
@@ -163,6 +203,12 @@ private class FakeMessagesApi : ChatSessionApi {
         CodexModelsResponse(success = false, error = "not scripted")
     override suspend fun getSlashCommands(sessionId: String): app.hapi.protocol.wire.SlashCommandsResponse =
         app.hapi.protocol.wire.SlashCommandsResponse(success = false, error = "not scripted")
+    override suspend fun searchSessionFiles(
+        sessionId: String,
+        query: String,
+        limit: Int?,
+    ): app.hapi.protocol.wire.FileSearchResponse =
+        app.hapi.protocol.wire.FileSearchResponse(success = false, error = "not scripted")
     override suspend fun uploadFile(
         sessionId: String,
         filename: String,
@@ -238,7 +284,8 @@ private fun detailSession(): Session = Session(
 
 /** Transport that hands each connection a handshake verdict from [verdicts] (last repeats). */
 private class ScriptedTransport(private val verdicts: List<String>) : SseTransport {
-    private var connects = 0
+    var connects = 0
+        private set
 
     override fun open(url: String, lastEventId: String?) = flow<TransportEvent> {
         val verdict = verdicts.getOrElse(connects) { verdicts.last() }
@@ -273,8 +320,10 @@ private class Harness(
     testScope: TestScope,
     transport: SseTransport,
     val api: FakeMessagesApi = FakeMessagesApi(),
+    val scope: CoroutineScope = testScope.backgroundScope,
+    uiDispatcher: CoroutineDispatcher = StandardTestDispatcher(testScope.testScheduler),
+    pipelineDispatcher: CoroutineDispatcher = StandardTestDispatcher(testScope.testScheduler),
 ) {
-    val scope: CoroutineScope = testScope.backgroundScope
     val sessionStore = FakeSessionStore().apply { detailToLoad = detailSession() }
     val lastSeenStore = LastSeenStore(scope)
     val messageWindows = MessageWindowStores(api = api, scope = scope)
@@ -294,13 +343,270 @@ private class Harness(
         sseEngine = engine,
         syncTargets = StoreSyncTargets(sessionStore, FakeMachineStore(), scope, messageWindows),
         scope = scope,
-        pipelineDispatcher = StandardTestDispatcher(testScope.testScheduler),
+        pipelineDispatcher = pipelineDispatcher,
+        uiDispatcher = uiDispatcher,
     )
 }
 
 // ------------------------------------------------------------------ tests --
 
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class ChatViewModelTest {
+    @Test
+    fun `inspection cancels hidden history demand and keeps one session subscription`() = runTest {
+        val transport = ScriptedTransport(listOf("ok"))
+        val gate = CompletableDeferred<Unit>()
+        // Model an HTTP response already crossing the cancellation boundary.
+        val api = object : FakeMessagesApi() {
+            override suspend fun getMessages(sessionId: String, query: MessagesQuery): MessagesResponse =
+                if (query is MessagesQuery.Before) withContext(kotlinx.coroutines.NonCancellable) {
+                    super.getMessages(sessionId, query)
+                } else super.getMessages(sessionId, query)
+        }
+        val h = Harness(this, transport, api)
+        api.tailResponses += MessagesResponse(
+            listOf(agentMessage("latest", 10, 10_000, "latest")),
+            page("latest", true, nextBeforeAt = 10_000, nextBeforeSeq = 10),
+        )
+        api.beforePage = MessagesResponse(
+            listOf(agentMessage("older", 9, 9_000, "older")),
+            page("before", true, nextBeforeAt = 9_000, nextBeforeSeq = 9),
+        )
+        api.beforeGate = gate
+        h.viewModel.start()
+        h.viewModel.uiState.first { it.blocks.isNotEmpty() }
+        runCurrent()
+        h.viewModel.readingViewportChanged(false, true)
+        runCurrent()
+        assertEquals(1, api.queries.value.filterIsInstance<MessagesQuery.Before>().size)
+        h.viewModel.beginInspection()
+        // Layout callbacks from the exiting destination must be ignored.
+        h.viewModel.readingViewportChanged(true, true)
+        gate.complete(Unit)
+        runCurrent()
+        val store = h.messageWindows.open(SESSION_ID)
+        assertEquals(MessageViewMode.History, store.state.value.viewMode)
+        assertEquals(listOf("latest"), store.state.value.messages.map { it.id })
+        assertEquals(1, transport.connects)
+        assertEquals(1, api.queries.value.filterIsInstance<MessagesQuery.Before>().size)
+        h.viewModel.setTranscriptVisible(true)
+        h.viewModel.start() // Host re-entry / rotation is idempotent.
+        runCurrent()
+        assertEquals(1, api.queries.value.filterIsInstance<MessagesQuery.Before>().size)
+        h.viewModel.readingViewportChanged(false, true)
+        h.viewModel.uiState.first { it.historyVersion == 1L }
+        assertEquals(2, api.queries.value.filterIsInstance<MessagesQuery.Before>().size)
+        assertEquals(1, transport.connects)
+        h.viewModel.stop()
+    }
+
+    @Test
+    fun `Default workers cannot mutate paging state outside the UI dispatcher`() = runTest {
+        val workers = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val ui = Executors.newSingleThreadExecutor { Thread(it, "hapi-history-ui") }.asCoroutineDispatcher()
+        try {
+            // Real worker threads and a separate serial UI executor, not a
+            // shared single-threaded TestDispatcher hiding producer/UI races.
+            withContext(Dispatchers.Default) {
+                withTimeout(10_000) {
+                    val inFlight = AtomicInteger()
+                    val peak = AtomicInteger()
+                    val beforeCount = AtomicInteger()
+                    val uiThread = withContext(ui) { Thread.currentThread() }
+                    val requestThreads = CopyOnWriteArrayList<Thread>()
+                    val api = object : FakeMessagesApi() {
+                        override suspend fun getMessages(sessionId: String, query: MessagesQuery): MessagesResponse {
+                            requestThreads += Thread.currentThread()
+                            if (query is MessagesQuery.Before) {
+                                beforeCount.incrementAndGet()
+                                peak.accumulateAndGet(inFlight.incrementAndGet(), ::maxOf)
+                                try {
+                                    delay(1)
+                                    val seq = query.beforeSeq - 1
+                                    return MessagesResponse(
+                                        listOf(agentMessage("row-$seq", seq, seq * 1000, "Row $seq")),
+                                        page("before", seq > 1, nextBeforeAt = seq * 1000, nextBeforeSeq = seq),
+                                    )
+                                } finally {
+                                    inFlight.decrementAndGet()
+                                }
+                            }
+                            return if (query is MessagesQuery.Latest) MessagesResponse(
+                                listOf(agentMessage("row-21", 21, 21_000, "Row 21")),
+                                page("latest", true, nextBeforeAt = 21_000, nextBeforeSeq = 21),
+                            ) else emptyLatest(direction = "after")
+                        }
+                    }
+                    val h = Harness(this@runTest, ScriptedTransport(listOf("ok")), api,
+                        scope = workers, uiDispatcher = ui, pipelineDispatcher = Dispatchers.Default)
+                    val transitions = CopyOnWriteArrayList<Pair<ChatHistoryPagingState.Phase, Thread>>()
+                    try {
+                        withContext(ui) {
+                            // Unconfined observation records the writer's
+                            // thread rather than hopping to a collector thread.
+                            workers.launch(Dispatchers.Unconfined) {
+                                h.viewModel.historyPaging.collect {
+                                    transitions += it.phase to Thread.currentThread()
+                                }
+                            }
+                            h.viewModel.start()
+                        }
+                        h.viewModel.uiState.first { it.blocks.isNotEmpty() && !it.isSyncingTail }
+                        val store = h.messageWindows.open(SESSION_ID)
+                        store.syncTail(ensureAfterCurrent = true)
+                        // Acknowledge the committed version immediately. This
+                        // can beat fetchOlder's completion back to the UI queue.
+                        workers.launch(Dispatchers.Unconfined) {
+                            store.state.map { it.historyVersion }.distinctUntilChanged().collect { version ->
+                                if (version > 0) withContext(ui) { h.viewModel.historyLaidOut(version, true) }
+                            }
+                        }
+                        withContext(ui) { h.viewModel.readingViewportChanged(false, true) }
+                        store.state.first { it.historyVersion == 20L }
+                        h.viewModel.historyPaging.first {
+                            it.phase == ChatHistoryPagingState.Phase.Idle && it.generation >= 20
+                        }
+                        assertEquals(20, beforeCount.get())
+                        assertEquals(1, peak.get())
+                        assertTrue(transitions.any { it.first == ChatHistoryPagingState.Phase.Loading })
+                        assertTrue(transitions.all { it.second == uiThread }, transitions.toString())
+                        assertTrue(requestThreads.all { it != uiThread }, "Message work must stay off the UI thread")
+                    } finally {
+                        withContext(ui) { h.viewModel.stop() }
+                    }
+                }
+            }
+        } finally {
+            workers.cancel()
+            workers.coroutineContext[Job]?.join()
+            ui.close()
+        }
+    }
+
+    @Test
+    fun `invalidated older response restarts pending demand after tail sync finished`() = runTest {
+        val h = Harness(this, ScriptedTransport(listOf("ok")))
+        h.api.tailResponses += MessagesResponse(
+            listOf(agentMessage("new", 10, 10_000, "new")),
+            page("latest", true, nextBeforeAt = 10_000, nextBeforeSeq = 10),
+        )
+        h.api.beforePage = MessagesResponse(
+            listOf(agentMessage("stale", 9, 9_000, "stale")),
+            page("before", true, nextBeforeAt = 9_000, nextBeforeSeq = 9),
+        )
+        val gate = CompletableDeferred<Unit>()
+        h.api.beforeGate = gate
+        h.viewModel.start()
+        h.viewModel.uiState.first { it.blocks.isNotEmpty() }
+        runCurrent()
+        h.viewModel.readingViewportChanged(followsTail = false, needsOlder = true)
+        runCurrent()
+        assertEquals(1, h.api.queries.value.filterIsInstance<MessagesQuery.Before>().size)
+
+        // Tail sync poisons the older generation, then finishes while the
+        // slower HTTP response still owns the coordinator's olderJob.
+        val store = h.messageWindows.open(SESSION_ID)
+        store.syncTail(ensureAfterCurrent = true)
+        runCurrent()
+        assertEquals(false, store.state.value.isSyncingTail)
+        assertEquals(ChatHistoryPagingState.Phase.Loading, h.viewModel.historyPaging.value.phase)
+        h.api.beforePage = MessagesResponse(
+            listOf(agentMessage("fresh", 8, 8_000, "fresh")),
+            page("before", false, nextBeforeAt = 8_000, nextBeforeSeq = 8),
+        )
+        h.api.beforeGate = null
+        gate.complete(Unit)
+        runCurrent()
+
+        // No new gesture, layout callback, or store event to unstick the pump.
+        assertEquals(2, h.api.queries.value.filterIsInstance<MessagesQuery.Before>().size)
+        assertEquals(listOf("fresh", "new"), store.state.value.messages.map { it.id })
+        assertTrue(h.viewModel.historyPaging.value.phase is ChatHistoryPagingState.Phase.AwaitingLayout)
+        h.viewModel.stop()
+    }
+
+    @Test
+    fun `viewport demand waits for layout and resumes without another gesture`() = runTest {
+        val h = Harness(this, ScriptedTransport(listOf("ok")))
+        h.api.tailResponses += MessagesResponse(
+            listOf(agentMessage("new", 10, 10_000, "new")),
+            page("latest", true, nextBeforeAt = 10_000, nextBeforeSeq = 10),
+        )
+        h.api.beforePage = MessagesResponse(
+            listOf(agentMessage("older", 9, 9_000, "older")),
+            page("before", true, nextBeforeAt = 9_000, nextBeforeSeq = 9),
+        )
+        h.viewModel.start()
+        h.viewModel.uiState.first { it.blocks.isNotEmpty() }
+        runCurrent()
+        h.viewModel.readingViewportChanged(followsTail = false, needsOlder = true)
+        val first = h.viewModel.uiState.first { it.historyVersion == 1L }
+        runCurrent()
+        assertEquals(1, h.api.queries.value.filterIsInstance<MessagesQuery.Before>().size)
+        assertTrue(h.viewModel.historyPaging.value.phase is ChatHistoryPagingState.Phase.AwaitingLayout)
+        h.api.beforePage = MessagesResponse(
+            listOf(agentMessage("oldest", 8, 8_000, "oldest")),
+            page("before", false, nextBeforeAt = 8_000, nextBeforeSeq = 8),
+        )
+        h.viewModel.historyLaidOut(first.historyVersion, madeProgress = true)
+        h.viewModel.uiState.first { it.historyVersion == 2L }
+        assertEquals(2, h.api.queries.value.filterIsInstance<MessagesQuery.Before>().size)
+        h.viewModel.stop()
+    }
+
+    @Test
+    fun `return from an overlay keeps history and failed latest sync remains retryable`() = runTest {
+        val h = Harness(this, ScriptedTransport(listOf("ok")))
+        h.api.tailResponses += MessagesResponse(
+            listOf(agentMessage("old", 1, 1000, "old")),
+            page("latest", false, nextBeforeAt = 1000, nextBeforeSeq = 1),
+        )
+        h.viewModel.start()
+        h.viewModel.uiState.first { it.blocks.isNotEmpty() }
+        runCurrent()
+        h.viewModel.readingViewportChanged(false, false)
+        runCurrent()
+        val store = h.messageWindows.open(SESSION_ID)
+        val retained = store.state.value.messages
+        val queries = h.api.queries.value.size
+        h.viewModel.stop()
+        runCurrent()
+        h.viewModel.start()
+        runCurrent()
+        assertEquals(MessageViewMode.History, store.state.value.viewMode)
+        assertEquals(retained, store.state.value.messages)
+        assertEquals(queries, h.api.queries.value.size)
+
+        // Seed an explicitly truncated window. Failure must not claim latest.
+        val seed = h.messageWindows.open("seed")
+        seed.seedFrom(store)
+        store.seedFrom(seed)
+        store.setViewMode(MessageViewMode.History)
+        h.api.tailFailure = true
+        h.viewModel.jumpToLatest()
+        runCurrent()
+        assertEquals(false, h.viewModel.jumpingLatest.value)
+        assertEquals(0L, h.viewModel.jumpToken.value)
+        assertTrue(store.state.value.requiresLatestReset)
+        assertEquals(MessageViewMode.History, store.state.value.viewMode)
+
+        // Cancelling a pending jump cannot leave a permanent spinner or
+        // complete a newer screen's navigation when its HTTP response returns.
+        h.api.tailFailure = false
+        val gate = CompletableDeferred<Unit>()
+        h.api.tailGate = gate
+        h.viewModel.jumpToLatest()
+        runCurrent()
+        assertTrue(h.viewModel.jumpingLatest.value)
+        h.viewModel.stop()
+        h.viewModel.start()
+        runCurrent()
+        assertEquals(false, h.viewModel.jumpingLatest.value)
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(0L, h.viewModel.jumpToken.value)
+        h.viewModel.stop()
+    }
 
     @Test
     fun `blocks flow from the window store through the pipeline`() = runTest {
@@ -383,15 +689,27 @@ class ChatViewModelTest {
     }
 
     @Test
-    fun `marks the session seen on entry and on updates`() = runTest {
+    fun `reads only rendered tail and keeps newer summary output unread`() = runTest {
         val harness = Harness(this, ScriptedTransport(listOf("ok")))
-        harness.sessionStore.summaries.value = listOf(summary(updatedAt = 500))
-
+        harness.sessionStore.summaries.value = listOf(summary(updatedAt = 500).copy(contentRevision = 4))
+        harness.api.tailResponses.add(MessagesResponse(
+            messages = listOf(agentMessage("a", 1, 100, "answer")),
+            page = page("latest", hasMore = false).copy(readThroughRevision = 3),
+        ))
         harness.viewModel.start()
-        harness.lastSeenStore.state.first { it.lastSeen[SESSION_ID] == 500L }
-
-        harness.sessionStore.summaries.value = listOf(summary(updatedAt = 900))
-        harness.lastSeenStore.state.first { it.lastSeen[SESSION_ID] == 900L }
+        val rendered = harness.viewModel.uiState.first { !it.isSyncingTail && it.readThroughRevision == 3L }
+        assertEquals(0, harness.lastSeenStore.lastSeenAt(SESSION_ID))
+        harness.viewModel.readingViewportChanged(followsTail = false, needsOlder = false)
+        harness.viewModel.markDisplayed(rendered.readThroughRevision, rendered.renderedReadState)
+        assertEquals(0, harness.lastSeenStore.lastSeenAt(SESSION_ID))
+        harness.viewModel.readingViewportChanged(followsTail = true, needsOlder = false)
+        harness.viewModel.setTranscriptVisible(false)
+        harness.viewModel.markDisplayed(rendered.readThroughRevision, rendered.renderedReadState)
+        assertEquals(0, harness.lastSeenStore.lastSeenAt(SESSION_ID))
+        harness.viewModel.setTranscriptVisible(true)
+        harness.viewModel.markDisplayed(rendered.readThroughRevision, rendered.renderedReadState)
+        harness.lastSeenStore.state.first { it.lastSeen[SESSION_ID] == 3L }
+        assertTrue(LastSeenStore.isUnread(harness.sessionStore.summaries.value.single(), harness.lastSeenStore.state.value))
         harness.viewModel.stop()
     }
 
@@ -407,6 +725,11 @@ class ChatViewModelTest {
                 blocks.filterIsInstance<ToolCallBlock>().any { it.tool.name == "Bash" }
             },
             "claude-assistant-text.json" to { blocks -> blocks.any { it is AgentTextBlock } },
+            "codex-plan-proposal-completed.json" to { blocks ->
+                blocks.filterIsInstance<ToolCallBlock>().any {
+                    app.hapi.companion.feature.chat.blocks.planProposalMarkdown(it.tool) != null
+                }
+            },
         )
 
         for ((name, expectation) in fixtures) {
@@ -431,6 +754,11 @@ class ChatViewModelTest {
             harness.viewModel.start()
             val state = harness.viewModel.uiState.first { it.blocks.isNotEmpty() }
             assertTrue(expectation(state.blocks), "fixture $name should satisfy its block expectation")
+            for (block in state.blocks.filterIsInstance<ToolCallBlock>()) {
+                app.hapi.companion.feature.chat.blocks.planProposalMarkdown(block.tool)?.let { plan ->
+                    assertTrue(harness.viewModel.markdownCache.cached(plan) != null, "Plans must be prepared before publication")
+                }
+            }
             harness.viewModel.stop()
         }
     }

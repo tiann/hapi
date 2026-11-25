@@ -1,12 +1,15 @@
-import type { ReactNode } from 'react'
+import type { ReactNode, Ref } from 'react'
 
 type IconProps = {
     className?: string
+    /** Lets a caller hand the SVG to a direct-DOM animation (e.g. the low-rate ticker). */
+    ref?: Ref<SVGSVGElement>
 }
 
 function createIcon(paths: ReactNode, props: IconProps, strokeWidth = 1.5) {
     return (
         <svg
+            ref={props.ref}
             className={props.className ?? 'h-4 w-4'}
             viewBox="0 0 24 24"
             fill="none"
@@ -23,6 +26,38 @@ function createIcon(paths: ReactNode, props: IconProps, strokeWidth = 1.5) {
 export function CloseIcon(props: IconProps) {
     return createIcon(
         <path d="M6 18 18 6M6 6l12 12" />,
+        props,
+        2
+    )
+}
+
+export function ArrowLeftIcon(props: IconProps) {
+    return createIcon(
+        <path d="M19 12H5m7-7-7 7 7 7" />,
+        props,
+        2
+    )
+}
+
+export function ArrowRightIcon(props: IconProps) {
+    return createIcon(
+        <path d="M5 12h14m-7-7 7 7-7 7" />,
+        props,
+        2
+    )
+}
+
+export function MinusIcon(props: IconProps) {
+    return createIcon(
+        <path d="M5 12h14" />,
+        props,
+        2
+    )
+}
+
+export function PlusIcon(props: IconProps) {
+    return createIcon(
+        <path d="M12 5v14M5 12h14" />,
         props,
         2
     )
@@ -61,12 +96,53 @@ export function CheckIcon(props: IconProps) {
     )
 }
 
+export function MarkAllReadIcon(props: IconProps) {
+    return createIcon(
+        <>
+            <path d="m3 5 2 2 4-4" />
+            <path d="M13 5h8" />
+            <path d="m3 12 2 2 4-4" />
+            <path d="M13 12h8" />
+            <path d="m3 19 2 2 4-4" />
+            <path d="M13 19h8" />
+        </>,
+        props,
+        2
+    )
+}
+
 export function InfoIcon(props: IconProps) {
     return createIcon(
         <>
             <circle cx="12" cy="12" r="9" />
             <path d="M12 11v5" />
             <path d="M12 8h.01" />
+        </>,
+        props,
+        2
+    )
+}
+
+export function ArchiveIcon(props: IconProps) {
+    return createIcon(
+        <>
+            <rect width="20" height="5" x="2" y="3" rx="1" />
+            <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" />
+            <path d="M10 12h4" />
+        </>,
+        props,
+        2
+    )
+}
+
+export function PinOffIcon(props: IconProps) {
+    return createIcon(
+        <>
+            <path d="M12 17v5" />
+            <path d="M15 9.34V4h2V2H7.66" />
+            <path d="M9 9v4l-2 2h8" />
+            <path d="M5 17h12" />
+            <path d="m2 2 20 20" />
         </>,
         props,
         2
@@ -98,12 +174,79 @@ export function RewindIcon(props: IconProps) {
     )
 }
 
+export function RefreshIcon(props: IconProps) {
+    return createIcon(
+        <>
+            <path d="M21 12a9 9 0 1 1-3-6.7" />
+            <polyline points="21 3 21 9 15 9" />
+        </>,
+        props,
+        2
+    )
+}
+
 /** Composer schedule-send clock — circle + hands (matches ComposerButtons). */
 export function ScheduleIcon(props: IconProps) {
     return createIcon(
         <>
             <circle cx="12" cy="12" r="9" />
             <polyline points="12 7 12 12 15.5 14" />
+        </>,
+        props,
+        2
+    )
+}
+
+/**
+ * Power/standby mark — a stopped or archived session's presence badge. Drawn
+ * heavier than the other icons (stroke 3.6 of 24) because it renders at 10px.
+ */
+export function StoppedBadgeIcon(props: IconProps) {
+    return createIcon(
+        <>
+            <path d="M7.2 6.2a8.6 8.6 0 1 0 9.6 0" />
+            <path d="M12 2v8.4" />
+        </>,
+        props,
+        3.6
+    )
+}
+
+/** Raised hand — a session waiting for permission approval. */
+export function HandIcon(props: IconProps) {
+    return createIcon(
+        <>
+            <path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2" />
+            <path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2" />
+            <path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8" />
+            <path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15" />
+        </>,
+        props,
+        2
+    )
+}
+
+/** Speech bubble — a session waiting for the user's reply. */
+export function MessageIcon(props: IconProps) {
+    return createIcon(
+        <path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z" />,
+        props,
+        2
+    )
+}
+
+/** Spinner spokes; callers add the spin animation and color. */
+export function LoaderIcon(props: IconProps) {
+    return createIcon(
+        <>
+            <line x1="12" y1="2" x2="12" y2="6" />
+            <line x1="12" y1="18" x2="12" y2="22" />
+            <line x1="4.93" y1="4.93" x2="7.76" y2="7.76" />
+            <line x1="16.24" y1="16.24" x2="19.07" y2="19.07" />
+            <line x1="2" y1="12" x2="6" y2="12" />
+            <line x1="18" y1="12" x2="22" y2="12" />
+            <line x1="4.93" y1="19.07" x2="7.76" y2="16.24" />
+            <line x1="16.24" y1="7.76" x2="19.07" y2="4.93" />
         </>,
         props,
         2

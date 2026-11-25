@@ -15,6 +15,7 @@ import { RPC_METHODS } from './rpcMethods'
 import { getBuiltinAgentConfigDescriptors } from './agentConfig'
 
 export const RUNNER_CAPABILITIES = {
+    codexSharedRuntime: true as const,
     piExistingSessionResume: true as const,
     agentConfigs: getBuiltinAgentConfigDescriptors()
 }
@@ -28,8 +29,16 @@ export type RunnerCapabilities = typeof RUNNER_CAPABILITIES
  * instead of a silent fail-closed product bug.
  */
 export const MACHINE_CAPABILITIES = {
+    ForkArchivedCodex: 'fork-archived-codex',
+    AgentAvailability: RPC_METHODS.AgentAvailability,
+    AgentQuotas: RPC_METHODS.AgentQuotas,
     CursorChatStoreStatus: RPC_METHODS.CursorChatStoreStatus,
     StopRunner: RPC_METHODS.StopRunner,
+    UsageQuery: RPC_METHODS.UsageQuery,
+    /** Read-only file/Git/search RPCs available on the long-lived runner. */
+    WorkspaceFileAccess: 'workspace-file-access',
+    /** Normalized local-session import transcripts via ListLocalSessions. */
+    LocalSessionImport: 'local-session-import',
 } as const
 
 export type MachineCapability =
@@ -37,8 +46,14 @@ export type MachineCapability =
 
 /** Capabilities this CLI generation registers on the machine socket. */
 export const CURRENT_MACHINE_CAPABILITIES: readonly MachineCapability[] = [
+    MACHINE_CAPABILITIES.ForkArchivedCodex,
+    MACHINE_CAPABILITIES.AgentAvailability,
+    MACHINE_CAPABILITIES.AgentQuotas,
     MACHINE_CAPABILITIES.CursorChatStoreStatus,
     MACHINE_CAPABILITIES.StopRunner,
+    MACHINE_CAPABILITIES.UsageQuery,
+    MACHINE_CAPABILITIES.WorkspaceFileAccess,
+    MACHINE_CAPABILITIES.LocalSessionImport,
 ]
 
 /**
@@ -47,6 +62,7 @@ export const CURRENT_MACHINE_CAPABILITIES: readonly MachineCapability[] = [
  * stop-runner ensure when a newer binary is already on disk).
  */
 export const REQUIRED_MACHINE_CAPABILITIES: readonly MachineCapability[] = [
+    MACHINE_CAPABILITIES.AgentAvailability,
     MACHINE_CAPABILITIES.CursorChatStoreStatus,
 ]
 

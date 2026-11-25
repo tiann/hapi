@@ -1,8 +1,10 @@
 import { EnhancedMode, PermissionMode } from "./loop";
-import { query, type QueryOptions as Options, type SDKMessage, type SDKSystemMessage, AbortError, SDKUserMessage } from '@/claude/sdk'
+import { query, type QueryOptions as Options, type SDKAssistantMessage, type SDKMessage, type SDKResultMessage, type SDKSystemMessage, AbortError, SDKUserMessage } from '@/claude/sdk'
 import { claudeCheckSession } from "./utils/claudeCheckSession";
 import { join } from 'node:path';
-import { parseSpecialCommand } from "@/parsers/specialCommands";
+import { randomUUID } from 'node:crypto';
+import { statSync } from 'node:fs';
+import { getClaudeNativeSlashCommand, parseSpecialCommand } from "@/parsers/specialCommands";
 import { logger } from "@/lib";
 import { PushableAsyncIterable } from "@/utils/PushableAsyncIterable";
 import { getProjectPath } from "./utils/path";
@@ -12,6 +14,82 @@ import { PermissionResult } from "./sdk/types";
 import { getHapiBlobsDir } from "@/constants/uploadPaths";
 import { getDefaultClaudeCodePath } from "./sdk/utils";
 import { filterCatalogAffectingClaudeArgs } from "./sdk/metadataExtractor";
+import { buildCompactCompletionEvent } from "./utils/compactCompletion";
+import { findLatestCompactSummary } from "./utils/compactSummaryLookup";
+
+export interface CompactSummaryPayload {
+    summary: string;
+    tokensBefore?: number;
+    tokensAfter?: number;
+}
+
+interface CompactCompletion {
+    completionEvent?: string;
+    compactSummary?: CompactSummaryPayload;
+    contextTokens?: number;
+}
+
+/**
+ * Injects plain user messages into the running turn. Claude picks a message up
+ * at its next tool boundary, or opens a follow-up turn for it when the current
+ * one ends first.
+ */
+export interface ClaudeSteerTarget {
+    /**
+     * Null when the turn can no longer accept a message. `delivered` resolves
+     * true once Claude echoes the message (it is processing it), false when the
+     * stream closes first. `uuid` is the native transcript entry id assigned to
+     * the injected user message.
+     */
+    steer(message: string): { delivered: Promise<boolean>; uuid: string } | null;
+}
+
+interface ActiveCompact {
+    uuid: string;
+    initial: boolean;
+    baseline: number | null;
+    failure: string | null;
+    sawCompactSignal: boolean;
+    sawCompactingStatus: boolean;
+    tokensBefore?: number;
+    tokensAfter?: number;
+}
+
+interface ActiveClear {
+    uuid: string;
+    previousSessionId: string | null;
+    nativeAlias: boolean;
+    init?: SDKSystemMessage;
+}
+
+function isCommandResult(message: SDKMessage, uuid: string, command: 'compact' | 'clear', legacyMatch: boolean): boolean {
+    return message.type === 'result'
+        && (message.user_message_uuid === uuid || (message.user_message_uuid == null
+            && (message.local_command === command || (message.local_command == null && legacyMatch))));
+}
+
+function getClearResultSessionId(message: SDKMessage, previousSessionId: string | null): string | undefined {
+    const id = message.session_id;
+    return message.subtype === 'success' && message.is_error !== true
+        && typeof id === 'string' && id && id !== previousSessionId ? id : undefined;
+}
+
+function unidentifiedCommandResult(command: 'compact' | 'clear'): string {
+    return command === 'compact'
+        ? '📦 Claude did not identify the /compact result'
+        : 'Claude did not identify the /clear result';
+}
+
+// acceptEdits/bypassPermissions are emulated in canCallTool so they can change
+// mid-session. Launching Claude natively in them skips canCallTool, so a later
+// downgrade (e.g. Yolo -> Default) would never take effect.
+const EFFORT_APPLY_TIMEOUT_MS = 5_000;
+const UNIDENTIFIED_COMMAND_RESULT_TIMEOUT_MS = 30_000;
+const COMPACT_PROGRESS_TIMEOUT_MS = 5 * 60_000;
+
+function nativePermissionMode(mode: PermissionMode): PermissionMode {
+    return mode === 'acceptEdits' || mode === 'bypassPermissions' ? 'default' : mode;
+}
 
 export async function claudeRemote(opts: {
 
@@ -25,21 +103,44 @@ export async function claudeRemote(opts: {
     hookSettingsPath: string,
     signal?: AbortSignal,
     canCallTool: (toolName: string, input: unknown, mode: EnhancedMode, options: { signal: AbortSignal }) => Promise<PermissionResult>,
+    /** Receives mid-turn permission mode changes so Claude's native mode can follow them. */
+    setPermissionModeListener?: (listener: ((mode: PermissionMode) => void) | null) => void,
+    /** Receives a live effort applier; it resolves false when Claude must restart instead. */
+    setEffortApplier?: (applier: ((effort: string | null) => Promise<boolean>) | null) => void,
+    /** Claude refused or fell back from a requested mode; `mode` is the one it actually runs. */
+    onPermissionModeRejected?: (mode: PermissionMode, reason: string) => void,
     /** Session modes used to spawn Claude before the first fork child prompt. */
     bootstrapMode?: EnhancedMode,
 
     // Dynamic parameters
-    nextMessage: () => Promise<{ message: string, mode: EnhancedMode } | null>,
-    onReady: () => void,
+    nextMessage: (correlatesResults?: boolean, signal?: AbortSignal) => Promise<{ message: string, mode: EnhancedMode } | null>,
+    onReady: (completionEvent?: string, compactSummary?: CompactSummaryPayload, compactContextTokens?: number) => void | Promise<void>,
     isAborted: (toolCallId: string) => boolean,
 
     // Callbacks
     onSessionFound: (id: string, extras?: { forkedFrom?: string }) => void,
     onThinkingChange?: (thinking: boolean) => void,
     onMessage: (message: SDKMessage) => void,
+    /** Called with a late result of a timed-out command that is dropped from the transcript. */
+    onDroppedResult?: (message: SDKResultMessage) => void,
+    /** Called once per spawn with whether the process starts fresh, before SDK messages arrive. */
+    onSpawn?: (fresh: boolean) => void,
+    onContextUsage?: (usage: { model?: string, maxTokens?: number }) => void,
+    onAccountIdentity?: (accountIdentity: string | null) => void,
     onFirstResult?: (initialMessage: string) => void,
+    /**
+     * The delivered input finished at the SDK boundary although onReady is
+     * still deferred (compact summary lookup, or a steer follow-up turn).
+     */
+    onResultAccepted?: (keepClearHookPending?: boolean) => void,
+    onInputUndelivered?: () => void,
+    /** The native prompt uuid of a just-submitted user message (queue batches only). */
+    onInputSubmitted?: (nativePromptUuid: string) => void,
     onCompletionEvent?: (message: string) => void,
-    onSessionReset?: () => void
+    getClearHookSessionId?: () => string | undefined,
+    onSessionReset?: (sessionId?: string) => void,
+    /** Open while a plain (non-command) turn runs; null otherwise. */
+    onSteerTargetChange?: (target: ClaudeSteerTarget | null) => void
 }) {
     const debugPrefix = '[claudeRemote][async-debug]';
 
@@ -90,21 +191,177 @@ export async function claudeRemote(opts: {
     }
     const forkedFrom = forkSession ? startFrom : null;
 
+    // Spawn-derived rewind/fork-at-message boundary passes through claudeArgs;
+    // filterCatalogAffectingClaudeArgs strips it from additionalArgs, so it is
+    // parsed here into the first-class SDK option.
+    let resumeSessionAt: string | undefined;
+    if (opts.claudeArgs) {
+        for (let i = 0; i < opts.claudeArgs.length; i++) {
+            if (opts.claudeArgs[i] === '--resume-session-at' && i + 1 < opts.claudeArgs.length) {
+                resumeSessionAt = opts.claudeArgs[++i];
+            }
+        }
+    }
+    if (resumeSessionAt) {
+        logger.debug(`[claudeRemote] --resume-session-at ${resumeSessionAt}`);
+    }
+
     // Mode starts from the persisted session for fork bootstrap; updated when
     // the first child prompt arrives. plan/auto must be present at process start.
     const bootstrapMode: EnhancedMode = opts.bootstrapMode ?? { permissionMode: 'default' };
     let mode: EnhancedMode = bootstrapMode;
     let initial: { message: string; mode: EnhancedMode } | null = null;
     let specialCommand: ReturnType<typeof parseSpecialCommand> = { type: null };
-    // Claude reports the /compact outcome on a `system`/`status` message that
-    // arrives before the `result` message. Hold it here so the completion event
-    // can report what actually happened. Stays null unless a failure is
-    // reported, so an unseen or successful status keeps the success path.
-    let isCompactCommand = false;
-    let compactFailure: string | null = null;
+    // Owns all mutable state from command enqueue through its result. Null
+    // means no manual compact turn can claim stream status or boundaries.
+    const compactState: { active: ActiveCompact | null } = { active: null };
+    const clearState: { active: ActiveClear | null } = { active: null };
+    // The local transcript is keyed by the live session id (updated on init),
+    // not opts.sessionId which can be stale for forked sessions.
+    let currentSessionId = startFrom;
     let awaitingForkInit = forkSession;
+    // A resume-at spawn (fork-at-message child, or a rewind restart) must start
+    // query() immediately: the native truncation materializes once the new
+    // process starts with the resume flags. Like --fork-session, stream-json
+    // input stays open for later turns.
+    let awaitingResumeAtInit = resumeSessionAt !== undefined;
+    if (awaitingResumeAtInit && !startFrom) {
+        throw new Error('Pending resume-at request has no native session to resume');
+    }
 
     const messages = new PushableAsyncIterable<SDKUserMessage>();
+    // Every stdin message carries a uuid that `--replay-user-messages` echoes
+    // back. The echoes are acks only: relaying them would duplicate prompts.
+    const pushedUuids = new Set<string>();
+    const pushUserMessage = (content: string, uuid: string = randomUUID()) => {
+        pushedUuids.add(uuid);
+        messages.push({ type: 'user', uuid, message: { role: 'user', content } });
+        return uuid;
+    };
+    // Steered messages Claude has not echoed yet. A result while any is
+    // pending is not the end of the turn: Claude runs a follow-up turn for it.
+    const pendingSteers = new Map<string, (delivered: boolean) => void>();
+    let steerTarget: ClaudeSteerTarget | null = null;
+    let responseClosed = false;
+    let inputEnded = false;
+    const setSteerable = (open: boolean) => {
+        if (open === (steerTarget !== null)) return;
+        if (!open) {
+            steerTarget = null;
+            opts.onSteerTargetChange?.(null);
+            return;
+        }
+        const target: ClaudeSteerTarget = {
+            steer: (message) => {
+                if (steerTarget !== target || responseClosed || inputEnded) return null;
+                const uuid = randomUUID();
+                const delivered = new Promise<boolean>((resolve) => pendingSteers.set(uuid, resolve));
+                pushUserMessage(message, uuid);
+                logger.debug(`${debugPrefix} steered message pushed uuid=${uuid} length=${message.length}`);
+                return { delivered, uuid };
+            }
+        };
+        steerTarget = target;
+        opts.onSteerTargetChange?.(target);
+    };
+    // Once no reader drains stdin, close the target and settle every
+    // unacknowledged steer as undelivered.
+    const closeSteering = () => {
+        responseClosed = true;
+        setSteerable(false);
+        for (const resolveSteer of pendingSteers.values()) {
+            resolveSteer(false);
+        }
+        pendingSteers.clear();
+    };
+
+    // Success-only: a failed compaction keeps its failure line, an unknown
+    // session id or any transcript read problem falls back to the plain
+    // completion line. Never propagates errors into the result flow.
+    // Null means the baseline could not be established (unknown session id or
+    // unreadable transcript) — summary promotion is skipped entirely, because
+    // reading from offset 0 could promote a previous compaction's summary row.
+    const getTranscriptBytes = (): number | null => {
+        if (!currentSessionId) return null;
+        try {
+            return statSync(join(getProjectPath(opts.path), `${currentSessionId}.jsonl`)).size;
+        } catch {
+            return null;
+        }
+    };
+    const beginCompactCommand = (uuid: string, initial: boolean) => {
+        logger.debug('[claudeRemote] /compact command detected - will process as normal but with compaction behavior');
+        // Keep baseline capture, state arming, and command enqueue in one event
+        // loop turn so an autonomous result cannot claim the pending compact.
+        compactState.active = {
+            uuid,
+            initial,
+            baseline: getTranscriptBytes(),
+            failure: null,
+            sawCompactSignal: false,
+            sawCompactingStatus: false
+        };
+        if (opts.onCompletionEvent) {
+            opts.onCompletionEvent('📦 Compaction started');
+        }
+    };
+    // Manual /compact keeps two kinds of CLI bookkeeping out of the chat
+    // relay, and both must be scoped by the armed command state so identical
+    // output from other slash commands stays visible:
+    // - the compact_boundary system message: its only web rendering is a
+    //   "Conversation compacted" status line that would duplicate the
+    //   completion output (summary card or token-delta line) right below it.
+    //   Auto-compact boundaries keep relaying as before.
+    // - the command's own stdout echo, which opens with the compact result.
+    //   PostCompact hook output is appended to the same echo (measured:
+    //   `Compacted PostCompact [script]`), so any echo opening with the
+    //   compact result is compact bookkeeping, not just the bare one.
+    const isManualCompactBoundaryMessage = (message: SDKMessage): boolean => {
+        if (compactState.active === null) return false;
+        return message.type === 'system'
+            && message.subtype === 'compact_boundary'
+            && (message as { compact_metadata?: { trigger?: string } }).compact_metadata?.trigger === 'manual';
+    };
+    const isCompactEchoMessage = (message: SDKMessage): boolean => {
+        if (compactState.active === null) return false;
+        if (message.type !== 'user') return false;
+        const content = (message as SDKUserMessage).message?.content;
+        return typeof content === 'string'
+            && /^<local-command-stdout>\s*Compacted\b/.test(content.trim());
+    };
+
+    const lookupCompactSummary = async (
+        failure: string | null,
+        sessionId: string | null,
+        baseline: number | null,
+        tokensBefore: number | undefined,
+        tokensAfter: number | undefined,
+        signal?: AbortSignal
+    ): Promise<CompactSummaryPayload | undefined> => {
+        if (failure !== null || !sessionId || baseline === null) return undefined;
+        try {
+            const transcriptPath = join(getProjectPath(opts.path), `${sessionId}.jsonl`);
+            const summary = await findLatestCompactSummary(transcriptPath, { minBytes: baseline, signal });
+            if (summary === null) return undefined;
+            return { summary, tokensBefore, tokensAfter };
+        } catch (e) {
+            logger.debug('[claudeRemote] compact summary lookup failed', e);
+            return undefined;
+        }
+    };
+
+    // Track thinking state. Declared before applyInitialTurn, which asserts
+    // the busy signal at the dequeue point.
+    let thinking = false;
+    const updateThinking = (newThinking: boolean) => {
+        if (thinking !== newThinking) {
+            thinking = newThinking;
+            logger.debug(`[claudeRemote] Thinking state changed to: ${thinking}`);
+            if (opts.onThinkingChange) {
+                opts.onThinkingChange(thinking);
+            }
+        }
+    };
 
     const applyInitialTurn = async (): Promise<{ message: string; mode: EnhancedMode } | null> => {
         let next: { message: string; mode: EnhancedMode } | null;
@@ -136,24 +393,56 @@ export async function claudeRemote(opts: {
             messages.end();
             return null;
         }
-        if (specialCommand.type === 'compact') {
-            logger.debug('[claudeRemote] /compact command detected - will process as normal but with compaction behavior');
-            isCompactCommand = true;
-            if (opts.onCompletionEvent) {
-                opts.onCompletionEvent('Compaction started');
-            }
-        }
-
         mode = next.mode;
-        messages.push({
-            type: 'user',
-            message: {
-                role: 'user',
-                content: next.message,
-            },
-        });
+        // Push first: an optional call would short-circuit its argument when
+        // no hook is set, and the message must reach the prompt regardless.
+        const submittedUuid = pushUserMessage(next.message);
+        if (specialCommand.type === 'compact') {
+            beginCompactCommand(submittedUuid, true);
+        }
+        // Only a plain prompt becomes a resolvable native history point:
+        // command turns (/compact) write XML the transcript classifier
+        // filters out, so advertising them sends rewind/fork at a boundary
+        // that can never resolve.
+        if (specialCommand.type === null) {
+            opts.onInputSubmitted?.(submittedUuid);
+        }
+        setSteerable(specialCommand.type === null);
+        // A turn is now actually in flight: the dequeue, not the query()
+        // spawn, is what makes the session busy. On a resume-at/fork spawn
+        // this only runs once the unlock delivered a prompt, so the idle
+        // wait before it reports thinking:false.
+        updateThinking(true);
         return next;
     };
+
+    // One shared unlock for spawn-gated first delivery: a --fork-session child
+    // or a --resume-at respawn starts query() before any prompt exists, and the
+    // SDK only emits `init` after the first prompt is sent. The SessionStart
+    // hooks (fork / resume) are the boot signal that the native state
+    // (fork branch or resume-at truncation) materialized, so the first queued
+    // prompt is accepted there instead of deadlocking on an `init` that will
+    // not arrive until the prompt below is sent. Clears BOTH waits so a spawn
+    // carrying both flags consumes the queue exactly once.
+    const unlockInitialDelivery = async (): Promise<boolean> => {
+        if (!awaitingForkInit && !awaitingResumeAtInit) {
+            return true;
+        }
+        awaitingForkInit = false;
+        awaitingResumeAtInit = false;
+        const first = await applyInitialTurn();
+        if (!first) {
+            return false;
+        }
+        initial = first;
+        return true;
+    };
+
+    // The resume-at boundary is decided at SPAWN TIME by
+    // deriveSpawnArgs (see conversationHistory): the durable rewind intent
+    // plus a fresh transcript evaluation, or a fork-at-message request while
+    // the child is unbuilt. Nothing consumes or re-arms the flag here —
+    // claudeRemote just parses the args the launcher derived (below).
 
     // Prepare SDK options. For --fork-session, start query() before waiting for the
     // first child prompt so the native fork materializes at the clicked source state.
@@ -163,8 +452,9 @@ export async function claudeRemote(opts: {
         cwd: opts.path,
         resume: startFrom ?? undefined,
         forkSession,
+        ...(resumeSessionAt ? { resumeSessionAt } : {}),
         mcpServers: opts.mcpServers,
-        permissionMode: bootstrapMode.permissionMode,
+        permissionMode: nativePermissionMode(bootstrapMode.permissionMode),
         model: bootstrapMode.model,
         effort: bootstrapMode.effort,
         fallbackModel: bootstrapMode.fallbackModel,
@@ -183,15 +473,17 @@ export async function claudeRemote(opts: {
         pathToClaudeCodeExecutable: getDefaultClaudeCodePath(),
         settingsPath: opts.hookSettingsPath,
         additionalDirectories: [getHapiBlobsDir()],
+        // Steering acks a mid-turn message by its echo.
+        replayUserMessages: true,
     }
 
-    if (!awaitingForkInit) {
+    if (!awaitingForkInit && !awaitingResumeAtInit) {
         const first = await applyInitialTurn();
         if (!first) {
             return;
         }
         initial = first;
-        sdkOptions.permissionMode = first.mode.permissionMode;
+        sdkOptions.permissionMode = nativePermissionMode(first.mode.permissionMode);
         sdkOptions.model = first.mode.model;
         sdkOptions.effort = first.mode.effort;
         sdkOptions.fallbackModel = first.mode.fallbackModel;
@@ -207,46 +499,153 @@ export async function claudeRemote(opts: {
         sdkOptions.disallowedTools = first.mode.disallowedTools;
     }
 
-    // Track thinking state
-    let thinking = false;
-    const updateThinking = (newThinking: boolean) => {
-        if (thinking !== newThinking) {
-            thinking = newThinking;
-            logger.debug(`[claudeRemote] Thinking state changed to: ${thinking}`);
-            if (opts.onThinkingChange) {
-                opts.onThinkingChange(thinking);
-            }
-        }
-    };
+    // A fresh process starts its cumulative counters at zero, so the caller can
+    // seed a baseline before the first result is converted.
+    opts.onSpawn?.(!startFrom && !forkSession);
 
     // Start the loop
-    const response = query({
-        prompt: messages,
-        options: sdkOptions,
+    let response: ReturnType<typeof query>;
+    try {
+        response = query({
+            prompt: messages,
+            options: sdkOptions,
+        });
+    } catch (e) {
+        // The initial prompt already flipped thinking on and opened the steer target.
+        updateThinking(false);
+        closeSteering();
+        throw e;
+    }
+
+    // plan/auto are enforced by Claude itself, so a mid-turn switch into or out
+    // of them must reach the running process; otherwise it waits for a restart.
+    let nativeMode = sdkOptions.permissionMode ?? 'default';
+    let requestedMode = mode.permissionMode;
+    let switchesInFlight = 0;
+    let modeChangeSeq = 0;
+    opts.setPermissionModeListener?.((next) => {
+        const previous = requestedMode;
+        if (next !== previous) {
+            modeChangeSeq += 1;
+        }
+        const seq = modeChangeSeq;
+        requestedMode = next;
+        const native = nativePermissionMode(next);
+        if (native === nativeMode) {
+            return;
+        }
+        const previousNative = nativeMode;
+        nativeMode = native;
+        switchesInFlight += 1;
+        response.setPermissionMode(native).catch((e) => {
+            logger.debug(`[claudeRemote] set_permission_mode ${native} failed`, e);
+            // A later mode change supersedes this one, even if it returned to the same mode.
+            if (seq !== modeChangeSeq) {
+                return;
+            }
+            nativeMode = previousNative;
+            opts.onPermissionModeRejected?.(previous, e instanceof Error ? e.message : String(e));
+        }).finally(() => {
+            switchesInFlight -= 1;
+        });
     });
 
-    let nextMessageFetchInFlight = false;
-    let inputEnded = false;
+    // Effort applies to the next request of the running process, so an
+    // effort-only change does not need the --resume restart other modes do.
+    let nativeEffort: string | null = sdkOptions.effort ?? null;
+    opts.setEffortApplier?.(async (effort) => {
+        if (effort === nativeEffort) {
+            return true;
+        }
+        // Control responses are not rejected when the process exits; never let
+        // a lost reply hold the next prompt. Timing out falls back to a restart.
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+            await Promise.race([
+                response.setEffort(effort),
+                new Promise<never>((_, reject) => {
+                    timer = setTimeout(() => reject(new Error('timed out')), EFFORT_APPLY_TIMEOUT_MS);
+                })
+            ]);
+            nativeEffort = effort;
+            // A process that closed while we waited cannot take the prompt;
+            // report a restart so the launcher keeps the batch for the next one.
+            return !responseClosed && !inputEnded;
+        } catch (e) {
+            logger.debug(`[claudeRemote] apply_flag_settings effortLevel=${effort ?? 'default'} failed`, e);
+            return false;
+        } finally {
+            clearTimeout(timer);
+        }
+    });
+
+    const nextMessageAbort = new AbortController();
+    let nextMessageFetch: Promise<void> | null = null;
     let nextMessageFetchSeq = 0;
     let streamMessageSeq = 0;
     let resultSeq = 0;
+    let correlatesResults: boolean | null = null;
+    let promptResultsHaveUuid = false;
+    let waitingForClearFollowUp = false;
+    let clearFollowUp: { uuid: string; sessionId: string | null; command?: string; earlyResult?: SDKMessage } | undefined;
+    const clearedSessionIds = new Set<string>();
+    const compactCompletionAbort = new AbortController();
+    let compactCompletion: Promise<CompactCompletion> | null = null;
+    let timedOutCommand: { uuid: string; command: 'compact' | 'clear' } | null = null;
+    let commandResultTimer: ReturnType<typeof setTimeout> | undefined;
+    let commandResultDeadline = 0;
+    let commandResultExpired = false;
+    let resolveCommandResultTimeout: ((value: null) => void) | undefined;
+    const cancelCommandResultTimeout = () => {
+        clearTimeout(commandResultTimer);
+        commandResultTimer = undefined;
+        commandResultExpired = false;
+    };
+    const armCommandResultTimeout = (delay: number) => {
+        cancelCommandResultTimeout();
+        commandResultTimer = setTimeout(() => {
+            commandResultExpired = true;
+            resolveCommandResultTimeout?.(null);
+        }, delay);
+    };
+    const startCommandResultTimeout = () => {
+        commandResultDeadline = Date.now() + UNIDENTIFIED_COMMAND_RESULT_TIMEOUT_MS;
+        armCommandResultTimeout(UNIDENTIFIED_COMMAND_RESULT_TIMEOUT_MS);
+    };
+    const getClearRotation = (clear: ActiveClear) => {
+        const id = clear.init?.session_id ?? opts.getClearHookSessionId?.();
+        return id && id !== clear.previousSessionId ? id : undefined;
+    };
+    const bindClearSession = (id: string, init?: SDKSystemMessage) => {
+        if (currentSessionId && currentSessionId !== id) clearedSessionIds.add(currentSessionId);
+        opts.onSessionReset?.(id);
+        currentSessionId = id;
+        opts.onSessionFound(id);
+        if (init?.session_id === id) opts.onMessage(init);
+    };
+    const abortCompactCompletion = () => compactCompletionAbort.abort();
+    opts.signal?.addEventListener('abort', abortCompactCompletion, { once: true });
+    if (opts.signal?.aborted) compactCompletionAbort.abort();
 
     const scheduleNextMessage = () => {
-        if (nextMessageFetchInFlight || inputEnded) {
+        if (nextMessageFetch || inputEnded || responseClosed) {
             logger.debug(
                 `${debugPrefix} scheduleNextMessage skipped ` +
-                `(inFlight=${nextMessageFetchInFlight}, inputEnded=${inputEnded})`
+                `(inFlight=${nextMessageFetch !== null}, inputEnded=${inputEnded}, responseClosed=${responseClosed})`
             );
             return;
         }
 
         const fetchId = ++nextMessageFetchSeq;
         const startedAt = Date.now();
-        nextMessageFetchInFlight = true;
         logger.debug(`${debugPrefix} scheduleNextMessage start fetchId=${fetchId}`);
-        void (async () => {
+        nextMessageFetch = (async () => {
             try {
-                const next = await opts.nextMessage();
+                const next = await opts.nextMessage(correlatesResults === true, nextMessageAbort.signal);
+                if (responseClosed) {
+                    if (next) opts.onInputUndelivered?.();
+                    return;
+                }
                 if (!next) {
                     inputEnded = true;
                     messages.end();
@@ -255,8 +654,31 @@ export async function claudeRemote(opts: {
                     );
                     return;
                 }
+                const nextSpecialCommand = parseSpecialCommand(next.message);
+                const nativeCommand = nextSpecialCommand.type === null ? getClaudeNativeSlashCommand(next.message) : undefined;
+                const clearAlias = nativeCommand === 'clear' && !opts.claudeArgs?.includes('--disable-slash-commands');
                 mode = next.mode;
-                messages.push({ type: 'user', message: { role: 'user', content: next.message } });
+                specialCommand = nextSpecialCommand;
+                const followUpUuid = pushUserMessage(next.message);
+                if (waitingForClearFollowUp && nextSpecialCommand.type === null && !clearAlias) {
+                    clearFollowUp = { uuid: followUpUuid, sessionId: currentSessionId, command: nativeCommand };
+                    waitingForClearFollowUp = nativeCommand !== undefined;
+                }
+                if (nextSpecialCommand.type === 'compact') {
+                    beginCompactCommand(followUpUuid, false);
+                    startCommandResultTimeout();
+                } else if (nextSpecialCommand.type === 'clear' || clearAlias) {
+                    clearState.active = { uuid: followUpUuid, previousSessionId: currentSessionId, nativeAlias: clearAlias };
+                    startCommandResultTimeout();
+                }
+                // See applyInitialTurn: only plain prompts are resolvable
+                // history points.
+                if (nextSpecialCommand.type === null) {
+                    opts.onInputSubmitted?.(followUpUuid);
+                }
+                setSteerable(nextSpecialCommand.type === null && !clearAlias);
+                // A follow-up prompt starts a new turn; only the first turn gets system/init.
+                updateThinking(true);
                 logger.debug(
                     `${debugPrefix} nextMessage resolved fetchId=${fetchId} elapsedMs=${Date.now() - startedAt} ` +
                     `messageLength=${next.message.length} permissionMode=${next.mode.permissionMode}`
@@ -271,17 +693,130 @@ export async function claudeRemote(opts: {
                 messages.setError(e instanceof Error ? e : new Error(String(e)));
                 logger.debug(`${debugPrefix} nextMessage error fetchId=${fetchId}`, e);
             } finally {
-                nextMessageFetchInFlight = false;
+                nextMessageFetch = null;
                 logger.debug(`${debugPrefix} scheduleNextMessage done fetchId=${fetchId}`);
             }
         })();
     };
 
-    updateThinking(true);
+    // Thinking is asserted at the dequeue points (applyInitialTurn above and
+    // the follow-up branch of scheduleNextMessage), not here: a resume-at or
+    // fork spawn starts query() before any prompt exists, and asserting here
+    // reported a busy session while it idled waiting for the user's first
+    // prompt.
     try {
         logger.debug(`[claudeRemote] Starting to iterate over response`);
 
-        for await (const message of response) {
+        const responseIterator = response[Symbol.asyncIterator]();
+        let pendingResponseNext: Promise<IteratorResult<SDKMessage>> | null = null;
+        let pendingResponseDone = false;
+        let pendingResponseError: unknown;
+        let hasPendingResponseError = false;
+        while (true) {
+            if (!pendingResponseNext) {
+                pendingResponseDone = false;
+                pendingResponseError = undefined;
+                hasPendingResponseError = false;
+                pendingResponseNext = responseIterator.next().then(
+                    (result) => {
+                        pendingResponseDone = result.done === true;
+                        if (pendingResponseDone) responseClosed = true;
+                        return result;
+                    },
+                    (error) => {
+                        pendingResponseError = error;
+                        hasPendingResponseError = true;
+                        throw error;
+                    }
+                );
+            }
+            let message: SDKMessage;
+            if (compactCompletion) {
+                const winner = await Promise.race([
+                    compactCompletion.then((result) => ({ type: 'compact' as const, result })),
+                    pendingResponseNext.then(
+                        (result) => ({ type: 'response' as const, result }),
+                        (error) => ({ type: 'response-error' as const, error })
+                    )
+                ]);
+                if (winner.type === 'response-error') {
+                    if (winner.error instanceof AbortError) throw winner.error;
+                    if (opts.signal?.aborted) throw new AbortError('Compaction completion aborted');
+                    const completion = await compactCompletion;
+                    compactCompletion = null;
+                    await opts.onReady(
+                        completion.completionEvent,
+                        completion.compactSummary,
+                        completion.contextTokens
+                    );
+                    throw winner.error;
+                }
+                if (winner.type === 'compact') {
+                    compactCompletion = null;
+                    await opts.onReady(
+                        winner.result.completionEvent,
+                        winner.result.compactSummary,
+                        winner.result.contextTokens
+                    );
+                    logger.debug(`${debugPrefix} compact completion published`);
+                    if (hasPendingResponseError) throw pendingResponseError;
+                    if (pendingResponseDone) {
+                        responseClosed = true;
+                        break;
+                    }
+                    scheduleNextMessage();
+                    continue;
+                }
+                pendingResponseNext = null;
+                if (winner.result.done) {
+                    responseClosed = true;
+                    const completion = await compactCompletion;
+                    compactCompletion = null;
+                    await opts.onReady(
+                        completion.completionEvent,
+                        completion.compactSummary,
+                        completion.contextTokens
+                    );
+                    break;
+                }
+                message = winner.result.value;
+            } else {
+                const next = commandResultExpired ? null : await Promise.race([
+                    pendingResponseNext,
+                    new Promise<null>((resolve) => { resolveCommandResultTimeout = resolve; })
+                ]);
+                resolveCommandResultTimeout = undefined;
+                if (next === null) {
+                    cancelCommandResultTimeout();
+                    const clear = clearState.active;
+                    const pending = clear ?? compactState.active;
+                    if (pending) {
+                        timedOutCommand = { uuid: pending.uuid, command: clear ? 'clear' : 'compact' };
+                        pushedUuids.delete(pending.uuid);
+                    }
+                    const rotatedId = clear ? getClearRotation(clear) : undefined;
+                    clearState.active = rotatedId ? null : clear;
+                    compactState.active = null;
+                    inputEnded = true;
+                    messages.end();
+                    opts.onResultAccepted?.(clear !== null && rotatedId === undefined);
+                    updateThinking(false);
+                    const waitNotice = 'Waiting for Claude to exit so background tasks can finish.';
+                    if (rotatedId) {
+                        bindClearSession(rotatedId, clear?.init);
+                        await opts.onReady(`Context was reset. ${waitNotice}`, undefined, 0);
+                    } else {
+                        await opts.onReady(`${unidentifiedCommandResult(clear ? 'clear' : 'compact')}. ${waitNotice}`);
+                    }
+                    continue;
+                }
+                pendingResponseNext = null;
+                if (next.done) {
+                    responseClosed = true;
+                    break;
+                }
+                message = next.value;
+            }
             streamMessageSeq += 1;
             logger.debug(
                 `${debugPrefix} stream message #${streamMessageSeq} type=${message.type} ` +
@@ -289,19 +824,162 @@ export async function claudeRemote(opts: {
             );
             logger.debugLargeJson(`[claudeRemote] Message ${message.type}`, message);
 
-            // Handle messages
-            opts.onMessage(message);
+            const isSessionControl = message.type === 'result' || (message.type === 'system'
+                && (message.subtype === 'init' || message.subtype === 'status' || message.subtype === 'compact_boundary'));
+            const fromClearedSession = typeof message.session_id === 'string' && clearedSessionIds.has(message.session_id);
+            if (isSessionControl && fromClearedSession) {
+                continue;
+            }
+
+            if (message.type === 'assistant' && fromClearedSession) {
+                const assistant = message as SDKAssistantMessage;
+                const { usage: _usage, ...content } = assistant.message as SDKAssistantMessage['message'] & { usage?: unknown };
+                opts.onMessage({ ...assistant, message: content });
+                continue;
+            }
+
+            // Autonomous rounds (background tasks, scheduled follow-ups) stream
+            // assistant messages after the previous result flipped thinking off;
+            // the SDK never re-fires its own thinking signal for them. Re-bump
+            // here so the hub renders the round as working, not waiting.
+            if (message.type === 'assistant') {
+                updateThinking(true);
+            }
+
+            if (message.type === 'user' && (message as SDKUserMessage).isReplay === true) {
+                const uuid = (message as SDKUserMessage).uuid;
+                if (uuid && pushedUuids.delete(uuid)) {
+                    const resolveSteer = pendingSteers.get(uuid);
+                    if (resolveSteer) {
+                        pendingSteers.delete(uuid);
+                        logger.debug(`${debugPrefix} steered message picked up uuid=${uuid}`);
+                        resolveSteer(true);
+                    }
+                    if (clearFollowUp?.uuid !== uuid || !clearFollowUp.earlyResult) continue;
+                    message = clearFollowUp.earlyResult;
+                }
+            }
+
+            const expectedCommand = clearFollowUp?.command;
+            const matchesFollowUpCommand = expectedCommand !== undefined
+                && message.type === 'result' && message.local_command === expectedCommand;
+            if (clearFollowUp && matchesFollowUpCommand && message.user_message_uuid == null
+                && clearFollowUp.sessionId !== null && message.session_id === clearFollowUp.sessionId
+                && pushedUuids.has(clearFollowUp.uuid)) {
+                clearFollowUp.earlyResult ??= message;
+                continue;
+            }
+
+            const clear = clearState.active;
+            if (clear && message.type === 'system' && message.subtype === 'init'
+                && typeof message.session_id === 'string' && message.session_id !== clear.previousSessionId) {
+                clear.init = message as SDKSystemMessage;
+                continue;
+            }
+            const clearSessionId = clear ? getClearRotation(clear) : undefined;
+            const matchesClearSession = clearSessionId !== undefined && message.session_id === clearSessionId;
+            const isClearResult = clear !== null
+                && isCommandResult(message, clear.uuid, 'clear', matchesClearSession)
+                && (!timedOutCommand || message.user_message_uuid === clear.uuid || matchesClearSession);
+            if (timedOutCommand && !isClearResult
+                && isCommandResult(message, timedOutCommand.uuid, timedOutCommand.command, false)) {
+                // Only the active session's counters belong to this process baseline.
+                if (message.type === 'result' && currentSessionId && message.session_id === currentSessionId) {
+                    opts.onDroppedResult?.(message as SDKResultMessage);
+                }
+                continue;
+            }
+            const initialClearSessionId = !clear && message.type === 'result' && resultSeq === 0
+                ? opts.getClearHookSessionId?.() : undefined;
+            let staleUsageSession = false;
+            if (initialClearSessionId && initialClearSessionId !== currentSessionId) {
+                bindClearSession(initialClearSessionId);
+                waitingForClearFollowUp = !inputEnded;
+                // The result may still carry the previous session's counters.
+                staleUsageSession = message.session_id !== initialClearSessionId;
+            }
+            const compactMetadata =
+                message.type === 'system' && message.subtype === 'compact_boundary'
+                    ? (message as any).compact_metadata
+                    : undefined;
+            // The result of the manual /compact turn describes the compaction
+            // call, not an assistant round: mark it so the log converter skips
+            // tok/s fields for it while autonomous round results stay unmarked.
+            const compact = compactState.active;
+            const isCompactTurnResult = compact !== null
+                && isCommandResult(message, compact.uuid, 'compact', compact.initial && compact.sawCompactSignal);
+            if (!isClearResult && !isManualCompactBoundaryMessage(message) && !isCompactEchoMessage(message)) {
+                opts.onMessage(isCompactTurnResult || staleUsageSession ? {
+                    ...message,
+                    ...(isCompactTurnResult ? { hapi_compact_turn: true } : {}),
+                    ...(staleUsageSession ? { hapi_skip_usage: true } : {})
+                } : message);
+            }
 
             // Handle special system messages
+            if (
+                message.type === 'system'
+                && message.subtype === 'hook_response'
+                && typeof (message as { hook_name?: string }).hook_name === 'string'
+                && ((message as { hook_name?: string }).hook_name ?? '').startsWith('SessionStart:')
+            ) {
+                if (!(await unlockInitialDelivery())) {
+                    return;
+                }
+            }
+
             if (message.type === 'system' && message.subtype === 'init') {
-                // Start thinking when session initializes
-                updateThinking(true);
+                // Keep the busy signal only when a turn is actually in flight
+                // (a normal attempt dequeued its first prompt before the
+                // spawn). A resume-at/fork spawn reaches init while still
+                // waiting for the unlock to dequeue anything.
+                if (initial) updateThinking(true);
 
                 const systemInit = message as SDKSystemMessage;
+
+                if (opts.onContextUsage) {
+                    // Older CLIs may not support get_context_usage; the converter's seed stays.
+                    response.getContextUsage().then(opts.onContextUsage, (e) => {
+                        logger.debug('[claudeRemote] get_context_usage failed', e);
+                    });
+                }
+
+                if (
+                    opts.onAccountIdentity
+                    && typeof (response as { getAccountIdentity?: () => Promise<string | null> }).getAccountIdentity === 'function'
+                ) {
+                    response.getAccountIdentity().then(opts.onAccountIdentity, (e) => {
+                        logger.debug('[claudeRemote] getAccountIdentity failed', e);
+                    });
+                }
+
+                // Claude silently starts in default when plan/auto is unavailable
+                // (e.g. auto disabled by settings); surface it instead of
+                // showing a mode that is not in effect.
+                const launchedMode = systemInit.permissionMode;
+                if (
+                    switchesInFlight === 0
+                    && (nativeMode === 'auto' || nativeMode === 'plan')
+                    && launchedMode
+                    && launchedMode !== nativeMode
+                ) {
+                    const requested = nativeMode;
+                    nativeMode = 'default';
+                    opts.onPermissionModeRejected?.('default', `Claude could not start in ${requested} mode, so it is running in default mode`);
+                }
+
+                // Fallback unlock when no SessionStart hook ran: only accept
+                // the first prompt once the native branch exists (init). No
+                // flag consumption happens here at all - the boundary is
+                // re-derived at every spawn from the durable state.
+                if (!(await unlockInitialDelivery())) {
+                    return;
+                }
 
                 // Session id is still in memory, wait until session file is written to disk
                 // Start a watcher for to detect the session id
                 if (systemInit.session_id) {
+                    currentSessionId = systemInit.session_id;
                     logger.debug(`[claudeRemote] Waiting for session file to be written to disk: ${systemInit.session_id}`);
                     const projectDir = getProjectPath(opts.path);
                     const found = await awaitFileExist(join(projectDir, `${systemInit.session_id}.jsonl`));
@@ -311,60 +989,162 @@ export async function claudeRemote(opts: {
                         : undefined;
                     opts.onSessionFound(systemInit.session_id, extras);
                 }
-
-                // Fork: only accept the first child prompt after the native branch exists.
-                if (awaitingForkInit) {
-                    awaitingForkInit = false;
-                    const first = await applyInitialTurn();
-                    if (!first) {
-                        return;
-                    }
-                    initial = first;
-                }
             }
 
             // Capture the /compact outcome. Only a reported failure is recorded:
             // anything else leaves the success path untouched, so a status shape
             // we do not recognise cannot invent a failure.
-            if (message.type === 'system' && message.subtype === 'status' && isCompactCommand) {
+            if (message.type === 'system' && message.subtype === 'status' && compact) {
                 const systemStatus = message as SDKSystemMessage;
+                if (systemStatus.status === 'compacting') {
+                    compact.sawCompactingStatus = true;
+                    if (!compact.initial) armCommandResultTimeout(COMPACT_PROGRESS_TIMEOUT_MS);
+                }
+                if (!compact.initial && systemStatus.compact_result !== undefined) startCommandResultTimeout();
+                if (systemStatus.compact_result !== undefined || (compact.initial && systemStatus.status === 'compacting')) {
+                    compact.sawCompactSignal = true;
+                }
                 if (systemStatus.compact_result === 'failed') {
                     const reason = typeof systemStatus.compact_error === 'string'
                         ? systemStatus.compact_error.trim()
                         : '';
-                    compactFailure = reason.length > 0 ? reason : 'Compaction failed';
-                    logger.debug(`[claudeRemote] Compaction reported as failed: ${compactFailure}`);
+                    compact.failure = reason;
+                    logger.debug(`[claudeRemote] Compaction reported as failed: ${reason}`);
                 }
+            }
+
+            // Capture the compaction token delta from the boundary metadata
+            // (pre_tokens/post_tokens are the context sizes on each side).
+            if (compact?.sawCompactingStatus && compactMetadata?.trigger === 'auto') {
+                compact.sawCompactingStatus = false;
+                if (!compact.initial) armCommandResultTimeout(Math.max(0, commandResultDeadline - Date.now()));
+            }
+            if (compact && isManualCompactBoundaryMessage(message)) {
+                compact.sawCompactSignal = true;
+                if (!compact.initial) startCommandResultTimeout();
+                if (typeof compactMetadata?.pre_tokens === 'number') compact.tokensBefore = compactMetadata.pre_tokens;
+                if (typeof compactMetadata?.post_tokens === 'number') compact.tokensAfter = compactMetadata.post_tokens;
+                logger.debug(`[claudeRemote] compact_boundary tokens: ${compact.tokensBefore} -> ${compact.tokensAfter}`);
             }
 
             // Handle result messages
             if (message.type === 'result') {
+                if (timedOutCommand && !isClearResult) {
+                    updateThinking(false);
+                    continue;
+                }
+                if (clearFollowUp) {
+                    const matchesUuid = message.user_message_uuid === clearFollowUp.uuid;
+                    const canAcceptWithoutUuid = !pushedUuids.has(clearFollowUp.uuid)
+                        && message.user_message_uuid == null && clearFollowUp.sessionId !== null
+                        && message.session_id === clearFollowUp.sessionId
+                        && (matchesFollowUpCommand || (!promptResultsHaveUuid && message.local_command == null));
+                    if (!matchesUuid && !canAcceptWithoutUuid) continue;
+                    pushedUuids.delete(clearFollowUp.uuid);
+                    clearFollowUp = undefined;
+                }
                 resultSeq += 1;
-                updateThinking(false);
-                logger.debug(
-                    `${debugPrefix} result #${resultSeq} received; scheduling next user message ` +
-                    `(nextInFlight=${nextMessageFetchInFlight}, inputEnded=${inputEnded})`
-                );
-
+                if (correlatesResults === null && (typeof message.user_message_uuid === 'string' || typeof message.local_command === 'string')) {
+                    correlatesResults = true;
+                }
+                if (clear) {
+                    if (!isClearResult) continue;
+                    const rotatedId = clearSessionId ?? getClearResultSessionId(message, clear.previousSessionId);
+                    cancelCommandResultTimeout();
+                    clearState.active = null;
+                    if (!clear.nativeAlias) pushedUuids.delete(clear.uuid);
+                    opts.onResultAccepted?.();
+                    updateThinking(false);
+                    waitingForClearFollowUp = !inputEnded;
+                    if (rotatedId) bindClearSession(rotatedId, clear.init);
+                    if (clear.nativeAlias) {
+                        // An alias result still carrying the previous session id must not rebase usage.
+                        const staleUsage = rotatedId && message.type === 'result' && message.session_id !== rotatedId;
+                        opts.onMessage(staleUsage ? { ...message, hapi_skip_usage: true } : message);
+                    }
+                    else if (rotatedId && message.type === 'result' && message.session_id === rotatedId) {
+                        // The suppressed /clear result rebases usage for the rotated session.
+                        opts.onDroppedResult?.(message as SDKResultMessage);
+                    }
+                    const completion = clear.nativeAlias ? undefined : rotatedId ? 'Context was reset' : 'Could not reset context';
+                    await opts.onReady(completion, undefined, rotatedId ? 0 : undefined);
+                    scheduleNextMessage();
+                    continue;
+                }
+                if (compact && !isCompactTurnResult) continue;
+                if (!compact && message.local_command == null && typeof message.user_message_uuid === 'string') {
+                    promptResultsHaveUuid = true;
+                }
                 if (resultSeq === 1 && specialCommand.type === null && initial) {
                     opts.onFirstResult?.(initial.message);
                 }
 
-                // Send completion messages
-                if (isCompactCommand) {
-                    const completion = compactFailure
-                        ? `Compaction failed: ${compactFailure}`
-                        : 'Compaction completed';
-                    logger.debug(`[claudeRemote] ${completion}`);
-                    if (opts.onCompletionEvent) {
-                        opts.onCompletionEvent(completion);
-                    }
-                    isCompactCommand = false;
-                    compactFailure = null;
+                if (pendingSteers.size > 0) {
+                    // The turn ended before Claude reached a tool boundary for
+                    // a steered message; it starts a follow-up turn for it.
+                    logger.debug(`${debugPrefix} result #${resultSeq} received with ${pendingSteers.size} pending steer(s); turn continues`);
+                    // The delivered prompt is complete; a later stream failure
+                    // must recover only the outstanding steer, not replay it.
+                    opts.onResultAccepted?.();
+                    continue;
                 }
 
-                // Send ready event
-                opts.onReady();
+                updateThinking(false);
+                setSteerable(false);
+                logger.debug(
+                    `${debugPrefix} result #${resultSeq} received; scheduling next user message ` +
+                    `(nextInFlight=${nextMessageFetch !== null}, inputEnded=${inputEnded})`
+                );
+
+                if (compact) {
+                    cancelCommandResultTimeout();
+                    const sessionId = currentSessionId;
+                    const baseline = compact.baseline;
+                    const failed = (!compact.sawCompactSignal && !compact.sawCompactingStatus)
+                        || message.is_error === true || message.subtype !== 'success';
+                    const resultText = typeof message.result === 'string' ? message.result.trim() : '';
+                    const failure = compact.failure ?? (failed ? resultText : null);
+                    const tokenCount = (value: number | undefined): number | undefined =>
+                        value !== undefined && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+                    const tokensBefore = tokenCount(compact.tokensBefore);
+                    const tokensAfter = tokenCount(compact.tokensAfter);
+                    // Preserve the post-compaction context size even when no
+                    // summary was found: the launcher refreshes the context
+                    // bar with it, since the next real usage only arrives
+                    // with the next model response.
+                    compactState.active = null;
+                    opts.onResultAccepted?.();
+
+                    compactCompletion = (async () => {
+                        let compactSummary = await lookupCompactSummary(
+                            failure,
+                            sessionId,
+                            baseline,
+                            tokensBefore,
+                            tokensAfter,
+                            compactCompletionAbort.signal
+                        );
+                        if (compactCompletionAbort.signal.aborted) {
+                            throw new AbortError('Compaction completion aborted');
+                        }
+                        if (!compactSummary && failure === null && (tokensBefore !== undefined || tokensAfter !== undefined)) {
+                            compactSummary = { summary: '', tokensBefore, tokensAfter };
+                        }
+                        const completionEvent = compactSummary
+                            ? undefined
+                            : buildCompactCompletionEvent(failure, tokensBefore, tokensAfter);
+                        logger.debug(`[claudeRemote] ${compactSummary ? `compact summary promoted (${compactSummary.summary.length} chars)` : completionEvent}`);
+                        return { completionEvent, compactSummary, contextTokens: tokensAfter };
+                    })();
+                    continue;
+                }
+
+                // An autonomous result may arrive while transcript polling is
+                // pending. The coordinator keeps consuming it, but the compact
+                // outcome remains the sole owner of ready and the next prompt.
+                if (compactCompletion) continue;
+
+                await opts.onReady();
                 logger.debug(`${debugPrefix} onReady emitted for result #${resultSeq}`);
 
                 // Pull next user message without blocking response stream processing.
@@ -387,8 +1167,24 @@ export async function claudeRemote(opts: {
                 }
             }
         }
+        const clear = clearState.active;
+        const compact = compactState.active;
+        const pending = clear ?? (compact?.initial === false ? compact : null);
+        if (clearFollowUp && pushedUuids.has(clearFollowUp.uuid) && !opts.signal?.aborted) {
+            opts.onInputUndelivered?.();
+        }
+        if (pending && !timedOutCommand && !opts.signal?.aborted && !(clear && getClearRotation(clear))) {
+            const command = clear ? 'clear' : 'compact';
+            const acknowledged = !pushedUuids.has(pending.uuid) || compact?.sawCompactSignal;
+            if (!acknowledged) throw new Error(`Claude exited before acknowledging /${command}`);
+            opts.onResultAccepted?.();
+            opts.onCompletionEvent?.(unidentifiedCommandResult(command));
+        }
         logger.debug(`${debugPrefix} response stream exhausted`);
     } catch (e) {
+        responseClosed = true;
+        compactCompletionAbort.abort();
+        await Promise.allSettled(compactCompletion ? [compactCompletion] : []);
         if (e instanceof AbortError) {
             logger.debug(`[claudeRemote] Aborted`);
             // Ignore
@@ -397,10 +1193,29 @@ export async function claudeRemote(opts: {
             throw e;
         }
     } finally {
+        closeSteering();
+        nextMessageAbort.abort();
+        if (nextMessageFetch) await nextMessageFetch;
+        messages.end();
+        cancelCommandResultTimeout();
+        const clear = clearState.active;
+        const rotatedId = clear ? getClearRotation(clear) : undefined;
+        if (rotatedId) {
+            opts.onResultAccepted?.();
+            bindClearSession(rotatedId, clear?.init);
+            await opts.onReady('Context was reset', undefined, 0);
+        }
+        if (compactCompletion) {
+            compactCompletionAbort.abort();
+            await Promise.allSettled([compactCompletion]);
+        }
+        opts.signal?.removeEventListener('abort', abortCompactCompletion);
         logger.debug(
             `${debugPrefix} finally ` +
             `(streamMessages=${streamMessageSeq}, results=${resultSeq}, nextFetches=${nextMessageFetchSeq}, inputEnded=${inputEnded})`
         );
+        opts.setPermissionModeListener?.(null);
+        opts.setEffortApplier?.(null);
         updateThinking(false);
     }
 }

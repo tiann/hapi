@@ -2,12 +2,17 @@ package app.hapi.companion.feature.pairing
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import app.hapi.companion.feature.passkey.PasskeyIssue
+import app.hapi.companion.feature.passkey.PasskeyPlatform
+import app.hapi.companion.feature.passkey.passkeyIssueOf
 import app.hapi.data.api.ApiError
 import app.hapi.data.auth.CredentialStore
 import app.hapi.data.auth.HubCredentials
 import app.hapi.data.auth.HubRegistry
 import app.hapi.data.auth.HubUrls
 import app.hapi.protocol.pairing.BindLink
+import app.hapi.protocol.wire.NativePasskeys
+import app.hapi.protocol.wire.PasskeyHubAddressRequiredException
 import app.hapi.protocol.wire.SUPPORTED_PROTOCOL_VERSION
 import java.io.IOException
 import kotlin.coroutines.cancellation.CancellationException
@@ -45,6 +50,9 @@ sealed interface PairingError {
     data class NotAHub(val hubUrl: String) : PairingError
     data class ProtocolMismatch(val hubVersion: Int, val supportedVersion: Int) : PairingError
     data class AuthFailed(val httpStatus: Int) : PairingError
+
+    /** Passkey sign-in failed (user cancellations never land here). */
+    data class Passkey(val issue: PasskeyIssue) : PairingError
 }
 
 /** A `hapicompanion://bind` deep link waiting for user confirmation. */
@@ -61,6 +69,12 @@ data class BindPrefill(
  * normalize the URL → `GET /health` reachability + protocol check →
  * `POST /api/auth` exchange → persist [HubCredentials] → register + activate
  * in the [HubRegistry] → [PairingUiState.Success].
+ *
+ * [signInWithPasskey] is the token-free alternative
+ * (`docs/api/client-contract/auth.md#passkeys-native`): one platform ceremony
+ * over a locally generated challenge, the Hub read from the credential's user
+ * handle, the same probe, then verify — storing the returned passkey session
+ * (no access token) as the hub's credential.
  *
  * Shared by the landing / QR-scan / manual-entry destinations (scoped to the
  * pairing nav graph), so an attempt started from a scan result reports into
@@ -144,9 +158,87 @@ class PairingViewModel(
         }
     }
 
-    private suspend fun runPairing(hubUrl: String, accessToken: String): PairingUiState {
-        val client = clientFactory.create(hubUrl)
+    /**
+     * Signs in with a passkey in a single system ceremony; no-op while an
+     * attempt is validating. Without [hubUrl] the selected credential names
+     * its Hub; a credential that cannot (long address) ends in
+     * [PasskeyIssue.HubAddressRequired] so the screen offers manual entry.
+     * With [hubUrl] (manual entry) the Hub is probed first and the credential
+     * must belong to it. A dismissed system sheet returns to
+     * [PairingUiState.Idle] silently. [platform] wraps the hosting Activity
+     * and is only held for the duration of the attempt.
+     */
+    fun signInWithPasskey(hubUrl: String?, platform: PasskeyPlatform) {
+        if (mutableState.value == PairingUiState.Validating) return
+        val expectedHub = hubUrl?.let {
+            HubUrls.normalize(it) ?: run {
+                mutableState.value = PairingUiState.Error(PairingError.InvalidUrl)
+                return
+            }
+        }
+        mutableState.value = PairingUiState.Validating
+        viewModelScope.launch {
+            mutableState.value = runPasskeySignIn(expectedHub, platform)
+        }
+    }
 
+    private suspend fun runPasskeySignIn(expectedHub: String?, platform: PasskeyPlatform): PairingUiState {
+        // Probe a typed Hub before prompting, so an unreachable address never
+        // costs the user a system sheet.
+        if (expectedHub != null) probeHub(clientFactory.create(expectedHub), expectedHub)?.let { return it }
+
+        val (hubUrl, assertion) = try {
+            val assertion = platform.getPasskey(NativePasskeys.nativeLoginOptions(nowMs()))
+            val located = NativePasskeys.loginHub(assertion, expectedHub)
+            (HubUrls.normalize(located) ?: throw PasskeyHubAddressRequiredException()) to assertion
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (error: Exception) {
+            return passkeyFailure(error, expectedHub)
+        }
+
+        val client = clientFactory.create(hubUrl)
+        if (expectedHub == null) probeHub(client, hubUrl)?.let { return it }
+
+        val login = try {
+            client.passkeyLoginVerify(NativePasskeys.credentialResponse(assertion))
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (error: Exception) {
+            return passkeyFailure(error, hubUrl)
+        }
+
+        // A passkey sign-in replaces any previous pairing secret for this hub:
+        // the stored entry authenticates by passkey session from now on.
+        withContext(ioDispatcher) {
+            credentialStore.set(
+                HubCredentials(
+                    hubUrl = hubUrl,
+                    passkeySession = login.passkeySession,
+                    jwt = login.token,
+                    jwtObtainedAtMs = nowMs(),
+                )
+            )
+        }
+        registry.addHub(hubUrl, makeActive = true)
+        mutablePrefill.value = null
+        return PairingUiState.Success(hubUrl)
+    }
+
+    /** Cancellation → silent [PairingUiState.Idle]; everything else → an error. */
+    private fun passkeyFailure(error: Exception, hubUrl: String?): PairingUiState {
+        val issue = passkeyIssueOf(error) ?: return PairingUiState.Idle
+        return PairingUiState.Error(
+            if (issue == PasskeyIssue.Unreachable && hubUrl != null) {
+                PairingError.Unreachable(hubUrl)
+            } else {
+                PairingError.Passkey(issue)
+            },
+        )
+    }
+
+    /** `GET /health` reachability + protocol check; null when the hub is usable. */
+    private suspend fun probeHub(client: PairingClient, hubUrl: String): PairingUiState.Error? {
         val health = try {
             client.health()
         } catch (cancellation: CancellationException) {
@@ -163,6 +255,12 @@ class PairingViewModel(
                 PairingError.ProtocolMismatch(health.protocolVersion, SUPPORTED_PROTOCOL_VERSION),
             )
         }
+        return null
+    }
+
+    private suspend fun runPairing(hubUrl: String, accessToken: String): PairingUiState {
+        val client = clientFactory.create(hubUrl)
+        probeHub(client, hubUrl)?.let { return it }
 
         val auth = try {
             client.authenticate(accessToken)

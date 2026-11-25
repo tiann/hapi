@@ -3,7 +3,13 @@
      cache/attachments/camera-*.jpg handed to TakePicture via FileProvider,
      deleted right after ingest. -->
 <paths>
+    <cache-path name="text_exports" path="text-exports/" />
     <cache-path
         name="attachment_captures"
         path="attachments/" />
+    <!-- Generated media downloads (chat blocks): cache/generated-media/
+         files opened via ACTION_VIEW in external players. -->
+    <cache-path
+        name="generated_media"
+        path="generated-media/" />
 </paths>

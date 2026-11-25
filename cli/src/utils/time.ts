@@ -1,3 +1,11 @@
+import { uptime } from 'node:os';
+import { setTimeout as abortableDelay } from 'node:timers/promises';
+
+/** OS-wide clock; whole seconds also match Bun's uptime precision across processes. */
+export function monotonicTimeMs(): number {
+    return Math.floor(uptime()) * 1000;
+}
+
 export async function delay(ms: number) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -44,6 +52,8 @@ export let backoff = createBackoff();
  * Options for withRetry function
  */
 export type RetryOptions = {
+    /** Cancels pending backoff and prevents further attempts. */
+    signal?: AbortSignal
     /** Maximum number of retry attempts. Default: unlimited */
     maxAttempts?: number
     /** Minimum delay between retries in ms. Default: 1000 */
@@ -77,13 +87,14 @@ export async function withRetry<T>(
     let attempt = 0
 
     while (true) {
+        options?.signal?.throwIfAborted()
         try {
             return await fn()
         } catch (error) {
             attempt++
 
             // Check if we should retry this error
-            if (!shouldRetry(error)) {
+            if (options?.signal?.aborted || !shouldRetry(error)) {
                 throw error
             }
 
@@ -102,7 +113,11 @@ export async function withRetry<T>(
                 onRetry(error, attempt, nextDelayMs)
             }
 
-            await delay(nextDelayMs)
+            if (options?.signal) {
+                await abortableDelay(nextDelayMs, undefined, { signal: options.signal })
+            } else {
+                await delay(nextDelayMs)
+            }
         }
     }
 }

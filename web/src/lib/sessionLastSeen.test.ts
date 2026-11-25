@@ -1,165 +1,248 @@
-import { createElement } from 'react'
-import { act, render } from '@testing-library/react'
-import { describe, expect, it, beforeEach, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-    getSessionLastSeenAt,
-    getSessionLastSeenSnapshot,
-    getSessionManualUnreadAt,
-    initializeSessionLastSeen,
-    markSessionUnread,
-    markSessionSeen,
-    useSessionLastSeenVersion,
+    configureSessionReadState, flushSessionReadState, followSessionTail, getSessionLastSeenAt,
+    getSessionManualUnreadAt, getUnreadSessionCount, markAllSessionsSeen,
+    markListedSessionSeen, markRenderedSessionSeen, markSessionSeen, markSessionUnread, observeSessionReadStates,
 } from './sessionLastSeen'
+import type { SessionReadState, SessionReadStateRequest } from '@hapi/protocol'
 
-function SessionLastSeenVersionProbe() {
-    const version = useSessionLastSeenVersion()
-    return createElement('output', { 'data-testid': 'last-seen-version' }, version)
-}
+const server = (readRevision = 0, version = 0, manualUnread = false): SessionReadState => ({ readRevision, version, manualUnread })
+const dormant = () => Promise.reject(new Error('offline'))
+let cleanup = () => {}
+function offlineScope(scope: string) { cleanup(); cleanup = configureSessionReadState(scope, dormant); cleanup() }
 
-describe('sessionLastSeen', () => {
-    beforeEach(() => {
-        localStorage.clear()
+beforeEach(() => {
+    vi.useFakeTimers()
+    localStorage.clear()
+    offlineScope('hub-a:alice')
+})
+afterEach(async () => { cleanup(); await vi.advanceTimersByTimeAsync(0); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
+
+describe('durable session read state', () => {
+    it.each(['read', 'unread', 'all'] as const)('persists and syncs %s over HTTP without crypto.randomUUID', async (action) => {
+        vi.stubGlobal('crypto', { getRandomValues: crypto.getRandomValues.bind(crypto) })
+        const session = { id: 's', contentRevision: 3, readState: server() }
+        observeSessionReadStates([session])
+
+        if (action === 'read') markSessionSeen('s', 3)
+        else if (action === 'unread') markSessionUnread('s', session.readState)
+        else expect(markAllSessionsSeen([session])).toBe(1)
+
+        const request: SessionReadStateRequest = action === 'unread'
+            ? { type: 'unread', expectedVersion: 0 }
+            : { type: 'read', readRevision: 3, expectedVersion: 0 }
+        const persisted = () => JSON.parse(localStorage.getItem('hapi.sessionReadState.v1:hub-a:alice')!).s
+        expect(persisted().pending).toEqual({ id: expect.any(String), request })
+        expect(getUnreadSessionCount([session])).toBe(action === 'unread' ? 1 : 0)
+
+        const send = vi.fn(async () => ({ readState: server(action === 'unread' ? 0 : 3, 1, action === 'unread') }))
+        cleanup = configureSessionReadState('hub-a:alice', send)
+        await vi.advanceTimersByTimeAsync(0)
+        expect(send).toHaveBeenCalledExactlyOnceWith('s', request)
+        expect(persisted().pending).toBeUndefined()
+        expect(getUnreadSessionCount([session])).toBe(action === 'unread' ? 1 : 0)
     })
 
-    it('stores the latest seen timestamp for a session', () => {
-        markSessionSeen('session-a', 1000)
-        markSessionSeen('session-a', 2500)
-        expect(getSessionLastSeenAt('session-a')).toBe(2500)
-    })
-
-    it('snapshots the store once for bulk unread filtering', () => {
-        markSessionSeen('session-a', 1000)
-        markSessionSeen('session-b', 2500)
-        expect(getSessionLastSeenSnapshot()).toEqual({
-            'session-a': 1000,
-            'session-b': 2500,
-        })
-    })
-
-    it('does not move the watermark backwards', () => {
-        markSessionSeen('session-a', 5000)
-        markSessionSeen('session-a', 2000)
-        expect(getSessionLastSeenAt('session-a')).toBe(5000)
-    })
-
-    it('moves the watermark behind the current activity when marking unread', () => {
-        markSessionSeen('session-a', 5000)
-
-        markSessionUnread('session-a', 5000)
-
-        expect(getSessionLastSeenAt('session-a')).toBe(4999)
-        expect(getSessionManualUnreadAt('session-a')).toBe(5000)
-    })
-
-    it('does not change an already-unread watermark when marking unread', () => {
-        markSessionSeen('session-a', 1000)
-
-        markSessionUnread('session-a', 5000)
-
-        expect(getSessionLastSeenAt('session-a')).toBe(1000)
-        expect(getSessionManualUnreadAt('session-a')).toBe(5000)
-    })
-
-    it('clears the explicit unread marker when the session is seen', () => {
-        markSessionUnread('session-a', 5000)
-        expect(getSessionManualUnreadAt('session-a')).toBe(5000)
-
-        markSessionSeen('session-a', 5000)
-
-        expect(getSessionManualUnreadAt('session-a')).toBeNull()
-    })
-
-    it('preserves an explicit unread marker when a stale seen timestamp arrives', () => {
-        markSessionUnread('session-a', 5000)
-
-        markSessionSeen('session-a', 4000)
-
-        expect(getSessionLastSeenAt('session-a')).toBe(4999)
-        expect(getSessionManualUnreadAt('session-a')).toBe(5000)
-    })
-
-    it('notifies same-tab consumers when the watermark changes', () => {
-        const view = render(createElement(SessionLastSeenVersionProbe))
-        const initialVersion = Number(view.getByTestId('last-seen-version').textContent)
-
-        act(() => {
-            markSessionUnread('session-a', 5000)
-        })
-
-        expect(view.getByTestId('last-seen-version')).toHaveTextContent(String(initialVersion + 1))
-    })
-
-    it('notifies consumers when either read-state key changes in another tab', () => {
-        const view = render(createElement(SessionLastSeenVersionProbe))
-        const initialVersion = Number(view.getByTestId('last-seen-version').textContent)
-
-        act(() => {
-            window.dispatchEvent(new StorageEvent('storage', { key: 'hapi.sessionLastSeen.v1' }))
-        })
-        expect(view.getByTestId('last-seen-version')).toHaveTextContent(String(initialVersion + 1))
-
-        act(() => {
-            window.dispatchEvent(new StorageEvent('storage', { key: 'hapi.sessionManualUnread.v1' }))
-        })
-        expect(view.getByTestId('last-seen-version')).toHaveTextContent(String(initialVersion + 2))
-    })
-
-    it('uses the first session list as the unread baseline', () => {
-        initializeSessionLastSeen('hub-a', [
-            { id: 'session-a', updatedAt: 1000 },
-            { id: 'session-b', updatedAt: 2500 },
-        ])
-
-        expect(getSessionLastSeenAt('session-a')).toBe(1000)
-        expect(getSessionLastSeenAt('session-b')).toBe(2500)
-    })
-
-    it('preserves existing watermarks while completing a legacy partial baseline', () => {
-        markSessionSeen('session-a', 1000)
-
-        initializeSessionLastSeen('hub-a', [
-            { id: 'session-a', updatedAt: 2500 },
-            { id: 'session-b', updatedAt: 2500 },
-        ])
-
-        expect(getSessionLastSeenAt('session-a')).toBe(1000)
-        expect(getSessionLastSeenAt('session-b')).toBe(2500)
-
-        initializeSessionLastSeen('hub-a', [{ id: 'session-c', updatedAt: 3000 }])
-        expect(getSessionLastSeenAt('session-c')).toBe(0)
-    })
-
-    it('initializes each hub independently', () => {
-        initializeSessionLastSeen('hub-a', [{ id: 'session-a', updatedAt: 1000 }])
-        initializeSessionLastSeen('hub-b', [{ id: 'session-b', updatedAt: 2000 }])
-
-        expect(getSessionLastSeenAt('session-b')).toBe(2000)
-    })
-
-    it('ignores localStorage write failures', () => {
-        const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
-            throw new Error('quota exceeded')
-        })
-
-        expect(() => markSessionSeen('session-a', 1000)).not.toThrow()
-
-        setItem.mockRestore()
-    })
-
-    it('returns zero when localStorage getter throws', () => {
-        const localStorageDescriptor = Object.getOwnPropertyDescriptor(window, 'localStorage')
-        Object.defineProperty(window, 'localStorage', {
-            configurable: true,
-            get() {
-                throw new Error('storage denied')
-            },
-        })
-
-        expect(getSessionLastSeenAt('session-a')).toBe(0)
-        expect(() => markSessionSeen('session-a', 1000)).not.toThrow()
-
-        if (localStorageDescriptor) {
-            Object.defineProperty(window, 'localStorage', localStorageDescriptor)
+    it('reads persisted state once per synchronous pass instead of once per row', async () => {
+        markSessionSeen('s', 2)
+        await Promise.resolve()
+        const parse = vi.spyOn(JSON, 'parse')
+        const getItem = vi.spyOn(Storage.prototype, 'getItem')
+        for (let i = 0; i < 500; i += 1) {
+            getSessionLastSeenAt('s')
+            getSessionManualUnreadAt('s')
         }
+        expect(parse).not.toHaveBeenCalled()
+        expect(getItem).toHaveBeenCalledTimes(1)
+        expect(getSessionLastSeenAt('s')).toBe(2)
+    })
+
+    it('observes writes from other tabs or code after the next microtask checkpoint', async () => {
+        markSessionSeen('s', 2)
+        localStorage.setItem('hapi.sessionReadState.v1:hub-a:alice', JSON.stringify({ s: { server: server(7) } }))
+        await Promise.resolve()
+        expect(getSessionLastSeenAt('s')).toBe(7)
+        localStorage.clear()
+        await Promise.resolve()
+        expect(getSessionLastSeenAt('s')).toBe(0)
+    })
+
+    it('does not keep an unsaved mutation when persistence fails', () => {
+        markSessionSeen('s', 2)
+        vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota') })
+        markSessionSeen('s', 9)
+        expect(getSessionLastSeenAt('s')).toBe(2)
+    })
+
+    it('ignores legacy timestamps and metadata-only changes', () => {
+        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({ s: Date.now() }))
+        expect(getSessionLastSeenAt('s')).toBe(0)
+        expect(getUnreadSessionCount([{ id: 's', contentRevision: 0 }])).toBe(0)
+        expect(getUnreadSessionCount([{ id: 's', contentRevision: 1 }])).toBe(1)
+    })
+
+    it('persists the exact observed revision monotonically and scopes by hub and namespace', () => {
+        markSessionSeen('s', 3)
+        markSessionSeen('s', 1)
+        expect(getSessionLastSeenAt('s')).toBe(3)
+        offlineScope('hub-a:bob')
+        expect(getSessionLastSeenAt('s')).toBe(0)
+        offlineScope('hub-b:alice')
+        expect(getSessionLastSeenAt('s')).toBe(0)
+        offlineScope('hub-a:alice')
+        expect(getSessionLastSeenAt('s')).toBe(3)
+        expect(getUnreadSessionCount([{ id: 's', contentRevision: 4 }])).toBe(1)
+    })
+
+    it('merges reads from other clients without allowing a stale response to erase manual unread', () => {
+        observeSessionReadStates([{ id: 's', readState: server(3, 2, true) }])
+        observeSessionReadStates([{ id: 's', readState: server(2, 1) }])
+        markSessionSeen('s', 3, 1)
+        expect(getSessionManualUnreadAt('s')).toBe(0)
+        markSessionSeen('s', 3, 2)
+        expect(getSessionManualUnreadAt('s')).toBeNull()
+        expect(getUnreadSessionCount([{ id: 's', contentRevision: 3, readState: server(3, 3, true) }])).toBe(1)
+    })
+
+    it('counts running output and hides only a followed tail until it is acknowledged', () => {
+        const row = { id: 's', contentRevision: 2, active: true, thinking: true }
+        expect(getUnreadSessionCount([row])).toBe(1)
+        const release = followSessionTail('s')
+        const again = followSessionTail('s')
+        expect(getUnreadSessionCount([row])).toBe(0)
+        expect(markAllSessionsSeen([row])).toBe(0)
+        expect(getSessionLastSeenAt('s')).toBe(0)
+        markSessionUnread('s')
+        expect(getUnreadSessionCount([row])).toBe(1)
+        release()
+        again()
+        expect(markAllSessionsSeen([row])).toBe(1)
+        expect(getSessionLastSeenAt('s')).toBe(2)
+        expect(getUnreadSessionCount([{ ...row, contentRevision: 3 }])).toBe(1)
+    })
+
+    it('does not claim a read when durable storage fails', () => {
+        vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota') })
+        markSessionSeen('s', 3)
+        expect(getSessionLastSeenAt('s')).toBe(0)
+    })
+
+    it('retries the persisted operation and preserves a newer operation during acknowledgement', async () => {
+        markSessionSeen('s', 3)
+        let resolve!: (value: { readState: SessionReadState }) => void
+        const sent: SessionReadStateRequest[] = []
+        cleanup = configureSessionReadState('hub-a:alice', async (_id, request) => {
+            sent.push({ ...request })
+            if (sent.length === 1) return new Promise(r => { resolve = r })
+            return { readState: server(request.type === 'read' ? request.readRevision : 0, 2) }
+        })
+        markSessionSeen('s', 4)
+        resolve({ readState: server(3, 1) })
+        await vi.advanceTimersByTimeAsync(0)
+        await flushSessionReadState()
+        expect(sent.map(r => r.type === 'read' ? r.readRevision : null)).toEqual([3, 4])
+        expect(getSessionLastSeenAt('s')).toBe(4)
+        expect(JSON.parse(localStorage.getItem('hapi.sessionReadState.v1:hub-a:alice')!).s.pending).toBeUndefined()
+    })
+
+    it.each([[2, 6], [2, 7], [4, 7]])('keeps an explicit read only across a single watermark advance (v%s, revision %s)', async (returnedVersion, watermark) => {
+        markSessionSeen('s', 6, 0)
+        let resolve!: (value: { readState: SessionReadState }) => void
+        const requests: SessionReadStateRequest[] = []
+        cleanup = configureSessionReadState('hub-a:alice', async (_id, request) => {
+            requests.push({ ...request })
+            if (requests.length === 1) return new Promise(r => { resolve = r })
+            return { readState: server(watermark, returnedVersion + 1, request.expectedVersion !== returnedVersion) }
+        })
+        markListedSessionSeen({ id: 's', contentRevision: 6, readState: server(2, 1, true) })
+        resolve({ readState: server(watermark, returnedVersion, true) })
+        await vi.advanceTimersByTimeAsync(0)
+        await flushSessionReadState()
+        expect(requests[1]).toEqual({ type: 'read', readRevision: 6, expectedVersion: returnedVersion === 2 ? 2 : 1 })
+        expect(getSessionManualUnreadAt('s')).toBe(returnedVersion === 2 ? null : 0)
+    })
+
+    it.each([2, 4])('settles an explicit read whose own response still carries the marker at v%s', async version => {
+        const seen = { id: 's', contentRevision: 7, readState: server(2, 1, true) }
+        markListedSessionSeen(seen)
+        const sent: SessionReadStateRequest[] = []
+        cleanup = configureSessionReadState('hub-a:alice', async (_id, request) => {
+            sent.push({ ...request })
+            return { readState: sent.length === 1 ? server(7, version, true) : server(7, version + 1) }
+        })
+        await vi.advanceTimersByTimeAsync(0)
+        await flushSessionReadState()
+        expect(sent.map(r => r.expectedVersion)).toEqual(version === 2 ? [1, 2] : [1])
+        expect(getSessionManualUnreadAt('s')).toBe(version === 2 ? null : 0)
+    })
+
+    it.each([5, 6])('a stale rendered receipt preserves the queued explicit clear, without consuming a later marker (v%s)', async version => {
+        markListedSessionSeen({ id: 's', contentRevision: 41, readState: server(40, 5, true) })
+        markRenderedSessionSeen('s', 42, 4, undefined)
+        const send = vi.fn(async (_id: string, request: SessionReadStateRequest) => ({
+            readState: server(42, version + 1, request.expectedVersion !== version),
+        }))
+        cleanup = configureSessionReadState('hub-a:alice', send)
+        await vi.advanceTimersByTimeAsync(0)
+        expect(send).toHaveBeenCalledExactlyOnceWith('s', { type: 'read', readRevision: 42, expectedVersion: 5 })
+        expect(getSessionManualUnreadAt('s')).toBe(version === 5 ? null : 0)
+    })
+
+    it('syncs other receipts while one session keeps returning 500', async () => {
+        markSessionSeen('broken', 5)
+        markSessionSeen('healthy', 3)
+        const send = vi.fn(async (id: string) => {
+            if (id === 'broken') throw { status: 500 }
+            return { readState: server(3, 1) }
+        })
+        cleanup = configureSessionReadState('hub-a:alice', send)
+        await vi.advanceTimersByTimeAsync(0)
+        expect(send.mock.calls.map(([id]) => id)).toEqual(['broken', 'healthy'])
+        const store = JSON.parse(localStorage.getItem('hapi.sessionReadState.v1:hub-a:alice')!)
+        expect(store.broken.pending).toBeDefined()
+        expect(store.healthy.pending).toBeUndefined()
+    })
+
+    it('sends the latest intent for the next session after an in-flight 500', async () => {
+        markSessionSeen('a', 1)
+        observeSessionReadStates([{ id: 'b', readState: server(0, 2) }])
+        markSessionSeen('b', 7)
+        let fail!: (error: unknown) => void
+        const send = vi.fn(async (id: string, _request: SessionReadStateRequest) => {
+            if (id === 'a') return new Promise<{ readState: SessionReadState }>((_, reject) => { fail = reject })
+            return { readState: server(1, 4, true) }
+        })
+        cleanup = configureSessionReadState('hub-a:alice', send)
+        markSessionUnread('b', server(1, 3))
+        fail({ status: 500 })
+        await vi.advanceTimersByTimeAsync(0)
+        expect(send.mock.calls).toEqual([
+            ['a', { type: 'read', readRevision: 1, expectedVersion: 0 }],
+            ['b', { type: 'unread', expectedVersion: 3 }],
+        ])
+        expect(getSessionManualUnreadAt('b')).toBe(0)
+    })
+
+    it('rolls back a rejected operation to authoritative state', async () => {
+        markSessionSeen('s', 9)
+        cleanup = configureSessionReadState('hub-a:alice', async () => {
+            throw { status: 409, body: JSON.stringify({ readState: server(2, 3, true) }) }
+        })
+        await vi.advanceTimersByTimeAsync(0)
+        expect(getSessionLastSeenAt('s')).toBe(2)
+        expect(getSessionManualUnreadAt('s')).toBe(0)
+    })
+
+    it('stores and sends a read without crypto.randomUUID (insecure context)', async () => {
+        vi.stubGlobal('crypto', { getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto) })
+        const sent: SessionReadStateRequest[] = []
+        cleanup = configureSessionReadState('hub-a:alice', async (_id, request) => {
+            sent.push({ ...request })
+            return { readState: server(request.type === 'read' ? request.readRevision : 0, 1) }
+        })
+        expect(() => markSessionSeen('s', 5)).not.toThrow()
+        await vi.advanceTimersByTimeAsync(0)
+        await flushSessionReadState()
+        expect(sent.map(r => r.type === 'read' ? r.readRevision : null)).toEqual([5])
     })
 })

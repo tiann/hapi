@@ -1,3 +1,4 @@
+import HapiClient
 import HapiProtocol
 import SwiftUI
 import UIKit
@@ -6,13 +7,14 @@ import VisionKit
 
 /// QR scanning step: a VisionKit live scanner that feeds every recognized
 /// string through ``BindLink/parse(_:)`` (so both the companion deeplink QR
-/// and the web direct-access QR pair) and pushes the shared confirm step on
-/// success. Falls back to guidance when scanning is unsupported (Simulator,
-/// no camera) or camera access is denied.
+/// and the web direct-access QR pair) and pairs immediately on success, with
+/// inline progress/error below the scanner. Falls back to guidance when
+/// scanning is unsupported (Simulator, no camera) or camera access is denied.
 struct QRScannerView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
-    @State private var scanned: PendingPairing?
+    @Environment(AppModel.self) private var model
+    @State private var attempt = PairingAttempt()
     @State private var cameraDenied = false
     @State private var sawForeignCode = false
 
@@ -28,19 +30,23 @@ struct QRScannerView: View {
                         }
                     }
                 }
-                .navigationDestination(item: $scanned) { pending in
-                    PairingConfirmView(pending: pending)
-                }
+                .interactiveDismissDisabled(attempt.isPairing)
         }
     }
 
     @ViewBuilder
     private var scannerContent: some View {
+        #if targetEnvironment(macCatalyst)
+        scanningUnavailableView
+        #else
         if DataScannerViewController.isSupported {
-            DataScannerRepresentable(isActive: scanned == nil, onScan: handleScannedString)
+            DataScannerRepresentable(
+                isActive: !attempt.isPairing && attempt.failure == nil,
+                onScan: handleScannedString
+            )
                 .ignoresSafeArea(edges: .bottom)
                 .overlay(alignment: .bottom) {
-                    hintBar
+                    statusBar
                 }
                 .overlay {
                     if cameraDenied {
@@ -52,16 +58,48 @@ struct QRScannerView: View {
                     cameraDenied = !(await DataScannerViewController.isAvailable)
                 }
         } else {
-            ContentUnavailableView {
-                Label("Scanning unavailable", systemImage: "camera")
-            } description: {
-                Text("This device cannot scan QR codes (for example the Simulator). Go back and use manual entry instead.")
-            } actions: {
-                Button("Close") {
-                    dismiss()
-                }
-                .buttonStyle(.bordered)
+            scanningUnavailableView
+        }
+        #endif
+    }
+
+    private var scanningUnavailableView: some View {
+        ContentUnavailableView {
+            Label("Scanning unavailable", systemImage: "camera")
+        } description: {
+            Text("This device cannot scan QR codes (for example the Simulator). Go back and use manual entry instead.")
+        } actions: {
+            Button("Close") {
+                dismiss()
             }
+            .buttonStyle(.bordered)
+        }
+    }
+
+    @ViewBuilder
+    private var statusBar: some View {
+        if attempt.isPairing {
+            HStack(spacing: 8) {
+                ProgressView()
+                Text("Pairing…")
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity)
+            .background(.thinMaterial)
+        } else if let failure = attempt.failure {
+            VStack(alignment: .leading, spacing: 12) {
+                PairingErrorView(failure: failure)
+                Button("Scan Again") {
+                    attempt.failure = nil
+                }
+                .buttonStyle(.borderedProminent)
+                .frame(maxWidth: .infinity)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity)
+            .background(.thinMaterial)
+        } else {
+            hintBar
         }
     }
 
@@ -95,24 +133,22 @@ struct QRScannerView: View {
 
     /// Returns whether the payload was accepted (stops further scanning).
     private func handleScannedString(_ raw: String) -> Bool {
-        guard scanned == nil else { return true }
+        guard !attempt.isPairing, attempt.failure == nil else { return true }
         guard let link = BindLink.parse(raw) else {
             sawForeignCode = true
             return false
         }
         UINotificationFeedbackGenerator().notificationOccurred(.success)
-        scanned = PendingPairing(
-            hubUrl: link.hubUrl,
-            accessToken: link.accessToken,
-            source: .qrScan
-        )
+        sawForeignCode = false
+        attempt.pair(model, hubUrl: link.hubUrl, accessToken: link.accessToken)
         return true
     }
 }
 
+#if !targetEnvironment(macCatalyst)
 /// `DataScannerViewController` wrapped for SwiftUI, restricted to QR codes.
 /// `isActive` gates scanning so a successful scan freezes the camera while
-/// the confirm step is up and re-arms when the user navigates back.
+/// pairing runs (or its error is showing) and re-arms on "Scan Again".
 private struct DataScannerRepresentable: UIViewControllerRepresentable {
     var isActive: Bool
     var onScan: (String) -> Bool
@@ -186,3 +222,4 @@ private struct DataScannerRepresentable: UIViewControllerRepresentable {
         }
     }
 }
+#endif

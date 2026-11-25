@@ -5,6 +5,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { execSync } from 'node:child_process'
+import { recordClaudeRateLimitEvent, resolveClaudeSessionAccountKey } from '@/agent/agentQuotas'
 import type {
     SDKMessage,
     SDKUserMessage,
@@ -13,7 +14,8 @@ import type {
     SDKResultMessage
 } from '@/claude/sdk'
 import type { RawJSONLines } from '@/claude/types'
-import type { ClaudePermissionMode } from '@hapi/protocol/types'
+import { isClaudeModelPreset } from '@hapi/protocol'
+import type { PermissionModeOf, Flavors } from '@hapi/protocol/types'
 import { logger } from '@/lib'
 
 /**
@@ -54,12 +56,72 @@ export interface ConversionContext {
     // the only turn-1 signal that such a session is 1M. Used only to seed the very first
     // contextWindow estimate before result.modelUsage confirms the real value.
     selectedModel?: string | null
+    accountIdentity?: string | null
 }
 
 type PermissionResponse = {
     approved: boolean
-    mode?: ClaudePermissionMode
+    mode?: PermissionModeOf<typeof Flavors.claude>
     reason?: string
+}
+
+/**
+ * Per-model `modelUsage` counters that are cumulative across --resume.
+ * `contextWindow` and `maxOutputTokens` are model constants, passed through unchanged.
+ */
+type CumulativeModelUsageKey =
+    | 'inputTokens'
+    | 'outputTokens'
+    | 'cacheReadInputTokens'
+    | 'cacheCreationInputTokens'
+    | 'webSearchRequests'
+    | 'costUSD'
+
+const CUMULATIVE_MODEL_USAGE_KEYS: readonly CumulativeModelUsageKey[] = [
+    'inputTokens',
+    'outputTokens',
+    'cacheReadInputTokens',
+    'cacheCreationInputTokens',
+    'webSearchRequests',
+    'costUSD'
+]
+
+type ModelUsageCounters = Partial<Record<CumulativeModelUsageKey, number>>
+
+type CumulativeUsageBaseline = {
+    totalCostUsd: number
+    durationApiMs: number
+    modelUsage: Record<string, ModelUsageCounters>
+    // True when modelUsage lists every model with counters, so an absent model
+    // is new. False when a result may have advanced counters unseen.
+    modelSnapshotKnown: boolean
+    // Models whose baseline predates a result that omitted modelUsage; their
+    // counters may have advanced unseen until they are rebased.
+    staleModels: ReadonlySet<string>
+    // True once a result omitted modelUsage; an unseen model may then hold
+    // earlier counters, so only startFreshProcessBaseline restores zero.
+    modelGapSeen: boolean
+    // Per model, token counters reported earlier that are still absent, so the
+    // fallback stays active until each returns and gains a baseline.
+    missingTokenCounters: Readonly<Record<string, ReadonlySet<CumulativeModelUsageKey>>>
+}
+
+const TOKEN_COUNTER_KEYS: readonly CumulativeModelUsageKey[] = [
+    'inputTokens',
+    'outputTokens',
+    'cacheReadInputTokens',
+    'cacheCreationInputTokens'
+]
+
+/**
+ * Per-round delta of a cumulative counter, or undefined when no trustworthy
+ * delta exists (no baseline, or a value that went backwards and rebased).
+ * A restored stale snapshot still above the baseline under-reports that round; accepted.
+ */
+function perRoundDelta(current: number, previous: number | undefined): number | undefined {
+    if (previous === undefined) return undefined
+    const delta = current - previous
+    return delta >= 0 ? delta : undefined
 }
 
 /**
@@ -103,6 +165,16 @@ export class SDKToLogConverter {
     // — rather than a single sticky number — means a mid-session model switch picks up the
     // new model's own window immediately instead of inheriting the previous model's.
     private modelContextWindows = new Map<string, number>()
+    // Keys whose window came from Claude's get_context_usage. That value is the effective
+    // window (capped by DISABLE_1M / autoCompactWindow), so a result's raw contextWindow
+    // must not overwrite it.
+    private contextUsageKeys = new Set<string>()
+    private accountIdentity: string | null
+    // Cumulative cost/modelUsage/duration_api_ms survive --resume, so emit only
+    // deltas against a known baseline and omit fields when none is available.
+    private previousCumulative: CumulativeUsageBaseline | null = null
+    // Native session id that owns previousCumulative; null until learned.
+    private usageSessionId: string | null = null
 
     constructor(
         context: Omit<ConversionContext, 'parentUuid'>,
@@ -115,6 +187,7 @@ export class SDKToLogConverter {
             parentUuid: null
         }
         this.responses = responses
+        this.accountIdentity = resolveClaudeSessionAccountKey(process.env, context.accountIdentity)
     }
 
     /**
@@ -151,10 +224,59 @@ export class SDKToLogConverter {
     }
 
     /**
+     * Apply Claude's get_context_usage answer for the current session model.
+     */
+    applyContextUsage(model: string | undefined, maxTokens: number | undefined): void {
+        const key = this.resolvedContextWindowKey
+        if (!key || !this.resolvedModel || !model || typeof maxTokens !== 'number' || maxTokens <= 0) {
+            return
+        }
+        if (this.resolvedModel.replace(/\[1m\]$/, '') !== model.replace(/\[1m\]$/, '')) {
+            return
+        }
+        this.modelContextWindows.set(key, maxTokens)
+        this.contextUsageKeys.add(key)
+    }
+
+    /**
+     * The contextWindow currently resolved for this session's model — the
+     * same value `convert()` stamps onto relayed assistant usage. Undefined
+     * until a system/init or result message establishes it. The
+     * post-compaction usage refresh (claudeRemoteLauncher) uses this so its
+     * context-only sample doesn't erase the status bar's known window
+     * denominator (the reducer replaces latestUsage wholesale).
+     */
+    currentContextWindow(): number | undefined {
+        return this.resolvedContextWindowKey
+            ? this.modelContextWindows.get(this.resolvedContextWindowKey)
+            : undefined
+    }
+
+    /**
      * Update session ID (for when session changes during resume)
      */
     updateSessionId(sessionId: string): void {
         this.context.sessionId = sessionId
+        // The usage baseline belongs to one native session: a different id
+        // (new session, /clear rotation, fork) cannot be differenced against it.
+        if (this.usageSessionId !== null && this.usageSessionId !== sessionId) {
+            this.previousCumulative = null
+        }
+        this.usageSessionId = sessionId
+    }
+
+    /**
+     * Bind the session's verified Claude account/provider identity so all subsequent
+     * rate_limit_event observations from this session stay attributed to its account.
+     * Retains any credential-specific binding captured at session startup when
+     * initialize returns no verified account identity.
+     */
+    updateAccountIdentity(accountIdentity: string | null | undefined): void {
+        if (!accountIdentity) return
+        const verified = resolveClaudeSessionAccountKey({}, accountIdentity)
+        if (verified) {
+            this.accountIdentity = verified
+        }
     }
 
     /**
@@ -163,6 +285,160 @@ export class SDKToLogConverter {
     resetParentChain(): void {
         this.lastUuid = null
         this.context.parentUuid = null
+        // The usage baseline is kept: updateSessionId clears it when the native session id changes.
+    }
+
+    /**
+     * Seed a zero baseline for a process started without a prior transcript.
+     */
+    startFreshProcessBaseline(): void {
+        // A fresh process owns whatever session id it reports next.
+        this.usageSessionId = null
+        this.previousCumulative = {
+            totalCostUsd: 0,
+            durationApiMs: 0,
+            modelUsage: {},
+            modelSnapshotKnown: true,
+            staleModels: new Set(),
+            modelGapSeen: false,
+            missingTokenCounters: {}
+        }
+    }
+
+    /**
+     * Advance the cumulative baseline for a result that produces no transcript
+     * entry, so the next round does not absorb its cost, tokens and API time.
+     */
+    consumeResultForAccounting(resultMsg: SDKResultMessage): void {
+        this.consumeCumulativeDeltas(resultMsg)
+    }
+
+    /**
+     * Diff a result's cumulative fields against the previous raw values, then
+     * advance the baseline even for errored/compaction rounds and backwards
+     * values. Fields without a trustworthy delta are omitted, not emitted raw.
+     */
+    private consumeCumulativeDeltas(resultMsg: SDKResultMessage): {
+        totalCostUsd: number | undefined
+        durationApiMs: number | undefined
+        modelUsage: SDKResultMessage['modelUsage']
+    } {
+        // A result from another native session (e.g. a background task of a
+        // session cleared after binding) is neither diffed nor used as a baseline.
+        if (this.usageSessionId !== null && typeof resultMsg.session_id === 'string'
+            && resultMsg.session_id !== this.usageSessionId) {
+            return { totalCostUsd: undefined, durationApiMs: undefined, modelUsage: undefined }
+        }
+        const previous = this.previousCumulative
+        const totalCostUsd = perRoundDelta(resultMsg.total_cost_usd, previous?.totalCostUsd)
+        const durationApiMs = typeof resultMsg.duration_api_ms === 'number'
+            ? perRoundDelta(resultMsg.duration_api_ms, previous?.durationApiMs)
+            : undefined
+
+        let modelUsage = resultMsg.modelUsage
+        // Retain baselines for models not present in this result (e.g. a
+        // subagent that only appears in some rounds) so their next appearance
+        // is still diffed correctly.
+        const nextModelUsage: Record<string, ModelUsageCounters> = { ...(previous?.modelUsage ?? {}) }
+        // After a result that hid modelUsage (or with no baseline) every model's
+        // counters may have advanced unseen, so none can be differenced.
+        const snapshotUnknown = previous?.modelSnapshotKnown !== true
+        const staleModels = new Set(previous?.staleModels ?? [])
+        const nextMissing: Record<string, ReadonlySet<CumulativeModelUsageKey>> = { ...(previous?.missingTokenCounters ?? {}) }
+        let tokenDeltaIncomplete = snapshotUnknown
+        if (resultMsg.modelUsage) {
+            const perRoundModelUsage: NonNullable<SDKResultMessage['modelUsage']> = {}
+            for (const [model, usage] of Object.entries(resultMsg.modelUsage)) {
+                const perRoundUsage = { ...usage } as Record<string, unknown>
+                const modelBaseline = previous?.modelUsage?.[model]
+                // Only a known snapshot proves an absent model is new in this
+                // process, so its raw counters are its per-round values.
+                const isNewModel = modelBaseline === undefined && previous?.modelSnapshotKnown === true
+                // A snapshot gap or a stale baseline means this model cannot be
+                // differenced; rebase on its raw values and fall back to usage.
+                const untrusted = snapshotUnknown
+                    || staleModels.has(model)
+                    || (modelBaseline === undefined && previous?.modelGapSeen === true)
+                if (untrusted) tokenDeltaIncomplete = true
+                staleModels.delete(model)
+                const counters: ModelUsageCounters = untrusted ? {} : { ...(modelBaseline ?? {}) }
+                const missing = new Set(previous?.missingTokenCounters?.[model] ?? [])
+                // Rebasing drops the old values but not which token counters the
+                // model reported: one still absent keeps the fallback active.
+                if (untrusted) {
+                    for (const key of TOKEN_COUNTER_KEYS) {
+                        if (modelBaseline?.[key] !== undefined) missing.add(key)
+                    }
+                }
+                let hasComparableDelta = false
+                let hasNonZeroDelta = false
+                for (const key of CUMULATIVE_MODEL_USAGE_KEYS) {
+                    const current = (usage as Record<string, unknown>)[key]
+                    if (typeof current !== 'number') {
+                        // A counter that vanished loses its baseline and rebases when it returns.
+                        if (counters[key] !== undefined || missing.has(key)) {
+                            delete counters[key]
+                            if (TOKEN_COUNTER_KEYS.includes(key)) {
+                                missing.add(key)
+                                tokenDeltaIncomplete = true
+                            }
+                        }
+                        continue
+                    }
+                    missing.delete(key)
+                    counters[key] = current
+                    if (untrusted) {
+                        delete perRoundUsage[key]
+                        continue
+                    }
+                    if (isNewModel) {
+                        perRoundUsage[key] = current
+                        continue
+                    }
+                    const delta = perRoundDelta(current, modelBaseline?.[key])
+                    if (delta !== undefined) {
+                        perRoundUsage[key] = delta
+                        hasComparableDelta = true
+                        if (delta > 0) hasNonZeroDelta = true
+                    } else {
+                        delete perRoundUsage[key]
+                        if (TOKEN_COUNTER_KEYS.includes(key)) tokenDeltaIncomplete = true
+                    }
+                }
+                nextModelUsage[model] = counters
+                nextMissing[model] = missing
+                // A baseline with no counter movement means this model did no work this round.
+                if (modelBaseline !== undefined && hasComparableDelta && !hasNonZeroDelta) continue
+                perRoundModelUsage[model] = perRoundUsage as NonNullable<SDKResultMessage['modelUsage']>[string]
+            }
+            // A partial token breakdown would be summed with the gap as zero, so
+            // drop all token counters and let the round's usage stand in.
+            // costUSD keeps its own per-model delta: nothing sums it across
+            // models and it cannot understate a token total.
+            if (tokenDeltaIncomplete) {
+                for (const usage of Object.values(perRoundModelUsage)) {
+                    for (const key of TOKEN_COUNTER_KEYS) delete (usage as Record<string, unknown>)[key]
+                }
+            }
+            modelUsage = perRoundModelUsage
+        }
+
+        if (resultMsg.modelUsage === undefined) {
+            for (const model of Object.keys(nextModelUsage)) staleModels.add(model)
+        }
+
+        this.previousCumulative = {
+            totalCostUsd: resultMsg.total_cost_usd,
+            durationApiMs: resultMsg.duration_api_ms,
+            modelUsage: nextModelUsage,
+            // A result without modelUsage may hide advanced counters.
+            modelSnapshotKnown: resultMsg.modelUsage !== undefined,
+            staleModels,
+            missingTokenCounters: nextMissing,
+            modelGapSeen: previous?.modelGapSeen === true || resultMsg.modelUsage === undefined
+        }
+
+        return { totalCostUsd, durationApiMs, modelUsage }
     }
 
     /**
@@ -173,6 +449,8 @@ export class SDKToLogConverter {
     private convertRateLimitEvent(sdkMessage: SDKMessage): RawJSONLines | null {
         const info = (sdkMessage as any).rate_limit_info
         if (typeof info !== 'object' || info === null) return null
+
+        recordClaudeRateLimitEvent(info, process.env, this.accountIdentity)
 
         const { status, resetsAt, utilization, rateLimitType } = info
 
@@ -245,7 +523,9 @@ export class SDKToLogConverter {
             isSidechain = true;
             parentToolUseId = (sdkMessage as any).parent_tool_use_id;
             parentUuid = this.sidechainLastUUID.get((sdkMessage as any).parent_tool_use_id) ?? null;
-            this.sidechainLastUUID.set((sdkMessage as any).parent_tool_use_id!, uuid);
+            if (sdkMessage.type !== 'result') {
+                this.sidechainLastUUID.set((sdkMessage as any).parent_tool_use_id!, uuid);
+            }
         }
         const baseFields = {
             parentUuid: parentUuid,
@@ -280,6 +560,7 @@ export class SDKToLogConverter {
                 if (userMsg.isSynthetic === true || userMsg.isMeta === true) {
                     logMessage.isMeta = true
                 }
+
 
                 // Check if this is a tool result and add mode if available
                 if (Array.isArray(userMsg.message.content)) {
@@ -325,7 +606,9 @@ export class SDKToLogConverter {
                     type: 'assistant',
                     message: assistantMsg.message,
                     // Assistant messages often have additional fields
-                    requestId: (assistantMsg as any).requestId
+                    requestId: (assistantMsg as any).requestId,
+                    // Set on synthetic API error messages; the web renders these as errors
+                    error: (assistantMsg as any).error
                 }
                 // if (assistantMsg.message.content && Array.isArray(assistantMsg.message.content)) {
                 //     for (const content of assistantMsg.message.content) {
@@ -343,6 +626,18 @@ export class SDKToLogConverter {
                 // System messages with subtype 'init' might update session ID
                 if (systemMsg.subtype === 'init' && systemMsg.session_id) {
                     this.updateSessionId(systemMsg.session_id)
+                }
+
+                if (systemMsg.subtype === 'init') {
+                    const initAccount = (systemMsg as unknown as { account?: { email?: unknown }; email?: unknown }).account
+                    const initEmail = typeof initAccount?.email === 'string'
+                        ? initAccount.email
+                        : typeof (systemMsg as unknown as { email?: unknown }).email === 'string'
+                            ? (systemMsg as unknown as { email: string }).email
+                            : null
+                    if (initEmail) {
+                        this.updateAccountIdentity(initEmail)
+                    }
                 }
 
                 // Capture the resolved model name on init. The remote launcher re-emits
@@ -368,7 +663,10 @@ export class SDKToLogConverter {
                         // first result lands. Guarding/seeding on resolvedContextWindowKey
                         // (not the bare init id) is what forces a re-seed when switching
                         // fable[1m] <-> fable, whose bare ids would otherwise be identical.
+                        // The bare preset aliases (opus/fable/sonnet/haiku) now resolve to models
+                        // with a native 1M window, so selecting one seeds 1M as well.
                         const seedIs1m = (this.context.selectedModel?.endsWith('[1m]') ?? false)
+                            || isClaudeModelPreset(this.context.selectedModel)
                             || systemMsg.model.endsWith('[1m]')
                         this.modelContextWindows.set(this.resolvedContextWindowKey, seedIs1m ? 1_000_000 : 200_000)
                     }
@@ -389,11 +687,7 @@ export class SDKToLogConverter {
             }
 
             case 'result': {
-                // Result messages are not converted to log messages
-                // They're SDK-specific messages that indicate session completion
-                // Not part of the actual conversation log.
-                //
-                // But they carry the authoritative per-model contextWindow. modelUsage is
+                // Result messages carry the authoritative per-model contextWindow. modelUsage is
                 // keyed by the same raw model id the CLI reports on system/init, so the
                 // entry for the current session model is stored under resolvedContextWindowKey
                 // (which folds in the "[1m]" for fable), matching what assistant lookups use.
@@ -410,8 +704,29 @@ export class SDKToLogConverter {
                             const key = (this.resolvedModel && model === this.resolvedModel)
                                 ? (this.resolvedContextWindowKey ?? model)
                                 : model
-                            this.modelContextWindows.set(key, cw)
+                            if (!this.contextUsageKeys.has(key)) {
+                                this.modelContextWindows.set(key, cw)
+                            }
                         }
+                    }
+                }
+                // These fields are cumulative across resumes; emit only a
+                // trustworthy per-round delta, never a lifetime total.
+                const perRound = resultMsg.hapi_skip_usage === true
+                    ? { totalCostUsd: undefined, durationApiMs: undefined, modelUsage: undefined }
+                    : this.consumeCumulativeDeltas(resultMsg)
+                logMessage = {
+                    ...baseFields,
+                    type: 'system',
+                    subtype: 'turn_duration',
+                    durationMs: resultMsg.duration_ms,
+                    resultSummary: {
+                        usage: resultMsg.usage,
+                        modelUsage: perRound.modelUsage,
+                        ...(perRound.totalCostUsd !== undefined ? { total_cost_usd: perRound.totalCostUsd } : {}),
+                        num_turns: resultMsg.num_turns,
+                        duration_ms: resultMsg.duration_ms,
+                        ...claudeGenerationFields(resultMsg, perRound.durationApiMs)
                     }
                 }
                 break
@@ -456,7 +771,7 @@ export class SDKToLogConverter {
         }
 
         // Update last UUID for parent tracking
-        if (logMessage && logMessage.type !== 'summary') {
+        if (logMessage && logMessage.type !== 'summary' && sdkMessage.type !== 'result') {
             this.lastUuid = uuid
         }
 
@@ -564,4 +879,23 @@ export function convertSDKToLog(
 ): RawJSONLines | null {
     const converter = new SDKToLogConverter(context, responses)
     return converter.convert(sdkMessage)
+}
+
+/**
+ * tok/s fields for the round: `generationMs` is the per-round delta of Claude
+ * Code's own API-active time (`duration_api_ms`, with tool execution and
+ * permission waits already outside it), paired with the round's output tokens.
+ * Errored rounds and manual compaction turns have no meaningful generation
+ * rate, so they emit nothing rather than a wrong one.
+ */
+function claudeGenerationFields(
+    resultMsg: SDKResultMessage,
+    generationMs: number | undefined
+): { generation_ms: number; generation_output_tokens: number } | Record<string, never> {
+    if (resultMsg.is_error || resultMsg.hapi_compact_turn === true) return {}
+    const outputTokens = resultMsg.usage?.output_tokens
+    const measurable = (value: unknown): value is number =>
+        typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+    if (!measurable(generationMs) || !measurable(outputTokens)) return {}
+    return { generation_ms: generationMs, generation_output_tokens: outputTokens }
 }

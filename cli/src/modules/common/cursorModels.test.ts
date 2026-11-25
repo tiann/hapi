@@ -273,6 +273,50 @@ describe('listCursorModels', () => {
         expect(spawnMock).not.toHaveBeenCalled()
     })
 
+    test('attaches variant cliModelSkus to parameterized bare base catalogs (#1818)', async () => {
+        vi.mocked(isAgentAcpTransportActive).mockReturnValue(true)
+        const bareCatalog = [
+            { modelId: 'composer-2.5', name: 'Composer 2.5' },
+            { modelId: 'claude-opus-4-8', name: 'Claude Opus 4.8' },
+            { modelId: 'grok-4.6', name: 'Cursor Grok 4.6' }
+        ]
+        setCursorAcpModelsSnapshot({
+            availableModels: bareCatalog,
+            currentModelId: 'composer-2.5',
+            parameterized: true
+        })
+        writeSharedCursorModelsCache({
+            success: true,
+            parameterized: true,
+            availableModels: bareCatalog,
+            currentModelId: 'composer-2.5',
+            cliModelSkus: [
+                { modelId: 'composer-2.5', name: 'Composer 2.5' },
+                { modelId: 'composer-2.5-fast', name: 'Composer 2.5 Fast' },
+                { modelId: 'claude-opus-4-8-low', name: 'Claude Opus 4.8 Low' },
+                { modelId: 'cursor-grok-4.6-high', name: 'Cursor Grok 4.6' }
+            ]
+        })
+
+        const result = await listCursorModels()
+
+        expect(result.availableModels?.map((row) => row.modelId)).toEqual([
+            'composer-2.5',
+            'claude-opus-4-8',
+            'grok-4.6'
+        ])
+        // Parameterized ACP sessions apply fast/effort over config options, so the
+        // spawn-safe variant skus stay attached to their bare base rows — including
+        // CLI skus that keep Cursor's legacy `cursor-` family prefix.
+        expect(result.cliModelSkus?.map((row) => row.modelId)).toEqual([
+            'composer-2.5',
+            'composer-2.5-fast',
+            'claude-opus-4-8-low',
+            'cursor-grok-4.6-high'
+        ])
+        expect(spawnMock).not.toHaveBeenCalled()
+    })
+
     test('enriches live ACP snapshot with fuller shared cliModelSkus while lock is active', async () => {
         vi.mocked(isAgentAcpTransportActive).mockReturnValue(true)
         setCursorAcpModelsSnapshot({

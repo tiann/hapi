@@ -7,10 +7,15 @@ React Mini App / PWA for monitoring and controlling hapi sessions.
 - Session list with status, pending approvals, todos, and summaries.
 - Chat view with streaming updates and message sending.
 - Permission approval and denial workflows.
+- Codex `request_user_input` choices honor `isOther`: **None of the above**
+  focuses optional notes, supports empty notes, and preserves the canonical
+  wire value across languages. Recorded other answers and notes remain visible
+  in live and historical cards; Pi/MCP forms without the flag are unchanged.
 - Permission mode and model selection.
 - Machine list and remote session spawn.
 - File browser and git status/diff views.
 - PWA install prompt and offline banner.
+- Optional unread-session count on the Windows taskbar when installed as an Edge/Chrome PWA (toggleable in Display settings; off by default).
 
 ## Runtime behavior
 
@@ -18,6 +23,16 @@ React Mini App / PWA for monitoring and controlling hapi sessions.
 - When opened in a normal browser, you can log in with `CLI_API_TOKEN:<namespace>` (or `CLI_API_TOKEN` for the default namespace).
 - The login screen includes a top-right hub picker; if unset, the app uses the same origin it was loaded from.
 - Live updates come from the hub via SSE.
+- Temporary sign-in connection failures show a reconnecting screen with automatic retry.
+  Each attempt has a 15-second deadline; Retry now cancels a stalled attempt.
+  Browser offline status and HTTP server failures have separate diagnostics. An already
+  authenticated tab keeps its cached chats browsable while reconnecting.
+  Aborted or incomplete authentication responses retain the current sign-in.
+  If live updates remain connected, a failed sign-in refresh gets its own warning
+  rather than reporting a hub outage.
+  Browser users can explicitly sign out of recovery before selecting another hub;
+  the old attempt and pairing-link credential are cleared before hub selection.
+- Session `@` suggestions require conversation content, including untitled conversations. Names and directory labels affect display/search, not eligibility; empty stubs stay excluded. See the [session list behavior guide](../docs/guide/session-list.md) for search and picker rules.
 
 ## Routes
 
@@ -30,14 +45,17 @@ See `src/router.tsx` for route definitions.
 - `/sessions/$sessionId/files` - File browser with git status.
 - `/sessions/$sessionId/file` - File viewer with diff support.
 - `/sessions/$sessionId/terminal` - Terminal interface.
+- `/browse` - Workspace browser, enabled by the runner's configured workspace roots.
 - `/share` - Share-target landing (Web Share Target POST → `?id=`, or native `/share#url=&text=&title=`).
 - `/settings` - Settings category hub (mobile) and responsive master-detail shell.
 - `/settings/general` - Language preferences.
 - `/settings/display` - Appearance, typography, colors, and session list preferences.
-- `/settings/chat` - Message input, tool card, and conversation color preferences.
+- `/settings/chat` - Message input, concise view, tool card, and conversation color preferences.
 - `/settings/voice` - Everyday voice assistant preferences.
 - `/settings/voice/voices` - Full-page voice picker.
 - `/settings/voice/advanced` - Voice persona, tuning, and diagnostics.
+- `/settings/machines` - Machine management and runner status.
+- `/settings/storage` - SQLite storage sizes for the hub owner.
 - `/settings/usage` - Cache-aware token usage dashboard for the hub owner.
 - `/settings/about` - Application links and version information.
 
@@ -46,24 +64,50 @@ See `src/router.tsx` for route definitions.
 ### Session list (`src/components/SessionList.tsx`)
 
 - Active/inactive status indicator.
+- Title-side activity/unread indicator: grey spinner while work runs with all output read, blue spinner while it runs with unread output, and a theme-foreground dot for unread content when no work is running. Work includes a foreground turn and background-only tasks (such as a background subagent); the spinner's label says which. Reading clears the unread state without stopping the spinner. Permission/input requests keep their own symbols; the title indicator does not certify a successful turn outcome, and background work is owned by the title rather than duplicated on the agent icon.
 - Session title from name, summary, or path.
 - Todo progress display.
 - Pending permission request count.
 - Agent flavor label (claude/codex/gemini).
 - Model mode display.
+- One Sort and filter menu combines the persisted sort/status/unread view with transient update-date and scratchlist filters and machine selection; Reset to default clears all conditions. Its popover sizes to its content, centers on the trigger, and stays within the viewport.
+- Pending-request status and session-row symbols distinguish questions from approvals and locate the correlated card; async questions open the live question panel.
+- Agent name and model display.
+- Metadata search with relevance ranking, wildcard matching, and date/unread/machine filters.
+- Stable user-input ordering across sessions and machine/project groups; agent output and status updates do not reorder ordinary rows.
+- Machine/project grouping, pinned and in-progress sections, and configurable collapsed previews.
+
+### Session title lock
+
+The rename dialog has a per-session lock beside the title input. New and existing
+sessions are unlocked by default. Saving a manual name does not automatically lock
+it: agents may still rename an unlocked session. Locking prevents agent title
+updates; users can still edit or generate a title and save it while locked.
+Save applies the title and lock together; Cancel discards both changes. Unlocking
+allows future agent title updates without immediately changing the current title.
+The Hub persists and enforces the lock across clients, restarts, and resume.
 
 ### Chat interface (`src/components/SessionChat.tsx`)
 
 - Message thread with infinite scroll.
+- Concise view (header toggle or `/settings/chat`, per device): shows only user input and each round's final reply (`src/chat/conciseView.ts`). Permission requests, questions, plan proposals, user shell commands, and errors stay visible; the full thread returns while a search target is active.
 - Composer for sending messages.
-- Permission mode toggle (default/acceptEdits/auto/bypassPermissions/plan).
-- Model selection (default/sonnet/sonnet[1m]/opus/opus[1m]).
-- Session abort and mode switch controls.
+- Composer send shortcut: Alt+S (independent of the Enter behavior setting).
+- A collapsible **Awaiting your reply** section above the composer collects all live non-blocking `request_user_input` questions, including those outside the loaded transcript. Answer there or dismiss individual questions without sending an answer or stopping the agent. Collapsing preserves drafts; blocking permissions retain their existing controls.
+- Permission mode and model selection for supported agents.
+  Cursor Auto uses CLI Auto for new/resumed sessions configured with Auto. Switching a live session to Auto when ACP does not advertise a literal Auto option relaunches the Cursor ACP process in place under `--model auto` while preserving the hub session id.
+- Session abort and handoff controls.
+- Codex **Continue planning** hides the current proposal's action menu locally
+  and focuses the composer without sending a message or replacing its draft.
+  The plan document remains readable; recycled cards stay dismissed and new
+  proposals get fresh action menus.
 - Context size display.
 - Per-session scratchlist (`src/components/AssistantChat/ScratchlistPanel.tsx`)
   - Workbench panel for held notes/drafts; **distinct from the queue**.
   - Add/delete/reorder entries; promote to composer (copy) or queue (send).
-  - Persists across reloads via `localStorage` keyed per session.
+  - Persists in the Hub and syncs across clients; `localStorage` is an offline cache and migration source.
+  - Entries and attachments saved on the hub and synced across devices.
+  - Reordering affects only the current view and resets when entries refresh.
   - Keyboard shortcut: Ctrl/Cmd+Shift+S to focus the add-input.
 
 ### File browser (`src/routes/sessions/files.tsx`)
@@ -80,12 +124,12 @@ See `src/router.tsx` for route definitions.
 ### Terminal (`src/routes/sessions/terminal.tsx`)
 
 - Remote terminal via xterm.js
-- Real-time via Socket.IO
+- Real-time via Socket.IO `/terminal`
 - Resize handling
 
 ### Voice assistant
 
-- ElevenLabs integration (@elevenlabs/react)
+- ElevenLabs (@elevenlabs/react), Gemini Live, and Qwen Realtime backends
 - Real-time voice control
 - Standard and realtime composer dictation with provider capability selection
 
@@ -94,10 +138,29 @@ See `src/router.tsx` for route definitions.
 Modular session creation:
 
 - Machine selector
-- Directory input with recent paths
+- Directory input with recent paths. The path tail is revealed after loading or selecting a path and after leaving the editor. Unfocused inputs support horizontal touch scrolling; focused inputs retain native editing and text selection.
 - Agent type selector
 - Model selector
-- Permission mode toggle (YOLO mode)
+- Per-agent permission, effort, and collaboration controls when supported
+
+### First-User-Experience (FUE)
+
+For a new, non-essential feature whose affordance would otherwise be hard to
+discover, consider the existing FUE primitive rather than a permanent UI block.
+Optional, not a requirement for every feature or a reason to expand a bug fix.
+
+- `src/lib/use-fue.ts`: `useFue(featureId)` returns `{ status, engage, dismiss }`; acknowledgement is isolated per feature in `hapi.fue.v1.<featureId>` localStorage keys.
+- `src/components/Fue.tsx`: `FueDot` marks the affordance; `FueCallout` explains it while `status === 'engaging'`.
+- Dismissal requires an affirmative user action ("Got it"), never an auto-timeout.
+- The FUE dot and feature-specific badges/counters are mutually exclusive; onboarding wins until acknowledged.
+- Opt in per feature; skip the wrapper if an upstream component already supplies onboarding.
+- Working example: `ScratchlistToggleButton` in `src/components/AssistantChat/ComposerButtons.tsx`. Use the source rather than maintaining a copied example here.
+
+### Browser settings export/import
+
+Settings → About exports and imports browser-local settings as JSON. Only keys in `SETTINGS_STORAGE_KEYS` (`src/lib/settingsTransfer.ts`) move; import replaces them and reloads.
+
+A new `hapi*` localStorage key must be classified: in `SETTINGS_STORAGE_KEYS` if the user chose it to configure the app and it makes sense in another browser on the same hub, otherwise in `NOT_SETTINGS_KEYS` (`src/lib/settingsTransfer.test.ts`). Data, drafts, last-used values, per-session or per-path UI state, dismissals, device-bound state, credentials, and trust grants are not settings. The test fails on unclassified keys.
 
 ## Authentication
 
@@ -122,6 +185,19 @@ See `src/hooks/useSSE.ts`.
 - SSE connection to `/api/events`.
 - Session/message/machine update events.
 - Automatic cache invalidation on events.
+
+## Syntax highlighting
+
+Code fences load their Shiki grammar on demand and reuse one highlighter. Plain
+text and unknown languages fetch no grammars; aliases, line wrapping and the
+150 ms streaming debounce are retained. A Markdown source fence loads the full
+supported set to preserve its embedded-language colors. Failed loads or rendering
+fall back to the current plain text instead of retaining an older code block.
+
+The PWA caches optional grammar/theme chunks after use, outside its install-time
+precache. Previously used grammars remain available offline; an unseen language
+falls back to plain text while offline. Only successful JavaScript responses are
+cached, so SSO HTML/redirects cannot replace a grammar module.
 
 ## Stack
 
@@ -194,3 +270,36 @@ bun run build:web -- --base /<repo>/
 4. Open the static site, click the top-right Hub button on the login screen, and enter the hapi hub origin.
 
 Clear the hub override in the same dialog to return to same-origin behavior.
+
+## Shared Passkeys
+
+Web and native apps use RP ID `auth.hapi.run`. Web registration/sign-in opens
+a popup on the isolated static authentication origin; the Hub performs all
+verification. The opener keeps the PKCE verifier and exchanges only a short-lived
+authorization code. Configure `HAPI_PUBLIC_URL` as the canonical HTTPS Hub origin.
+Separately hosted web apps need an explicit Hub `CORS_ORIGINS` entry for their
+callback origin. Wildcards do not authorize authentication callbacks. Popups
+and the opener relationship must be allowed; do not set COOP headers that sever
+the cross-origin popup/opener relationship on either site.
+
+Build the independent authentication site with `bun run build:passkey-site`.
+Deploy **only `website/dist/auth/`** to `auth.hapi.run`, not the marketing app.
+Serve the supplied `_headers` policies (or equivalent host configuration),
+including CSP, frame restrictions, origin-only referrers and no-store, and preserve the
+`.well-known` files. No third-party scripts, analytics, or service worker belong
+on this origin. The Hub callback path `/passkey/callback` must serve the web
+app shell (including on separately hosted static deployments).
+
+See the [authentication contract](../docs/api/client-contract/auth.md#passkeys-web)
+for transaction, challenge/account binding, and code-exchange details.
+
+The bridge uses `Referrer-Policy: strict-origin`: only the authentication origin
+is disclosed, never its fragment or path. Do not replace it with `no-referrer`:
+Chromium otherwise serializes a cross-origin form POST's `Origin` as `null`,
+which the Hub correctly rejects. Hub ceremony responses remain `no-referrer`.
+
+Browser regression: `bun run test:passkey:browser` uses Chromium's virtual
+authenticator against the production Hub and built static site, with all page
+requests intercepted locally. It checks both web-created → native and
+native-created → web authentication. Install the normal Playwright Chromium
+build, or use an existing Chrome with `PLAYWRIGHT_CHANNEL=chrome`.

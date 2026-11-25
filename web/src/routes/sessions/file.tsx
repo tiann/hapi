@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useParams, useSearch } from '@tanstack/react-router'
 import type { GitCommandResponse } from '@/types/api'
 import { FileIcon } from '@/components/FileIcon'
-import { CopyIcon, CheckIcon } from '@/components/icons'
+import { CopyIcon, CheckIcon, WrapIcon } from '@/components/icons'
 import { useAppContext } from '@/lib/app-context'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
@@ -14,34 +14,26 @@ import { useTranslation } from '@/lib/use-translation'
 import { decodeBase64 } from '@/lib/utils'
 import { ImagePreview } from '@/components/ImagePreview'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
+import { HtmlFilePreview } from '@/components/HtmlFilePreview'
+import { isHtmlFile } from '@/lib/file-html-preview'
+import { ExpandableErrorMessage } from '@/components/ExpandableErrorMessage'
 import { formatFileMetadata } from '@/lib/file-metadata'
 import {
     getInitialMarkdownPreviewMode,
     isMarkdownFile,
     persistMarkdownPreviewMode,
+    resolveImageMimeType,
     type MarkdownPreviewMode,
 } from '@/lib/file-markdown-preview'
 import { downloadBase64File } from '@/lib/file-download'
+import { useCodeWrap } from '@/hooks/useCodeWrap'
+import { useSession } from '@/hooks/queries/useSession'
 
 const MAX_COPYABLE_FILE_BYTES = 1_000_000
 const FILE_SCROLL_KEY_PREFIX = 'hapi-file-scroll-'
 
 function getFileScrollStorageKey(sessionId: string, filePath: string, staged: boolean | undefined): string {
     return `${FILE_SCROLL_KEY_PREFIX}${sessionId}:${encodeURIComponent(filePath)}:${staged === true ? 'staged' : 'unstaged'}`
-}
-const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
-    apng: 'image/apng',
-    avif: 'image/avif',
-    bmp: 'image/bmp',
-    gif: 'image/gif',
-    ico: 'image/x-icon',
-    jpeg: 'image/jpeg',
-    jpg: 'image/jpeg',
-    png: 'image/png',
-    svg: 'image/svg+xml',
-    tif: 'image/tiff',
-    tiff: 'image/tiff',
-    webp: 'image/webp'
 }
 
 function decodePath(value: string): string {
@@ -144,8 +136,17 @@ function FileContentHeader(props: {
     label: string
     copied: boolean
     copyLabel: string
-    onCopy: () => void
+    onCopy?: () => void
+    codeWrap?: boolean
+    wrapEnableLabel?: string
+    wrapDisableLabel?: string
+    onToggleWrap?: () => void
 }) {
+    const showWrapToggle = props.onToggleWrap !== undefined
+        && props.wrapEnableLabel !== undefined
+        && props.wrapDisableLabel !== undefined
+    const wrapLabel = props.codeWrap ? props.wrapDisableLabel : props.wrapEnableLabel
+
     return (
         <div
             data-hapi-file-content-header="true"
@@ -154,15 +155,34 @@ function FileContentHeader(props: {
             <div className="min-w-0 flex-1 truncate font-mono text-[11px] uppercase tracking-[0.08em] text-[var(--app-code-header-fg)]">
                 {props.label}
             </div>
-            <button
-                type="button"
-                onClick={props.onCopy}
-                className="shrink-0 rounded-md p-1 text-[var(--app-code-header-fg)] transition-colors hover:bg-[var(--app-code-copy-hover-bg)] hover:text-[var(--app-fg)]"
-                title={props.copyLabel}
-                aria-label={props.copyLabel}
-            >
-                {props.copied ? <CheckIcon className="h-3.5 w-3.5" /> : <CopyIcon className="h-3.5 w-3.5" />}
-            </button>
+            <div className="flex shrink-0 items-center gap-1">
+                {showWrapToggle ? (
+                    <button
+                        type="button"
+                        data-hapi-code-wrap-toggle="true"
+                        data-hapi-wrap-enable-label={props.wrapEnableLabel}
+                        data-hapi-wrap-disable-label={props.wrapDisableLabel}
+                        onClick={props.onToggleWrap}
+                        className={`rounded-md p-1 transition-colors hover:bg-[var(--app-code-copy-hover-bg)] hover:text-[var(--app-fg)] ${props.codeWrap ? 'text-[var(--app-fg)]' : 'text-[var(--app-code-header-fg)]'}`}
+                        title={wrapLabel}
+                        aria-label={wrapLabel}
+                        aria-pressed={props.codeWrap}
+                    >
+                        <WrapIcon className="h-3.5 w-3.5" />
+                    </button>
+                ) : null}
+                {props.onCopy ? (
+                    <button
+                        type="button"
+                        onClick={props.onCopy}
+                        className="rounded-md p-1 text-[var(--app-code-header-fg)] transition-colors hover:bg-[var(--app-code-copy-hover-bg)] hover:text-[var(--app-fg)]"
+                        title={props.copyLabel}
+                        aria-label={props.copyLabel}
+                    >
+                        {props.copied ? <CheckIcon className="h-3.5 w-3.5" /> : <CopyIcon className="h-3.5 w-3.5" />}
+                    </button>
+                ) : null}
+            </div>
         </div>
     )
 }
@@ -173,14 +193,6 @@ function resolveLanguage(path: string): string | undefined {
     const ext = parts[parts.length - 1]?.toLowerCase()
     if (!ext) return undefined
     return langAlias[ext] ?? ext
-}
-
-function resolveImageMimeType(path: string): string | null {
-    const parts = path.split('.')
-    if (parts.length <= 1) return null
-    const ext = parts[parts.length - 1]?.toLowerCase()
-    if (!ext) return null
-    return IMAGE_MIME_BY_EXTENSION[ext] ?? null
 }
 
 function getUtf8ByteLength(value: string): number {
@@ -211,13 +223,20 @@ export default function FilePage() {
     const goBack = useAppGoBack()
     const { sessionId } = useParams({ from: '/sessions/$sessionId/file' })
     const search = useSearch({ from: '/sessions/$sessionId/file' })
+    const { session } = useSession(api, sessionId)
     const encodedPath = typeof search.path === 'string' ? search.path : ''
     const staged = search.staged
+    const markdownLinkSearch = useMemo(
+        () => ({ origin: search.origin, tab: search.tab, query: search.query }),
+        [search.origin, search.tab, search.query]
+    )
 
     const filePath = useMemo(() => decodePath(encodedPath), [encodedPath])
     const fileName = filePath.split('/').pop() || filePath || t('file.page.fallbackName')
     const imageMimeType = useMemo(() => resolveImageMimeType(filePath), [filePath])
     const markdownFile = useMemo(() => isMarkdownFile(filePath), [filePath])
+    const htmlFile = useMemo(() => isHtmlFile(filePath), [filePath])
+    const previewableFile = markdownFile || htmlFile
 
     const diffQuery = useQuery({
         queryKey: queryKeys.gitFileDiff(sessionId, filePath, staged),
@@ -260,9 +279,9 @@ export default function FilePage() {
 
     const language = useMemo(() => imageMimeType ? undefined : resolveLanguage(filePath), [filePath, imageMimeType])
     const [markdownMode, setMarkdownMode] = useState<MarkdownPreviewMode>(getInitialMarkdownPreviewMode)
-    const showMarkdownSource = !markdownFile || markdownMode === 'source'
+    const showMarkdownSource = !previewableFile || markdownMode === 'source'
     const highlighted = useShikiHighlighter(
-        imageMimeType || (markdownFile && !showMarkdownSource) ? '' : decodedContent,
+        imageMimeType || (previewableFile && !showMarkdownSource) ? '' : decodedContent,
         language
     )
     const contentSizeBytes = useMemo(
@@ -277,6 +296,7 @@ export default function FilePage() {
     const canDownload = fileContentResult?.success === true && Boolean(fileContentResult.content)
 
     const [displayMode, setDisplayMode] = useState<'diff' | 'file'>('diff')
+    const { codeWrap, setCodeWrap } = useCodeWrap()
     const fileScrollRef = useRef<HTMLDivElement>(null)
     const restoredScrollKeyRef = useRef<string | null>(null)
     const fileScrollKey = useMemo(
@@ -322,6 +342,34 @@ export default function FilePage() {
         restoreFileScroll()
         restoredScrollKeyRef.current = fileScrollKey
     }, [diffQuery.isLoading, fileQuery.isLoading, fileScrollKey, restoreFileScroll])
+    useLayoutEffect(() => {
+        const element = fileScrollRef.current
+        if (!element) return
+        const content = element.querySelector<HTMLElement>('.file-preview-scroll-content')
+
+        const updateScrollbarCompensation = () => {
+            const scrollbarWidth = Math.max(0, element.offsetWidth - element.clientWidth)
+            element.style.setProperty('--file-preview-scrollbar-compensation', `${scrollbarWidth}px`)
+            const contentWidth = content?.getBoundingClientRect().width ?? element.clientWidth
+            const contentOffset = scrollbarWidth > 0
+                ? Math.min(
+                    scrollbarWidth / 2,
+                    Math.max(0, (element.offsetWidth - contentWidth) / 2)
+                )
+                : 0
+            element.style.setProperty('--file-preview-scroll-content-offset', `${contentOffset}px`)
+        }
+
+        updateScrollbarCompensation()
+        const resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateScrollbarCompensation)
+        resizeObserver?.observe(element)
+        if (content) resizeObserver?.observe(content)
+        window.addEventListener('resize', updateScrollbarCompensation)
+        return () => {
+            resizeObserver?.disconnect()
+            window.removeEventListener('resize', updateScrollbarCompensation)
+        }
+    }, [])
 
     const setMarkdownPreviewMode = (mode: MarkdownPreviewMode) => {
         setMarkdownMode(mode)
@@ -353,7 +401,7 @@ export default function FilePage() {
 
     return (
         <div className="flex h-full min-h-0 flex-col">
-            <div className="bg-[var(--app-bg)] pt-[env(safe-area-inset-top)]">
+            <div className="bg-[var(--app-bg)] pt-[var(--route-safe-area-top,env(safe-area-inset-top))]">
                 <div className="mx-auto w-full max-w-content flex items-center gap-2 p-3 border-b border-[var(--app-border)]">
                     <button
                         type="button"
@@ -394,7 +442,7 @@ export default function FilePage() {
                 </div>
             </div>
 
-            {diffContent || (markdownFile && displayMode === 'file') ? (
+            {diffContent || (previewableFile && displayMode === 'file') ? (
                 <div className="bg-[var(--app-bg)]">
                     <div className="mx-auto w-full max-w-content px-3 py-2 flex items-center gap-2 border-b border-[var(--app-divider)]">
                         {diffContent ? (
@@ -415,7 +463,7 @@ export default function FilePage() {
                                 </button>
                             </>
                         ) : null}
-                        {markdownFile && displayMode === 'file' ? (
+                        {previewableFile && displayMode === 'file' ? (
                             <>
                                 {diffContent ? <span className="mx-1 h-4 w-px bg-[var(--app-divider)]" aria-hidden="true" /> : null}
                                 <button
@@ -438,29 +486,37 @@ export default function FilePage() {
                 </div>
             ) : null}
 
-            <div ref={fileScrollRef} data-hapi-file-scroll="true" className="app-scroll-y flex-1 min-h-0">
-                <div className="mx-auto w-full max-w-content p-4">
+            <div ref={fileScrollRef} data-hapi-file-scroll="true" className="app-scroll-y file-preview-scroll-y flex-1 min-h-0">
+                <div className="file-preview-scroll-content mx-auto w-full max-w-content p-4">
                     {diffErrorMessage ? (
-                        <div className="mb-3 rounded-md bg-amber-500/10 p-2 text-xs text-[var(--app-hint)]">
-                            {diffErrorMessage}
-                        </div>
+                        <ExpandableErrorMessage
+                            message={diffErrorMessage}
+                            expandLabel={t('file.page.expandError')}
+                            collapseLabel={t('file.page.collapseError')}
+                            className="mb-3 rounded-md bg-amber-500/10 p-2 text-xs text-[var(--app-hint)]"
+                        />
                     ) : null}
                     {missingPath ? (
                         <div className="text-sm text-[var(--app-hint)]">{t('file.page.missingPath')}</div>
                     ) : loading ? (
                         <FileContentSkeleton label={t('loading.file')} />
                     ) : fileErrorMessage ? (
-                        <div className="text-sm text-[var(--app-hint)]">{fileErrorMessage}</div>
+                        <ExpandableErrorMessage
+                            message={fileErrorMessage}
+                            expandLabel={t('file.page.expandError')}
+                            collapseLabel={t('file.page.collapseError')}
+                            className="text-sm text-[var(--app-hint)]"
+                        />
                     ) : displayMode === 'diff' && diffContent ? (
                         <DiffDisplay diffContent={diffContent} />
-                    ) : displayMode === 'diff' && diffError ? (
-                        <div className="text-sm text-[var(--app-hint)]">{diffErrorMessage}</div>
-                    ) : displayMode === 'file' ? (
+                    ) : displayMode === 'diff' && diffError ? null
+                    : displayMode === 'file' ? (
                         imagePreviewUrl ? (
                             <ImagePreview
                                 src={imagePreviewUrl}
                                 fileName={fileName}
                                 label={t('file.page.imagePreviewAlt', { name: fileName })}
+                                fileSize={fileContentResult?.size}
                             />
                         ) : binaryFile ? (
                             <div className="text-sm text-[var(--app-hint)]">
@@ -468,7 +524,9 @@ export default function FilePage() {
                             </div>
                         ) : (
                             decodedContent ? (
-                                markdownFile && !showMarkdownSource ? (
+                                htmlFile && !showMarkdownSource ? (
+                                    <HtmlFilePreview sessionId={sessionId} filePath={filePath} html={decodedContent} />
+                                ) : markdownFile && !showMarkdownSource ? (
                                     <div className="markdown-content">
                                         {canCopyContent ? (
                                             <div className="mb-3 overflow-hidden rounded-md">
@@ -480,22 +538,37 @@ export default function FilePage() {
                                                 />
                                             </div>
                                         ) : null}
-                                        <MarkdownRenderer content={decodedContent} standalone />
+                                        <MarkdownRenderer
+                                            content={decodedContent}
+                                            standalone
+                                            sessionId={sessionId}
+                                            filePath={filePath}
+                                            workspacePath={session?.metadata?.path}
+                                            fileSearch={markdownLinkSearch}
+                                        />
                                     </div>
                                 ) : (
                                     <div
                                         data-hapi-file-source-preview="true"
                                         className="min-w-0 max-w-full overflow-hidden rounded-md bg-[var(--app-code-bg)]"
                                     >
-                                        {canCopyContent ? (
-                                            <FileContentHeader
-                                                label={language ?? 'text'}
-                                                copied={contentCopied}
-                                                copyLabel={t('file.page.copyContent')}
-                                                onCopy={() => copyContent(decodedContent)}
-                                            />
-                                        ) : null}
-                                        <pre className="shiki m-0 overflow-auto bg-[var(--app-code-bg)] p-3 text-xs font-mono">
+                                        <FileContentHeader
+                                            label={language ?? 'text'}
+                                            copied={contentCopied}
+                                            copyLabel={t('file.page.copyContent')}
+                                            onCopy={canCopyContent ? () => copyContent(decodedContent) : undefined}
+                                            codeWrap={codeWrap}
+                                            wrapEnableLabel={t('code.wrap.enable')}
+                                            wrapDisableLabel={t('code.wrap.disable')}
+                                            onToggleWrap={() => setCodeWrap(!codeWrap)}
+                                        />
+                                        <pre
+                                            className={`shiki m-0 overflow-y-auto bg-[var(--app-code-bg)] p-3 text-xs font-mono ${codeWrap ? 'overflow-x-hidden' : 'overflow-x-auto'}`}
+                                            style={{
+                                                whiteSpace: codeWrap ? 'pre-wrap' : 'pre',
+                                                ...(codeWrap ? { wordBreak: 'break-word' as const } : {})
+                                            }}
+                                        >
                                             <code>{highlighted ?? decodedContent}</code>
                                         </pre>
                                     </div>

@@ -10,6 +10,7 @@ import Foundation
 /// `content` degrades to `.null` instead of throwing.
 public struct DecryptedMessage: Codable, Equatable, Sendable {
     /// Server uuid. Optimistic rows use the client `localId` until echoed.
+    public var contentRevision: Int?
     public var id: String
     /// Per-session insert counter; `null` on optimistic rows.
     public var seq: Int?
@@ -32,6 +33,7 @@ public struct DecryptedMessage: Codable, Equatable, Sendable {
     public var deliveryState: String?
 
     public init(
+        contentRevision: Int? = nil,
         id: String,
         seq: Int? = nil,
         localId: String? = nil,
@@ -41,6 +43,7 @@ public struct DecryptedMessage: Codable, Equatable, Sendable {
         scheduledAt: Int? = nil,
         deliveryState: String? = nil
     ) {
+        self.contentRevision = contentRevision
         self.id = id
         self.seq = seq
         self.localId = localId
@@ -53,6 +56,7 @@ public struct DecryptedMessage: Codable, Equatable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        contentRevision = try container.decodeIfPresent(Int.self, forKey: .contentRevision)
         id = try container.decode(String.self, forKey: .id)
         seq = try container.decodeIfPresent(Int.self, forKey: .seq)
         localId = try container.decodeIfPresent(String.self, forKey: .localId)

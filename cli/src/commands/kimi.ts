@@ -3,8 +3,8 @@ import { authAndSetupMachineIfNeeded } from '@/ui/auth'
 import { initializeToken } from '@/ui/tokenInit'
 import { maybeAutoStartServer } from '@/utils/autoStartServer'
 import type { CommandDefinition } from './types'
-import { KIMI_PERMISSION_MODES } from '@hapi/protocol/modes'
-import type { KimiPermissionMode } from '@hapi/protocol/types'
+import { Flavors } from '@hapi/protocol/modes'
+import type { PermissionModeOf } from '@hapi/protocol/types'
 
 export const kimiCommand: CommandDefinition = {
     name: 'kimi',
@@ -14,9 +14,12 @@ export const kimiCommand: CommandDefinition = {
             const options: {
                 startedBy?: 'runner' | 'terminal'
                 startingMode?: 'local' | 'remote'
-                permissionMode?: KimiPermissionMode
+                permissionMode?: PermissionModeOf<typeof Flavors.kimi>
                 model?: string
+                effort?: string
                 resumeSessionId?: string
+                existingSessionId?: string
+                reservedSessionId?: string
             } = {}
 
             let hasExplicitPermissionMode = false
@@ -32,12 +35,25 @@ export const kimiCommand: CommandDefinition = {
                     } else {
                         throw new Error('Invalid --hapi-starting-mode (expected local or remote)')
                     }
+                } else if (arg === '--hapi-session-id') {
+                    // Adopt-stub: create bootstrap with reserved id (not reopen).
+                    const sessionId = commandArgs[++i]
+                    if (!sessionId) {
+                        throw new Error('Missing --hapi-session-id value')
+                    }
+                    options.reservedSessionId = sessionId
+                } else if (arg === '--existing-session-id') {
+                    const sessionId = commandArgs[++i]
+                    if (!sessionId) {
+                        throw new Error('Missing --existing-session-id value')
+                    }
+                    options.existingSessionId = sessionId
                 } else if (arg === '--permission-mode') {
                     const mode = commandArgs[++i]
-                    if (!mode || !(KIMI_PERMISSION_MODES as readonly string[]).includes(mode)) {
+                    if (!mode || !Flavors.kimi.allowsPermissionMode(mode)) {
                         throw new Error(`Invalid --permission-mode value: ${mode ?? '(missing)'}`)
                     }
-                    options.permissionMode = mode as KimiPermissionMode
+                    options.permissionMode = mode
                     hasExplicitPermissionMode = true
                 } else if (arg === '--yolo' && !hasExplicitPermissionMode) {
                     options.permissionMode = 'yolo'
@@ -53,6 +69,12 @@ export const kimiCommand: CommandDefinition = {
                         throw new Error('Missing --model value')
                     }
                     options.model = model
+                } else if (arg === '--effort') {
+                    const effort = commandArgs[++i]
+                    if (!effort) {
+                        throw new Error('Missing --effort value')
+                    }
+                    options.effort = effort
                 }
             }
 

@@ -46,6 +46,17 @@ function baseSession(overrides: Partial<Session> = {}): Session {
 
 export const sseFixtureCases: SseFixtureCase[] = [
     {
+        name: 'last-user-message-time-monotonic',
+        description: 'The list ordering clock changes only with user input; ordinary activity does not advance it and stale SSE replay cannot rewind it.',
+        initialSession: baseSession({ lastUserMessageAt: T0 }),
+        patches: [
+            { updatedAt: T0 + 30_000, thinking: true },
+            { lastUserMessageAt: T0 - 10_000 },
+            { lastUserMessageAt: T0 + 60_000 },
+            { updatedAt: T0 + 90_000, thinking: false }
+        ]
+    },
+    {
         name: 'metadata-newer-version-applied',
         description: 'A metadata wrapper with version strictly greater than the cached metadataVersion replaces the value and stores the version; the accompanying newer updatedAt advances.',
         initialSession: baseSession(),
@@ -60,6 +71,33 @@ export const sseFixtureCases: SseFixtureCase[] = [
                         name: 'project',
                         flavor: 'claude',
                         summary: { text: 'Add retry to upload path', updatedAt: T0 + 9_000 }
+                    }
+                }
+            }
+        ]
+    },
+    {
+        name: 'metadata-dsh-session-id-applied',
+        description: 'A newer metadata patch adds the native DSH session id; the applied session retains it so native summary projections keep the resume token.',
+        initialSession: baseSession({
+            model: null,
+            metadata: {
+                path: '/home/dev/project',
+                host: 'devbox',
+                name: 'project',
+                flavor: 'dsh'
+            }
+        }),
+        patches: [
+            {
+                metadata: {
+                    version: 4,
+                    value: {
+                        path: '/home/dev/project',
+                        host: 'devbox',
+                        name: 'project',
+                        flavor: 'dsh',
+                        dshSessionId: 'dsh-session-1'
                     }
                 }
             }

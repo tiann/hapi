@@ -79,7 +79,545 @@ struct MessageWindowControllerTests {
         )
     }
 
+    /// Hub-merged tool-call row: the hub folds the streamed tool-call and its
+    /// result into one row keyed by the call id, keeping the row's original
+    /// cursor position.
+    private func toolCallRow(id: String, seq: Int, at: Int, status: String) -> DecryptedMessage {
+        DecryptedMessage(
+            id: id,
+            seq: seq,
+            content: [
+                "role": "agent",
+                "content": [
+                    "type": "codex",
+                    "data": [
+                        "type": "tool-call",
+                        "callId": "call-1",
+                        "name": "Bash",
+                        "input": ["command": "ls"],
+                        "status": .string(status),
+                    ],
+                ],
+            ],
+            createdAt: at,
+            invokedAt: at
+        )
+    }
+
+    /// Warm tail window: rows r-1..r-9 plus a merged tool-call row at seq 10.
+    private func warmRecoveryWindow(id: String, callStatus: String) -> MessageWindowState {
+        var state = MessageWindowState(sessionId: id)
+        state.messages = (1...9).map { WindowMessage(wire: agentRow(id: "r-\($0)", seq: $0, at: $0 * 1000)) }
+            + [WindowMessage(wire: toolCallRow(id: "call-row", seq: 10, at: 10_000, status: callStatus))]
+        state.epoch = 1
+        state.hasMore = true
+        state.oldestPosition = MessagePosition(at: 1000, seq: 1)
+        state.newestPosition = MessagePosition(at: 10_000, seq: 10)
+        return state
+    }
+
     // MARK: - Tail sync
+
+    @Test func coldSyncRequestsTheInitialPageSize() async {
+        let provider = GatedMessagesProvider()
+        let controller = MessageWindowController(sessionId: "s", provider: provider)
+
+        let sync = Task { await controller.syncTail() }
+        await provider.waitForRequests(1)
+
+        let requests = await provider.requests
+        guard case .latest(let limit) = requests[0] else {
+            Issue.record("cold sync should request the latest page, got \(requests[0])")
+            return
+        }
+        #expect(limit == MessageWindowConstants.initialPageSize)
+
+        await provider.release(latestPage([agentRow(id: "a-1", seq: 1, at: 1000)], epoch: 0))
+        await sync.value
+    }
+
+    @Test func resetAndCachedCursorSyncsKeepTheFullPageSize() async {
+        let provider = GatedMessagesProvider()
+
+        var resetState = MessageWindowState(sessionId: "reset")
+        resetState.requiresLatestReset = true
+        let resetController = MessageWindowController(
+            sessionId: "reset",
+            provider: provider,
+            initialState: resetState
+        )
+        let resetSync = Task { await resetController.syncTail() }
+        await provider.waitForRequests(1)
+        let resetRequests = await provider.requests
+        guard case .latest(let resetLimit) = resetRequests[0] else {
+            Issue.record("reset sync should request the latest page, got \(resetRequests[0])")
+            return
+        }
+        #expect(resetLimit == MessageWindowConstants.pageSize)
+        await provider.release(latestPage([agentRow(id: "reset-1", seq: 1, at: 1000)], epoch: 1))
+        await resetSync.value
+
+        var cachedState = MessageWindowState(sessionId: "cached")
+        cachedState.messages = [WindowMessage(wire: agentRow(id: "cached-1", seq: 1, at: 1000))]
+        cachedState.hasMore = true
+        cachedState.epoch = 1
+        cachedState.oldestPosition = MessagePosition(at: 1000, seq: 1)
+        cachedState.newestPosition = MessagePosition(at: 1000, seq: 1)
+        cachedState.preferLatestOnActivation = true
+        let cachedController = MessageWindowController(
+            sessionId: "cached",
+            provider: provider,
+            initialState: cachedState
+        )
+        let cachedSync = Task { await cachedController.syncTail() }
+        await provider.waitForRequests(2)
+        let cachedRequests = await provider.requests
+        guard case .latest(let cachedLimit) = cachedRequests[1] else {
+            Issue.record("cached re-entry should request the latest page, got \(cachedRequests[1])")
+            return
+        }
+        #expect(cachedLimit == MessageWindowConstants.pageSize)
+        await provider.release(latestPage([agentRow(id: "cached-2", seq: 2, at: 2000)], epoch: 1))
+        await cachedSync.value
+    }
+
+    @Test func cancellingHistoryDoesNotPublishAnOfflineWarning() async {
+        let provider = GatedMessagesProvider()
+        var initial = MessageWindowState(sessionId: "history")
+        initial.hasMore = true
+        initial.epoch = 1
+        initial.oldestPosition = MessagePosition(at: 1000, seq: 1)
+        let controller = MessageWindowController(sessionId: "history", provider: provider, initialState: initial)
+        let task = Task { await controller.fetchOlder() }
+        await provider.waitForRequests(1)
+        task.cancel()
+        await provider.failPending(CancellationError())
+        guard case .stopped(.invalidated) = await task.value else {
+            Issue.record("Cancellation must not appear as a failed network request")
+            return
+        }
+        let state = await controller.state
+        #expect(!state.isLoadingMore)
+        #expect(state.warning == nil)
+        #expect(state.hasMore)
+    }
+
+    @Test func nativeHistoryRetainsThePrependBudgetAcrossSSEAndReset() async throws {
+        var initial = MessageWindowState(sessionId: "history")
+        initial.messages = (1...800).map { WindowMessage(wire: agentRow(id: "a-\($0)", seq: $0, at: $0 * 1000)) }
+        initial.epoch = 1
+        initial.viewMode = .history
+        let provider = GatedMessagesProvider()
+        let controller = MessageWindowController(sessionId: "history", provider: provider,
+                                                 initialState: initial, historyRetentionLimit: 800)
+        await controller.ingestSSEMessages([WindowMessage(wire: agentRow(id: "new", seq: 801, at: 801000))])
+        let history = await controller.state
+        #expect(history.messages.count == 800)
+        #expect(history.messages.first?.id == "a-1")
+        #expect(history.requiresLatestReset)
+        await provider.release(latestPage([agentRow(id: "new", seq: 801, at: 801000)], epoch: 1))
+        try await controller.reconcileQueuedState()
+        let afterReconnect = await controller.state
+        #expect(await provider.requests == [.latest(limit: 200)])
+        #expect(afterReconnect.messages == history.messages)
+        #expect(afterReconnect.oldestPosition == history.oldestPosition)
+        #expect(afterReconnect.newestPosition == history.newestPosition)
+        #expect(afterReconnect.hasMore == history.hasMore)
+        #expect(afterReconnect.historyVersion == history.historyVersion)
+        #expect(afterReconnect.syncGeneration == history.syncGeneration + 1)
+        #expect(afterReconnect.requiresLatestReset)
+        #expect(!afterReconnect.isSyncingTail)
+        await controller.setViewMode(.tail)
+        let tail = await controller.state
+        #expect(tail.messages.count == 400)
+        #expect(tail.epoch == nil)
+        await controller.clear()
+        let cleared = await controller.state
+        #expect(cleared.historyRetentionLimit == 800)
+    }
+
+    @Test(arguments: [false, true])
+    func gapRecoveryReplacesTruncatedHistoryOnEpochChangeOrExplicitReset(reset: Bool) async throws {
+        let provider = GatedMessagesProvider()
+        var initial = MessageWindowState(sessionId: "history")
+        initial.messages = [WindowMessage(wire: agentRow(id: "obsolete", seq: 1, at: 1000))]
+        initial.epoch = 1
+        initial.viewMode = .history
+        initial.requiresLatestReset = true
+        initial.hasMore = true
+        initial.oldestPosition = MessagePosition(at: 1000, seq: 1)
+        initial.newestPosition = initial.oldestPosition
+        let controller = MessageWindowController(sessionId: "history", provider: provider, initialState: initial)
+        let epoch = reset ? 1 : 2
+        // Empty authoritative latest also covers deleted history.
+        await provider.release(latestPage([], epoch: epoch, reset: reset))
+        try await controller.reconcileQueuedState()
+        #expect(await provider.requests.count == 1)
+        let state = await controller.state
+        #expect(state.epoch == epoch)
+        #expect(state.messages.isEmpty)
+        #expect(!state.requiresLatestReset)
+        #expect(!state.hasMore)
+    }
+
+    @Test func gapRecoveryDrainsAFreshEpochCheckDuringTruncatedHistorySync() async throws {
+        let provider = GatedMessagesProvider()
+        var initial = MessageWindowState(sessionId: "history")
+        initial.messages = [WindowMessage(wire: agentRow(id: "obsolete", seq: 1, at: 1000))]
+        initial.epoch = 1
+        initial.viewMode = .history
+        initial.requiresLatestReset = true
+        let controller = MessageWindowController(sessionId: "history", provider: provider, initialState: initial)
+        let first = Task { await controller.syncTail() }
+        await provider.waitForRequests(1)
+        let recovery = Task { try await controller.reconcileQueuedState() }
+        // Let recovery join the parked run before releasing its old snapshot.
+        try await Task.sleep(for: .milliseconds(20))
+        await provider.release(latestPage([], epoch: 1))
+        await first.value
+        await provider.waitForRequests(2)
+        #expect(await provider.requests == [.latest(limit: 200), .latest(limit: 200)])
+        #expect(await controller.state.messages.map(\.id) == ["obsolete"])
+        await provider.release(latestPage([agentRow(id: "replacement", seq: 2, at: 2000)], epoch: 2))
+        try await recovery.value
+        #expect(await controller.state.epoch == 2)
+        #expect(await controller.state.messages.map(\.id) == ["replacement"])
+    }
+
+    @Test func gapRecoveryCatchesUpMissedRowsAndReconcilesMergedRowsFromTheLatestPage() async {
+        let provider = GatedMessagesProvider()
+        let controller = MessageWindowController(
+            sessionId: "gap-upsert",
+            provider: provider,
+            initialState: warmRecoveryWindow(id: "gap-upsert", callStatus: "in_progress")
+        )
+        await provider.release(afterPage(
+            [agentRow(id: "r-11", seq: 11, at: 11_000), agentRow(id: "r-12", seq: 12, at: 12_000)],
+            epoch: 1, nextAfter: (12_000, 12), hasMore: false
+        ))
+        let page = (1...9).map { agentRow(id: "r-\($0)", seq: $0, at: $0 * 1000) }
+            + [toolCallRow(id: "call-row", seq: 10, at: 10_000, status: "completed")]
+            + [agentRow(id: "r-11", seq: 11, at: 11_000), agentRow(id: "r-12", seq: 12, at: 12_000)]
+        await provider.release(latestPage(page, epoch: 1))
+
+        await controller.recoverAfterGapResume()
+
+        // Catch-up first (newer rows only), then the authoritative latest
+        // page applied as an upsert: rows present in the page are replaced by
+        // id — the merged tool-call row's content converges — while rows the
+        // page cannot reach and the hasMore/oldest cursor survive.
+        let requests = await provider.requests
+        guard requests.count == 2, case .after = requests[0] else {
+            Issue.record("recovery must catch up first, got \(requests)")
+            return
+        }
+        guard case .latest(let limit) = requests[1] else {
+            Issue.record("recovery must reconcile the latest page, got \(requests[1])")
+            return
+        }
+        #expect(limit == MessageWindowConstants.pageSize)
+        let state = await controller.state
+        #expect(state.messages.map(\.id) == (1...9).map { "r-\($0)" } + ["call-row", "r-11", "r-12"])
+        #expect(state.messages.first(where: { $0.id == "call-row" })?.content
+            == toolCallRow(id: "call-row", seq: 10, at: 10_000, status: "completed").content)
+        #expect(state.newestPosition?.seq == 12)
+        #expect(state.oldestPosition?.seq == 1)
+        #expect(state.hasMore)
+        #expect(state.warning == nil)
+    }
+
+    @Test func failedCatchUpStopsBeforeTheLatestPageAndTheNextRecoveryRetries() async {
+        let provider = GatedMessagesProvider()
+        let controller = MessageWindowController(
+            sessionId: "gap-retry",
+            provider: provider,
+            initialState: warmRecoveryWindow(id: "gap-retry", callStatus: "in_progress")
+        )
+
+        let recovery = Task { await controller.recoverAfterGapResume() }
+        await provider.waitForRequests(1)
+        await provider.failPending(GapSyncFailure())
+        await recovery.value
+
+        // The failed catch-up leaves the failure warning, keeps the original
+        // cursor, and never advances to the latest page.
+        let requests = await provider.requests
+        guard requests.count == 1, case .after = requests[0] else {
+            Issue.record("failed catch-up must stop before the latest page, got \(requests)")
+            return
+        }
+        let failed = await controller.state
+        #expect(failed.warning != nil)
+        #expect(failed.messages.map(\.id) == (1...9).map { "r-\($0)" } + ["call-row"])
+        #expect(failed.newestPosition == MessagePosition(at: 10_000, seq: 10))
+
+        // The next recovery retries the whole recovery: catch-up, then the
+        // latest-page upsert that converges the merged row.
+        await provider.release(afterPage(
+            [agentRow(id: "r-11", seq: 11, at: 11_000), agentRow(id: "r-12", seq: 12, at: 12_000)],
+            epoch: 1, nextAfter: (12_000, 12), hasMore: false
+        ))
+        let page = (1...9).map { agentRow(id: "r-\($0)", seq: $0, at: $0 * 1000) }
+            + [toolCallRow(id: "call-row", seq: 10, at: 10_000, status: "completed")]
+            + [agentRow(id: "r-11", seq: 11, at: 11_000), agentRow(id: "r-12", seq: 12, at: 12_000)]
+        await provider.release(latestPage(page, epoch: 1))
+        await controller.recoverAfterGapResume()
+
+        let retried = await provider.requests
+        // provider.requests is cumulative: the failed first catch-up, then
+        // the retry's catch-up and latest page.
+        guard retried.count == 3 else {
+            Issue.record("retry must run exactly catch-up + latest page, got \(retried)")
+            return
+        }
+        guard case .after = retried[1] else {
+            Issue.record("retry must run its catch-up, got \(retried[1])")
+            return
+        }
+        guard case .latest = retried[2] else {
+            Issue.record("retry must reconcile the latest page, got \(retried[2])")
+            return
+        }
+        let state = await controller.state
+        #expect(state.messages.first(where: { $0.id == "call-row" })?.content
+            == toolCallRow(id: "call-row", seq: 10, at: 10_000, status: "completed").content)
+        #expect(state.warning == nil)
+    }
+
+    @Test func recoveryCatchUpOverflowingTheHistoryBudgetStaysResetMarked() async {
+        let provider = GatedMessagesProvider()
+        var initial = MessageWindowState(sessionId: "gap-overflow")
+        initial.viewMode = .history
+        initial.epoch = 1
+        initial.hasMore = true
+        initial.oldestPosition = MessagePosition(at: 1000, seq: 1)
+        initial.newestPosition = MessagePosition(at: 600_000, seq: 600)
+        initial.messages = (1...600).map { WindowMessage(wire: agentRow(id: "r-\($0)", seq: $0, at: $0 * 1000)) }
+        let controller = MessageWindowController(sessionId: "gap-overflow", provider: provider, initialState: initial)
+        await provider.release(afterPage(
+            (601...800).map { agentRow(id: "r-\($0)", seq: $0, at: $0 * 1000) },
+            epoch: 1, nextAfter: (800_000, 800), hasMore: true
+        ))
+        await provider.release(latestPage(
+            (901...1100).map { agentRow(id: "r-\($0)", seq: $0, at: $0 * 1000) },
+            epoch: 1
+        ))
+
+        await controller.recoverAfterGapResume()
+
+        // The catch-up page overflowed the 600-row history budget: the
+        // prepend trim kept rows 1-600, dropped the caught-up 601-800, and
+        // marked the window for a reset. The recovery must not reconcile the
+        // latest page on top — rows 601-900 would sit between the two
+        // cursors, unreachable from either — and must not consume the
+        // recovery flags.
+        let overflowed = await controller.state
+        #expect(overflowed.messages.map(\.id) == (1...600).map { "r-\($0)" })
+        #expect(overflowed.requiresLatestReset)
+        #expect(overflowed.pendingGapRecovery)
+        #expect(overflowed.warning == nil)
+
+        // Returning to the tail view applies the authoritative replacement
+        // and closes the hole.
+        await controller.setViewMode(.tail)
+        await controller.syncTail()
+
+        let replaced = await controller.state
+        #expect(replaced.messages.map(\.id) == (901...1100).map { "r-\($0)" })
+        #expect(!replaced.requiresLatestReset)
+        #expect(!replaced.pendingGapRecovery)
+        #expect(replaced.oldestPosition?.seq == 901)
+        #expect(replaced.warning == nil)
+    }
+
+    @Test func noNewsRecoveryKeepsTheLoadedOlderCursor() async {
+        let provider = GatedMessagesProvider()
+        var initial = MessageWindowState(sessionId: "gap-cursor")
+        initial.epoch = 1
+        initial.hasMore = true
+        initial.oldestPosition = MessagePosition(at: 1000, seq: 1)
+        initial.newestPosition = MessagePosition(at: 800_000, seq: 800)
+        initial.messages = (1...800).map { WindowMessage(wire: agentRow(id: "r-\($0)", seq: $0, at: $0 * 1000)) }
+        let controller = MessageWindowController(sessionId: "gap-cursor", provider: provider, initialState: initial)
+        await provider.release(afterPage([], epoch: 1, nextAfter: (800_000, 800), hasMore: false))
+        await provider.release(latestPage(
+            (601...800).map { agentRow(id: "r-\($0)", seq: $0, at: $0 * 1000) },
+            epoch: 1, hasMore: true
+        ))
+
+        await controller.recoverAfterGapResume()
+
+        // The latest page excludes the held rows 1-600: the older-paging
+        // cursor must stay at the window edge (row 1) instead of jumping to
+        // the page's own bound (row 600), like the web keeps it.
+        let state = await controller.state
+        #expect(state.messages.count == 800)
+        #expect(state.oldestPosition?.seq == 1)
+        #expect(state.hasMore)
+    }
+
+    @Test func gapRecoveryRefreshesARetainedNonTerminalToolCallRowTheLatestPageCannotReach() async {
+        let provider = GatedMessagesProvider()
+        let controller = MessageWindowController(
+            sessionId: "gap-sweep",
+            provider: provider,
+            initialState: warmRecoveryWindow(id: "gap-sweep", callStatus: "in_progress")
+        )
+        await provider.release(afterPage(
+            (11...310).map { agentRow(id: "r-\($0)", seq: $0, at: $0 * 1000) },
+            epoch: 1, nextAfter: (310_000, 310), hasMore: false
+        ))
+        await provider.release(latestPage(
+            (111...310).map { agentRow(id: "r-\($0)", seq: $0, at: $0 * 1000) },
+            epoch: 1
+        ))
+        await provider.releaseContext(MessageContextResponse(
+            messages: [toolCallRow(id: "call-row", seq: 10, at: 10_000, status: "completed")],
+            targetMessageId: "call-row",
+            page: MessageContextPage(
+                epoch: 1, nextBeforeSeq: 1, nextBeforeAt: 1000,
+                snapshotHeadSeq: 310, snapshotHeadAt: 310_000, hasMore: false
+            )
+        ))
+
+        await controller.recoverAfterGapResume()
+
+        // The call was enriched while disconnected and 300 newer rows pushed
+        // it beyond the latest page: only a by-id context refresh can
+        // converge the cached card.
+        #expect(await provider.contextRequests == ["call-row"])
+        let state = await controller.state
+        #expect(state.messages.first(where: { $0.id == "call-row" })?.content
+            == toolCallRow(id: "call-row", seq: 10, at: 10_000, status: "completed").content)
+        #expect(state.messages.count == 310)
+        #expect(state.newestPosition?.seq == 310)
+        #expect(state.warning == nil)
+    }
+
+    @Test func gapRecoveryFinishesTheRunWithAWarningWhenTheContextRefreshFindsNoRow() async {
+        let provider = GatedMessagesProvider()
+        let controller = MessageWindowController(
+            sessionId: "gap-sweep-missing",
+            provider: provider,
+            initialState: warmRecoveryWindow(id: "gap-sweep-missing", callStatus: "in_progress")
+        )
+        await provider.release(afterPage(
+            (11...310).map { agentRow(id: "r-\($0)", seq: $0, at: $0 * 1000) },
+            epoch: 1, nextAfter: (310_000, 310), hasMore: false
+        ))
+        await provider.release(latestPage(
+            (111...310).map { agentRow(id: "r-\($0)", seq: $0, at: $0 * 1000) },
+            epoch: 1
+        ))
+
+        await controller.recoverAfterGapResume()
+
+        // The context endpoint no longer knows the row: the sweep leaves it
+        // as is, surfaces the warning, and finishes the run's bookkeeping
+        // instead of leaving the window marked syncing.
+        #expect(await provider.contextRequests == ["call-row"])
+        let state = await controller.state
+        #expect(state.messages.first(where: { $0.id == "call-row" })?.content
+            == toolCallRow(id: "call-row", seq: 10, at: 10_000, status: "in_progress").content)
+        #expect(state.warning != nil)
+        #expect(!state.isSyncingTail)
+    }
+
+    @Test func anOrdinarySyncRetriesTheSweepWhenTheContextRefreshFails() async {
+        let provider = GatedMessagesProvider()
+        let controller = MessageWindowController(
+            sessionId: "gap-sweep-retry",
+            provider: provider,
+            initialState: warmRecoveryWindow(id: "gap-sweep-retry", callStatus: "in_progress")
+        )
+        await provider.release(afterPage(
+            (11...310).map { agentRow(id: "r-\($0)", seq: $0, at: $0 * 1000) },
+            epoch: 1, nextAfter: (310_000, 310), hasMore: false
+        ))
+        await provider.release(latestPage(
+            (111...310).map { agentRow(id: "r-\($0)", seq: $0, at: $0 * 1000) },
+            epoch: 1
+        ))
+        await provider.failNextContextRequests(1)
+
+        await controller.recoverAfterGapResume()
+
+        // The failed refresh surfaces the warning and leaves the recovery
+        // pending, so the next ORDINARY sync retries the sweep instead of
+        // leaving the enriched cached call stale with no retry path.
+        #expect(await provider.contextRequests == ["call-row"])
+        let failed = await controller.state
+        #expect(failed.warning != nil)
+        #expect(failed.pendingGapRecovery)
+
+        await provider.release(afterPage(
+            (11...310).map { agentRow(id: "r-\($0)", seq: $0, at: $0 * 1000) },
+            epoch: 1, nextAfter: (310_000, 310), hasMore: false
+        ))
+        await provider.release(latestPage(
+            (111...310).map { agentRow(id: "r-\($0)", seq: $0, at: $0 * 1000) },
+            epoch: 1
+        ))
+        await provider.releaseContext(MessageContextResponse(
+            messages: [toolCallRow(id: "call-row", seq: 10, at: 10_000, status: "completed")],
+            targetMessageId: "call-row",
+            page: MessageContextPage(
+                epoch: 1, nextBeforeSeq: 1, nextBeforeAt: 1000,
+                snapshotHeadSeq: 310, snapshotHeadAt: 310_000, hasMore: false
+            )
+        ))
+        await controller.syncTail()
+
+        #expect(await provider.contextRequests == ["call-row", "call-row"])
+        let state = await controller.state
+        #expect(state.messages.first(where: { $0.id == "call-row" })?.content
+            == toolCallRow(id: "call-row", seq: 10, at: 10_000, status: "completed").content)
+        #expect(!state.pendingGapRecovery)
+        #expect(state.warning == nil)
+    }
+
+    @Test func stalledOlderCursorDoesNotApplyOrPretendHistoryIsExhausted() async {
+        let provider = GatedMessagesProvider()
+        var initial = MessageWindowState(sessionId: "history")
+        initial.hasMore = true
+        initial.epoch = 1
+        initial.oldestPosition = MessagePosition(at: 1000, seq: 1)
+        await provider.release(MessagesResponse(messages: [], page: MessagesPage(
+            direction: .before, limit: 200, epoch: 1, reset: false,
+            nextBeforeSeq: 1, nextBeforeAt: 1000, nextAfterSeq: nil, nextAfterAt: nil,
+            snapshotHeadSeq: nil, snapshotHeadAt: nil, hasMore: true
+        )))
+        let controller = MessageWindowController(sessionId: "history", provider: provider, initialState: initial)
+        let outcome = await controller.fetchOlder()
+        guard case .stopped(.cursorDidNotAdvance) = outcome else { Issue.record("Expected a stalled cursor"); return }
+        let state = await controller.state
+        #expect(state.hasMore)
+        #expect(!state.isLoadingMore)
+        #expect(state.historyVersion == 0)
+    }
+
+    @Test func readerReversalVetoesAnInflightPrepend() async {
+        let provider = GatedMessagesProvider()
+        var initial = MessageWindowState(sessionId: "history")
+        initial.hasMore = true
+        initial.epoch = 1
+        initial.oldestPosition = MessagePosition(at: 1000, seq: 1)
+        let controller = MessageWindowController(sessionId: "history", provider: provider, initialState: initial)
+        let gate = ChatHistoryRequestGate()
+        let request = Task { await controller.fetchOlder(onBeforeApply: { _ in gate.allowsApply }) }
+        await provider.waitForRequests(1)
+        gate.invalidate()
+        await provider.release(MessagesResponse(messages: [agentRow(id: "older", seq: 0, at: 0)], page: MessagesPage(
+            direction: .before, limit: 200, epoch: 1, reset: false,
+            nextBeforeSeq: 0, nextBeforeAt: 0, nextAfterSeq: nil, nextAfterAt: nil,
+            snapshotHeadSeq: nil, snapshotHeadAt: nil, hasMore: false
+        )))
+        let outcome = await request.value
+        guard case .stopped(.invalidated) = outcome else { Issue.record("Stale page was applied"); return }
+        let state = await controller.state
+        #expect(state.messages.isEmpty)
+        #expect(state.historyVersion == 0)
+    }
 
     @Test func concurrentSyncTailCallsCoalesceIntoASingleRun() async {
         let provider = GatedMessagesProvider()
@@ -293,10 +831,16 @@ struct MessageWindowControllerTests {
 
 // MARK: - Gated transport
 
+/// Non-cancellation transport failure for the gap-recovery tests.
+private struct GapSyncFailure: Error {}
+
 /// Provider whose responses are released manually, so tests control the
 /// interleaving between transport round-trips and controller mutations.
 actor GatedMessagesProvider: MessagesProviding {
     private(set) var requests: [MessagesPageQuery] = []
+    private(set) var contextRequests: [String] = []
+    private var contextResponses: [MessageContextResponse?] = []
+    var contextFailures = 0
     private var buffered: [MessagesResponse] = []
     private var pending: [CheckedContinuation<MessagesResponse, any Error>] = []
     private var requestWaiters: [(threshold: Int, continuation: CheckedContinuation<Void, Never>)] = []
@@ -325,6 +869,26 @@ actor GatedMessagesProvider: MessagesProviding {
         QueuedStateResponse(queuedLocalIds: [], invokedLocalMessages: [])
     }
 
+    func messageContext(sessionId: String, messageId: String) async throws -> MessageContextResponse? {
+        contextRequests.append(messageId)
+        if contextFailures > 0 {
+            contextFailures -= 1
+            throw GapSyncFailure()
+        }
+        if contextResponses.isEmpty { return nil }
+        return contextResponses.removeFirst()
+    }
+
+    /// Queue a message-context response for the recovery sweep.
+    func releaseContext(_ response: MessageContextResponse?) {
+        contextResponses.append(response)
+    }
+
+    /// Make the next `count` context requests throw (retry-path tests).
+    func failNextContextRequests(_ count: Int) {
+        contextFailures = count
+    }
+
     /// Answer the oldest parked request, or buffer for the next one.
     func release(_ response: MessagesResponse) {
         if pending.isEmpty {
@@ -332,6 +896,10 @@ actor GatedMessagesProvider: MessagesProviding {
         } else {
             pending.removeFirst().resume(returning: response)
         }
+    }
+
+    func failPending(_ error: any Error) {
+        pending.removeFirst().resume(throwing: error)
     }
 
     /// Suspends until at least `threshold` requests have been issued.

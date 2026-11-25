@@ -22,22 +22,27 @@ describe('buildElevenLabsSessionOverridesFromPrefs', () => {
         expect(overrides).toEqual({})
     })
 
-    test('custom voice id with default sliders emits tts.voice_id ONLY', () => {
+    test('custom voice id with default sliders emits tts.voiceId ONLY (SDK camelCase)', () => {
         const overrides = buildElevenLabsSessionOverridesFromPrefs(
             structuredClone(DEFAULT_VOICE_PERSONALITY),
             { language: 'en', voiceId: 'voice_abc' }
         )
         expect(overrides.agent).toEqual({ language: 'en' })
-        expect(overrides.tts).toEqual({ voice_id: 'voice_abc' })
+        // @elevenlabs/client constructOverrides reads overrides.tts.voiceId, not voice_id
+        expect(overrides.tts).toEqual({ voiceId: 'voice_abc' })
+        expect(overrides.tts).not.toHaveProperty('voice_id')
     })
 
-    test('custom voice id with non-balanced preset emits sliders + voice_id', () => {
+    test('custom voice id with non-balanced preset emits camelCase sliders + voiceId', () => {
         const overrides = buildElevenLabsSessionOverridesFromPrefs(
             { ...DEFAULT_VOICE_PERSONALITY, preset: 'warm' },
             { language: 'en', voiceId: 'voice_abc' }
         )
-        expect(overrides.tts?.voice_id).toBe('voice_abc')
+        expect(overrides.tts?.voiceId).toBe('voice_abc')
         expect(overrides.tts?.stability).toBeDefined()
+        expect(overrides.tts?.similarityBoost).toBeDefined()
+        expect(overrides.tts).not.toHaveProperty('voice_id')
+        expect(overrides.tts).not.toHaveProperty('similarity_boost')
     })
 
     test('custom character emits composed prompt with client tools', () => {
@@ -59,7 +64,13 @@ describe('buildElevenLabsSessionOverridesFromPrefs', () => {
             { ...DEFAULT_VOICE_PERSONALITY, preset: 'warm' },
             { language: 'en' }
         )
-        expect(overrides.tts?.style).toBeGreaterThan(DEFAULT_VOICE_PERSONALITY.elevenLabs.style)
+        // warm raises expressiveness → similarityBoost / stability diverge from defaults
+        expect(overrides.tts?.similarityBoost).toBeDefined()
+        expect(
+            Number(overrides.tts?.stability) !== DEFAULT_VOICE_PERSONALITY.elevenLabs.stability
+            || Number(overrides.tts?.similarityBoost) !== DEFAULT_VOICE_PERSONALITY.elevenLabs.similarity_boost
+            || Number(overrides.tts?.speed) !== DEFAULT_VOICE_PERSONALITY.elevenLabs.speed
+        ).toBe(true)
     })
 
     test('balanced preset does not emit tts override', () => {
@@ -77,7 +88,7 @@ describe('buildElevenLabsSessionOverridesFromPrefs', () => {
         expect(capped).toContain('truncated')
     })
 
-    test('sends use_speaker_boost in tts override when set', () => {
+    test('omits fields the ElevenLabs client SDK does not map from overrides.tts', () => {
         const overrides = buildElevenLabsSessionOverridesFromPrefs(
             {
                 ...DEFAULT_VOICE_PERSONALITY,
@@ -89,6 +100,12 @@ describe('buildElevenLabsSessionOverridesFromPrefs', () => {
             },
             { language: 'en' }
         )
-        expect(overrides.tts).toHaveProperty('use_speaker_boost', true)
+        // 0.13 constructOverrides only forwards voiceId/speed/stability/similarityBoost
+        expect(overrides.tts).not.toHaveProperty('use_speaker_boost')
+        expect(overrides.tts).not.toHaveProperty('useSpeakerBoost')
+        expect(overrides.tts).not.toHaveProperty('style')
+        expect(overrides.tts?.stability).toBeDefined()
+        expect(overrides.tts?.speed).toBeDefined()
+        expect(overrides.tts?.similarityBoost).toBeDefined()
     })
 })

@@ -1,6 +1,16 @@
 import { isKnownFlavor } from '@hapi/protocol'
 import type { Session } from '@/types/api'
 
+/** Transport liveness alone cannot tell whether the agent process has stopped. */
+export function inactiveSessionBannerKey(session: Pick<Session, 'active' | 'metadata'>, checking: boolean, resumable: boolean) {
+    if (session.active) return null
+    if (checking) return 'session.inactive.checking'
+    if (session.metadata?.lifecycleState === 'archived') {
+        return resumable ? 'session.inactive.autoResume' : 'session.inactive.cannotResume'
+    }
+    return resumable ? 'session.inactive.disconnectedResume' : 'session.inactive.disconnected'
+}
+
 /** Agent thread id used by hub `resolveAgentResumeId`, flavor-specific.
  *  Mirrors hub: cross-flavor ids are ignored to avoid the web layer claiming a
  *  session is resumable when the hub will only honor the current flavor's id.
@@ -22,6 +32,7 @@ export function resolveAgentSessionIdFromMetadata(
         case 'kimi': return metadata.kimiSessionId ?? undefined
         case 'copilot': return metadata.copilotSessionId ?? undefined
         case 'pi': return metadata.piSessionId ?? undefined
+        case 'dsh': return metadata.dshSessionId ?? undefined
         default: return metadata.claudeSessionId ?? undefined
     }
 }

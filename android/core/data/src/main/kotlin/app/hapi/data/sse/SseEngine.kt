@@ -6,12 +6,18 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlin.coroutines.coroutineContext
 import kotlin.random.Random
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
@@ -110,6 +116,7 @@ class SseEngine(
      */
     private val cursors = mutableMapOf<String, String>()
     private val foreground = MutableStateFlow(true)
+    private val networkRoute = MutableStateFlow<NetworkRoute?>(null)
 
     private class Subscription {
         /**
@@ -120,20 +127,70 @@ class SseEngine(
          * acknowledged.
          */
         val events = MutableSharedFlow<EngineEvent>()
+        val state = MutableStateFlow(ConnectionState())
+        val reconnectRevision = MutableStateFlow(0L)
+        var phase = ConnectionState.Phase.Idle
+        var lastFailure: ConnectionFailure? = null
         var job: Job? = null
     }
 
     /** The per-key event stream. Stable across subscribe/unsubscribe cycles. */
     fun events(key: SseSubscriptionKey): SharedFlow<EngineEvent> = subscription(key).events
 
+    fun connectionState(key: SseSubscriptionKey): StateFlow<ConnectionState> = subscription(key).state.asStateFlow()
+
+    fun reconnecting(key: SseSubscriptionKey) = connectionState(key).reconnectNotice(nowMs)
+
+    /**
+     * [reconnectOutageNotice] on this engine's own clock (the grace compares
+     * against `outageStartedAtMs`, which this engine stamped) — banner
+     * visibility/reason labeling must not mix clocks. An auth-side outage
+     * (token refresh keeps failing before any transport attempt) surfaces as
+     * [OutageNotice] with a null failure: visible, reason unknown.
+     */
+    fun connectionOutageNotice(key: SseSubscriptionKey): Flow<OutageNotice?> =
+        connectionState(key).reconnectOutageNotice(nowMs)
+
+    /** Cancellation joins the previous attempt before opening another socket. */
+    fun requestReconnect(key: SseSubscriptionKey) {
+        synchronized(lock) {
+            val sub = subscriptions[key.key] ?: return
+            if (sub.job?.isActive != true) return
+            publishState(sub, ConnectionState.Phase.Backoff)
+            sub.reconnectRevision.value += 1
+        }
+    }
+
+    fun networkChanged(route: NetworkRoute) {
+        synchronized(lock) {
+            val previous = networkRoute.value
+            if (previous == route) return
+            networkRoute.value = route
+            // The first callback establishes the baseline, not a route change.
+            if (previous == null) return
+            subscriptions.values.filter { it.job?.isActive == true }.forEach { sub ->
+                publishState(sub, ConnectionState.Phase.Backoff)
+                sub.reconnectRevision.value += 1
+            }
+        }
+    }
+
     /** Starts the connection loop for [key]. No-op when already running. */
+    @OptIn(ExperimentalCoroutinesApi::class)
     fun subscribe(key: SseSubscriptionKey) {
         val sub = subscription(key)
         synchronized(lock) {
             if (sub.job?.isActive == true) {
                 return
             }
-            sub.job = scope.launch { runSubscriptionLoop(key, sub) }
+            val previous = sub.job
+            sub.job = scope.launch {
+                previous?.join()
+                sub.reconnectRevision.collectLatest {
+                    awaitForeground()
+                    runSubscriptionLoop(key, sub)
+                }
+            }
         }
     }
 
@@ -141,7 +198,10 @@ class SseEngine(
     fun unsubscribe(key: SseSubscriptionKey) {
         val job = synchronized(lock) {
             val sub = subscriptions[key.key] ?: return
-            sub.job.also { sub.job = null }
+            sub.job.also {
+                it?.cancel()
+                publishState(sub, ConnectionState.Phase.Idle)
+            }
         }
         job?.cancel()
     }
@@ -155,7 +215,29 @@ class SseEngine(
      * any error surfacing.
      */
     fun setLifecycleForeground(foreground: Boolean) {
-        this.foreground.value = foreground
+        synchronized(lock) {
+            val resuming = foreground && !this.foreground.value
+            this.foreground.value = foreground
+            subscriptions.values.forEach {
+                publishState(it, it.phase)
+                if (resuming && it.phase == ConnectionState.Phase.Backoff && it.job?.isActive == true) {
+                    it.reconnectRevision.value++
+                }
+            }
+        }
+    }
+
+    private fun publishState(sub: Subscription, phase: ConnectionState.Phase) = synchronized(lock) {
+        sub.phase = phase
+        val visiblePhase = if (!foreground.value && phase != ConnectionState.Phase.Idle) ConnectionState.Phase.Suspended else phase
+        val start = when (visiblePhase) {
+            ConnectionState.Phase.Backoff -> sub.state.value.outageStartedAtMs ?: nowMs()
+            ConnectionState.Phase.Connecting -> sub.state.value.outageStartedAtMs
+            else -> null
+        }
+        if (visiblePhase == ConnectionState.Phase.Connected) sub.lastFailure = null
+        val failure = if (visiblePhase == ConnectionState.Phase.Connected) null else sub.lastFailure
+        sub.state.value = ConnectionState(visiblePhase, start, failure)
     }
 
     private fun subscription(key: SseSubscriptionKey): Subscription = synchronized(lock) {
@@ -173,14 +255,21 @@ class SseEngine(
         var authRetriedThisCycle = false
         var forceTokenRefresh = false
         while (coroutineContext.isActive) {
+            publishState(sub, ConnectionState.Phase.Connecting)
             val token = tokenProvider.freshToken(forceTokenRefresh)
             forceTokenRefresh = false
             if (token == null) {
+                publishState(sub, ConnectionState.Phase.Backoff)
                 attempt = backoffThenAwaitForeground(attempt)
                 continue
             }
 
             val outcome = runAttempt(key, sub, token)
+            sub.lastFailure = ConnectionFailure(
+                reason = outcome.endReason ?: DisconnectReason.Closed,
+                httpCode = outcome.failureCode.takeIf { outcome.endReason == DisconnectReason.TransportError },
+            )
+            publishState(sub, ConnectionState.Phase.Backoff)
 
             if (outcome.handshakeReached) {
                 // "Reset the attempt counter to 0 on every successful open."
@@ -218,13 +307,28 @@ class SseEngine(
     }
 
     private suspend fun awaitForeground() {
-        foreground.first { it }
+        combine(foreground, networkRoute) { visible, route -> visible && (route == null || route.networkId != null) }.first { it }
     }
 
     private class AttemptState {
         @Volatile var handshakeReached = false
         @Volatile var lastActivityAtMs = 0L
         @Volatile var failureCode: Int? = null
+
+        /**
+         * Any transport failure was seen this attempt — with or without an
+         * HTTP code. Codeless failures (DNS/TLS/socket errors, the dominant
+         * mobile outage shape) must still attribute as a transport error like
+         * the web's unconditional onerror → transport-error, not as Closed.
+         */
+        @Volatile var sawFailure = false
+
+        /**
+         * Set by whoever ends the attempt (watchdog / resume check before
+         * cancelling, transport failure, clean EOF) — the last writer wins,
+         * resolved at the end of [runAttempt] when null.
+         */
+        @Volatile var endReason: DisconnectReason? = null
     }
 
     private suspend fun runAttempt(
@@ -249,7 +353,10 @@ class SseEngine(
                     when (transportEvent) {
                         TransportEvent.Connected -> state.lastActivityAtMs = nowMs()
                         is TransportEvent.Event -> handleRawEvent(key, sub, transportEvent.event, state)
-                        is TransportEvent.Failure -> state.failureCode = transportEvent.code
+                        is TransportEvent.Failure -> {
+                            state.sawFailure = true
+                            state.failureCode = transportEvent.code
+                        }
                     }
                 }
             } catch (cancellation: CancellationException) {
@@ -265,6 +372,14 @@ class SseEngine(
         collector.join()
         watchdog.cancel()
         resumeCheck.cancel()
+        if (state.endReason == null) {
+            state.endReason = when {
+                // Any transport failure — coded or codeless — is a transport
+                // error; only a clean EOF with no failure attributes Closed.
+                state.sawFailure -> DisconnectReason.TransportError
+                else -> DisconnectReason.Closed
+            }
+        }
         state
     }
 
@@ -280,6 +395,7 @@ class SseEngine(
         while (!state.handshakeReached) {
             val remaining = connectDeadline - nowMs()
             if (remaining <= 0) {
+                state.endReason = DisconnectReason.ConnectTimeout
                 collector.cancel()
                 return
             }
@@ -291,6 +407,7 @@ class SseEngine(
                 continue
             }
             if (nowMs() - state.lastActivityAtMs >= ReconnectPolicy.STALE_MS) {
+                state.endReason = DisconnectReason.HeartbeatTimeout
                 collector.cancel()
                 return
             }
@@ -305,6 +422,7 @@ class SseEngine(
     private suspend fun runForegroundResumeCheck(state: AttemptState, collector: Job) {
         foreground.drop(1).collect { isForeground ->
             if (isForeground && nowMs() - state.lastActivityAtMs >= ReconnectPolicy.RESUME_STALE_MS) {
+                state.endReason = DisconnectReason.VisibilityRecovery
                 collector.cancel()
             }
         }
@@ -330,6 +448,7 @@ class SseEngine(
                 return
             }
             state.handshakeReached = true
+            publishState(sub, ConnectionState.Phase.Connected)
             sub.events.emit(EngineEvent.Handshake(data.subscriptionId, resumeVerdict(data.resume)))
             return
         }

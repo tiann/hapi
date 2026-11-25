@@ -11,6 +11,7 @@ import { ACTIONS } from './callbacks'
 import { createCallbackData, getSessionName } from './renderer'
 import { getAgentName } from '../notifications/sessionInfo'
 import { formatToolArgumentsDetailed } from '../notifications/toolArgs'
+import { composeInputRequestNotification, getFirstPendingRequest, isInputRequestTool } from '../notifications/inputRequest'
 
 type NotificationContext = {
     hasContext: boolean
@@ -41,6 +42,12 @@ export function formatReadyNotification(session: Session, machine?: Machine): st
  * Format a compact session notification for permission requests
  */
 export function formatSessionNotification(session: Session, machine?: Machine): string {
+    const pending = getFirstPendingRequest(session)
+    const inputNotification = composeInputRequestNotification(session, pending)
+    if (inputNotification) {
+        return `${inputNotification.title}\n\n${inputNotification.body}`
+    }
+
     const context = buildNotificationContext(session, machine)
     const lines: string[] = context.hasContext
         ? [
@@ -51,16 +58,12 @@ export function formatSessionNotification(session: Session, machine?: Machine): 
         ]
         : ['Permission Request', '', `Session: ${getSessionName(session)}`]
 
-    const requests = session.agentState?.requests
-    if (requests) {
-        const reqId = Object.keys(requests)[0]
-        const req = requests[reqId]
-        if (req) {
-            lines.push(`Tool: ${req.tool}`)
-            const args = formatToolArgumentsDetailed(req.tool, req.arguments)
-            if (args) {
-                lines.push(args)
-            }
+    const req = pending?.request
+    if (req) {
+        lines.push(`Tool: ${req.tool}`)
+        const args = formatToolArgumentsDetailed(req.tool, req.arguments)
+        if (args) {
+            lines.push(args)
         }
     }
 
@@ -129,12 +132,11 @@ function formatSessionPath(session: Session): string | null {
  */
 export function createNotificationKeyboard(session: Session, publicUrl: string): InlineKeyboard {
     const keyboard = new InlineKeyboard()
-    const requests = session.agentState?.requests ?? null
-    const hasRequests = Boolean(requests && Object.keys(requests).length > 0)
+    const pending = getFirstPendingRequest(session)
     const canControl = session.active
 
-    if (canControl && hasRequests) {
-        const requestId = Object.keys(requests!)[0]
+    if (canControl && pending && !isInputRequestTool(pending.request.tool)) {
+        const requestId = pending.requestId
         const reqPrefix = requestId.slice(0, 8)
 
         keyboard

@@ -295,6 +295,7 @@ describe('formatInspectPeerReport', () => {
             thinking: false,
             flavor: 'cursor',
             path: '/tmp/x',
+            machine: 'studio',
             lifecycleState: null,
             updatedAt: 1_700_000_000_000,
             messages: [

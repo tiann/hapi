@@ -15,6 +15,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -34,6 +35,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -51,6 +53,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
+import app.hapi.companion.feature.directorybrowser.RemoteDirectoryBrowserSheet
 import app.hapi.companion.ui.components.AgentFlavorIcon
 import app.hapi.companion.ui.theme.HapiTheme
 
@@ -69,6 +72,7 @@ fun NewSessionScreen(
     onCreated: (sessionId: String) -> Unit,
 ) {
     val state by viewModel.uiState.collectAsState()
+    val directoryBrowser by viewModel.directoryBrowser.state.collectAsState()
 
     LaunchedEffect(viewModel) {
         viewModel.spawned.collect(onCreated)
@@ -98,9 +102,11 @@ fun NewSessionScreen(
             onDirectoryChange = viewModel::setDirectory,
             onSuggestionPicked = viewModel::pickSuggestion,
             onRecentPathPicked = viewModel::pickRecentPath,
+            onBrowseDirectory = viewModel::openDirectoryBrowser,
             onSessionTypeChange = viewModel::setSessionType,
             onWorktreeNameChange = viewModel::setWorktreeName,
             onAgentSelected = viewModel::setAgent,
+            onRetryAgentAvailability = viewModel::retryAgentAvailability,
             onModelSelected = viewModel::setModel,
             onEffortSelected = viewModel::setEffort,
             onReasoningEffortSelected = viewModel::setModelReasoningEffort,
@@ -110,6 +116,18 @@ fun NewSessionScreen(
             onCopilotAgentModeSelected = viewModel::setCopilotAgentMode,
             onServiceTierSelected = viewModel::setServiceTier,
             onCreate = viewModel::create,
+        )
+    }
+    if (directoryBrowser.open) {
+        RemoteDirectoryBrowserSheet(
+            state = directoryBrowser,
+            onDismiss = viewModel.directoryBrowser::close,
+            onNavigate = viewModel.directoryBrowser::navigate,
+            onNavigateEntry = viewModel.directoryBrowser::navigateEntry,
+            onNavigateUp = viewModel.directoryBrowser::navigateUp,
+            onRefresh = viewModel.directoryBrowser::refresh,
+            onIncludeHiddenChange = viewModel.directoryBrowser::setIncludeHidden,
+            onSelect = viewModel::selectBrowsedDirectory,
         )
     }
 }
@@ -123,9 +141,11 @@ internal fun NewSessionContent(
     onDirectoryChange: (String) -> Unit,
     onSuggestionPicked: (String) -> Unit,
     onRecentPathPicked: (String) -> Unit,
+    onBrowseDirectory: () -> Unit = {},
     onSessionTypeChange: (String) -> Unit,
     onWorktreeNameChange: (String) -> Unit,
     onAgentSelected: (String) -> Unit,
+    onRetryAgentAvailability: () -> Unit = {},
     onModelSelected: (String) -> Unit,
     onEffortSelected: (String) -> Unit,
     onReasoningEffortSelected: (String) -> Unit,
@@ -150,9 +170,10 @@ internal fun NewSessionContent(
             onDirectoryChange = onDirectoryChange,
             onSuggestionPicked = onSuggestionPicked,
             onRecentPathPicked = onRecentPathPicked,
+            onBrowseDirectory = onBrowseDirectory,
         )
         SessionTypeSection(state, onSessionTypeChange, onWorktreeNameChange)
-        AgentSection(state, onAgentSelected)
+        AgentSection(state, onAgentSelected, onRetryAgentAvailability)
 
         state.modelOptions?.let { options ->
             OptionDropdown(
@@ -291,6 +312,7 @@ private fun DirectorySection(
     onDirectoryChange: (String) -> Unit,
     onSuggestionPicked: (String) -> Unit,
     onRecentPathPicked: (String) -> Unit,
+    onBrowseDirectory: () -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         OutlinedTextField(
@@ -305,6 +327,11 @@ private fun DirectorySection(
                 autoCorrectEnabled = false,
                 imeAction = ImeAction.Done,
             ),
+            trailingIcon = {
+                IconButton(onClick = onBrowseDirectory, enabled = !state.isSpawning) {
+                    Icon(Icons.Default.Search, contentDescription = stringResource(R.string.new_session_browse))
+                }
+            },
             modifier = Modifier.fillMaxWidth(),
         )
 
@@ -440,7 +467,11 @@ private fun SessionTypeSection(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun AgentSection(state: NewSessionUiState, onAgentSelected: (String) -> Unit) {
+private fun AgentSection(
+    state: NewSessionUiState,
+    onAgentSelected: (String) -> Unit,
+    onRetryAvailability: () -> Unit,
+) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         SectionLabel(stringResource(R.string.new_session_agent))
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -448,10 +479,34 @@ private fun AgentSection(state: NewSessionUiState, onAgentSelected: (String) -> 
                 FilterChip(
                     selected = state.form.agent == agent.value,
                     onClick = { onAgentSelected(agent.value) },
-                    enabled = !state.isSpawning,
+                    enabled = !state.isSpawning && !state.agentAvailabilityLoading && state.agentAvailabilityError == null,
                     leadingIcon = { AgentFlavorIcon(agent.value, modifier = Modifier.size(16.dp)) },
                     label = { Text(agent.label) },
                 )
+            }
+        }
+        if (state.agentAvailabilityLoading) {
+            Text(
+                stringResource(R.string.new_session_agent_availability_loading),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        state.agentAvailabilityError?.let { error ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    error,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                TextButton(onClick = onRetryAvailability) {
+                    Text(stringResource(R.string.new_session_retry))
+                }
             }
         }
     }
@@ -466,13 +521,22 @@ private fun PermissionSection(
     onYoloToggle: (Boolean) -> Unit,
 ) {
     when (val permission = state.permission) {
-        is PermissionUi.NativeSelect -> OptionDropdown(
-            label = stringResource(R.string.new_session_permission_mode),
-            options = permission.options,
-            selected = state.form.permissionMode,
-            enabled = !state.isSpawning,
-            onSelect = onPermissionModeSelected,
-        )
+        is PermissionUi.NativeSelect -> Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            OptionDropdown(
+                label = stringResource(R.string.new_session_permission_mode),
+                options = permission.options,
+                selected = state.form.permissionMode,
+                enabled = !state.isSpawning,
+                onSelect = onPermissionModeSelected,
+            )
+            if (state.grokAutoUnavailable) {
+                Text(
+                    text = stringResource(R.string.new_session_grok_auto_unavailable_desc),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
 
         is PermissionUi.YoloToggle -> Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
             SectionLabel(stringResource(R.string.new_session_yolo))
@@ -574,6 +638,7 @@ private fun OptionDropdown(
                             expanded = false
                             onSelect(option.value)
                         },
+                        enabled = option.enabled,
                     )
                 }
             }
@@ -609,12 +674,15 @@ private fun previewState(form: NewSessionForm): NewSessionUiState = NewSessionUi
         OptionItem("codex", "Codex"),
         OptionItem("grok", "Grok Build"),
     ),
+    agentAvailabilityLoading = false,
+    agentAvailabilityError = null,
     modelOptions = NewSessionCatalogs.CLAUDE_MODELS,
     modelsLoading = false,
     modelsError = null,
     effortOptions = NewSessionCatalogs.CLAUDE_EFFORTS,
     reasoningEffortOptions = null,
     permission = PermissionUi.YoloToggle("Yolo"),
+    grokAutoUnavailable = false,
     showCollaborationMode = false,
     collaborationModeOptions = emptyList(),
     showFastMode = false,
@@ -679,7 +747,6 @@ private fun NewSessionPreviewCodexWorktree() {
                         listOf(
                             OptionItem("default", "Default"),
                             OptionItem("read-only", "Read Only"),
-                            OptionItem("safe-yolo", "Safe Yolo"),
                             OptionItem("yolo", "Yolo"),
                         ),
                     ),

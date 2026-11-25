@@ -1,6 +1,7 @@
 import type { FixtureCase } from '../fixtureTypes'
 import { claudeOutputCases } from './claudeOutput'
 import { codexCases } from './codex'
+import { compactionCases } from './compaction'
 import { eventCases } from './events'
 import { userCases } from './user'
 import { truncationCases } from './truncation'
@@ -15,6 +16,7 @@ import { cursorCases } from './cursor'
 export const fixtureCases: FixtureCase[] = [
     ...claudeOutputCases,
     ...codexCases,
+    ...compactionCases,
     ...eventCases,
     ...userCases,
     ...truncationCases,

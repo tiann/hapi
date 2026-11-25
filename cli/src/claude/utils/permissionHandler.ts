@@ -5,6 +5,7 @@
  * Handles tool permission requests, responses, and state management.
  */
 
+import { buildAskUserQuestionUpdatedInput } from './askUserQuestionAnswers';
 import { logger } from "@/lib";
 import { SDKAssistantMessage, SDKMessage, SDKUserMessage } from "../sdk";
 import { PermissionResult } from "../sdk/types";
@@ -16,6 +17,7 @@ import { EnhancedMode, PermissionMode } from "../loop";
 import { getToolDescriptor } from "./getToolDescriptor";
 import { delay } from "@/utils/time";
 import { isObject } from "@hapi/protocol";
+import { PERMISSION_REQUEST_NOT_FOUND_MESSAGE } from "@hapi/protocol/rpcMethods";
 import {
     BasePermissionHandler,
     type PendingPermissionRequest,
@@ -100,48 +102,6 @@ function formatAskUserQuestionAnswers(answers: Record<string, string[]> | Record
         : `User answered:\n${body}`;
 }
 
-function buildAskUserQuestionUpdatedInput(input: unknown, answers: Record<string, string[]> | Record<string, { answers: string[] }>): Record<string, unknown> {
-    // Normalize incoming answers (web sends Record<questionIndex, string[]>;
-    // codex pathway sends nested Record<id, { answers: string[] }>) into a
-    // single Record<index, string[]> shape we can iterate.
-    const indexedAnswers: Record<string, string[]> = {};
-    for (const [key, value] of Object.entries(answers)) {
-        if (Array.isArray(value)) {
-            indexedAnswers[key] = value;
-        } else if (value && typeof value === 'object' && 'answers' in value) {
-            indexedAnswers[key] = value.answers;
-        }
-    }
-
-    if (!isObject(input)) {
-        return { answers: {} };
-    }
-
-    // claude code 2.x's built-in AskUserQuestion tool expects
-    //   answers: Record<questionText, answerString>
-    // and joins multi-select answers with a comma; it then echoes them
-    // verbatim in the tool result (`mapToolResultToToolResultBlockParam`).
-    // Sending the index-keyed `string[]` shape we receive from the web
-    // makes claude's lookup miss every question, producing the empty
-    // "User has answered your questions: ." result that locks the turn.
-    const questions = Array.isArray(input.questions) ? input.questions : [];
-    const claudeShapedAnswers: Record<string, string> = {};
-    for (let i = 0; i < questions.length; i += 1) {
-        const q = questions[i];
-        if (!q || typeof q !== 'object') continue;
-        const questionText = (q as { question?: unknown }).question;
-        if (typeof questionText !== 'string' || questionText.length === 0) continue;
-        const selections = indexedAnswers[String(i)];
-        if (!selections || selections.length === 0) continue;
-        claudeShapedAnswers[questionText] = selections.join(',');
-    }
-
-    return {
-        ...input,
-        answers: claudeShapedAnswers
-    };
-}
-
 /**
  * Build updated input for request_user_input tool
  * The answers format is nested: { answers: { [id]: { answers: string[] } } }
@@ -157,13 +117,27 @@ function buildRequestUserInputUpdatedInput(input: unknown, answers: unknown): Re
     };
 }
 
+// Backstop for tool calls whose result never shows up in the stream.
+const MAX_TRACKED_TOOL_CALLS = 1000;
+
+function isExitPlanModeToolName(name: string): boolean {
+    return name === 'exit_plan_mode' || name === 'ExitPlanMode';
+}
+
 export class PermissionHandler extends BasePermissionHandler<PermissionResponse, PermissionResult> {
+    // Tool calls that have not produced a result yet. Finished calls are
+    // dropped in onMessage(); keeping them would retain every tool input
+    // (file contents for Write/Edit) for the lifetime of the session.
     private toolCalls: { id: string, name: string, input: any, used: boolean }[] = [];
+    // Outlives the toolCalls entry: isAborted() is asked about a call only
+    // after its tool_result has already dropped it.
+    private exitPlanModeToolCallIds = new Set<string>();
     private responses = new Map<string, PermissionResponse>();
     private session: Session;
     private allowedTools = new Set<string>();
     private allowedBashLiterals = new Set<string>();
     private allowedBashPrefixes = new Set<string>();
+    private steerDenied = new Set<string>();
     private onPermissionRequestCallback?: (toolCallId: string) => void;
 
     constructor(session: Session) {
@@ -300,7 +274,7 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
                 }
                 // Check prefix matches
                 for (const prefix of this.allowedBashPrefixes) {
-                    if (inputObj.command.startsWith(prefix)) {
+                    if (prefix.length > 0 && inputObj.command.startsWith(prefix)) {
                         return { behavior: 'allow', updatedInput: input as Record<string, unknown> };
                     }
                 }
@@ -360,6 +334,16 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
             // Set up abort signal handling
             const abortHandler = () => {
                 this.pendingRequests.delete(id);
+                // Mirrors cancelPendingRequests' session-level cancel path: without
+                // this, a per-request abort (e.g. Claude sending a
+                // control_cancel_request) leaves the request live in agentState, so
+                // a later answer still passes the hub's requests[id] check and
+                // reaches handleMissingPendingResponse below instead of being
+                // rejected up front (hapi#1735).
+                this.finalizeRequest(id, {
+                    status: 'canceled',
+                    reason: 'Permission request aborted'
+                });
                 reject(new Error('Permission request aborted'));
             };
             signal.addEventListener('abort', abortHandler, { once: true });
@@ -403,6 +387,9 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
         // Check if it's a prefix pattern (ends with :*)
         if (command.endsWith(':*')) {
             const prefix = command.slice(0, -2); // Remove :*
+            if (prefix.length === 0) {
+                return;
+            }
             this.allowedBashPrefixes.add(prefix);
         } else {
             // Literal match
@@ -445,6 +432,12 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
                             input: block.input,
                             used: false
                         });
+                        if (isExitPlanModeToolName(block.name!)) {
+                            this.exitPlanModeToolCallIds.add(block.id!);
+                        }
+                        if (this.toolCalls.length > MAX_TRACKED_TOOL_CALLS) {
+                            this.toolCalls.shift();
+                        }
                     }
                 }
             }
@@ -454,10 +447,7 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
             if (userMsg.message && userMsg.message.content && Array.isArray(userMsg.message.content)) {
                 for (const block of userMsg.message.content) {
                     if (block.type === 'tool_result' && block.tool_use_id) {
-                        const toolCall = this.toolCalls.find(tc => tc.id === block.tool_use_id);
-                        if (toolCall && !toolCall.used) {
-                            toolCall.used = true;
-                        }
+                        this.forgetFinishedToolCall(block.tool_use_id);
                     }
                 }
             }
@@ -465,9 +455,32 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
     }
 
     /**
+     * Drops a finished tool call, plus older calls with the same name and
+     * input. resolveToolCallId() scans newest-first and stops at the first
+     * match, so those older calls could never be resolved again anyway.
+     */
+    private forgetFinishedToolCall(toolCallId: string): void {
+        const index = this.toolCalls.findIndex(tc => tc.id === toolCallId);
+        if (index === -1) {
+            return;
+        }
+        const finished = this.toolCalls[index];
+        this.toolCalls = this.toolCalls.filter((call, i) => {
+            if (i === index) {
+                return false;
+            }
+            return i > index || call.name !== finished.name || !deepEqual(call.input, finished.input);
+        });
+    }
+
+    /**
      * Checks if a tool call is rejected
      */
     isAborted(toolCallId: string): boolean {
+        // A steer denial must keep the turn running so Claude reads the steer
+        if (this.steerDenied.has(toolCallId)) {
+            return false;
+        }
 
         // If tool not approved, it's aborted
         if (this.responses.get(toolCallId)?.approved === false) {
@@ -475,8 +488,7 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
         }
 
         // Always abort exit_plan_mode
-        const toolCall = this.toolCalls.find(tc => tc.id === toolCallId);
-        if (toolCall && (toolCall.name === 'exit_plan_mode' || toolCall.name === 'ExitPlanMode')) {
+        if (this.exitPlanModeToolCallIds.has(toolCallId)) {
             return true;
         }
 
@@ -485,10 +497,27 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
     }
 
     /**
+     * Deny every pending request so a steered message can reach Claude, which
+     * only folds steers in at a tool boundary that a pending request blocks.
+     * isAborted() reports these as not aborted, so the turn keeps running.
+     */
+    denyPendingForSteer(): void {
+        const reason = 'The user sent a new message instead of answering. Read it and continue from there.';
+        for (const [id, pending] of this.pendingRequests) {
+            this.pendingRequests.delete(id);
+            this.steerDenied.add(id);
+            pending.resolve({ behavior: 'deny', message: reason });
+            this.finalizeRequest(id, { status: 'denied', reason });
+        }
+    }
+
+    /**
      * Resets all state for new sessions
      */
     reset(): void {
         this.toolCalls = [];
+        this.exitPlanModeToolCallIds.clear();
+        this.steerDenied.clear();
         this.responses.clear();
         this.allowedTools.clear();
         this.allowedBashLiterals.clear();
@@ -508,7 +537,15 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
     }
 
     protected handleMissingPendingResponse(_response: PermissionResponse): void {
-        logger.debug('Permission request not found or already resolved');
+        // Thrown (not just logged) so the RPC caller sees a real error instead
+        // of a silent no-op: RpcHandlerManager.handleRequest catches this and
+        // returns it as `{ error: message }`, which the hub's RpcGateway now
+        // turns into a 409 for the operator instead of accepting a doomed
+        // answer with no feedback (hapi#1735). The message is the shared
+        // PERMISSION_REQUEST_NOT_FOUND_MESSAGE constant so the hub can match
+        // on it specifically rather than treating any error here as "not found".
+        logger.debug(PERMISSION_REQUEST_NOT_FOUND_MESSAGE);
+        throw new Error(PERMISSION_REQUEST_NOT_FOUND_MESSAGE);
     }
 
     protected onResponseReceived(response: PermissionResponse): void {

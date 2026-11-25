@@ -4,9 +4,10 @@ import type { SessionMetadataSummary } from '@/types/api'
 import type { ChatToolCall, ToolPermission } from '@/chat/types'
 import { usePlatform } from '@/hooks/usePlatform'
 import { Spinner } from '@/components/Spinner'
-import { isCodexFamilyFlavor } from '@hapi/protocol'
+import { getPermissionReplyStyle } from '@hapi/protocol'
 import { getInputStringAny } from '@/lib/toolInputUtils'
 import { useTranslation } from '@/lib/use-translation'
+import { isAsyncRequestUserInput } from '@/components/ToolCard/requestUserInput'
 
 function isToolAllowedForSession(toolName: string, toolInput: unknown, allowedTools: string[] | undefined): boolean {
     if (!allowedTools || allowedTools.length === 0) return false
@@ -22,25 +23,12 @@ function isToolAllowedForSession(toolName: string, toolInput: unknown, allowedTo
     return false
 }
 
-function isCodexSession(metadata: SessionMetadataSummary | null, toolName: string): boolean {
-    return isCodexFamilyFlavor(metadata?.flavor)
-        || metadata?.flavor === 'cursor'
-        || toolName.startsWith('Codex')
-        || toolName.startsWith('Gemini')
-        || toolName.startsWith('OpenCode')
-        || toolName.startsWith('Copilot')
-        || toolName.startsWith('Cursor')
-}
-
-function isClaudeSession(metadata: SessionMetadataSummary | null): boolean {
-    return metadata?.flavor === 'claude'
-}
-
-function formatPermissionSummary(permission: ToolPermission, toolName: string, toolInput: unknown, codex: boolean, t: (key: string) => string): string {
+function formatPermissionSummary(permission: ToolPermission, toolName: string, toolInput: unknown, decision: boolean, t: (key: string) => string): string {
+    if (permission.status === 'resolved') return t('tool.resolved')
     if (permission.status === 'pending') return t('tool.waitingForApproval')
     if (permission.status === 'canceled') return permission.reason ? `${t('tool.canceled')}: ${permission.reason}` : t('tool.canceled')
 
-    if (codex) {
+    if (decision) {
         if (permission.status === 'approved' && permission.decision === 'approved_for_session') return t('tool.approvedForSession')
         if (permission.status === 'approved') return t('tool.approved')
         if (permission.status === 'denied' && permission.decision === 'abort') return permission.reason ? `${t('tool.aborted')}: ${permission.reason}` : t('tool.aborted')
@@ -59,6 +47,22 @@ function formatPermissionSummary(permission: ToolPermission, toolName: string, t
     }
 
     return t('tool.allow')
+}
+
+/**
+ * What the permission footer renders; null means nothing. ToolCard uses this
+ * too, so the card body and the footer cannot disagree about visibility.
+ */
+export function permissionFooterContent(permission: ToolPermission | undefined, toolName: string, toolInput: unknown): 'controls' | 'status' | 'reason' | null {
+    if (!permission) return null
+    if (permission.status === 'pending') return 'controls'
+    if (permission.status === 'resolved') return 'status'
+    // A canceled optional question loses its form, so its history needs a visible
+    // outcome even without a reason. "Canceled" also covers runtime withdrawal.
+    if (permission.status === 'canceled' && isAsyncRequestUserInput(toolName, toolInput)) return 'status'
+    // Keep the thread minimal: approval is already reflected by tool state/icon.
+    if ((permission.status === 'denied' || permission.status === 'canceled') && permission.reason) return 'reason'
+    return null
 }
 
 function PermissionRowButton(props: {
@@ -112,12 +116,16 @@ export function PermissionFooter(props: {
     const [loadingForSession, setLoadingForSession] = useState(false)
     const [error, setError] = useState<string | null>(null)
 
-    const codex = useMemo(() => isCodexSession(props.metadata, props.tool.name), [props.metadata, props.tool.name])
-    const claude = useMemo(() => isClaudeSession(props.metadata), [props.metadata])
+    const replyStyle = useMemo(
+        () => getPermissionReplyStyle(props.metadata?.flavor, props.tool.name),
+        [props.metadata, props.tool.name]
+    )
+    const decision = replyStyle === 'decision'
+    const allowTools = replyStyle === 'allowTools'
 
     if (!permission) return null
 
-    const summary = formatPermissionSummary(permission, props.tool.name, props.tool.input, codex, t)
+    const summary = formatPermissionSummary(permission, props.tool.name, props.tool.input, decision, t)
     const isPending = permission.status === 'pending'
 
     const run = async (action: () => Promise<void>, hapticType: 'success' | 'error') => {
@@ -146,8 +154,8 @@ export function PermissionFooter(props: {
         || toolName === 'ExitPlanMode'
         || toolName === 'CursorCreatePlan'
 
-    const canAllowForSession = !codex && isPending && !hideAllowForSession
-    const canAllowAllEdits = claude && isPending && isEditTool
+    const canAllowForSession = !decision && isPending && !hideAllowForSession
+    const canAllowAllEdits = allowTools && isPending && isEditTool
 
     const approve = async () => {
         if (!isPending || loading || loadingAllEdits || loadingForSession) return
@@ -166,7 +174,7 @@ export function PermissionFooter(props: {
     const approveForSession = async () => {
         if (!canAllowForSession || loading || loadingAllEdits || loadingForSession) return
         setLoadingForSession(true)
-        if (claude) {
+        if (allowTools) {
             const command = toolName === 'Bash' ? getInputStringAny(props.tool.input, ['command', 'cmd']) : null
             const toolIdentifier = toolName === 'Bash' && command ? `Bash(${command})` : toolName
             await run(() => props.api.approvePermission(props.sessionId, permission.id, { allowTools: [toolIdentifier] }), 'success')
@@ -183,32 +191,30 @@ export function PermissionFooter(props: {
         setLoading(null)
     }
 
-    const codexApprove = async (decision: 'approved' | 'approved_for_session') => {
+    const approveDecision = async (value: 'approved' | 'approved_for_session') => {
         if (!isPending || loading || loadingForSession) return
-        if (decision === 'approved_for_session') {
+        if (value === 'approved_for_session') {
             setLoadingForSession(true)
-            await run(() => props.api.approvePermission(props.sessionId, permission.id, { decision }), 'success')
+            await run(() => props.api.approvePermission(props.sessionId, permission.id, { decision: value }), 'success')
             setLoadingForSession(false)
             return
         }
         setLoading('allow')
-        await run(() => props.api.approvePermission(props.sessionId, permission.id, { decision }), 'success')
+        await run(() => props.api.approvePermission(props.sessionId, permission.id, { decision: value }), 'success')
         setLoading(null)
     }
 
-    const codexAbort = async () => {
+    const abortDecision = async () => {
         if (!isPending || loading || loadingForSession) return
         setLoading('abort')
         await run(() => props.api.denyPermission(props.sessionId, permission.id, { decision: 'abort' }), 'success')
         setLoading(null)
     }
 
-    if (!isPending) {
-        // Keep the thread minimal: approval is already reflected by tool state/icon.
-        // Only surface a short message when the permission was denied/canceled and we have a reason.
-        if (permission.status !== 'denied' && permission.status !== 'canceled') return null
-        if (!permission.reason) return null
-
+    const content = permissionFooterContent(permission, toolName, props.tool.input)
+    if (content === null) return null
+    if (content === 'status') return <div className="mt-2 text-xs text-[var(--app-hint)]">{summary}</div>
+    if (content === 'reason') {
         return (
             <div className="mt-2 rounded-xl border border-[var(--app-badge-error-border)] bg-[var(--app-badge-error-bg)] px-3 py-2 text-xs text-[var(--app-badge-error-text)]">
                 {permission.reason}
@@ -227,28 +233,28 @@ export function PermissionFooter(props: {
             ) : null}
 
             <div className="mt-3 flex flex-col gap-1.5">
-                {codex ? (
+                {decision ? (
                     <>
                         <PermissionRowButton
                             label={t('tool.yes')}
                             tone="allow"
                             loading={loading === 'allow'}
                             disabled={props.disabled || loading !== null || loadingForSession}
-                            onClick={() => codexApprove('approved')}
+                            onClick={() => approveDecision('approved')}
                         />
                         <PermissionRowButton
                             label={t('tool.yesForSession')}
                             tone="muted"
                             loading={loadingForSession}
                             disabled={props.disabled || loading !== null || loadingForSession}
-                            onClick={() => codexApprove('approved_for_session')}
+                            onClick={() => approveDecision('approved_for_session')}
                         />
                         <PermissionRowButton
                             label={t('tool.abortLabel')}
                             tone="deny"
                             loading={loading === 'abort'}
                             disabled={props.disabled || loading !== null || loadingForSession}
-                            onClick={codexAbort}
+                            onClick={abortDecision}
                         />
                     </>
                 ) : (

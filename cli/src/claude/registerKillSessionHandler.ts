@@ -1,14 +1,27 @@
 import { RpcHandlerManager } from "@/api/rpc/RpcHandlerManager";
 import { logger } from "@/lib";
-import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
+import { DEFAULT_RPC_TIMEOUT_MS, getSessionStopPreparationMethod, RPC_METHODS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods';
+import { getProcessStartMarker } from '@/utils/process';
+import { monotonicTimeMs } from '@/utils/time';
 
 interface KillSessionRequest {
-    // No parameters needed
+    /** Runner owns process-tree termination after preparation is acknowledged. */
+    prepareOnly?: boolean;
+    expectedPid?: number;
+    expectedProcessStartMarker?: string;
+    expectedMachineId?: string;
+    preparationLease?: SessionStopPreparationLease;
 }
 
 interface KillSessionResponse {
     success: boolean;
     message: string;
+    /** OS pid of this CLI — hub uses it to confirm exit via StopSession when maps miss. */
+    pid: number;
+    /** Generation marker for `pid`; required before the runner will tree-kill it. */
+    processStartMarker?: string;
+    preparationLease?: SessionStopPreparationLease;
+    machineId?: string;
 }
 
 /**
@@ -22,18 +35,46 @@ interface KillSessionResponse {
 export interface KillSessionLifecycle {
     cleanupAndExit: () => Promise<void>;
     setArchiveReason?: (reason: string) => void;
+    /** Complete queued publications before the hub starts runner termination. */
+    beforeKill?: (lease?: SessionStopPreparationLease) => Promise<boolean | void>;
+    /** Immutable bootstrap identity, independent of later session metadata. */
+    machineId?: string;
 }
 
 export function registerKillSessionHandler(
     rpcHandlerManager: RpcHandlerManager,
-    lifecycleOrCleanup: KillSessionLifecycle | (() => Promise<void>)
+    lifecycleOrCleanup: KillSessionLifecycle | (() => Promise<void>),
+    session?: {
+        hubArchived?: boolean
+        on(event: 'hub-archived', listener: () => void): unknown
+    }
 ) {
     const lifecycle: KillSessionLifecycle = typeof lifecycleOrCleanup === 'function'
         ? { cleanupAndExit: lifecycleOrCleanup }
         : lifecycleOrCleanup;
+    const machineId = lifecycle.machineId;
 
-    rpcHandlerManager.registerHandler<KillSessionRequest, KillSessionResponse>(RPC_METHODS.KillSession, async () => {
+    const exitFromHubArchive = () => {
+        logger.debug('Hub-archived metadata received; exiting CLI');
+        lifecycle.setArchiveReason?.('User terminated');
+        void lifecycle.cleanupAndExit();
+    };
+
+    const killSession = async (request: KillSessionRequest): Promise<KillSessionResponse> => {
         logger.debug('Kill session request received');
+        if (request?.expectedMachineId !== undefined && request.expectedMachineId !== machineId) {
+            throw new Error('Session machine does not match shutdown target');
+        }
+        const processStartMarker = getProcessStartMarker(process.pid) ?? undefined;
+        if (request?.expectedPid !== undefined && (request.expectedPid !== process.pid
+            || !request.expectedProcessStartMarker || request.expectedProcessStartMarker !== processStartMarker)) {
+            throw new Error('Session process generation does not match shutdown target');
+        }
+        const lease = request?.prepareOnly === true ? request.preparationLease : undefined;
+        if (request?.prepareOnly === true && (!lease?.id || !Number.isFinite(lease.expiresAt)
+            || lease.expiresAt <= monotonicTimeMs() || lease.expiresAt > monotonicTimeMs() + DEFAULT_RPC_TIMEOUT_MS)) {
+            throw new Error('Session shutdown preparation lease is invalid or expired');
+        }
 
         // tiann/hapi#914: stamp the archive reason from the RPC path so the
         // default in `runnerLifecycle.ts` can be reassigned away from
@@ -42,14 +83,47 @@ export function registerKillSessionHandler(
         // those archives now stay labelled `'Hub restart'` (the new default).
         lifecycle.setArchiveReason?.('User terminated');
 
-        // This will start the cleanup process
-        void lifecycle.cleanupAndExit();
+        // The hub follows this ACK with StopSession, whose graceful process
+        // deadline can be shorter than a healthy publication drain.
+        if (await lifecycle.beforeKill?.(lease) === false || (lease && lease.expiresAt <= monotonicTimeMs())) {
+            throw new Error('Session shutdown preparation was not confirmed');
+        }
 
-        // We should still be able to respond to the client, though they
-        // should optimistically assume the session is dead.
+        // This will start the cleanup process
+        if (request?.prepareOnly !== true) void lifecycle.cleanupAndExit();
+
+        // Include pid + start marker so archive can ask the runner to verify
+        // this exact process generation exited (#1910) — not a reused PID.
         return {
             success: true,
-            message: 'Killing hapi CLI process'
+            message: request?.prepareOnly === true ? 'Session shutdown prepared' : 'Killing hapi CLI process',
+            pid: process.pid,
+            ...(processStartMarker ? { processStartMarker } : {}),
+            ...(lease ? { preparationLease: lease } : {}),
+            ...(machineId ? { machineId } : {}),
         };
-    });
+    };
+    rpcHandlerManager.registerHandler<KillSessionRequest, KillSessionResponse>(RPC_METHODS.KillSession, killSession);
+    if (machineId && lifecycle.beforeKill) {
+        rpcHandlerManager.registerHandler<KillSessionRequest, KillSessionResponse>(
+            getSessionStopPreparationMethod(machineId, process.pid), async (request) => {
+                if (request?.prepareOnly !== true || request.expectedMachineId !== machineId || request.expectedPid !== process.pid) {
+                    throw new Error('Process-scoped shutdown requires the exact preparation target');
+                }
+                return killSession(request);
+            }
+        );
+    }
+
+    // #1910: when archive lands as hub metadata (KillSession unreachable),
+    // still exit instead of reconnecting forever.
+    // #1911 criterion 6: EventEmitter does not replay past emits — if
+    // noteHubArchived already latched before this registration, exit now.
+    // Still subscribe so a later emit (or a race with the latch write) is covered.
+    if (session?.hubArchived) {
+        exitFromHubArchive();
+    }
+    if (session && typeof session.on === 'function') {
+        session.on('hub-archived', exitFromHubArchive);
+    }
 }

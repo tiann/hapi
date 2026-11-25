@@ -18,6 +18,18 @@ function isUsableModelsResponse(response: CursorModelsResponse | null): response
     );
 }
 
+/**
+ * Bumped when a cached catalog can no longer be trusted. v1 carried synthesized
+ * `[fast=…]` wire ids that Cursor rejects at `session/new`; `listCursorModels`
+ * serves the on-disk cache without re-probing, so stale entries must not be read.
+ */
+const SHARED_CACHE_VERSION = 2;
+
+type SharedCacheEnvelope = {
+    version: number;
+    response: CursorModelsResponse;
+};
+
 /** Cross-process catalog for New Session while an ACP lock blocks `agent --list-models`. */
 export function readSharedCursorModelsCache(): CursorModelsResponse | null {
     const path = getSharedCachePath();
@@ -26,8 +38,12 @@ export function readSharedCursorModelsCache(): CursorModelsResponse | null {
     }
 
     try {
-        const parsed = JSON.parse(readFileSync(path, 'utf8')) as CursorModelsResponse;
-        return isUsableModelsResponse(parsed) ? parsed : null;
+        const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<SharedCacheEnvelope> | null;
+        if (!parsed || parsed.version !== SHARED_CACHE_VERSION) {
+            return null;
+        }
+        const response = parsed.response ?? null;
+        return isUsableModelsResponse(response) ? response : null;
     } catch {
         return null;
     }
@@ -41,7 +57,8 @@ export function writeSharedCursorModelsCache(response: CursorModelsResponse): vo
     const path = getSharedCachePath();
     try {
         mkdirSync(dirname(path), { recursive: true });
-        writeFileSync(path, JSON.stringify(response), 'utf8');
+        const envelope: SharedCacheEnvelope = { version: SHARED_CACHE_VERSION, response };
+        writeFileSync(path, JSON.stringify(envelope), 'utf8');
     } catch {
         // Best effort — in-process cache still works in the session child.
     }

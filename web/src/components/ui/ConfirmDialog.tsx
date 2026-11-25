@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import {
     Dialog,
     DialogContent,
@@ -18,6 +18,14 @@ type ConfirmDialogProps = {
     confirmingLabel: string
     onConfirm: () => Promise<void>
     isPending: boolean
+    isConfirmDisabled?: boolean
+    allowDismissWhilePending?: boolean
+    /** Error-dialog mode: a single Retry action, dismissed via Esc/backdrop/X. */
+    hideCancel?: boolean
+    /** Stay open after a successful confirm (the caller unmounts or swaps the
+     * dialog when the follow-up work completes). */
+    keepOpenAfterConfirm?: boolean
+    onBackgroundError?: (message: string) => void
     destructive?: boolean
     centerTitle?: boolean
 }
@@ -33,11 +41,22 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
         confirmingLabel,
         onConfirm,
         isPending,
+        isConfirmDisabled = false,
+        allowDismissWhilePending = false,
+        hideCancel = false,
+        keepOpenAfterConfirm = false,
+        onBackgroundError,
         destructive = false,
         centerTitle = false
     } = props
 
     const [error, setError] = useState<string | null>(null)
+    const openRef = useRef(isOpen)
+    openRef.current = isOpen
+    useEffect(() => {
+        openRef.current = isOpen
+        return () => { openRef.current = false }
+    }, [isOpen])
 
     // Clear error when dialog opens/closes
     useEffect(() => {
@@ -50,13 +69,17 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
         setError(null)
         try {
             await onConfirm()
-            onClose()
+            if (!keepOpenAfterConfirm) onClose()
         } catch (err) {
             const message =
                 err instanceof Error && err.message
                     ? err.message
                     : t('dialog.error.default')
-            setError(message)
+            if (openRef.current) {
+                setError(message)
+            } else {
+                onBackgroundError?.(message)
+            }
         }
     }
 
@@ -83,19 +106,21 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
                 ) : null}
 
                 <div className="mt-4 flex gap-2 justify-end">
-                    <Button
-                        type="button"
-                        variant="secondary"
-                        onClick={onClose}
-                        disabled={isPending}
-                    >
-                        {t('button.cancel')}
-                    </Button>
+                    {hideCancel ? null : (
+                        <Button
+                            type="button"
+                            variant="secondary"
+                            onClick={onClose}
+                            disabled={isPending && !allowDismissWhilePending}
+                        >
+                            {t(isPending && allowDismissWhilePending ? 'button.close' : 'button.cancel')}
+                        </Button>
+                    )}
                     <Button
                         type="button"
                         variant={destructive ? 'destructive' : 'secondary'}
                         onClick={handleConfirm}
-                        disabled={isPending}
+                        disabled={isPending || isConfirmDisabled}
                     >
                         {isPending ? confirmingLabel : confirmLabel}
                     </Button>

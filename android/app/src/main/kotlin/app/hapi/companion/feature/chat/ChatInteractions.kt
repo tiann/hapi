@@ -19,6 +19,9 @@ data class ChatInteractions(
     val permissionOverrides: Map<String, PermissionRowOverride>,
     val resolvePermission: (requestId: String, action: PermissionAction) -> Unit,
     val retryFailedMessage: (localId: String) -> Unit,
+    val codexPlanActions: CodexPlanActions = CodexPlanActions(),
+    val implementCodexPlan: (planId: String) -> Unit = {},
+    val continueCodexPlan: (planId: String) -> Unit = {},
 )
 
 /** Dynamic local: override churn invalidates readers only, not the whole tree. */

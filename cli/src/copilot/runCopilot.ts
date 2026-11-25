@@ -42,9 +42,12 @@ export async function runCopilot(opts: {
     startingMode?: 'local' | 'remote';
     permissionMode?: PermissionMode;
     model?: string;
+    effort?: string;
     copilotAgentMode?: import('@hapi/protocol').CopilotAgentMode;
     resumeSessionId?: string;
     existingSessionId?: string;
+    /** Fresh-spawn reserved hub id from `--hapi-session-id` (create/getOrCreate). */
+    reservedSessionId?: string;
     workingDirectory?: string;
 } = {}): Promise<void> {
     const workingDirectory = opts.workingDirectory ?? getInvokedCwd();
@@ -78,7 +81,8 @@ export async function runCopilot(opts: {
             startedBy,
             workingDirectory,
             agentState: initialState,
-            model: persistedModel
+            model: persistedModel,
+            reservedSessionId: opts.reservedSessionId
         });
     const { api, session } = bootstrap;
 
@@ -90,6 +94,7 @@ export async function runCopilot(opts: {
     const messageQueue = new MessageQueue2<CopilotMode>((mode) => hashObject({
         permissionMode: mode.permissionMode,
         model: mode.model,
+        effort: mode.effort,
         agentMode: mode.agentMode
     }));
 
@@ -98,15 +103,21 @@ export async function runCopilot(opts: {
     let currentAgentMode = opts.copilotAgentMode ?? 'interactive';
     let sessionModel: string | null = persistedModel ?? null;
     let resolvedModel = sessionModel ?? runtimeConfig.model ?? null;
+    let sessionEffort: string | null = opts.effort ?? null;
 
+    let shuttingDown = false;
     const lifecycle = createRunnerLifecycle({
         session,
         logTag: 'copilot',
-        stopKeepAlive: () => sessionWrapperRef.current?.stopKeepAlive()
+        stopKeepAlive: () => sessionWrapperRef.current?.stopKeepAlive(),
+        onBeforeClose: () => {
+            shuttingDown = true;
+            return sessionWrapperRef.current?.kill().catch((error) => logger.debug('[copilot] Launcher kill failed', error));
+        }
     });
 
     lifecycle.registerProcessHandlers();
-    registerKillSessionHandler(session.rpcHandlerManager, lifecycle);
+    registerKillSessionHandler(session.rpcHandlerManager, lifecycle, session);
     registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle);
 
     const syncSessionMode = () => {
@@ -116,6 +127,7 @@ export async function runCopilot(opts: {
         }
         sessionInstance.setPermissionMode(currentPermissionMode);
         sessionInstance.setModel(sessionModel);
+        sessionInstance.setEffort(sessionEffort);
         sessionInstance.setAgentMode(currentAgentMode);
         sessionInstance.pushKeepAlive();
 
@@ -125,6 +137,7 @@ export async function runCopilot(opts: {
     const buildMode = (): CopilotMode => ({
         permissionMode: currentPermissionMode,
         model: resolvedModel ?? undefined,
+        effort: sessionEffort,
         agentMode: currentAgentMode
     });
 
@@ -260,12 +273,12 @@ export async function runCopilot(opts: {
         return parsed.data as PermissionMode;
     };
 
-    const resolveModel = (value: unknown): string | null => {
+    const resolveModel = (value: unknown, label = 'model'): string | null => {
         if (value === null) {
             return null;
         }
         if (typeof value !== 'string' || value.trim().length === 0) {
-            throw new Error('Invalid model');
+            throw new Error(`Invalid ${label}`);
         }
         return value.trim();
     };
@@ -274,7 +287,7 @@ export async function runCopilot(opts: {
         if (!payload || typeof payload !== 'object') {
             throw new Error('Invalid session config payload');
         }
-        const config = payload as { permissionMode?: unknown; model?: unknown; copilotAgentMode?: unknown };
+        const config = payload as { permissionMode?: unknown; model?: unknown; effort?: unknown; copilotAgentMode?: unknown };
         const applied: Record<string, unknown> = {};
 
         if (config.permissionMode !== undefined) {
@@ -292,6 +305,14 @@ export async function runCopilot(opts: {
             sessionModel = resolveModel(config.model);
             resolvedModel = resolveCopilotQueueModel(sessionModel);
             applied.model = sessionModel;
+        }
+
+        if (config.effort !== undefined) {
+            if (sessionWrapperRef.current?.mode === 'local') {
+                throw new Error('Copilot effort can only be changed for remote sessions');
+            }
+            sessionEffort = resolveModel(config.effort, 'effort');
+            applied.effort = sessionEffort;
         }
 
         if (config.copilotAgentMode !== undefined) {
@@ -335,7 +356,11 @@ export async function runCopilot(opts: {
             onModelRollback: (model) => {
                 sessionModel = model;
                 resolvedModel = resolveCopilotQueueModel(model);
-            }
+            },
+            onEffortRollback: (effort) => {
+                sessionEffort = effort;
+            },
+            getQueuedModel: () => resolvedModel
         });
     } catch (error) {
         crashed = true;
@@ -347,7 +372,7 @@ export async function runCopilot(opts: {
             lifecycle.setExitCode(1);
             lifecycle.setArchiveReason(`Local launch failed: ${localFailure.message.slice(0, 200)}`);
             lifecycle.setSessionEndReason('error');
-        } else if (!crashed) {
+        } else if (!crashed && !shuttingDown) {
             lifecycle.setSessionEndReason('completed');
         }
         await lifecycle.cleanupAndExit();

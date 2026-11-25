@@ -62,6 +62,7 @@ fun parseMessageAsEvent(msg: NormalizedMessage): AgentEvent? {
 
 fun dedupeAgentEvents(blocks: List<ChatBlock>): List<ChatBlock> {
     val result = mutableListOf<ChatBlock>()
+    val compactions = mutableMapOf<String, Int>()
     var prevEventKey: String? = null
     var prevTitleChangedTo: String? = null
 
@@ -74,6 +75,28 @@ fun dedupeAgentEvents(blocks: List<ChatBlock>): List<ChatBlock> {
         }
 
         val event = block.event
+        val compactionId = asString(event.raw["compactionId"])
+        if (event.type == "compact-summary" && !compactionId.isNullOrEmpty()) {
+            val index = compactions[compactionId]
+            if (index != null) {
+                val previous = result[index] as? AgentEventBlock
+                val summary = asString(event.raw["summary"])
+                if (previous != null) {
+                    val merged = buildJsonObject {
+                        previous.event.raw.forEach { (key, value) -> put(key, value) }
+                        if (!summary.isNullOrBlank()) put("summary", summary)
+                        for (field in listOf("tokensBefore", "tokensAfter", "estimatedTokensAfter")) {
+                            val value = asNumber(event.raw[field])
+                            if (value != null && value.isFinite() && value >= 0 && value <= 9_007_199_254_740_991.0 && kotlin.math.floor(value) == value) put(field, value)
+                        }
+                    }
+                    result[index] = AgentEventBlock(previous.id, previous.createdAt, previous.invokedAt, previous.model, AgentEvent.of(merged), previous.meta)
+                }
+                continue
+            }
+            compactions[compactionId] = result.size
+        }
+
         if (event is AgentEvent.TitleChanged && event.title != null) {
             val title = event.title!!.trim()
             val key = "title-changed:$title"

@@ -8,6 +8,8 @@ import FilePage from './file'
 
 const goBackMock = vi.fn()
 const copyMock = vi.hoisted(() => vi.fn())
+const getGitDiffFileMock = vi.hoisted(() => vi.fn())
+const readSessionFileMock = vi.hoisted(() => vi.fn())
 
 const sampleMarkdown = '# Heading\n\n| Col A | Col B |\n| --- | --- |\n| one | two |'
 const filePath = 'docs/README.md'
@@ -27,13 +29,8 @@ vi.mock('@tanstack/react-router', () => ({
 vi.mock('@/lib/app-context', () => ({
     useAppContext: () => ({
         api: {
-            getGitDiffFile: vi.fn(async () => ({ success: true, stdout: '' })),
-            readSessionFile: vi.fn(async () => ({
-                success: true,
-                content: encodedContent,
-                size: fileSize,
-                modified: fileModified,
-            })),
+            getGitDiffFile: getGitDiffFileMock,
+            readSessionFile: readSessionFileMock,
         },
     }),
 }))
@@ -78,6 +75,13 @@ function renderWithProviders() {
 describe('FilePage markdown preview', () => {
     beforeEach(() => {
         vi.clearAllMocks()
+        getGitDiffFileMock.mockResolvedValue({ success: true, stdout: '' })
+        readSessionFileMock.mockResolvedValue({
+            success: true,
+            content: encodedContent,
+            size: fileSize,
+            modified: fileModified,
+        })
         window.localStorage.clear()
         window.sessionStorage.clear()
     })
@@ -88,6 +92,8 @@ describe('FilePage markdown preview', () => {
         await waitFor(() => {
             expect(screen.getByTestId('markdown-preview')).toHaveTextContent('# Heading')
         })
+        expect(screen.getByTestId('markdown-preview').closest('.file-preview-scroll-content')).not.toBeNull()
+        expect(screen.getByTestId('markdown-preview').closest('.file-preview-scroll-y')).not.toBeNull()
         expect(screen.getByText(formatFileMetadata(fileSize, fileModified, 'en')!)).toBeInTheDocument()
         expect(screen.getAllByText(filePath)).toHaveLength(1)
         const previewCopyButton = screen.getByRole('button', { name: 'Copy file content' })
@@ -114,6 +120,54 @@ describe('FilePage markdown preview', () => {
         await waitFor(() => {
             expect(screen.getByTestId('markdown-preview')).toBeInTheDocument()
         })
+    })
+
+    it('collapses long preview errors until clicked', async () => {
+        const tail = 'FULL ERROR TAIL'
+        const longError = `Command failed: git diff --no-ext-diff -- TASKS.md ${'diagnostic '.repeat(30)}${tail}`
+        getGitDiffFileMock.mockResolvedValue({ success: false, error: longError })
+
+        renderWithProviders()
+
+        const errorToggle = await screen.findByRole('button', { name: /Show full error/ })
+        expect(screen.getAllByRole('alert')).toHaveLength(1)
+        expect(errorToggle).toHaveAttribute('aria-expanded', 'false')
+        expect(errorToggle).toHaveTextContent('…')
+        expect(errorToggle).not.toHaveTextContent(tail)
+
+        fireEvent.click(errorToggle)
+        expect(errorToggle).toHaveAttribute('aria-expanded', 'true')
+        expect(errorToggle).toHaveTextContent(longError)
+
+        fireEvent.click(errorToggle)
+        expect(errorToggle).toHaveAttribute('aria-expanded', 'false')
+        expect(errorToggle).not.toHaveTextContent(tail)
+    })
+
+    it('uses the shared code-wrap preference for the source preview', async () => {
+        window.localStorage.setItem('hapi-code-wrap', '1')
+        renderWithProviders()
+
+        await waitFor(() => {
+            expect(screen.getByTestId('markdown-preview')).toBeInTheDocument()
+        })
+        fireEvent.click(screen.getByRole('button', { name: 'Source' }))
+
+        await waitFor(() => {
+            expect(screen.getByRole('code')).toHaveTextContent('# Heading')
+        })
+        const sourceCode = screen.getByRole('code')
+        const sourcePre = sourceCode.closest('pre')
+        const wrapToggle = screen.getByRole('button', { pressed: true })
+
+        expect(wrapToggle).toBeInTheDocument()
+        expect(sourcePre).toHaveStyle({ whiteSpace: 'pre-wrap', wordBreak: 'break-word' })
+
+        fireEvent.click(wrapToggle)
+
+        expect(screen.getByRole('button', { pressed: false })).toBeInTheDocument()
+        expect(sourcePre).toHaveStyle({ whiteSpace: 'pre' })
+        expect(window.localStorage.getItem('hapi-code-wrap')).toBeNull()
     })
 
     it('preserves the file preview scroll position across route remounts', async () => {

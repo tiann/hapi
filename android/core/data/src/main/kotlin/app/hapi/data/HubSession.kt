@@ -10,6 +10,8 @@ import java.io.Closeable
 import java.io.File
 import java.util.concurrent.TimeUnit
 import okhttp3.Cache
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 
 /**
@@ -28,17 +30,37 @@ import okhttp3.OkHttpClient
  * [ensureFreshToken] before (re)connecting, since SSE authenticates only at
  * connect time.
  */
-class HubSession(
-    hubUrl: String,
+class HubSession internal constructor(
+    baseUrl: HttpUrl,
     credentialStore: CredentialStore,
     authEvents: AuthEvents? = null,
     /** Directory for the generated-image disk cache; null disables caching (tests). */
     imageCacheDir: File? = null,
     imageCacheMaxBytes: Long = DEFAULT_IMAGE_CACHE_BYTES,
 ) : Closeable {
+    /** Public production entry point: cleartext hub origins are rejected. */
+    constructor(
+        hubUrl: String,
+        credentialStore: CredentialStore,
+        authEvents: AuthEvents? = null,
+        imageCacheDir: File? = null,
+        imageCacheMaxBytes: Long = DEFAULT_IMAGE_CACHE_BYTES,
+    ) : this(
+        baseUrl = requireHttpsBaseUrl(hubUrl),
+        credentialStore = credentialStore,
+        authEvents = authEvents,
+        imageCacheDir = imageCacheDir,
+        imageCacheMaxBytes = imageCacheMaxBytes,
+    )
+
+    private val baseUrl: HttpUrl = baseUrl.newBuilder()
+        .encodedPath("/")
+        .query(null)
+        .fragment(null)
+        .build()
 
     /** Normalized hub origin. */
-    val hubUrl: String = requireNotNull(HubUrls.normalize(hubUrl)) { "Invalid hub URL: $hubUrl" }
+    val hubUrl: String = this.baseUrl.toString().removeSuffix("/")
 
     private val baseClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
@@ -68,7 +90,7 @@ class HubSession(
         imageCache?.let { apiClient.newBuilder().cache(it).build() } ?: apiClient
 
     val api: HapiApi = HapiApi(
-        hubUrl = this.hubUrl,
+        baseUrl = baseUrl,
         client = apiClient,
         imageClient = imageClient,
         authClient = baseClient,
@@ -94,5 +116,9 @@ class HubSession(
         private const val CONNECT_TIMEOUT_SECONDS = 10L
         private const val READ_TIMEOUT_SECONDS = 60L
         private const val WRITE_TIMEOUT_SECONDS = 60L
+
+        private fun requireHttpsBaseUrl(raw: String): HttpUrl = HubUrls.normalize(raw)
+            ?.toHttpUrl()
+            ?: throw IllegalArgumentException("Invalid HTTPS hub URL: $raw")
     }
 }

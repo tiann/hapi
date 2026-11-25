@@ -1,13 +1,33 @@
 import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, PermissionMode } from '@hapi/protocol/types'
-import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
+import { DEFAULT_RPC_TIMEOUT_MS, getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
+import {
+    UsageQueryResultSchema,
+    UsageQuerySettingsResponseSchema,
+    type UsageQueryAgent,
+    type UsageQueryAgentSettings,
+    type UsageQueryResult,
+    type UsageQuerySettingsResponse,
+    type UsageQueryTemplate
+} from '@hapi/protocol/usageQuery'
 import {
     ArchiveCodexSessionRpcResponseSchema,
+    AgentAvailabilityResponseSchema,
+    AgentQuotasResponseSchema,
     CursorChatStoreStatusSchema,
     ListCodexSessionsRpcResponseSchema,
-    ListPiSessionsRpcResponseSchema
+    ListOpencodeSessionsRpcResponseSchema,
+    ListPiSessionsRpcResponseSchema,
+    PrepareCursorImportRpcResponseSchema
 } from '@hapi/protocol/apiTypes'
+import type { PrepareCursorImportRpcResponse } from '@hapi/protocol/apiTypes'
+import { ListLocalSessionsRpcResponseSchema } from '@hapi/protocol/localTranscript'
+import type { ListLocalSessionsRpcResponse, LocalSessionFlavor } from '@hapi/protocol/localTranscript'
 import type {
+    AbortChunkedUploadResponse,
     AgyModelsResponse,
+    ClaudeModelsResponse,
+    AgentAvailabilityResponse,
+    AgentQuotasResponse,
     CodexModelSummary,
     CodexModelsResponse,
     CommandResponse,
@@ -16,29 +36,55 @@ import type {
     CursorChatStoreStatus,
     DeleteUploadResponse,
     DirectoryEntry,
+    DshModelsResponse,
     FileReadResponse,
     GeneratedImageResponse,
+    ImplementCodexPlanResult,
+    InitChunkedUploadRequest,
+    InitChunkedUploadResponse,
     CopilotModelsResponse,
+    CopilotReasoningEffortResponse,
     GrokModelsResponse,
+    KimiModelsResponse,
+    KimiReasoningEffortResponse,
     GrokReasoningEffortResponse,
     ListDirectoryResponse,
     ListCodexSessionsRpcResponse,
     ListPiSessionsRpcResponse,
+    ListOpencodeSessionsRpcResponse,
     ArchiveCodexSessionRpcResponse,
     OpencodeModelsResponse,
     OpencodeModelSummary,
+    OpencodeModelVariantsResponse,
     OpencodeReasoningEffortResponse,
     PathExistsResponse,
     PiModelsResponse,
     SlashCommandsResponse,
     StatFilesResponse,
-    UploadFileResponse
+    UploadChunkResponse,
+    UploadFileResponse,
+    WorkspaceReadFileRequest,
+    WorkspaceListDirectoryRequest,
+    WorkspaceStatFilesRequest,
+    WorkspaceGitStatusRequest,
+    WorkspaceGitDiffNumstatRequest,
+    WorkspaceGitDiffFileRequest,
+    WorkspaceRipgrepRequest
 } from '@hapi/protocol/apiTypes'
 import type { Server } from 'socket.io'
 import type { RpcRegistry } from '../socket/rpcRegistry'
 
-const DEFAULT_RPC_TIMEOUT_MS = 30_000
 const MODEL_LIST_RPC_TIMEOUT_MS = 120_000
+// Codex can spend 30s awaiting startup after preflight and process creation.
+const CODEX_SPAWN_RPC_TIMEOUT_MS = 60_000
+const UPLOAD_CHUNK_RPC_TIMEOUT_MS = 60_000
+
+export class RunnerStopRpcError extends Error {
+    constructor(readonly timedOut: boolean, cause: unknown) {
+        super('Runner stop acknowledgement was not received', { cause })
+        this.name = 'RunnerStopRpcError'
+    }
+}
 
 /**
  * tiann/hapi#916: thrown by {@link RpcGateway.rpcCall} when the target CLI is
@@ -61,6 +107,28 @@ export class RpcTargetMissingError extends Error {
     }
 }
 
+/**
+ * The CLI no longer has this permission request pending — most often because
+ * it was already answered, or canceled on the agent side (e.g. Claude Code
+ * sent a control_cancel_request for it) before this answer arrived.
+ */
+export class PermissionRequestNotFoundError extends Error {
+    constructor(requestId: string) {
+        super(`Permission request is no longer active: ${requestId}`)
+        this.name = 'PermissionRequestNotFoundError'
+    }
+}
+
+// Matches on the specific shared message rather than treating any error on
+// the Permission RPC method as "not found" — a future, unrelated throw in
+// handlePermissionResponse's success path should surface as a genuine error,
+// not get relabeled as a stale request.
+function isPermissionRequestNotFoundResponse(response: unknown): boolean {
+    if (!response || typeof response !== 'object') return false
+    const error = (response as Record<string, unknown>).error
+    return error === PERMISSION_REQUEST_NOT_FOUND_MESSAGE
+}
+
 export type RpcCommandResponse = CommandResponse
 export type FileSearchOptions = {
     query: string
@@ -78,18 +146,25 @@ export type RpcCodexModel = CodexModelSummary
 export type RpcListCodexModelsResponse = CodexModelsResponse
 export type RpcListCodexSessionsResponse = ListCodexSessionsRpcResponse
 export type RpcListPiSessionsResponse = ListPiSessionsRpcResponse
+export type RpcListOpencodeSessionsResponse = ListOpencodeSessionsRpcResponse
 export type RpcArchiveCodexSessionResponse = ArchiveCodexSessionRpcResponse
 export type RpcCursorModel = CursorModelSummary
 export type RpcListCursorModelsResponse = CursorModelsResponse
 export type RpcCursorChatStoreStatus = CursorChatStoreStatus
 export type RpcOpencodeModel = OpencodeModelSummary
 export type RpcListOpencodeModelsResponse = OpencodeModelsResponse
+export type RpcListOpencodeModelVariantsResponse = OpencodeModelVariantsResponse
 export type RpcListGrokModelsResponse = GrokModelsResponse
 export type RpcListCopilotModelsResponse = CopilotModelsResponse
+export type RpcListKimiModelsResponse = KimiModelsResponse
 export type RpcListGrokReasoningEffortOptionsResponse = GrokReasoningEffortResponse
 export type RpcListOpencodeReasoningEffortOptionsResponse = OpencodeReasoningEffortResponse
 export type RpcListAgyModelsResponse = AgyModelsResponse
+export type RpcListDshModelsResponse = DshModelsResponse
 export type RpcListPiModelsResponse = PiModelsResponse
+export type RpcListClaudeModelsResponse = ClaudeModelsResponse
+export type RpcUsageQuerySettingsResponse = UsageQuerySettingsResponse
+export type RpcUsageQueryResult = UsageQueryResult
 
 export class RpcGateway {
     constructor(
@@ -106,7 +181,7 @@ export class RpcGateway {
         decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort',
         answers?: Record<string, string[]> | Record<string, { answers: string[] }>
     ): Promise<void> {
-        await this.sessionRpc(sessionId, RPC_METHODS.Permission, {
+        const response = await this.sessionRpc(sessionId, RPC_METHODS.Permission, {
             id: requestId,
             approved: true,
             mode,
@@ -114,6 +189,9 @@ export class RpcGateway {
             decision,
             answers
         })
+        if (isPermissionRequestNotFoundResponse(response)) {
+            throw new PermissionRequestNotFoundError(requestId)
+        }
     }
 
     async denyPermission(
@@ -121,11 +199,14 @@ export class RpcGateway {
         requestId: string,
         decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
     ): Promise<void> {
-        await this.sessionRpc(sessionId, RPC_METHODS.Permission, {
+        const response = await this.sessionRpc(sessionId, RPC_METHODS.Permission, {
             id: requestId,
             approved: false,
             decision
         })
+        if (isPermissionRequestNotFoundResponse(response)) {
+            throw new PermissionRequestNotFoundError(requestId)
+        }
     }
 
     async abortSession(sessionId: string): Promise<void> {
@@ -145,24 +226,88 @@ export class RpcGateway {
             effort?: string | null
             collaborationMode?: CodexCollaborationMode
             copilotAgentMode?: CopilotAgentMode
+            autoBridgeTransientModelErrors?: boolean
         }
     ): Promise<unknown> {
         return await this.sessionRpc(sessionId, RPC_METHODS.SetSessionConfig, config)
     }
 
-    async killSession(sessionId: string): Promise<void> {
-        await this.sessionRpc(sessionId, RPC_METHODS.KillSession, {})
+    async killSession(sessionId: string, options: {
+        prepareOnly?: boolean; expectedMachineId?: string; expectedPid?: number; expectedProcessStartMarker?: string; preparationLease?: SessionStopPreparationLease
+    } = {}): Promise<{ pid?: number; machineId?: string; processStartMarker?: string; preparationLease?: SessionStopPreparationLease }> {
+        let method: string = RPC_METHODS.KillSession
+        if (options.prepareOnly) {
+            if (!options.expectedMachineId || !options.expectedPid || !options.expectedProcessStartMarker) {
+                throw new Error('Process shutdown preparation requires machine and process generation')
+            }
+            method = getSessionStopPreparationMethod(options.expectedMachineId, options.expectedPid)
+        }
+        const result = await this.sessionRpc(sessionId, method, options)
+        if (result && typeof result === 'object' && ('error' in result || ('success' in result && result.success === false))) {
+            throw new Error(typeof (result as { error?: unknown }).error === 'string'
+                ? (result as { error: string }).error : 'Session shutdown was not confirmed')
+        }
+        if (!result || typeof result !== 'object') return {}
+        const pid = (result as { pid?: unknown }).pid
+        const processStartMarker = (result as { processStartMarker?: unknown }).processStartMarker
+        const preparationLease = (result as { preparationLease?: SessionStopPreparationLease }).preparationLease
+        const machineId = (result as { machineId?: unknown }).machineId
+        return {
+            ...(typeof pid === 'number' ? { pid } : {}),
+            ...(typeof processStartMarker === 'string' ? { processStartMarker } : {}),
+            ...(preparationLease ? { preparationLease } : {}),
+            ...(typeof machineId === 'string' ? { machineId } : {}),
+        }
     }
 
-    async stopRunnerSession(machineId: string, sessionId: string): Promise<'stopped' | 'already_gone' | 'still_alive'> {
-        const result = await this.machineRpc(machineId, RPC_METHODS.StopSession, { sessionId })
+    async stopRunnerSession(
+        machineId: string,
+        sessionId: string,
+        opts?: { processStartMarker?: string; timeoutMs?: number }
+    ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> {
+        const timeoutMs = opts?.timeoutMs ?? DEFAULT_RPC_TIMEOUT_MS
+        const started = performance.now()
+        let result: unknown
+        try {
+            result = await this.machineRpc(machineId, RPC_METHODS.StopSession, {
+                sessionId,
+                ...(opts?.processStartMarker ? { processStartMarker: opts.processStartMarker } : {}),
+            }, timeoutMs)
+        } catch (error) {
+            if (error instanceof RpcTargetMissingError) throw error
+            // Ack timeout does not cancel the remote stop. Preserve uncertainty
+            // instead of claiming that the process is definitely still alive.
+            throw new RunnerStopRpcError(performance.now() - started >= timeoutMs, error)
+        }
         const status = result && typeof result === 'object' ? (result as { status?: unknown }).status : undefined
-        if (status === 'stopped' || status === 'already_gone' || status === 'still_alive') return status
+        if (status === 'stopped' || status === 'already_gone' || status === 'still_alive' || status === 'unknown') return status
         throw new Error('Unexpected stop-session response')
     }
 
     async handoffSessionToLocal(sessionId: string): Promise<void> {
         await this.sessionRpc(sessionId, RPC_METHODS.HandoffLocal, {})
+    }
+
+    async bridgeModelError(
+        sessionId: string,
+        payload: {
+            eventId: string
+            atTs: number
+            kind: string
+            rawSnippet: string
+            lastUserMessage?: string
+            priorAssistantClaimsDone: boolean
+            transient: boolean
+            bridgedForEventId?: string
+            retriedAndFailed?: boolean
+            supersededByUserTurn?: boolean
+            bridgeable?: boolean
+        }
+    ): Promise<{ ok: boolean; reason?: string }> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.BridgeModelError, payload) as {
+            ok: boolean
+            reason?: string
+        }
     }
 
     async spawnSession(
@@ -182,11 +327,25 @@ export class RpcGateway {
         collaborationMode?: CodexCollaborationMode,
         copilotAgentMode?: CopilotAgentMode,
         startingMode?: 'remote' | 'pty',
-        // Hub session id to reuse for this spawn. When set, the runner boots the
-        // CLI with `--hapi-session-id`, so the child reuses the existing hub
-        // session row (same id) instead of minting a new one.
-        forkSession?: boolean
-    ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
+        // Hub session id for this spawn (preallocated stub or reopen). Runner
+        // stamps `--existing-session-id` or `--hapi-session-id` by flavor; the
+        // latter is adopt-stub (create/getOrCreate with id), not reopen.
+        forkSession?: boolean,
+        /** Fresh machine-spawn stub — distinct from reopen existingSessionId. */
+        reservedSessionId?: string,
+        /** Claude: resume the spawned child truncated to this entry uuid. */
+        resumeSessionAt?: string
+    ): Promise<
+        | { type: 'success'; sessionId: string }
+        | {
+            type: 'error'
+            message: string
+            code?: 'agent_unavailable' | 'outside_workspace_roots'
+            agent?: AgentFlavor
+            /** Explicit false = no OS child; stub safe to delete (#1911 B3). */
+            childStarted?: boolean
+        }
+    > {
         try {
             const result = await this.machineRpc(
                 machineId,
@@ -205,12 +364,17 @@ export class RpcGateway {
                     permissionMode,
                     serviceTier,
                     existingSessionId,
-                    sessionId: existingSessionId,
+                    reservedSessionId,
+                    // Local HTTP / tracking may still read sessionId; prefer
+                    // reserved stub id, then reopen id.
+                    sessionId: reservedSessionId ?? existingSessionId,
                     collaborationMode,
                     copilotAgentMode,
                     startingMode,
-                    forkSession: forkSession === true
-                }
+                    forkSession: forkSession === true,
+                    resumeSessionAt
+                },
+                agent === 'codex' ? CODEX_SPAWN_RPC_TIMEOUT_MS : DEFAULT_RPC_TIMEOUT_MS
             )
             if (result && typeof result === 'object') {
                 const obj = result as Record<string, unknown>
@@ -218,10 +382,25 @@ export class RpcGateway {
                     return { type: 'success', sessionId: obj.sessionId }
                 }
                 if (obj.type === 'error' && typeof obj.errorMessage === 'string') {
-                    return { type: 'error', message: obj.errorMessage }
+                    const code = obj.code === 'agent_unavailable' || obj.code === 'outside_workspace_roots'
+                        ? obj.code
+                        : undefined
+                    const unavailableAgent = typeof obj.agent === 'string' ? obj.agent as AgentFlavor : undefined
+                    const childStarted = obj.childStarted === false ? false : undefined
+                    return {
+                        type: 'error',
+                        message: obj.errorMessage,
+                        ...(code ? { code } : {}),
+                        ...(unavailableAgent ? { agent: unavailableAgent } : {}),
+                        ...(childStarted === false ? { childStarted: false } : {}),
+                    }
                 }
                 if (obj.type === 'requestToApproveDirectoryCreation' && typeof obj.directory === 'string') {
-                    return { type: 'error', message: `Directory creation requires approval: ${obj.directory}` }
+                    return {
+                        type: 'error',
+                        message: `Directory creation requires approval: ${obj.directory}`,
+                        childStarted: false,
+                    }
                 }
                 if (typeof obj.error === 'string') {
                     return { type: 'error', message: obj.error }
@@ -241,6 +420,8 @@ export class RpcGateway {
                 })()
             return { type: 'error', message: `Unexpected spawn result: ${details}` }
         } catch (error) {
+            // Ambiguous: the machine RPC may have started a child before failing.
+            // Do not claim childStarted: false — hub keeps the stub.
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }
         }
     }
@@ -253,7 +434,53 @@ export class RpcGateway {
         return result as RpcListDirectoryResponse
     }
 
-    async checkPathsExist(machineId: string, paths: string[]): Promise<Record<string, boolean>> {
+    async getAgentAvailability(machineId: string): Promise<AgentAvailabilityResponse> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.AgentAvailability, {})
+        return AgentAvailabilityResponseSchema.parse(result)
+    }
+
+    async getUsageQuerySettings(machineId: string, agent: UsageQueryAgent): Promise<RpcUsageQuerySettingsResponse> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.UsageQueryGetSettings, { agent })
+        return UsageQuerySettingsResponseSchema.parse(result)
+    }
+
+    async saveUsageQuerySettings(
+        machineId: string,
+        agent: UsageQueryAgent,
+        settings: UsageQueryAgentSettings
+    ): Promise<RpcUsageQuerySettingsResponse> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.UsageQuerySaveSettings, {
+            agent,
+            ...settings
+        })
+        return UsageQuerySettingsResponseSchema.parse(result)
+    }
+
+    async testUsageQueryTemplate(
+        machineId: string,
+        agent: UsageQueryAgent,
+        template: UsageQueryTemplate
+    ): Promise<RpcUsageQueryResult> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.UsageQueryTest, { agent, template })
+        return UsageQueryResultSchema.parse(result)
+    }
+
+    async queryUsage(
+        machineId: string,
+        agent: UsageQueryAgent,
+        force = false
+    ): Promise<RpcUsageQueryResult> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.UsageQuery, { agent, force })
+        return UsageQueryResultSchema.parse(result)
+    }
+
+    async getAgentQuotas(machineId: string, options?: { refresh?: boolean }): Promise<AgentQuotasResponse> {
+        const params = options?.refresh ? { refresh: true } : {}
+        const result = await this.machineRpc(machineId, RPC_METHODS.AgentQuotas, params, 20_000)
+        return AgentQuotasResponseSchema.parse(result)
+    }
+
+    async checkPathsExist(machineId: string, paths: string[]): Promise<PathExistsResponse> {
         const result = await this.machineRpc(machineId, RPC_METHODS.PathExists, { paths }) as RpcPathExistsResponse | unknown
         if (!result || typeof result !== 'object') {
             throw new Error('Unexpected path-exists result')
@@ -268,7 +495,13 @@ export class RpcGateway {
         for (const [key, value] of Object.entries(existsValue)) {
             exists[key] = value === true
         }
-        return exists
+        const outsideWorkspaceRoots = Array.isArray((result as RpcPathExistsResponse).outsideWorkspaceRoots)
+            ? (result as RpcPathExistsResponse).outsideWorkspaceRoots?.filter((path): path is string => typeof path === 'string')
+            : undefined
+        return {
+            exists,
+            ...(outsideWorkspaceRoots?.length ? { outsideWorkspaceRoots } : {}),
+        }
     }
 
     async getCursorChatStoreStatus(
@@ -301,8 +534,8 @@ export class RpcGateway {
         return await this.sessionRpc(sessionId, RPC_METHODS.GitDiffFile, options) as RpcCommandResponse
     }
 
-    async readSessionFile(sessionId: string, path: string): Promise<RpcReadFileResponse> {
-        return await this.sessionRpc(sessionId, RPC_METHODS.ReadFile, { path }) as RpcReadFileResponse
+    async readSessionFile(sessionId: string, path: string, options?: { maxBytes?: number }): Promise<RpcReadFileResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.ReadFile, { path, ...options }) as RpcReadFileResponse
     }
 
     async readGeneratedImage(sessionId: string, imageId: string): Promise<RpcGeneratedImageResponse> {
@@ -321,12 +554,66 @@ export class RpcGateway {
         return await this.sessionRpc(sessionId, RPC_METHODS.UploadFile, { sessionId, filename, content, mimeType }) as RpcUploadFileResponse
     }
 
+    async initChunkedUpload(sessionId: string, request: InitChunkedUploadRequest): Promise<InitChunkedUploadResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.UploadInit, { sessionId, ...request }) as InitChunkedUploadResponse
+    }
+
+    async uploadFileChunk(sessionId: string, uploadId: string, index: number, content: string): Promise<UploadChunkResponse> {
+        return await this.sessionRpc(
+            sessionId,
+            RPC_METHODS.UploadChunk,
+            { sessionId, uploadId, index, content },
+            UPLOAD_CHUNK_RPC_TIMEOUT_MS
+        ) as UploadChunkResponse
+    }
+
+    async finalizeChunkedUpload(sessionId: string, uploadId: string): Promise<RpcUploadFileResponse> {
+        return await this.sessionRpc(
+            sessionId,
+            RPC_METHODS.UploadFinalize,
+            { sessionId, uploadId },
+            UPLOAD_CHUNK_RPC_TIMEOUT_MS
+        ) as RpcUploadFileResponse
+    }
+
+    async abortChunkedUpload(sessionId: string, uploadId: string): Promise<AbortChunkedUploadResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.UploadAbort, { sessionId, uploadId }) as AbortChunkedUploadResponse
+    }
+
     async deleteUploadFile(sessionId: string, path: string): Promise<RpcDeleteUploadResponse> {
         return await this.sessionRpc(sessionId, RPC_METHODS.DeleteUpload, { sessionId, path }) as RpcDeleteUploadResponse
     }
 
+    async readWorkspaceFile(machineId: string, request: WorkspaceReadFileRequest): Promise<RpcReadFileResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.WorkspaceReadFile, request) as RpcReadFileResponse
+    }
+
+    async listWorkspaceDirectory(machineId: string, request: WorkspaceListDirectoryRequest): Promise<RpcListDirectoryResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.WorkspaceListDirectory, request) as RpcListDirectoryResponse
+    }
+
+    async statWorkspaceFiles(machineId: string, request: WorkspaceStatFilesRequest): Promise<RpcStatFilesResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.WorkspaceStatFiles, request) as RpcStatFilesResponse
+    }
+
+    async getWorkspaceGitStatus(machineId: string, request: WorkspaceGitStatusRequest): Promise<RpcCommandResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.WorkspaceGitStatus, request) as RpcCommandResponse
+    }
+
+    async getWorkspaceGitDiffNumstat(machineId: string, request: WorkspaceGitDiffNumstatRequest): Promise<RpcCommandResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.WorkspaceGitDiffNumstat, request) as RpcCommandResponse
+    }
+
+    async getWorkspaceGitDiffFile(machineId: string, request: WorkspaceGitDiffFileRequest): Promise<RpcCommandResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.WorkspaceGitDiffFile, request) as RpcCommandResponse
+    }
+
     async runRipgrep(sessionId: string, args: string[], cwd?: string, fileSearch?: FileSearchOptions): Promise<RpcCommandResponse> {
         return await this.sessionRpc(sessionId, RPC_METHODS.Ripgrep, { args, cwd, fileSearch }) as RpcCommandResponse
+    }
+
+    async runWorkspaceRipgrep(machineId: string, request: WorkspaceRipgrepRequest): Promise<RpcCommandResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.WorkspaceRipgrep, request) as RpcCommandResponse
     }
 
     async listSlashCommands(sessionId: string, agent: string): Promise<SlashCommandsResponse> {
@@ -349,6 +636,10 @@ export class RpcGateway {
         return await this.machineRpc(machineId, RPC_METHODS.ListCodexModels, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListCodexModelsResponse
     }
 
+    async listOpencodeModelVariantsForMachine(machineId: string, cwd?: string | null): Promise<RpcListOpencodeModelVariantsResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.ListOpencodeModelVariants, { cwd: cwd ?? null }, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListOpencodeModelVariantsResponse
+    }
+
     async listCodexModelsForSession(sessionId: string): Promise<RpcListCodexModelsResponse> {
         return await this.sessionRpc(
             sessionId,
@@ -368,9 +659,43 @@ export class RpcGateway {
         return ListPiSessionsRpcResponseSchema.parse(result)
     }
 
+    async listOpencodeSessionsForMachine(machineId: string, cwd?: string | null, sessionIds?: string[]): Promise<RpcListOpencodeSessionsResponse> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.ListOpencodeSessions, { cwd: cwd ?? null, sessionIds }, MODEL_LIST_RPC_TIMEOUT_MS)
+        return ListOpencodeSessionsRpcResponseSchema.parse(result)
+    }
+
     async archiveCodexSessionForMachine(machineId: string, sessionId: string): Promise<RpcArchiveCodexSessionResponse> {
         const result = await this.machineRpc(machineId, RPC_METHODS.ArchiveCodexSession, { sessionId }, MODEL_LIST_RPC_TIMEOUT_MS)
         return ArchiveCodexSessionRpcResponseSchema.parse(result)
+    }
+
+    async listLocalSessionsForMachine(machineId: string, params: {
+        flavor: LocalSessionFlavor
+        cwd?: string | null
+        sessionIds?: string[] | null
+    }): Promise<ListLocalSessionsRpcResponse> {
+        const result = await this.machineRpc(
+            machineId,
+            RPC_METHODS.ListLocalSessions,
+            { flavor: params.flavor, cwd: params.cwd ?? null, sessionIds: params.sessionIds ?? undefined },
+            MODEL_LIST_RPC_TIMEOUT_MS
+        )
+        return ListLocalSessionsRpcResponseSchema.parse(result)
+    }
+
+    async prepareCursorImportForMachine(
+        machineId: string,
+        uuid: string,
+        workspacePath?: string | null
+    ): Promise<PrepareCursorImportRpcResponse> {
+        // ACP verify can take tens of seconds; reuse the long list timeout.
+        const result = await this.machineRpc(
+            machineId,
+            RPC_METHODS.PrepareCursorImport,
+            { uuid, workspacePath: workspacePath ?? null },
+            MODEL_LIST_RPC_TIMEOUT_MS
+        )
+        return PrepareCursorImportRpcResponseSchema.parse(result)
     }
 
     async listCursorModelsForSession(sessionId: string): Promise<RpcListCursorModelsResponse> {
@@ -397,6 +722,14 @@ export class RpcGateway {
         return await this.sessionRpc(sessionId, RPC_METHODS.ListGrokModels, {}) as RpcListGrokModelsResponse
     }
 
+    async listDshModelsForMachine(machineId: string): Promise<RpcListDshModelsResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.ListDshModelsForMachine, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListDshModelsResponse
+    }
+
+    async listDshModelsForSession(sessionId: string): Promise<RpcListDshModelsResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.ListDshModels, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListDshModelsResponse
+    }
+
     async listGrokReasoningEffortOptionsForSession(sessionId: string): Promise<RpcListGrokReasoningEffortOptionsResponse> {
         return await this.sessionRpc(sessionId, RPC_METHODS.ListGrokReasoningEffortOptions, {}) as RpcListGrokReasoningEffortOptionsResponse
     }
@@ -410,6 +743,10 @@ export class RpcGateway {
         ) as RpcListCopilotModelsResponse
     }
 
+    async listCopilotReasoningEffortOptionsForSession(sessionId: string): Promise<CopilotReasoningEffortResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.ListCopilotReasoningEffortOptions, {}) as CopilotReasoningEffortResponse
+    }
+
     async listCopilotModelsForSession(sessionId: string): Promise<RpcListCopilotModelsResponse> {
         return await this.sessionRpc(
             sessionId,
@@ -417,6 +754,32 @@ export class RpcGateway {
             {},
             MODEL_LIST_RPC_TIMEOUT_MS
         ) as RpcListCopilotModelsResponse
+    }
+
+    async listKimiModelsForCwd(machineId: string, cwd: string): Promise<RpcListKimiModelsResponse> {
+        return await this.machineRpc(
+            machineId,
+            RPC_METHODS.ListKimiModelsForCwd,
+            { cwd },
+            MODEL_LIST_RPC_TIMEOUT_MS
+        ) as RpcListKimiModelsResponse
+    }
+
+    /**
+     * Active-session Kimi discovery. The probe runs in the CLI that owns the
+     * session, so it works without a background runner on the machine.
+     */
+    async listKimiReasoningEffortOptionsForSession(sessionId: string): Promise<KimiReasoningEffortResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.ListKimiReasoningEffortOptions, {}) as KimiReasoningEffortResponse
+    }
+
+    async listKimiModelsForSession(sessionId: string): Promise<RpcListKimiModelsResponse> {
+        return await this.sessionRpc(
+            sessionId,
+            RPC_METHODS.ListKimiModels,
+            {},
+            MODEL_LIST_RPC_TIMEOUT_MS
+        ) as RpcListKimiModelsResponse
     }
 
     /** Generic Pi RPC call — routes all Pi-specific session RPCs through
@@ -441,19 +804,53 @@ export class RpcGateway {
 
     async forkConversation(
         sessionId: string,
-        params: { messageLocalId?: string }
-    ): Promise<import('@hapi/protocol/apiTypes').ForkConversationRpcResult> {
+        params: { messageLocalId?: string; latestCompleted?: boolean; lastTurnId?: string }
+    ): Promise<import('@hapi/protocol/apiTypes').ForkConversationRpcResponse> {
         return await this.sessionRpc(
             sessionId,
             RPC_METHODS.ForkConversation,
             params,
             120_000
-        ) as import('@hapi/protocol/apiTypes').ForkConversationRpcResult
+        ) as import('@hapi/protocol/apiTypes').ForkConversationRpcResponse
+    }
+
+    /** Ask a preview-capable shared runtime where its fork boundary sits. */
+    async previewForkBoundary(
+        sessionId: string,
+        params: import('@hapi/protocol/apiTypes').PreviewForkBoundaryRequest
+    ): Promise<import('@hapi/protocol/apiTypes').PreviewForkBoundaryResult> {
+        // A CLI handler failure arrives as a RESOLVED {error} envelope
+        // (RpcHandlerManager serializes thrown errors), not a rejected RPC:
+        // unwrapped, the cast would answer the preview with a cut of
+        // undefineds instead of the runtime failure.
+        const result = await this.sessionRpc(
+            sessionId,
+            RPC_METHODS.PreviewForkBoundary,
+            params,
+            30_000
+        ) as import('@hapi/protocol/apiTypes').PreviewForkBoundaryResult & { error?: unknown }
+        if (typeof result?.error === 'string' && result.error) throw new Error(result.error)
+        return result
+    }
+
+    async forkArchivedCodex(machineId: string, request: import('@hapi/protocol/apiTypes').ForkArchivedCodexRequest): Promise<import('@hapi/protocol/apiTypes').ForkArchivedCodexResponse> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.ForkArchivedCodex, request, 120_000) as Record<string, unknown>
+        if (typeof result?.error === 'string') return { error: result.error, rollbackSafe: result.rollbackSafe === true }
+        if (typeof result?.nativeSessionId !== 'string' || !result.nativeSessionId) throw new Error('Native archived fork did not return a session id')
+        return { nativeSessionId: result.nativeSessionId }
+    }
+
+    async clearConversation(sessionId: string): Promise<{ sessionId: string }> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.ClearConversation, {}, 120_000) as { sessionId: string }
+    }
+
+    async implementCodexPlan(sessionId: string, planId: string): Promise<ImplementCodexPlanResult> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.ImplementCodexPlan, { planId }, 60_000) as ImplementCodexPlanResult
     }
 
     async rewindConversation(
         sessionId: string,
-        params: { messageLocalId: string }
+        params: { messageLocalId: string; discardedThroughSeq?: number; opencodeRewind?: import('@hapi/protocol/schemas').OpenCodeRewindOperation }
     ): Promise<import('@hapi/protocol/apiTypes').RewindConversationRpcResult> {
         return await this.sessionRpc(
             sessionId,
@@ -467,12 +864,21 @@ export class RpcGateway {
         return await this.sessionRpc(sessionId, RPC_METHODS.ListOpencodeReasoningEffortOptions, {}) as RpcListOpencodeReasoningEffortOptionsResponse
     }
 
-    async listAgyModelsForMachine(machineId: string): Promise<RpcListAgyModelsResponse> {
-        return await this.machineRpc(machineId, RPC_METHODS.ListAgyModels, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListAgyModelsResponse
+    async listAgyModelsForMachine(machineId: string, options?: { refresh?: boolean }): Promise<RpcListAgyModelsResponse> {
+        const params = { refresh: options?.refresh === true }
+        return await this.machineRpc(machineId, RPC_METHODS.ListAgyModels, params, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListAgyModelsResponse
     }
 
     async listPiModelsForMachine(machineId: string): Promise<RpcListPiModelsResponse> {
         return await this.machineRpc(machineId, RPC_METHODS.ListPiModelsForMachine, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListPiModelsResponse
+    }
+
+    async listPiModelsForSession(sessionId: string): Promise<RpcListPiModelsResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.ListPiModels, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListPiModelsResponse
+    }
+
+    async listClaudeModelsForMachine(machineId: string): Promise<RpcListClaudeModelsResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.ListClaudeModels, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListClaudeModelsResponse
     }
 
     private async sessionRpc(

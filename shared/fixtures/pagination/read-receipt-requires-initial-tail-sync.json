@@ -1,0 +1,50 @@
+{
+    "description": "SSE arriving before initial tail synchronization cannot establish a read receipt over an unloaded conversation.",
+    "expectedState": {
+        "epoch": null,
+        "hasMore": false,
+        "messages": [
+            {
+                "contentRevision": 5,
+                "createdAt": 10000,
+                "id": "live",
+                "invokedAt": 10000,
+                "localId": null,
+                "optimistic": false,
+                "queued": false,
+                "seq": 10
+            }
+        ],
+        "newestCursor": null,
+        "olderCursor": null,
+        "readThroughRevision": null,
+        "viewMode": "tail"
+    },
+    "fixtureVersion": 1,
+    "name": "read-receipt-requires-initial-tail-sync",
+    "ops": [
+        {
+            "messages": [
+                {
+                    "content": {
+                        "content": {
+                            "data": {
+                                "message": "live",
+                                "type": "message"
+                            },
+                            "type": "codex"
+                        },
+                        "role": "agent"
+                    },
+                    "contentRevision": 5,
+                    "createdAt": 10000,
+                    "id": "live",
+                    "invokedAt": 10000,
+                    "localId": null,
+                    "seq": 10
+                }
+            ],
+            "op": "sse-messages"
+        }
+    ]
+}

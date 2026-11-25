@@ -3,22 +3,29 @@
  */
 
 import { io, type Socket } from 'socket.io-client'
-import { readdir, realpath, stat } from 'node:fs/promises'
-import { realpathSync } from 'node:fs'
-import { basename, dirname, isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
+import { readdir, stat } from 'node:fs/promises'
+import { join } from 'node:path'
 import { logger } from '@/ui/logger'
+import { ForkArchivedCodexRequestSchema } from '@hapi/protocol/apiTypes'
 import { configuration } from '@/configuration'
 import type { ClientToServerEvents, ServerToClientEvents, Update, UpdateMachineBody } from '@hapi/protocol'
 import {
     ArchiveCodexSessionRpcRequestSchema,
     ListCodexSessionsRpcRequestSchema,
+    ListOpencodeSessionsRpcRequestSchema,
     ListPiSessionsRpcRequestSchema,
+    PrepareCursorImportRpcRequestSchema,
     type ArchiveCodexSessionRpcResponse,
+    type AgentAvailabilityResponse,
+    type AgentQuotasRequest,
+    type AgentQuotasResponse,
     type ListCodexSessionsRpcResponse,
+    type ListOpencodeSessionsRpcResponse,
     type ListPiSessionsRpcResponse,
     type MachineDirectoryEntry,
     type MachineListDirectoryResponse,
-    type PathExistsResponse
+    type PathExistsResponse,
+    type PrepareCursorImportRpcResponse
 } from '@hapi/protocol/apiTypes'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import { RUNNER_CAPABILITIES } from '@hapi/protocol'
@@ -29,34 +36,76 @@ import { backoff } from '@/utils/time'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 import { RpcHandlerManager } from './rpc/RpcHandlerManager'
 import { registerCommonHandlers } from '../modules/common/registerCommonHandlers'
+import { registerWorkspaceFileHandlers } from '../modules/common/workspaceFileHandlers'
+import { setAgyCatalogChangeListener } from '../modules/common/agyModels'
 import {
     listOpencodeModelsForCwd,
     type ListOpencodeModelsForCwdRequest,
     type ListOpencodeModelsForCwdResponse
 } from '../modules/common/opencodeModels'
 import {
+    listOpencodeModelVariants,
+    type ListOpencodeModelVariantsResponse
+} from '../modules/common/opencodeModelVariants'
+import {
     listGrokModelsForCwd,
     type ListGrokModelsForCwdRequest,
     type ListGrokModelsForCwdResponse
 } from '../modules/common/grokModels'
 import {
+    listDshModelsForMachine,
+    type ListDshModelsForMachineResponse
+} from '../modules/common/dshModels'
+import {
     listCopilotModelsForCwd,
     type ListCopilotModelsForCwdRequest,
     type ListCopilotModelsForCwdResponse
 } from '../modules/common/copilotModels'
+import {
+    listKimiModelsForCwd,
+    type ListKimiModelsForCwdRequest,
+    type ListKimiModelsForCwdResponse
+} from '../modules/common/kimiModels'
 import type { SpawnSessionOptions, SpawnSessionResult } from '../modules/common/rpcTypes'
 import { applyVersionedAck } from './versionedUpdate'
-import { archiveLocalCodexSession, listLocalCodexSessionSummaries, listLocalCodexSessionsWithMessagesByIds } from '../modules/common/codexSessions'
+import {
+    archiveLocalCodexSession,
+    listLocalCodexSessionSummaries,
+    listLocalCodexSessionsWithMessagesByIds
+} from '../modules/common/codexSessions'
 import { listLocalPiSessionSummaries, listLocalPiSessionsWithMessagesByIds } from '../modules/common/piSessions'
+import { listLocalOpencodeSessionSummaries, listLocalOpencodeSessionsWithMessagesByIds } from '../modules/common/opencodeSessions'
+import { registerLocalSessionHandlers } from '../modules/common/localSessions/rpcHandlers'
+import { registerLocalSessionSource } from '../modules/common/localSessions/registry'
+import { codexLocalSessionSource } from '../modules/common/localSessions/sources/codex'
+import { piLocalSessionSource } from '../modules/common/localSessions/sources/pi'
+import { opencodeLocalSessionSource } from '../modules/common/localSessions/sources/opencode'
+import { claudeLocalSessionSource } from '../modules/common/localSessions/sources/claude'
+import { cursorLocalSessionSource } from '../modules/common/localSessions/sources/cursor'
 import { buildSocketIoExtraHeaderOptions } from './hubExtraHeaders'
 import { collectMachineHealth } from '@/utils/machineHealth'
 import { inspectCursorChatStore } from '@/cursor/cursorChatStoreStatus'
 import { homedir } from 'node:os'
 import type { CursorChatStoreStatus } from '@hapi/protocol/apiTypes'
+import { MachinePathPolicy } from './machinePathPolicy'
+import { getAgentAvailabilityResponse } from '@/agent/agentAvailability'
+import {
+    QueryUsageRequestSchema,
+    SaveUsageQuerySettingsRequestSchema,
+    TestUsageQueryRequestSchema,
+    UsageQueryAgentRequestSchema
+} from '@hapi/protocol/usageQuery'
+import { UsageQueryService } from '@/usageQuery/service'
+import { getAgentQuotasResponse } from '@/agent/agentQuotas'
+
+export { normalizeWindowsDriveRoot } from './machinePathPolicy'
 
 type MachineRpcHandlers = {
     spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>
-    stopSession: (sessionId: string) => Promise<'stopped' | 'already_gone' | 'still_alive'>
+    stopSession: (
+        sessionId: string,
+        opts?: { processStartMarker?: string }
+    ) => Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'>
     requestShutdown: () => void
 }
 
@@ -75,30 +124,6 @@ interface CursorChatStoreStatusRequest {
     homeDir?: string
 }
 
-export function normalizeWindowsDriveRoot(path: string): string {
-    return /^[A-Za-z]:$/.test(path) ? `${path}\\` : path
-}
-
-function canonicalRealpathSync(path: string): string {
-    return normalizeWindowsDriveRoot(realpathSync.native(path))
-}
-
-function normalizeWorkspaceRoots(paths?: string[]): string[] | undefined {
-    if (!paths?.length) {
-        return undefined
-    }
-
-    const normalized = Array.from(new Set(paths.map((path) => {
-        try {
-            return canonicalRealpathSync(path)
-        } catch {
-            return normalizeWindowsDriveRoot(resolvePath(path))
-        }
-    })))
-
-    return normalized.length > 0 ? normalized : undefined
-}
-
 function workspaceRootsEqual(left?: string[], right?: string[]): boolean {
     const normalizedLeft = left ?? []
     const normalizedRight = right ?? []
@@ -113,48 +138,159 @@ function formatWorkspaceRoots(paths?: string[]): string {
     return paths?.length ? paths.join(', ') : '(none)'
 }
 
+/** Default number of consecutive connect failures before rotating to the next hub entry. */
+export const DEFAULT_FAILOVER_AFTER = 5
+
+/** How long to dwell on a fallback hub entry before retrying the primary entry. */
+export const PRIMARY_ENTRY_RETRY_DELAY_MS = 30 * 60 * 1000
+
+/**
+ * Builds the hub entry rotation ring: the primary entry (HAPI_API_URL) first,
+ * then the comma-separated HAPI_API_FALLBACK_URLS entries. Trailing slashes are
+ * stripped from fallback entries so they compose cleanly into the `<origin>/cli`
+ * socket URL; the primary entry is kept verbatim. Duplicates (against the
+ * primary or within the list) are dropped. When the env is unset or every entry
+ * is blank the ring holds only the primary, which disables rotation entirely
+ * (single-URL behavior, zero regression).
+ */
+export function buildHubEntryRotation(primaryUrl: string, fallbackUrlsEnv: string | undefined): string[] {
+    const primary = primaryUrl.trim()
+    const fallbacks: string[] = []
+    for (const rawEntry of (fallbackUrlsEnv ?? '').split(',')) {
+        const entry = rawEntry.trim().replace(/\/+$/, '')
+        if (!entry || entry === primary || fallbacks.includes(entry)) continue
+        fallbacks.push(entry)
+    }
+    return [primary, ...fallbacks]
+}
+
+/**
+ * Parses HAPI_API_FAILOVER_AFTER (minimum 1). Unset, non-numeric or
+ * non-positive values fall back to the default.
+ */
+export function resolveFailoverThreshold(envValue: string | undefined): number {
+    const parsed = Number.parseInt((envValue ?? '').trim(), 10)
+    if (!Number.isFinite(parsed) || parsed < 1) {
+        return DEFAULT_FAILOVER_AFTER
+    }
+    return parsed
+}
+
 export class ApiMachineClient {
     private socket!: Socket<ServerToClientEvents, ClientToServerEvents>
     private keepAliveInterval: NodeJS.Timeout | null = null
     private keepAliveStartTimeout: ReturnType<typeof setTimeout> | null = null
+    // Hub entry rotation ring: primary (HAPI_API_URL) first, fallbacks from
+    // HAPI_API_FALLBACK_URLS after. A single-entry ring disables rotation and
+    // keeps the client identical to the old single-URL implementation.
+    private hubEntries: string[] = [configuration.apiUrl]
+    private activeEntryIndex = 0
+    private connectFailureStreak = 0
+    private failoverAfter = DEFAULT_FAILOVER_AFTER
+    private primaryEntryRetryTimer: ReturnType<typeof setTimeout> | null = null
     private rpcHandlerManager: RpcHandlerManager
+    private readonly usageQueryService: UsageQueryService
 
-    private readonly normalizedWorkspaceRoots: string[] | undefined
+    private readonly pathPolicy: MachinePathPolicy
 
     constructor(
         private readonly token: string,
         private readonly machine: Machine,
         private readonly workspaceRoots?: string[]
     ) {
-        // Realpath roots once so all subsequent comparisons are against
-        // canonical, symlink-resolved locations. Falls back to lexical
-        // resolution if realpath fails so we still get protection.
-        this.normalizedWorkspaceRoots = normalizeWorkspaceRoots(workspaceRoots)
+        this.pathPolicy = new MachinePathPolicy({
+            workspaceRoots,
+        })
 
         this.rpcHandlerManager = new RpcHandlerManager({
             scopePrefix: this.machine.id,
             logger: (msg, data) => logger.debug(msg, data)
         })
+        this.usageQueryService = new UsageQueryService({
+            settingsFile: join(configuration.happyHomeDir, 'usage-query.json')
+        })
 
         registerCommonHandlers(this.rpcHandlerManager, getInvokedCwd())
+        registerWorkspaceFileHandlers(this.rpcHandlerManager, {
+            resolveForCheck: (path) => this.pathPolicy.resolveForCheck(path),
+            isWithinSpawnRoots: (path) => this.pathPolicy.isWithinSpawnRoots(path),
+        })
+
+        // Only the machine daemon answers `<machineId>:listAgyModels`, so it is
+        // the one process that can tell the hub its catalog moved.
+        setAgyCatalogChangeListener(() => {
+            this.socket.emit('machine-agy-models-changed', { machineId: this.machine.id })
+        })
+
+        this.rpcHandlerManager.registerHandler<unknown, AgentAvailabilityResponse>(
+            RPC_METHODS.AgentAvailability,
+            async () => getAgentAvailabilityResponse()
+        )
+
+        this.rpcHandlerManager.registerHandler(
+            RPC_METHODS.UsageQueryGetSettings,
+            async (params) => {
+                const parsed = UsageQueryAgentRequestSchema.parse(params)
+                return await this.usageQueryService.getSettings(parsed.agent)
+            }
+        )
+
+        this.rpcHandlerManager.registerHandler(
+            RPC_METHODS.UsageQuerySaveSettings,
+            async (params) => {
+                const parsed = SaveUsageQuerySettingsRequestSchema.parse(params)
+                return await this.usageQueryService.saveSettings(parsed.agent, parsed)
+            }
+        )
+
+        this.rpcHandlerManager.registerHandler(
+            RPC_METHODS.UsageQueryTest,
+            async (params) => {
+                const parsed = TestUsageQueryRequestSchema.parse(params)
+                return await this.usageQueryService.test(parsed.agent, parsed.template)
+            }
+        )
+
+        this.rpcHandlerManager.registerHandler(
+            RPC_METHODS.UsageQuery,
+            async (params) => {
+                const parsed = QueryUsageRequestSchema.parse(params)
+                return await this.usageQueryService.query(parsed.agent, parsed.force === true)
+            }
+        )
+
+        this.rpcHandlerManager.registerHandler<AgentQuotasRequest, AgentQuotasResponse>(
+            RPC_METHODS.AgentQuotas,
+            async (params) => await getAgentQuotasResponse({ refresh: params?.refresh === true })
+        )
 
         this.rpcHandlerManager.registerHandler<PathExistsRequest, PathExistsResponse>(RPC_METHODS.PathExists, async (params) => {
             const rawPaths = Array.isArray(params?.paths) ? params.paths : []
             const uniquePaths = Array.from(new Set(rawPaths.filter((path): path is string => typeof path === 'string')))
             const exists: Record<string, boolean> = {}
+            const outsideWorkspaceRoots: string[] = []
 
             await Promise.all(uniquePaths.map(async (path) => {
                 const trimmed = path.trim()
                 if (!trimmed) return
+                const resolved = await this.pathPolicy.resolveForCheck(trimmed)
+                if (!this.pathPolicy.isWithinSpawnRoots(resolved)) {
+                    exists[trimmed] = false
+                    outsideWorkspaceRoots.push(trimmed)
+                    return
+                }
                 try {
-                    const stats = await stat(trimmed)
+                    const stats = await stat(resolved)
                     exists[trimmed] = stats.isDirectory()
                 } catch {
                     exists[trimmed] = false
                 }
             }))
 
-            return { exists }
+            return {
+                exists,
+                ...(outsideWorkspaceRoots.length > 0 ? { outsideWorkspaceRoots } : {}),
+            }
         })
 
         this.rpcHandlerManager.registerHandler<CursorChatStoreStatusRequest, CursorChatStoreStatus>(
@@ -170,10 +306,6 @@ export class ApiMachineClient {
         )
 
         this.rpcHandlerManager.registerHandler<ListMachineDirectoryRequest, MachineListDirectoryResponse>(RPC_METHODS.ListMachineDirectory, async (params) => {
-            if (!this.normalizedWorkspaceRoots?.length) {
-                return { success: false, error: 'Workspace browsing is not enabled for this machine' }
-            }
-
             const rawPath = typeof params?.path === 'string' ? params.path.trim() : ''
             if (!rawPath) {
                 return { success: false, error: 'Path is required' }
@@ -181,8 +313,8 @@ export class ApiMachineClient {
 
             const includeHidden = params?.includeHidden === true
 
-            const targetPath = await this.resolveForWorkspaceCheck(rawPath)
-            if (!this.isWithinWorkspaceRoots(targetPath)) {
+            const targetPath = await this.pathPolicy.resolveForCheck(rawPath)
+            if (!this.pathPolicy.isWithinBrowseRoots(targetPath)) {
                 return { success: false, error: 'Path is outside workspace roots' }
             }
 
@@ -199,34 +331,27 @@ export class ApiMachineClient {
                     if (!includeHidden && entry.name.startsWith('.')) return
 
                     const fullPath = join(targetPath, entry.name)
+                    const resolvedEntryPath = entry.isSymbolicLink()
+                        ? await this.pathPolicy.resolveForCheck(fullPath)
+                        : fullPath
+                    if (!this.pathPolicy.isWithinBrowseRoots(resolvedEntryPath)) return
+                    const stats = await stat(resolvedEntryPath).catch(() => undefined)
                     let type: 'file' | 'directory' | 'other' = 'other'
-                    let size: number | undefined
-                    let modified: number | undefined
                     let isGitRepo = false
 
-                    if (entry.isDirectory()) {
+                    if (entry.isDirectory() || stats?.isDirectory()) {
                         type = 'directory'
                         try {
-                            const gitStat = await stat(join(fullPath, '.git'))
+                            const gitStat = await stat(join(resolvedEntryPath, '.git'))
                             isGitRepo = gitStat.isDirectory() || gitStat.isFile()
                         } catch {
                             // not a git repo
                         }
-                    } else if (entry.isFile()) {
+                    } else if (entry.isFile() || stats?.isFile()) {
                         type = 'file'
                     }
 
-                    if (!entry.isSymbolicLink()) {
-                        try {
-                            const stats = await stat(fullPath)
-                            size = stats.size
-                            modified = stats.mtime.getTime()
-                        } catch {
-                            // ignore stat errors
-                        }
-                    }
-
-                    entries.push({ name: entry.name, type, size, modified, isGitRepo })
+                    entries.push({ name: entry.name, type, size: stats?.size, modified: stats?.mtime.getTime(), isGitRepo })
                 }))
 
                 entries.sort((a, b) => {
@@ -256,12 +381,29 @@ export class ApiMachineClient {
                     return { success: false, error: 'cwd is required' }
                 }
 
-                const resolvedCwd = await this.resolveForWorkspaceCheck(rawCwd)
-                if (!this.isWithinWorkspaceRoots(resolvedCwd)) {
+                const resolvedCwd = await this.pathPolicy.resolveForCheck(rawCwd)
+                if (!this.pathPolicy.isWithinSpawnRoots(resolvedCwd)) {
                     return { success: false, error: 'Path is outside workspace roots' }
                 }
 
                 return await listOpencodeModelsForCwd(resolvedCwd)
+            }
+        )
+
+        this.rpcHandlerManager.registerHandler<{ cwd?: string | null }, ListOpencodeModelVariantsResponse>(
+            RPC_METHODS.ListOpencodeModelVariants,
+            async (params) => {
+                const rawCwd = typeof params?.cwd === 'string' ? params.cwd.trim() : ''
+                if (!rawCwd) {
+                    return { success: false, error: 'cwd is required' }
+                }
+
+                const resolvedCwd = await this.pathPolicy.resolveForCheck(rawCwd)
+                if (!this.pathPolicy.isWithinSpawnRoots(resolvedCwd)) {
+                    return { success: false, error: 'Path is outside workspace roots' }
+                }
+
+                return await listOpencodeModelVariants({ cwd: resolvedCwd })
             }
         )
 
@@ -271,12 +413,21 @@ export class ApiMachineClient {
                 const rawCwd = typeof params?.cwd === 'string' ? params.cwd.trim() : ''
                 if (!rawCwd) return { success: false, error: 'cwd is required' }
 
-                const resolvedCwd = await this.resolveForWorkspaceCheck(rawCwd)
-                if (!this.isWithinWorkspaceRoots(resolvedCwd)) {
+                const resolvedCwd = await this.pathPolicy.resolveForCheck(rawCwd)
+                if (!this.pathPolicy.isWithinSpawnRoots(resolvedCwd)) {
                     return { success: false, error: 'Path is outside workspace roots' }
                 }
 
                 return await listGrokModelsForCwd(resolvedCwd)
+            }
+        )
+
+        // DSH models are machine-global, so unlike the cwd-scoped probes above
+        // this handler takes no parameters.
+        this.rpcHandlerManager.registerHandler<undefined, ListDshModelsForMachineResponse>(
+            RPC_METHODS.ListDshModelsForMachine,
+            async () => {
+                return await listDshModelsForMachine()
             }
         )
 
@@ -286,12 +437,27 @@ export class ApiMachineClient {
                 const rawCwd = typeof params?.cwd === 'string' ? params.cwd.trim() : ''
                 if (!rawCwd) return { success: false, error: 'cwd is required' }
 
-                const resolvedCwd = await this.resolveForWorkspaceCheck(rawCwd)
-                if (!this.isWithinWorkspaceRoots(resolvedCwd)) {
+                const resolvedCwd = await this.pathPolicy.resolveForCheck(rawCwd)
+                if (!this.pathPolicy.isWithinSpawnRoots(resolvedCwd)) {
                     return { success: false, error: 'Path is outside workspace roots' }
                 }
 
                 return await listCopilotModelsForCwd(resolvedCwd)
+            }
+        )
+
+        this.rpcHandlerManager.registerHandler<ListKimiModelsForCwdRequest, ListKimiModelsForCwdResponse>(
+            RPC_METHODS.ListKimiModelsForCwd,
+            async (params) => {
+                const rawCwd = typeof params?.cwd === 'string' ? params.cwd.trim() : ''
+                if (!rawCwd) return { success: false, error: 'cwd is required' }
+
+                const resolvedCwd = await this.pathPolicy.resolveForCheck(rawCwd)
+                if (!this.pathPolicy.isWithinSpawnRoots(resolvedCwd)) {
+                    return { success: false, error: 'Path is outside workspace roots' }
+                }
+
+                return await listKimiModelsForCwd(resolvedCwd)
             }
         )
 
@@ -302,8 +468,8 @@ export class ApiMachineClient {
                 if (!parsed.success) return { success: false, error: 'Invalid Codex sessions request' }
                 const rawCwd = typeof parsed.data.cwd === 'string' ? parsed.data.cwd.trim() : ''
                 if (rawCwd) {
-                    const resolvedCwd = await this.resolveForWorkspaceCheck(rawCwd)
-                    if (!this.isWithinWorkspaceRoots(resolvedCwd)) {
+                    const resolvedCwd = await this.pathPolicy.resolveForCheck(rawCwd)
+                    if (!this.pathPolicy.isWithinSpawnRoots(resolvedCwd)) {
                         return { success: false, error: 'Path is outside workspace roots' }
                     }
                 }
@@ -342,8 +508,8 @@ export class ApiMachineClient {
                 if (!parsed.success) return { success: false, error: 'Invalid Pi sessions request' }
                 const rawCwd = typeof parsed.data.cwd === 'string' ? parsed.data.cwd.trim() : ''
                 if (rawCwd) {
-                    const resolvedCwd = await this.resolveForWorkspaceCheck(rawCwd)
-                    if (!this.isWithinWorkspaceRoots(resolvedCwd)) {
+                    const resolvedCwd = await this.pathPolicy.resolveForCheck(rawCwd)
+                    if (!this.pathPolicy.isWithinSpawnRoots(resolvedCwd)) {
                         return { success: false, error: 'Path is outside workspace roots' }
                     }
                 }
@@ -358,72 +524,144 @@ export class ApiMachineClient {
                 return { success: true, sessions }
             }
         )
+
+        this.rpcHandlerManager.registerHandler<unknown, ListOpencodeSessionsRpcResponse>(
+            RPC_METHODS.ListOpencodeSessions,
+            async (params) => {
+                const parsed = ListOpencodeSessionsRpcRequestSchema.safeParse(params)
+                if (!parsed.success) return { success: false, error: 'Invalid Opencode sessions request' }
+                const rawCwd = typeof parsed.data.cwd === 'string' ? parsed.data.cwd.trim() : ''
+                if (rawCwd) {
+                    const resolvedCwd = await this.pathPolicy.resolveForCheck(rawCwd)
+                    if (!this.pathPolicy.isWithinSpawnRoots(resolvedCwd)) {
+                        return { success: false, error: 'Path is outside workspace roots' }
+                    }
+                }
+                const requestedIds = parsed.data.sessionIds ? new Set(parsed.data.sessionIds) : null
+                let allSessions
+                try {
+                    allSessions = requestedIds
+                        ? await listLocalOpencodeSessionsWithMessagesByIds(requestedIds)
+                        : await listLocalOpencodeSessionSummaries()
+                } catch (error) {
+                    return { success: false, error: error instanceof Error ? error.message : 'Failed to read local OpenCode sessions' }
+                }
+                const sessions = []
+                for (const session of allSessions) {
+                    if (await this.isLocalSessionWithinWorkspaceRoots(session)) sessions.push(session)
+                }
+                return { success: true, sessions }
+            }
+        )
+
+        for (const source of [
+            codexLocalSessionSource,
+            piLocalSessionSource,
+            opencodeLocalSessionSource,
+            claudeLocalSessionSource,
+            cursorLocalSessionSource
+        ]) {
+            registerLocalSessionSource(source)
+        }
+        registerLocalSessionHandlers({
+            registerHandler: (method, handler) => this.rpcHandlerManager.registerHandler(method, handler),
+            resolveForCheck: (path) => this.pathPolicy.resolveForCheck(path),
+            isWithinSpawnRoots: (path) => this.pathPolicy.isWithinSpawnRoots(path),
+            isSessionWithinWorkspaceRoots: (session) => this.isLocalSessionWithinWorkspaceRoots(session)
+        })
+
+        this.rpcHandlerManager.registerHandler<unknown, PrepareCursorImportRpcResponse>(
+            RPC_METHODS.PrepareCursorImport,
+            async (params) => {
+                const parsed = PrepareCursorImportRpcRequestSchema.safeParse(params)
+                if (!parsed.success) {
+                    const rawUuid = typeof (params as Record<string, unknown> | null)?.uuid === 'string'
+                        ? String((params as Record<string, unknown>).uuid).trim() || 'invalid'
+                        : 'invalid'
+                    return {
+                        success: false,
+                        uuid: rawUuid,
+                        reason: 'internal_error',
+                        message: 'Invalid Cursor import prepare request',
+                        durationMs: 0
+                    }
+                }
+                const workspacePath = typeof parsed.data.workspacePath === 'string' ? parsed.data.workspacePath.trim() : ''
+                if (workspacePath) {
+                    const resolvedCwd = await this.pathPolicy.resolveForCheck(workspacePath)
+                    if (!this.pathPolicy.isWithinSpawnRoots(resolvedCwd)) {
+                        return {
+                            success: false,
+                            uuid: parsed.data.uuid,
+                            reason: 'internal_error',
+                            message: 'Path is outside workspace roots',
+                            durationMs: 0
+                        }
+                    }
+                }
+                // Dynamic import: cursorImportSessions pulls bun:sqlite off the apiMachine hot path.
+                const { prepareCursorImportOnDisk } = await import('../modules/common/cursorImportSessions')
+                const prepared = await prepareCursorImportOnDisk({
+                    uuid: parsed.data.uuid.trim(),
+                    workspacePath: parsed.data.workspacePath ?? null,
+                    home: homedir()
+                })
+                // Prepare may resolve cwd from ACP meta when the request omitted
+                // workspacePath — re-gate the final path against spawn roots.
+                if (prepared.success === true) {
+                    const resolvedCwd = await this.pathPolicy.resolveForCheck(prepared.workspacePath)
+                    if (!this.pathPolicy.isWithinSpawnRoots(resolvedCwd)) {
+                        return {
+                            success: false,
+                            uuid: prepared.uuid,
+                            reason: 'internal_error',
+                            message: 'Path is outside workspace roots',
+                            durationMs: prepared.durationMs
+                        }
+                    }
+                }
+                return prepared
+            }
+        )
     }
 
     private async isLocalSessionWithinWorkspaceRoots(session: { cwd?: string | null }): Promise<boolean> {
-        if (!this.normalizedWorkspaceRoots?.length) return true
+        if (!this.pathPolicy.hasWorkspaceRoots()) return true
         const cwd = session.cwd?.trim()
         if (!cwd) return false
-        const resolvedCwd = await this.resolveForWorkspaceCheck(cwd)
-        return this.isWithinWorkspaceRoots(resolvedCwd)
-    }
-
-    private isWithinWorkspaceRoots(absolutePath: string): boolean {
-        if (!this.normalizedWorkspaceRoots?.length) return true
-        return this.normalizedWorkspaceRoots.some((workspaceRoot) => {
-            const rel = relative(workspaceRoot, absolutePath)
-            return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
-        })
-    }
-
-    /**
-     * Canonicalize a path for workspace-root containment checks. Resolves
-     * symlinks via realpath so a symlink such as `/safe/out -> /etc` cannot
-     * be used to escape the configured root with a lexical-only check.
-     *
-     * If the path doesn't exist (e.g. a session is being spawned in a
-     * directory we'll create), walks up to the nearest existing ancestor
-     * and realpaths *that*, joining the missing tail back on. This way the
-     * check still runs against the real on-disk location once any
-     * intermediate symlink in the parent chain has been resolved.
-     */
-    private async resolveForWorkspaceCheck(path: string): Promise<string> {
-        const absolute = resolvePath(path)
-        try {
-            return normalizeWindowsDriveRoot(await realpath(absolute))
-        } catch {
-            const missing: string[] = []
-            let cursor = absolute
-            while (cursor !== dirname(cursor)) {
-                missing.unshift(basename(cursor))
-                cursor = dirname(cursor)
-                try {
-                    return join(normalizeWindowsDriveRoot(await realpath(cursor)), ...missing)
-                } catch {
-                    // keep walking to the nearest existing parent
-                }
-            }
-            return normalizeWindowsDriveRoot(absolute)
-        }
+        const resolvedCwd = await this.pathPolicy.resolveForCheck(cwd)
+        return this.pathPolicy.isWithinSpawnRoots(resolvedCwd)
     }
 
     setRPCHandlers({ spawnSession, stopSession, requestShutdown }: MachineRpcHandlers): void {
+        this.rpcHandlerManager.registerHandler(RPC_METHODS.ForkArchivedCodex, async (raw: unknown) => {
+            const request = ForkArchivedCodexRequestSchema.parse(raw)
+            const { forkArchivedCodex } = await import('@/codex/shared/archivedFork')
+            return forkArchivedCodex(request, () => this.pathPolicy.allowsSpawn(request.directory))
+        })
         this.rpcHandlerManager.registerHandler(RPC_METHODS.SpawnHappySession, async (params: any) => {
-            const { directory, sessionId, existingSessionId, resumeSessionId, machineId, approvedNewDirectoryCreation, agent, model, effort, modelReasoningEffort, yolo, permissionMode, serviceTier, collaborationMode, copilotAgentMode, token, sessionType, worktreeName, startingMode, forkSession } = params || {}
+            const { directory, sessionId, existingSessionId, reservedSessionId, resumeSessionId, machineId, approvedNewDirectoryCreation, agent, model, effort, modelReasoningEffort, yolo, permissionMode, serviceTier, collaborationMode, copilotAgentMode, token, sessionType, worktreeName, startingMode, forkSession, resumeSessionAt } = params || {}
 
             if (!directory) {
                 throw new Error('Directory is required')
             }
 
-            const resolvedDirectory = await this.resolveForWorkspaceCheck(directory)
-            if (!this.isWithinWorkspaceRoots(resolvedDirectory)) {
-                return { type: 'error', errorMessage: 'Directory is outside this machine\'s workspace roots' }
+            const resolvedDirectory = await this.pathPolicy.resolveForCheck(directory)
+            if (!this.pathPolicy.isWithinSpawnRoots(resolvedDirectory)) {
+                return {
+                    type: 'error',
+                    errorMessage: 'Directory is outside this machine\'s workspace roots',
+                    code: 'outside_workspace_roots',
+                    // Pre-exec: no OS child — hub must delete the prealloc stub (#1911).
+                    childStarted: false,
+                }
             }
 
             const result = await spawnSession({
                 directory,
                 sessionId,
                 existingSessionId,
+                reservedSessionId,
                 resumeSessionId,
                 machineId,
                 approvedNewDirectoryCreation,
@@ -440,7 +678,9 @@ export class ApiMachineClient {
                 sessionType,
                 worktreeName,
                 startingMode,
-                forkSession: forkSession === true
+                forkSession: forkSession === true,
+                resumeSessionAt: typeof resumeSessionAt === 'string' ? resumeSessionAt : undefined,
+                validateDirectory: async (path) => await this.pathPolicy.allowsSpawn(path),
             })
 
             switch (result.type) {
@@ -449,17 +689,25 @@ export class ApiMachineClient {
                 case 'requestToApproveDirectoryCreation':
                     return { type: 'requestToApproveDirectoryCreation', directory: result.directory }
                 case 'error':
-                    return { type: 'error', errorMessage: result.errorMessage }
+                    return {
+                        type: 'error',
+                        errorMessage: result.errorMessage,
+                        code: result.code,
+                        agent: result.agent,
+                    }
             }
         })
 
         this.rpcHandlerManager.registerHandler(RPC_METHODS.StopSession, async (params: any) => {
-            const { sessionId } = params || {}
+            const { sessionId, processStartMarker } = params || {}
             if (!sessionId) {
                 throw new Error('Session ID is required')
             }
 
-            const status = await stopSession(sessionId)
+            const status = await stopSession(
+                sessionId,
+                typeof processStartMarker === 'string' ? { processStartMarker } : undefined
+            )
             return { status }
         })
 
@@ -535,8 +783,46 @@ export class ApiMachineClient {
         })
     }
 
+    /**
+     * Tell the hub a runner-owned child died without the CLI's normal
+     * session-end handshake. Best effort: the hub also has the child socket
+     * and its keep-alive expiry as a backstop if this frame is lost.
+     */
+    reportSessionChildExited(payload: {
+        sid: string
+        pid: number
+        processStartMarker?: string
+        time?: number
+    }): void {
+        if (!this.socket) return
+        this.socket.emit('session-child-exited', {
+            machineId: this.machine.id,
+            sid: payload.sid,
+            pid: payload.pid,
+            ...(payload.processStartMarker ? { processStartMarker: payload.processStartMarker } : {}),
+            time: payload.time ?? Date.now()
+        })
+    }
+
     connect(): void {
-        this.socket = io(`${configuration.apiUrl}/cli`, {
+        // Snapshot the rotation ring on connect: primary entry first, fallback
+        // entries from env after. Unset/blank env yields a single-entry ring,
+        // which keeps the client exactly on the primary URL (zero regression).
+        this.hubEntries = buildHubEntryRotation(configuration.apiUrl, process.env.HAPI_API_FALLBACK_URLS)
+        this.failoverAfter = resolveFailoverThreshold(process.env.HAPI_API_FAILOVER_AFTER)
+        this.activeEntryIndex = 0
+        this.connectFailureStreak = 0
+        this.createSocket()
+    }
+
+    /**
+     * Creates — and, after hub entry rotation, re-creates — the machine socket
+     * against the currently active entry. Everything origin-independent
+     * (auth token, transport options, extra headers) is rebuilt identically
+     * for every entry because they all flow through this single path.
+     */
+    private createSocket(): void {
+        this.socket = io(`${this.hubEntries[this.activeEntryIndex]}/cli`, {
             transports: ['websocket'],
             auth: {
                 token: this.token,
@@ -552,6 +838,11 @@ export class ApiMachineClient {
 
         this.socket.on('connect', () => {
             logger.debug('[API MACHINE] Connected to bot')
+            // A completed handshake proves the active entry works: reset the
+            // failure streak and, while dwelling on a fallback entry, arm the
+            // periodic retry of the primary entry.
+            this.connectFailureStreak = 0
+            this.schedulePrimaryEntryRetry()
             this.rpcHandlerManager.onSocketConnect(this.socket)
             this.updateRunnerState((state) => ({
                 ...(state ?? {}),
@@ -642,6 +933,13 @@ export class ApiMachineClient {
 
         this.socket.on('connect_error', (error) => {
             logger.debug(`[API MACHINE] Connection error: ${error.message}`)
+            // socket.io retries the same origin forever, so cross-border
+            // interference on the active entry needs our own rotation: count
+            // consecutive failures and switch origins once enough pile up.
+            this.connectFailureStreak += 1
+            if (this.hubEntries.length > 1 && this.connectFailureStreak >= this.failoverAfter) {
+                this.rotateToNextHubEntry()
+            }
         })
 
         this.socket.on('error', (payload) => {
@@ -691,8 +989,69 @@ export class ApiMachineClient {
         }
     }
 
+    /**
+     * Rotates to the next hub entry after `failoverAfter` consecutive connect
+     * failures and rebuilds the socket against the new origin. No-op for a
+     * single-entry ring (rotation disabled).
+     */
+    private rotateToNextHubEntry(): void {
+        if (this.hubEntries.length <= 1) return
+        const previousEntry = this.hubEntries[this.activeEntryIndex]
+        const failures = this.connectFailureStreak
+        this.activeEntryIndex = (this.activeEntryIndex + 1) % this.hubEntries.length
+        logger.debug(`[API MACHINE] rotating hub entry ${previousEntry} -> ${this.hubEntries[this.activeEntryIndex]} after ${failures} connect failures`)
+        this.rebuildSocket()
+    }
+
+    /**
+     * While connected through a fallback entry, arms a timer that periodically
+     * tears the connection down and retries the primary entry. If the primary
+     * is still unreachable the regular failure rotation carries the client
+     * back around the ring to a working entry, so no extra fallback
+     * bookkeeping is needed here.
+     */
+    private schedulePrimaryEntryRetry(): void {
+        if (this.activeEntryIndex === 0) return
+        if (this.primaryEntryRetryTimer) return
+        this.primaryEntryRetryTimer = setTimeout(() => {
+            this.primaryEntryRetryTimer = null
+            const fallbackEntry = this.hubEntries[this.activeEntryIndex]
+            this.activeEntryIndex = 0
+            logger.debug(`[API MACHINE] retrying primary hub entry ${this.hubEntries[0]} after dwelling on fallback ${fallbackEntry}`)
+            this.rebuildSocket()
+        }, PRIMARY_ENTRY_RETRY_DELAY_MS)
+    }
+
+    private clearPrimaryEntryRetryTimer(): void {
+        if (this.primaryEntryRetryTimer) {
+            clearTimeout(this.primaryEntryRetryTimer)
+            this.primaryEntryRetryTimer = null
+        }
+    }
+
+    /**
+     * Tears the current socket down (stopping its own reconnection loop so it
+     * cannot fight the rotation) and reconnects through the active entry via
+     * the shared construction path in createSocket(). Also clears every timer
+     * tied to the abandoned socket so rotations can never leak them.
+     */
+    private rebuildSocket(): void {
+        this.clearPrimaryEntryRetryTimer()
+        this.stopKeepAlive()
+        // The old socket's listeners are dropped on purpose: after rotation
+        // they would only observe the abandoned entry's lifecycle.
+        this.socket.removeAllListeners()
+        this.socket.close()
+        this.rpcHandlerManager.onSocketDisconnect()
+        this.connectFailureStreak = 0
+        this.createSocket()
+    }
+
     shutdown(): void {
         this.stopKeepAlive()
+        this.clearPrimaryEntryRetryTimer()
+        // The listener holds this client, and the socket is about to close.
+        setAgyCatalogChangeListener(null)
         if (this.socket) {
             this.socket.close()
         }

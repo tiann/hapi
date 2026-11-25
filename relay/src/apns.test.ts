@@ -5,9 +5,9 @@
  * if these tests ever start failing on a Bun upgrade, swap the transport
  * behind the ApnsClient interface (see relay/src/apns.ts header comment).
  */
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test'
 import { createServer } from 'node:http2'
-import { decodeProtectedHeader, jwtVerify } from 'jose'
+import { decodeProtectedHeader, jwtVerify, SignJWT } from 'jose'
 import {
     APNS_JWT_MAX_AGE_MS,
     ApnsJwtProvider,
@@ -111,6 +111,33 @@ describe('ApnsJwtProvider', () => {
         // with identical claims.
         expect(second).not.toBe(first)
     })
+
+    test('shares one JWT across concurrent callers on startup and refresh', async () => {
+        let nowMs = 1_700_000_000_000
+        const provider = makeProvider(() => nowMs)
+        const first = await Promise.all(Array.from({ length: 8 }, () => provider.getToken()))
+        expect(new Set(first).size).toBe(1)
+
+        nowMs += APNS_JWT_MAX_AGE_MS + 1
+        const refreshed = await Promise.all(Array.from({ length: 8 }, () => provider.getToken()))
+        expect(new Set(refreshed).size).toBe(1)
+        expect(refreshed[0]).not.toBe(first[0])
+        expect(await provider.getToken()).toBe(refreshed[0]!)
+    })
+
+    test('can retry signing after a failed token generation', async () => {
+        const provider = makeProvider(() => 1_700_000_000_000)
+        const sign = spyOn(SignJWT.prototype, 'sign')
+            .mockRejectedValueOnce(new Error('test signing failure'))
+        try {
+            await expect(provider.getToken()).rejects.toThrow('test signing failure')
+            const token = await provider.getToken()
+            expect(decodeProtectedHeader(token).kid).toBe(KEY_ID)
+            expect(sign).toHaveBeenCalledTimes(2)
+        } finally {
+            sign.mockRestore()
+        }
+    })
 })
 
 describe('Http2ApnsClient against a node:http2 mock', () => {
@@ -202,6 +229,17 @@ describe('Http2ApnsClient against a node:http2 mock', () => {
         expect(mock.sessionCount).toBe(1)
         expect(mock.requests[0]!.headers.authorization)
             .toBe(mock.requests[1]!.headers.authorization)
+    })
+
+    test('shares one authorization token when first pushes arrive concurrently', async () => {
+        const c = makeClient()
+        const outcomes = await Promise.all(Array.from({ length: 8 }, (_, i) => c.push(
+            basePush({ deviceToken: i.toString(16).padStart(64, '0') })
+        )))
+        expect(outcomes.every((result) => result.kind === 'delivered')).toBe(true)
+        expect(mock.requests.length).toBe(8)
+        expect(mock.sessionCount).toBe(1)
+        expect(new Set(mock.requests.map((request) => request.headers.authorization)).size).toBe(1)
     })
 
     test('maps APNs 410 Unregistered', async () => {

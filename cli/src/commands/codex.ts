@@ -3,12 +3,12 @@ import { authAndSetupMachineIfNeeded } from '@/ui/auth'
 import { initializeToken } from '@/ui/tokenInit'
 import { maybeAutoStartServer } from '@/utils/autoStartServer'
 import type { CommandDefinition } from './types'
-import { CODEX_PERMISSION_MODES } from '@hapi/protocol/modes'
-import type { CodexPermissionMode } from '@hapi/protocol/types'
+import { Flavors } from '@hapi/protocol/modes'
+import type { PermissionModeOf } from '@hapi/protocol/types'
 import { CodexCollaborationModeSchema } from '@hapi/protocol/schemas'
 import type { ReasoningEffort } from '@/codex/appServerTypes'
-import { assertCodexLocalSupported } from '@/codex/utils/codexVersion'
 import { parseReasoningEffortValue } from '@/codex/utils/reasoningEffort'
+import { resolveSharedCodex } from '@/codex/shared/launch'
 
 // Mirror the web /service-tier endpoint's enum so the internal resume spawn
 // path can never seed/persist an unsupported tier string.
@@ -38,9 +38,12 @@ export const codexCommand: CommandDefinition = {
             const options: {
                 startedBy?: 'runner' | 'terminal'
                 codexArgs?: string[]
-                permissionMode?: CodexPermissionMode
+                permissionMode?: PermissionModeOf<typeof Flavors.codex>
                 resumeSessionId?: string
+                resumeLast?: boolean
+                resumeAll?: boolean
                 existingSessionId?: string
+                reservedSessionId?: string
                 model?: string
                 modelReasoningEffort?: ReasoningEffort
                 serviceTier?: string
@@ -54,15 +57,31 @@ export const codexCommand: CommandDefinition = {
                 if (i === 0 && arg === 'resume') {
                     const candidate = commandArgs[i + 1]
                     if (!candidate || candidate.startsWith('-')) {
-                        unknownArgs.push(arg)
+                        if (!commandArgs.includes('--last')) throw new Error('Use hapi resume to choose a HAPI session, or hapi codex resume <native-id> / --last')
+                        options.resumeLast = true
                         continue
                     }
                     options.resumeSessionId = candidate
                     i += 1
                     continue
                 }
-                if (arg === '--started-by') {
+                if (arg === '--last' && options.resumeLast) {
+                    continue
+                } else if (arg === '--all' && options.resumeLast) {
+                    options.resumeAll = true
+                } else if (arg === '--') {
+                    unknownArgs.push(...commandArgs.slice(i))
+                    break
+                } else if (i === 0 && ['fork', 'exec', 'review', 'login', 'logout'].includes(arg)) {
+                    throw new Error(`Use native codex ${arg} outside HAPI, or /${arg} in an attached terminal`)
+                } else if (arg === '--started-by') {
                     options.startedBy = commandArgs[++i] as 'runner' | 'terminal'
+                } else if (arg === '--hapi-session-id') {
+                    const sessionId = commandArgs[++i]
+                    if (!sessionId) {
+                        throw new Error('Missing --hapi-session-id value')
+                    }
+                    options.reservedSessionId = sessionId
                 } else if (arg === '--existing-session-id') {
                     const sessionId = commandArgs[++i]
                     if (!sessionId) {
@@ -71,10 +90,10 @@ export const codexCommand: CommandDefinition = {
                     options.existingSessionId = sessionId
                 } else if (arg === '--permission-mode') {
                     const mode = commandArgs[++i]
-                    if (!mode || !(CODEX_PERMISSION_MODES as readonly string[]).includes(mode)) {
+                    if (!mode || !Flavors.codex.allowsPermissionMode(mode)) {
                         throw new Error(`Invalid --permission-mode value: ${mode ?? '(missing)'}`)
                     }
-                    options.permissionMode = mode as CodexPermissionMode
+                    options.permissionMode = mode
                     hasExplicitPermissionMode = true
                 } else if ((arg === '--yolo' || arg === '--dangerously-bypass-approvals-and-sandbox') && !hasExplicitPermissionMode) {
                     options.permissionMode = 'yolo'
@@ -112,10 +131,7 @@ export const codexCommand: CommandDefinition = {
                 options.codexArgs = unknownArgs
             }
 
-            if (options.startedBy !== 'runner') {
-                assertCodexLocalSupported()
-            }
-
+            resolveSharedCodex()
             await initializeToken()
             if (options.startedBy === 'runner') {
                 await maybeAutoStartServer()

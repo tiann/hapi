@@ -16,9 +16,9 @@ public enum ScratchlistCaps {
     /// `SCRATCHLIST_MAX_ENTRIES` — POST past it → 409 `scratchlist_at_cap`.
     public static let maxEntries = 200
 
-    /// `SCRATCHLIST_MAX_TEXT_LENGTH` — clients truncate (web behavior); the
-    /// hub 400s anything longer. The hub counts JS string length (UTF-16
-    /// units), so clients must clamp on that measure, not Characters.
+    /// `SCRATCHLIST_MAX_TEXT_LENGTH` — web truncates; iOS rejects overlong
+    /// drafts without discarding text. The hub 400s anything longer. The hub counts JS string length (UTF-16
+    /// units), so clients must validate that measure, not Characters.
     public static let maxTextLength = 10_000
 }
 

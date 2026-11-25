@@ -3,6 +3,7 @@ import type { OpencodeModelsResponse, OpencodeModelSummary } from '@hapi/protoco
 import { AcpStdioTransport } from '@/agent/backends/acp/AcpStdioTransport';
 import packageJson from '../../../package.json';
 import { getErrorMessage } from './rpcResponses';
+import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand';
 
 export interface ListOpencodeModelsForCwdRequest {
     cwd?: string;
@@ -85,7 +86,7 @@ function extractModelsFromResponse(response: unknown): {
 
 async function runOpencodeProbe(cwd: string): Promise<ListOpencodeModelsForCwdResponse> {
     const transport = await AcpStdioTransport.create({
-        command: 'opencode',
+        command: getAgentLaunchCommand('opencode'),
         args: ['acp']
     });
 

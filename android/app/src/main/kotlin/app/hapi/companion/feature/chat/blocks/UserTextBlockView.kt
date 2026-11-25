@@ -12,29 +12,41 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import app.hapi.companion.R
 import app.hapi.companion.feature.chat.LocalChatInteractions
+import app.hapi.companion.feature.chat.LocalChatInspection
+import app.hapi.companion.feature.chat.messagePreview
+import app.hapi.companion.ui.theme.HapiTypography
 import app.hapi.companion.feature.chat.attachments.PreviewImage
 import app.hapi.companion.feature.chat.attachments.rememberPreviewImage
 import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.protocol.chat.ChatAttachment
 import app.hapi.protocol.chat.UserTextBlock
+import app.hapi.protocol.chat.translatedFrom
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 
 /**
  * Operator prompt: right-aligned bubble (whitespace preserved — prompts are
@@ -43,55 +55,82 @@ import app.hapi.protocol.chat.UserTextBlock
  * Android- and web-sent messages carry one, and optimistic rows do too, so
  * thumbnails appear instantly on send) or filename chips, and a failed-send
  * tap-to-retry hint (B-M3f upgrades the former chips-only rendering).
+ *
+ * Hub-translated prompts (`meta.translatedFrom`) show what the user typed by
+ * default; a caption under the bubble flips to the English actually sent to
+ * the agent (web `HappyUserMessage`). Selection copies the visible variant.
  */
 @Composable
 fun UserTextBlockView(block: UserTextBlock, modifier: Modifier = Modifier) {
-    val maxBubbleWidth = (LocalConfiguration.current.screenWidthDp * 0.85f).dp
-    Row(modifier = modifier.fillMaxWidth()) {
-        Spacer(modifier = Modifier.width(48.dp).weight(1f))
-        Column(horizontalAlignment = Alignment.End) {
-            Surface(
-                color = MaterialTheme.colorScheme.primaryContainer,
-                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 4.dp),
-                modifier = Modifier.widthIn(max = maxBubbleWidth),
-            ) {
-                Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-                    Text(
-                        text = block.text,
-                        style = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.sp, lineHeight = 21.sp),
-                    )
-                    block.attachments?.takeIf { it.isNotEmpty() }?.let { attachments ->
-                        Column(
-                            modifier = Modifier.padding(top = 8.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp),
-                            horizontalAlignment = Alignment.End,
-                        ) {
-                            attachments.forEach { AttachmentView(it) }
+    val translatedFrom = block.translatedFrom
+    var showSentText by rememberSaveable(block.id) { mutableStateOf(false) }
+    val visibleText = if (translatedFrom != null && !showSentText) translatedFrom else block.text
+    val preview = remember(visibleText) { messagePreview(visibleText) }
+    val inspection = LocalChatInspection.current
+    BoxWithConstraints(modifier.fillMaxWidth()) {
+        val maxBubbleWidth = maxWidth * 0.85f
+        Row(modifier = Modifier.fillMaxWidth()) {
+            Spacer(modifier = Modifier.width(48.dp).weight(1f))
+            Column(horizontalAlignment = Alignment.End) {
+                Surface(
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 4.dp),
+                    modifier = Modifier.widthIn(max = maxBubbleWidth),
+                ) {
+                    Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                        SelectionContainer {
+                            Text(text = preview.text, style = HapiTypography.body)
+                        }
+                        if (preview.end < visibleText.length) {
+                            TextButton(onClick = { inspection?.openMessage(block.id) }, enabled = inspection != null) {
+                                Text(stringResource(R.string.chat_view_full_message))
+                            }
+                        }
+                        block.attachments?.takeIf { it.isNotEmpty() }?.let { attachments ->
+                            Column(
+                                modifier = Modifier.padding(top = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                                horizontalAlignment = Alignment.End,
+                            ) {
+                                attachments.forEach { AttachmentView(it) }
+                            }
                         }
                     }
                 }
-            }
-            if (block.status == "failed") {
-                val interactions = LocalChatInteractions.current
-                val retryLocalId = block.localId
-                val retryModifier = if (interactions != null && retryLocalId != null) {
-                    Modifier.clickable { interactions.retryFailedMessage(retryLocalId) }
-                } else {
-                    Modifier
+                if (translatedFrom != null) {
+                    Text(
+                        text = stringResource(R.string.chat_translated_label) + " · " + stringResource(
+                            if (showSentText) R.string.chat_translated_show_original else R.string.chat_translated_show_sent,
+                        ),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .clickable(role = Role.Button) { showSentText = !showSentText }
+                            .padding(top = 2.dp, end = 4.dp),
+                    )
                 }
-                Text(
-                    text = stringResource(
-                        if (interactions != null && retryLocalId != null) {
-                            R.string.chat_not_delivered_retry
-                        } else {
-                            R.string.chat_not_delivered
-                        },
-                    ),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = retryModifier.padding(top = 2.dp, end = 4.dp),
-                )
+                if (block.status == "failed") {
+                    val interactions = LocalChatInteractions.current
+                    val retryLocalId = block.localId
+                    val retryModifier = if (interactions != null && retryLocalId != null) {
+                        Modifier.clickable { interactions.retryFailedMessage(retryLocalId) }
+                    } else {
+                        Modifier
+                    }
+                    Text(
+                        text = stringResource(
+                            if (interactions != null && retryLocalId != null) {
+                                R.string.chat_not_delivered_retry
+                            } else {
+                                R.string.chat_not_delivered
+                            },
+                        ),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = retryModifier.padding(top = 2.dp, end = 4.dp),
+                    )
+                }
             }
         }
     }
@@ -185,6 +224,19 @@ private fun UserTextBlockPreview() {
                     status = "failed",
                     originalText = null,
                     meta = null,
+                ),
+            )
+            UserTextBlockView(
+                UserTextBlock(
+                    id = "u3",
+                    localId = null,
+                    createdAt = 0,
+                    invokedAt = null,
+                    text = "Fix the login bug",
+                    attachments = null,
+                    status = null,
+                    originalText = null,
+                    meta = buildJsonObject { put("translatedFrom", JsonPrimitive("修复登录问题")) },
                 ),
             )
             }

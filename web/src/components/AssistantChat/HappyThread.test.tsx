@@ -4,17 +4,20 @@ import { useState, type ComponentProps } from 'react'
 import { I18nProvider } from '@/lib/i18n-context'
 import {
     ConversationOutlinePanel,
+    anchorMessageIdFromAnchor,
     captureScrollAnchor,
     getHistoryCoverageRetryDelay,
     getPullToLoadState,
     getScrollIntent,
-    hasAppliedHistoryVersion,
+    getScrollToBottomButtonVisibility,
     isNestedScrollEvent,
     locateOutlineTargetMessage,
     prependMissingUserSnapshot,
     restoreScrollAnchor,
     shouldLoadOlderForViewport,
     shouldCancelInitialScrollSettling,
+    shouldRenderScrollToBottomButton,
+    shouldShowScrollToBottomButton,
     ThreadMessagesById,
 } from '@/components/AssistantChat/HappyThread'
 import { AssistantRuntimeProvider, useExternalStoreRuntime } from '@assistant-ui/react'
@@ -334,6 +337,63 @@ describe('scroll anchor helpers', () => {
         })
     })
 
+    it('shows the jump button in either direction away from the bottom', () => {
+        const downward = getScrollIntent({
+            scrollTop: 610,
+            previousScrollTop: 590,
+            scrollHeight: 1232,
+            clientHeight: 530
+        })
+        const upward = getScrollIntent({
+            scrollTop: 590,
+            previousScrollTop: 610,
+            scrollHeight: 1232,
+            clientHeight: 530
+        })
+        const atBottom = getScrollIntent({
+            scrollTop: 702,
+            previousScrollTop: 690,
+            scrollHeight: 1232,
+            clientHeight: 530
+        })
+
+        expect(downward.isScrollingDown).toBe(true)
+        expect(shouldShowScrollToBottomButton(downward)).toBe(true)
+        expect(shouldShowScrollToBottomButton(upward)).toBe(true)
+        expect(shouldShowScrollToBottomButton(atBottom)).toBe(false)
+    })
+
+    it('keeps the jump button hidden while the new-message indicator has content', () => {
+        expect(shouldRenderScrollToBottomButton(true, 0)).toBe(true)
+        expect(shouldRenderScrollToBottomButton(true, 1)).toBe(false)
+        expect(shouldRenderScrollToBottomButton(false, 0)).toBe(false)
+    })
+
+    it('keeps the jump button visible when scrolling stops or reverses', () => {
+        const downward = getScrollIntent({
+            scrollTop: 610,
+            previousScrollTop: 590,
+            scrollHeight: 1232,
+            clientHeight: 530
+        })
+        const stationary = getScrollIntent({
+            scrollTop: 610,
+            previousScrollTop: 610,
+            scrollHeight: 1232,
+            clientHeight: 530
+        })
+        const upward = getScrollIntent({
+            scrollTop: 590,
+            previousScrollTop: 610,
+            scrollHeight: 1232,
+            clientHeight: 530
+        })
+
+        expect(getScrollToBottomButtonVisibility(false, downward)).toBe(true)
+        expect(getScrollToBottomButtonVisibility(true, stationary)).toBe(true)
+        expect(getScrollToBottomButtonVisibility(true, upward)).toBe(true)
+    })
+
     it('cancels initial scroll settling when the user scrolls up away from the bottom', () => {
         const intent = getScrollIntent({
             scrollTop: 520,
@@ -375,6 +435,24 @@ describe('scroll anchor helpers', () => {
         expect(shouldCancelInitialScrollSettling(intent, false)).toBe(false)
     })
 
+    it('resolves a streamed card anchor to its raw message id, not the stream id', () => {
+        // A Pi assistant card renders with its stream id in the DOM id, while
+        // the store protects rows by canonical message id.
+        const group = document.createElement('div')
+        group.id = 'hapi-message-agent-text:stream-abc:0'
+        group.setAttribute('data-hapi-source-message-ids', 'raw-msg-1 raw-msg-2')
+        document.body.append(group)
+
+        expect(anchorMessageIdFromAnchor({ id: group.id, topOffset: 0 })).toBe('raw-msg-1')
+
+        group.remove()
+    })
+
+    it('falls back to the DOM id for kinds that embed a raw message id', () => {
+        expect(anchorMessageIdFromAnchor({ id: 'hapi-message-user-text:raw-msg-9', topOffset: 0 }))
+            .toBe('raw-msg-9')
+    })
+
     it('restores the captured message to the same viewport offset', () => {
         const viewport = document.createElement('div')
         const message = document.createElement('div')
@@ -390,11 +468,6 @@ describe('scroll anchor helpers', () => {
         expect(viewport.scrollTop).toBe(250)
 
         viewport.remove()
-    })
-
-    it('waits until assistant-ui has applied the loaded history version', () => {
-        expect(hasAppliedHistoryVersion(4, 4)).toBe(false)
-        expect(hasAppliedHistoryVersion(4, 5)).toBe(true)
     })
 })
 

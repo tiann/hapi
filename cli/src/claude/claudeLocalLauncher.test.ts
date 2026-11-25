@@ -1,14 +1,23 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { Metadata } from '@/api/types'
 
 const harness = vi.hoisted(() => ({
     launches: [] as Array<Record<string, unknown>>,
-    scannerOnMessage: null as ((message: Record<string, unknown>) => void) | null
+    scannerOnMessage: null as ((message: Record<string, unknown>) => void) | null,
+    nextLaunchError: null as Error | null
 }))
 
 vi.mock('./claudeLocal', () => ({
     claudeLocal: async (opts: Record<string, unknown>) => {
         harness.launches.push(opts)
+        if (harness.nextLaunchError) {
+            const err = harness.nextLaunchError
+            harness.nextLaunchError = null
+            throw err
+        }
     }
 }))
 
@@ -24,10 +33,18 @@ vi.mock('./utils/sessionScanner', () => ({
 
 vi.mock('@/modules/common/launcher/BaseLocalLauncher', () => ({
     BaseLocalLauncher: class {
-        constructor(private readonly opts: { launch: (signal: AbortSignal) => Promise<void> }) {}
+        constructor(private readonly opts: {
+            launch: (signal: AbortSignal) => Promise<void>
+            onLaunchSuccess?: () => void
+        }) {}
         async run(): Promise<'exit'> {
-            await this.opts.launch(new AbortController().signal)
-            return 'exit'
+            try {
+                await this.opts.launch(new AbortController().signal)
+                this.opts.onLaunchSuccess?.()
+                return 'exit'
+            } catch {
+                return 'exit'
+            }
         }
     }
 }))
@@ -37,31 +54,44 @@ import { claudeLocalLauncher } from './claudeLocalLauncher'
 function createSessionStub() {
     const sentMessages: Array<Record<string, unknown>> = []
     let metadata: Metadata = { path: '/tmp/test', host: 'localhost' }
-    return {
-        session: {
-            sessionId: 'test-session',
-            path: '/tmp/test',
-            startedBy: 'terminal' as const,
-            startingMode: 'local' as const,
-            claudeEnvVars: {},
-            claudeArgs: [],
-            getModel: () => 'claude-opus-4-1',
-            mcpServers: [],
-            allowedTools: [],
-            hookSettingsPath: null,
-            queue: { size: () => 0, reset: () => {}, setOnMessage: () => {} },
-            client: {
-                sendClaudeSessionMessage: (msg: Record<string, unknown>) => { sentMessages.push(msg) },
-                updateMetadata: (handler: (current: Metadata) => Metadata) => {
-                    metadata = handler(metadata)
-                },
-                rpcHandlerManager: { registerHandler: () => {} }
+    const session = {
+        localPermissionBridge: { start: vi.fn(), stop: vi.fn(), onTranscript: vi.fn() },
+        sessionId: 'test-session',
+        thinking: false,
+        localTurnStartedAt: 0,
+        onThinkingChange: vi.fn(),
+        path: '/tmp/test',
+        startedBy: 'terminal' as const,
+        startingMode: 'local' as const,
+        claudeEnvVars: {},
+        claudeArgs: [] as string[] | undefined,
+        startupResumeSessionAt: undefined as string | undefined,
+        getModel: () => 'claude-opus-4-1',
+        getPermissionMode: () => 'default',
+        mcpServers: [],
+        allowedTools: [],
+        hookSettingsPath: null,
+        queue: { size: () => 0, reset: () => {}, setOnMessage: () => {} },
+        client: {
+            getMetadata: () => metadata,
+            sendClaudeSessionMessage: (msg: Record<string, unknown>) => { sentMessages.push(msg) },
+            updateMetadata: (handler: (current: Metadata) => Metadata) => {
+                metadata = handler(metadata)
             },
-            addSessionFoundCallback: () => {},
-            removeSessionFoundCallback: () => {},
-            consumeOneTimeFlags: () => {},
-            recordLocalLaunchFailure: () => {}
+            rpcHandlerManager: { registerHandler: () => {} }
         },
+        addSessionFoundCallback: () => {},
+        removeSessionFoundCallback: () => {},
+        consumeOneTimeFlags: () => {
+            session.startupResumeSessionAt = undefined
+        },
+        consumeStartupResumeSessionAt: () => {
+            session.startupResumeSessionAt = undefined
+        },
+        recordLocalLaunchFailure: () => {}
+    }
+    return {
+        session,
         sentMessages,
         getMetadata: () => metadata,
         setMetadata: (value: Metadata) => { metadata = value }
@@ -72,6 +102,7 @@ describe('claudeLocalLauncher message filtering', () => {
     afterEach(() => {
         harness.launches = []
         harness.scannerOnMessage = null
+        harness.nextLaunchError = null
     })
 
     it('uses Claude Code summary messages as a title fallback', async () => {
@@ -84,12 +115,48 @@ describe('claudeLocalLauncher message filtering', () => {
         expect(getMetadata().summary?.text).toBe('Native title')
     })
 
+    it('clears thinking on exit and on an Esc interrupt, which fires no Stop hook', async () => {
+        const { session } = createSessionStub()
+        await claudeLocalLauncher(session as never)
+        expect(session.onThinkingChange).toHaveBeenCalledWith(false)
+
+        session.onThinkingChange.mockClear()
+        session.thinking = true
+        harness.scannerOnMessage!({ type: 'user', uuid: 'u1', message: { role: 'user', content: 'keep going' } })
+        expect(session.onThinkingChange).not.toHaveBeenCalled()
+
+        harness.scannerOnMessage!({
+            type: 'user',
+            uuid: 'u2',
+            message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user for tool use]' }] }
+        })
+        expect(session.onThinkingChange).toHaveBeenCalledWith(false)
+    })
+
+    it('ignores an interrupt marker delivered after a newer turn started', async () => {
+        const { session } = createSessionStub()
+        await claudeLocalLauncher(session as never)
+        session.onThinkingChange.mockClear()
+        session.thinking = true
+        session.localTurnStartedAt = Date.parse('2026-10-27T10:00:05Z')
+
+        harness.scannerOnMessage!({
+            type: 'user',
+            uuid: 'u1',
+            timestamp: '2026-10-27T10:00:04Z',
+            message: { role: 'user', content: '[Request interrupted by user]' }
+        })
+        expect(session.onThinkingChange).not.toHaveBeenCalled()
+    })
+
     it('passes the current session model to the local Claude process', async () => {
         const { session } = createSessionStub()
 
         await claudeLocalLauncher(session as never)
 
         expect(harness.launches[0]).toMatchObject({ model: 'claude-opus-4-1' })
+        expect(session.localPermissionBridge.start).toHaveBeenCalledWith('test-session')
+        expect(session.localPermissionBridge.stop).toHaveBeenCalled()
     })
 
     it('converts Claude Code ai-title metadata into a HAPI title', async () => {
@@ -185,6 +252,7 @@ describe('claudeLocalLauncher message filtering', () => {
         })
 
         expect(sentMessages).toHaveLength(0)
+        expect(session.localPermissionBridge.onTranscript).toHaveBeenCalledWith(expect.objectContaining({ isMeta: true }))
     })
 
     it('filters out isCompactSummary messages', async () => {
@@ -199,5 +267,128 @@ describe('claudeLocalLauncher message filtering', () => {
         })
 
         expect(sentMessages).toHaveLength(0)
+    })
+})
+
+describe('claudeLocalLauncher context window seed (#1858)', () => {
+    afterEach(() => {
+        harness.launches = []
+        harness.scannerOnMessage = null
+        harness.nextLaunchError = null
+    })
+
+    function assistant(model: string, usage: Record<string, unknown> = { input_tokens: 1, output_tokens: 1 }) {
+        return { type: 'assistant', uuid: model, message: { role: 'assistant', model, content: [], usage } }
+    }
+
+    it('stamps 1M on main-model messages when launched with a [1m] alias, not on subagent models', async () => {
+        const { session, sentMessages } = createSessionStub()
+        session.getModel = () => 'opus[1m]'
+        await claudeLocalLauncher(session as never)
+
+        harness.scannerOnMessage!(assistant('claude-opus-5'))
+        harness.scannerOnMessage!(assistant('claude-haiku-4-5-20251001'))
+
+        expect(sentMessages[0]).toMatchObject({ message: { usage: { context_window: 1_000_000 } } })
+        expect((sentMessages[1].message as { usage: Record<string, unknown> }).usage.context_window).toBeUndefined()
+    })
+
+    it('stamps nothing when the launch model is not a [1m] variant', async () => {
+        const { session, sentMessages } = createSessionStub()
+        session.getModel = () => 'opus'
+        await claudeLocalLauncher(session as never)
+
+        harness.scannerOnMessage!(assistant('claude-opus-5'))
+
+        expect((sentMessages[0].message as { usage: Record<string, unknown> }).usage.context_window).toBeUndefined()
+    })
+
+    it('follows an in-session model switch (PostModelSwitch to_model) and keeps explicit windows', async () => {
+        const { session, sentMessages } = createSessionStub()
+        session.getModel = () => 'opus'
+        await claudeLocalLauncher(session as never)
+
+        ;(session as { localContextModel?: string | null }).localContextModel = 'claude-sonnet-5-5[1m]'
+        harness.scannerOnMessage!(assistant('claude-sonnet-5-5'))
+        harness.scannerOnMessage!(assistant('claude-sonnet-5-5', { input_tokens: 1, output_tokens: 1, context_window: 500_000 }))
+
+        expect(sentMessages[0]).toMatchObject({ message: { usage: { context_window: 1_000_000 } } })
+        expect(sentMessages[1]).toMatchObject({ message: { usage: { context_window: 500_000 } } })
+    })
+
+    it('strips stale --resume <sourceId> and --fork-session from spawnArgs once the child transcript materialized', async () => {
+        const root = mkdtempSync(join(tmpdir(), 'hapi-local-fork-'))
+        const previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+        try {
+            process.env.CLAUDE_CONFIG_DIR = root
+            const projectDir = join(root, 'projects', '/tmp/test'.replace(/[^a-zA-Z0-9]/g, '-'))
+            mkdirSync(projectDir, { recursive: true })
+            writeFileSync(
+                join(projectDir, 'child-session-id.jsonl'),
+                JSON.stringify({ type: 'user', uuid: 'u1', message: { role: 'user', content: 'hi' } }) + '\n'
+            )
+
+            const { session } = createSessionStub()
+            session.sessionId = 'child-session-id'
+            ;(session as { claudeArgs?: string[] }).claudeArgs = [
+                '--resume',
+                'source-session-id',
+                '--fork-session',
+                '--resume-session-at',
+                'fork-boundary'
+            ]
+
+            await claudeLocalLauncher(session as never)
+
+            expect(harness.launches[0]).toMatchObject({
+                sessionId: 'child-session-id',
+                claudeArgs: undefined
+            })
+        } finally {
+            if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+            else process.env.CLAUDE_CONFIG_DIR = previousConfigDir
+            rmSync(root, { recursive: true, force: true })
+        }
+    })
+
+    it('applies startupResumeSessionAt to the initial launch without --fork-session and consumes it before respawn', async () => {
+        const { session } = createSessionStub()
+        session.sessionId = 'resumed-session-id'
+        session.claudeArgs = undefined
+        session.startupResumeSessionAt = 'user-boundary-uuid'
+
+        await claudeLocalLauncher(session as never)
+        expect(harness.launches[0]).toMatchObject({
+            sessionId: 'resumed-session-id',
+            claudeArgs: ['--resume-session-at', 'user-boundary-uuid']
+        })
+        expect(session.startupResumeSessionAt).toBeUndefined()
+
+        // Subsequent launch/respawn must not re-apply the startup boundary.
+        await claudeLocalLauncher(session as never)
+        expect(harness.launches[1]).toMatchObject({
+            sessionId: 'resumed-session-id',
+            claudeArgs: undefined
+        })
+    })
+
+    it('retains startupResumeSessionAt across an aborted initial launch failure until launch succeeds', async () => {
+        const { session } = createSessionStub()
+        session.sessionId = 'resumed-session-id'
+        session.claudeArgs = undefined
+        session.startupResumeSessionAt = 'user-boundary-uuid'
+        harness.nextLaunchError = new Error('transient launch error')
+
+        await claudeLocalLauncher(session as never)
+        expect(harness.launches[0]).toMatchObject({
+            claudeArgs: ['--resume-session-at', 'user-boundary-uuid']
+        })
+        expect(session.startupResumeSessionAt).toBe('user-boundary-uuid')
+
+        await claudeLocalLauncher(session as never)
+        expect(harness.launches[1]).toMatchObject({
+            claudeArgs: ['--resume-session-at', 'user-boundary-uuid']
+        })
+        expect(session.startupResumeSessionAt).toBeUndefined()
     })
 })

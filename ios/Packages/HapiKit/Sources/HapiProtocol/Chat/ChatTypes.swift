@@ -206,12 +206,14 @@ public struct AgentEvent: Equatable, Sendable {
         ])
     }
 
-    public static func compactSummary(summary: String, tokensBefore: Double?, estimatedTokensAfter: Double?) -> AgentEvent {
+    public static func compactSummary(summary: String, tokensBefore: Double?, estimatedTokensAfter: Double?, tokensAfter: Double? = nil, compactionId: String? = nil) -> AgentEvent {
         var object: [String: JSONValue] = [
             "type": .string("compact-summary"),
             "summary": .string(summary),
         ]
         if let tokensBefore { object["tokensBefore"] = .number(tokensBefore) }
+        if let tokensAfter { object["tokensAfter"] = .number(tokensAfter) }
+        if let compactionId { object["compactionId"] = .string(compactionId) }
         if let estimatedTokensAfter { object["estimatedTokensAfter"] = .number(estimatedTokensAfter) }
         return AgentEvent(object: object)
     }
@@ -253,6 +255,7 @@ public enum ToolPermissionStatus: String, Equatable, Sendable {
     case pending
     case approved
     case denied
+    case resolved
     case canceled
 }
 
@@ -786,6 +789,14 @@ public struct UserTextBlock: Equatable, Sendable {
     public var status: String?
     public var originalText: String?
     public var meta: JSONValue?
+
+    /// What the user typed when the hub translated the prompt
+    /// (`meta.translatedFrom`, strings only); ``text`` is then the English
+    /// actually sent to the agent. Derived from ``meta`` so reducer output
+    /// (and fixture conformance) is unchanged.
+    public var translatedFrom: String? {
+        meta?.objectValue?["translatedFrom"]?.stringValue
+    }
 }
 
 public struct AgentTextBlock: Equatable, Sendable {

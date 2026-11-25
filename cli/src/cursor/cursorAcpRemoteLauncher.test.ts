@@ -1,4 +1,6 @@
+import * as shutdown from '@/modules/common/remote/settleAcpLauncherShutdown';
 import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
+import { expectAcpKill } from '@/test/expectAcpKill';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import type { EnhancedMode } from './loop';
 import type { AgentMessage } from '@/agent/types';
@@ -10,32 +12,110 @@ const harness = vi.hoisted(() => ({
     loadSessionError: null as Error | null,
     newSessionError: null as Error | null,
     failSetConfigOption: false,
+    failFastConfigOption: false,
     supportsLoadSession: true,
     loadSessionCalled: false,
     newSessionCalled: false,
     newSessionAttempts: 0,
     promptCalls: 0,
     prompts: [] as unknown[][],
-    deferPrompt: null as Promise<void> | null,
-    deferSoftSteer: null as Promise<void> | null,
+    deferSoftSteer: null as Promise<string | null | void> | null,
     softSteerDispatchError: null as Error | null,
     deferSoftSteerDispatch: null as Promise<void> | null,
     promptErrors: [] as Error[],
     promptMessages: [] as AgentMessage[],
     promptMessageBatches: [] as AgentMessage[][],
     promptStderrErrors: [] as Array<{ type: string; message: string; raw: string }>,
-    releasePrompt: null as (() => void) | null,
     backendArgs: null as { command: string; args?: string[] } | null,
+    modelOptionValues: [
+        'default[]',
+        'composer-2.5[fast=true]',
+        'composer-2.5[fast=false]',
+        'gpt-5.3-codex[reasoning=medium,fast=false]',
+        'gpt-5.3-codex[reasoning=medium,fast=true]',
+        'cursor-grok-4.5-medium',
+        'cursor-grok-4.5-medium-fast',
+    ] as string[],
     setConfigOptionCalls: [] as Array<{ sessionId: string; configId: string; value: string }>,
     deferSetConfigOption: null as Promise<void> | null,
     releaseSetConfigOption: null as (() => void) | null,
+    /** When true, mode-opt also waits on deferSetConfigOption (Bridge abort race). */
+    deferModeConfigOption: false,
+    setConfigOptionWaiting: 0,
     deferLoadSession: null as Promise<void> | null,
     releaseLoadSession: null as (() => void) | null,
-    stderrErrorHandler: null as ((error: { type: string; message: string; raw?: string }) => void) | null,
+    stderrErrorHandler: null as ((error: {
+        type: string
+        message: string
+        raw: string
+    }) => void) | null,
+    emitStderrOnPrompt: null as {
+        type: 'rate_limit' | 'model_not_found' | 'authentication' | 'quota_exceeded' | 'unknown'
+        message: string
+        raw: string
+    } | null,
+    emitStderrOnInitialize: null as {
+        type: 'rate_limit' | 'model_not_found' | 'authentication' | 'quota_exceeded' | 'unknown'
+        message: string
+        raw: string
+    } | null,
+    emitStderrOnLoadSession: null as {
+        type: 'rate_limit' | 'model_not_found' | 'authentication' | 'quota_exceeded' | 'unknown'
+        message: string
+        raw: string
+    } | null,
+    emitTextOnPrompt: null as string | null,
+    /** Last prompt onMessage — soft-steer late failures reuse the shared handler. */
+    activeOnMessage: null as ((message: AgentMessage) => void) | null,
+    promptReject: null as Error | null,
+    deferPrompt: null as Promise<void> | null,
+    releasePrompt: null as (() => void) | null,
+    deferBeforeSend: null as Promise<void> | null,
+    releaseBeforeSend: null as (() => void) | null,
+    promptSends: 0,
+    /** When cancelPrompt runs, reject the deferred prompt with this error. */
+    rejectPromptOnCancel: null as Error | null,
     disconnectError: null as Error | null,
     overlayCleanup: null as ReturnType<typeof vi.fn> | null,
-    agentActivityListener: null as ((thinking: boolean) => void) | null
+    notifyRuleInstallCalls: [] as Array<{ cwd: string; project?: string | null; agentId?: string | null }>,
+    notifyRuleCleanup: null as ReturnType<typeof vi.fn> | null,
+    agentActivityListener: null as ((thinking: boolean, source?: string) => void) | null,
+    titleSyncControllers: [] as unknown[],
+    titleSyncRegistered: [] as unknown[],
+    onChangeTitle: null as ((title: string) => void) | null,
+    /** When set, the next backend.initialize() rejects once, then clears. */
+    failNextInitialize: null as Error | null,
+    /** When > 0, the next N backend.initialize() calls reject. */
+    failInitializeTimes: 0,
+    /** When set, the next backend.initialize() awaits this before completing. */
+    deferNextInitialize: null as Promise<void> | null,
+    /** Spawn flags passed to createCursorAcpBackend (newest last). */
+    spawnAutoReviewFlags: [] as boolean[],
+    /** Last prompt() onUpdate — used to simulate post-prompt harness resume (#2267). */
+    lastPromptOnUpdate: null as ((message: AgentMessage) => void) | null,
+    /** Mirrors AcpSdkBackend.promptGeneration for post-done gate reopen. */
+    promptGeneration: 0
 }));
+
+vi.mock('@/agent/acpSessionTitle', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/agent/acpSessionTitle')>();
+    return {
+        ...actual,
+        createAcpSessionTitleSync: (...args: Parameters<typeof actual.createAcpSessionTitleSync>) => {
+            const controller = actual.createAcpSessionTitleSync(...args);
+            harness.titleSyncControllers.push(controller);
+            return controller;
+        },
+        registerAcpSessionTitleSync: (
+            backend: Parameters<typeof actual.registerAcpSessionTitleSync>[0],
+            client: Parameters<typeof actual.registerAcpSessionTitleSync>[1],
+            controller?: Parameters<typeof actual.registerAcpSessionTitleSync>[2]
+        ) => {
+            harness.titleSyncRegistered.push(controller ?? null);
+            return actual.registerAcpSessionTitleSync(backend, client, controller);
+        }
+    };
+});
 
 const legacyLauncher = vi.hoisted(() => vi.fn());
 
@@ -45,22 +125,50 @@ vi.mock('./cursorLegacyRemoteLauncher', () => ({
 
 vi.mock('./utils/cursorAcpBackend', () => ({
     CURSOR_ACP_REQUIRED_MESSAGE: 'Cursor ACP mode is required for new Cursor remote sessions.',
-    createCursorAcpBackend: vi.fn((opts?: { model?: string | null }) => {
+    createCursorAcpBackend: vi.fn((opts?: { model?: string | null; autoReview?: boolean }) => {
         const args = ['acp'];
         const model = opts?.model?.trim();
-        if (model && model !== 'auto' && model !== 'default' && model !== 'default[]') {
-            args.unshift('--model', model);
+        const spawn = !model
+            ? null
+            : (model === 'auto' || model === 'default' || model === 'default[]' ? 'auto' : model);
+        if (spawn) {
+            args.unshift('--model', spawn);
         }
+        if (opts?.autoReview) {
+            args.unshift('--auto-review');
+        }
+        harness.spawnAutoReviewFlags.push(Boolean(opts?.autoReview));
         harness.backendArgs = { command: 'agent', args };
         return {
             initialize: vi.fn(async () => {
                 harness.initializeAttempts += 1;
+                if (harness.emitStderrOnInitialize && harness.stderrErrorHandler) {
+                    harness.stderrErrorHandler(harness.emitStderrOnInitialize);
+                }
+                if (harness.failNextInitialize) {
+                    const error = harness.failNextInitialize;
+                    harness.failNextInitialize = null;
+                    throw error;
+                }
+                if (harness.failInitializeTimes > 0) {
+                    harness.failInitializeTimes -= 1;
+                    throw new Error('initialize failed');
+                }
+                if (harness.deferNextInitialize) {
+                    const deferred = harness.deferNextInitialize;
+                    harness.deferNextInitialize = null;
+                    await deferred;
+                }
+                // Remap path (#1430 / stale spawn): fail only the first initialize
+                // so the launcher can retry after rewriting --model.
                 if (harness.initializeError && harness.initializeAttempts === 1) {
-                    harness.stderrErrorHandler?.({
-                        type: 'model_not_found',
-                        message: harness.initializeError.message,
-                        raw: harness.initializeError.message
-                    });
+                    if (!harness.emitStderrOnInitialize) {
+                        harness.stderrErrorHandler?.({
+                            type: 'model_not_found',
+                            message: harness.initializeError.message,
+                            raw: harness.initializeError.message
+                        });
+                    }
                     throw harness.initializeError;
                 }
             }),
@@ -70,6 +178,9 @@ vi.mock('./utils/cursorAcpBackend', () => ({
                 harness.loadSessionCalled = true;
                 if (harness.deferLoadSession) {
                     await harness.deferLoadSession;
+                }
+                if (harness.emitStderrOnLoadSession && harness.stderrErrorHandler) {
+                    harness.stderrErrorHandler(harness.emitStderrOnLoadSession);
                 }
                 if (harness.loadSessionError) throw harness.loadSessionError;
                 return 'loaded-acp-session';
@@ -90,11 +201,23 @@ vi.mock('./utils/cursorAcpBackend', () => ({
             setMode: vi.fn(async () => {}),
             setModel: vi.fn(async () => {}),
             setConfigOption: vi.fn(async (sessionId: string, configId: string, value: string) => {
-                if (configId === 'model-opt' && harness.deferSetConfigOption) {
-                    await harness.deferSetConfigOption;
+                const deferModel = configId === 'model-opt' && harness.deferSetConfigOption;
+                const deferMode = configId === 'mode-opt'
+                    && harness.deferModeConfigOption
+                    && harness.deferSetConfigOption;
+                if (deferModel || deferMode) {
+                    harness.setConfigOptionWaiting += 1;
+                    try {
+                        await harness.deferSetConfigOption;
+                    } finally {
+                        harness.setConfigOptionWaiting -= 1;
+                    }
                 }
                 if (harness.failSetConfigOption && configId === 'model-opt') {
                     throw new Error('set_config_option rejected');
+                }
+                if (harness.failFastConfigOption && configId === 'fast') {
+                    throw new Error('fast update rejected');
                 }
                 harness.setConfigOptionCalls.push({ sessionId, configId, value });
             }),
@@ -111,6 +234,12 @@ vi.mock('./utils/cursorAcpBackend', () => ({
                 currentModelId: 'composer-2.5[fast=true]'
             })),
             getConfigOptionByCategory: vi.fn((_sessionId: string, category: string) => {
+                if (category === 'fast' && harness.failFastConfigOption) {
+                    return {
+                        id: 'fast',
+                        options: [{ value: 'false' }, { value: 'true' }]
+                    };
+                }
                 if (category === 'mode') {
                     return {
                         id: 'mode-opt',
@@ -124,32 +253,57 @@ vi.mock('./utils/cursorAcpBackend', () => ({
                 if (category === 'model') {
                     return {
                         id: 'model-opt',
-                        options: [
-                            { value: 'default[]' },
-                            { value: 'composer-2.5[fast=true]' },
-                            { value: 'composer-2.5[fast=false]' },
-                            { value: 'gpt-5.3-codex[reasoning=medium,fast=false]' },
-                            { value: 'gpt-5.3-codex[reasoning=medium,fast=true]' },
-                            { value: 'cursor-grok-4.5-medium' },
-                            { value: 'cursor-grok-4.5-medium-fast' },
-                        ]
+                        options: harness.modelOptionValues.map((value) => ({ value }))
                     };
                 }
                 return undefined;
             }),
-            prompt: vi.fn(async (_sessionId: string, content: unknown[], onMessage?: (message: AgentMessage) => void) => {
+            prompt: vi.fn(async (
+                _sessionId: string,
+                content: unknown[],
+                onMessage?: (message: AgentMessage) => void,
+                options?: { shouldSend?: () => boolean }
+            ) => {
                 harness.promptCalls++;
+                harness.activeOnMessage = onMessage ?? null;
+                if (harness.deferBeforeSend) {
+                    await harness.deferBeforeSend;
+                    if (options?.shouldSend && !options.shouldSend()) {
+                        return false;
+                    }
+                }
+                harness.promptSends++;
                 harness.prompts.push(content);
+                harness.lastPromptOnUpdate = onMessage ?? null;
+                // Real AcpSdkBackend bumps generation after the pre-swap drain and
+                // new handler install; mock skips drain and bumps before emitting.
+                harness.promptGeneration += 1;
                 const messages = harness.promptMessageBatches.shift() ?? harness.promptMessages.splice(0, 1);
                 for (const message of messages) onMessage?.(message);
+                if (harness.emitTextOnPrompt && onMessage) {
+                    onMessage({ type: 'text', text: harness.emitTextOnPrompt });
+                }
                 const stderrError = harness.promptStderrErrors.shift();
                 if (stderrError) harness.stderrErrorHandler?.(stderrError);
+                if (harness.emitStderrOnPrompt && harness.stderrErrorHandler) {
+                    harness.stderrErrorHandler(harness.emitStderrOnPrompt);
+                }
                 if (harness.deferPrompt) await harness.deferPrompt;
                 const error = harness.promptErrors.shift();
                 if (error) throw error;
+                if (harness.promptReject) {
+                    throw harness.promptReject;
+                }
+                return true;
             }),
-            cancelPrompt: vi.fn(async () => {}),
-            getPromptGeneration: vi.fn(() => 1),
+            cancelPrompt: vi.fn(async () => {
+                // Settlement of a deferred prompt is owned by the test so
+                // userAbortRequested is visible before classifyAcpRpcRejection.
+                if (harness.rejectPromptOnCancel) {
+                    harness.promptReject = harness.rejectPromptOnCancel;
+                }
+            }),
+            getPromptGeneration: vi.fn(() => harness.promptGeneration),
             beginSoftSteerPrompt: vi.fn(() => ({
                 dispatched: harness.softSteerDispatchError
                     ? Promise.reject(harness.softSteerDispatchError)
@@ -160,15 +314,16 @@ vi.mock('./utils/cursorAcpBackend', () => ({
             abortSoftSteers: vi.fn(),
             waitForResponseComplete: vi.fn(async () => {}),
             respondToPermission: vi.fn(async () => {}),
-            onStderrError: vi.fn((handler) => {
-                harness.stderrErrorHandler = handler ?? null;
+            onStderrError: vi.fn((handler: typeof harness.stderrErrorHandler) => {
+                harness.stderrErrorHandler = handler;
             }),
             setUsageUpdateListener: vi.fn(),
-            setAgentActivityListener: vi.fn((listener: ((thinking: boolean) => void) | null) => {
+            setAgentActivityListener: vi.fn((listener: ((thinking: boolean, source?: string) => void) | null) => {
                 harness.agentActivityListener = listener;
             }),
             setSessionInfoUpdateListener: vi.fn(),
             refreshSessionInfo: vi.fn(async () => {}),
+            discardPendingMessageBuffers: vi.fn(async () => {}),
             onPermissionRequest: vi.fn(),
             registerExtensionRequestHandler: vi.fn(),
             disconnect: vi.fn(async () => {
@@ -189,17 +344,41 @@ vi.mock('./utils/cursorExtensionAdapter', () => ({
 
 vi.mock('@/agent/permissionAdapter', () => ({
     PermissionAdapter: class {
+        constructor(
+            client: { rpcHandlerManager?: { registerHandler?: (method: string, handler: (payload: unknown) => Promise<unknown>) => void } },
+            _backend: unknown,
+            _getMode: unknown,
+            onResponse?: (response: {
+                id: string
+                approved: boolean
+                decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
+            }) => Promise<boolean>
+        ) {
+            if (onResponse && client?.rpcHandlerManager?.registerHandler) {
+                client.rpcHandlerManager.registerHandler(
+                    'permission',
+                    async (payload: unknown) => onResponse(payload as {
+                        id: string
+                        approved: boolean
+                        decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
+                    })
+                );
+            }
+        }
         cancelAll = vi.fn(async () => {});
     }
 }));
 
 vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({
-    buildHapiMcpBridge: async () => ({
-        server: { stop: () => {} },
-        mcpServers: {
-            hapi: { command: 'hapi', args: ['mcp', '--url', 'http://127.0.0.1:1/'] },
-        },
-    }),
+    buildHapiMcpBridge: async (_client: unknown, options?: { onChangeTitle?: (title: string) => void }) => {
+        harness.onChangeTitle = options?.onChangeTitle ?? null;
+        return {
+            server: { stop: () => {} },
+            mcpServers: {
+                hapi: { command: 'hapi', args: ['mcp', '--url', 'http://127.0.0.1:1/'] },
+            },
+        };
+    },
 }));
 
 vi.mock('./utils/cursorMcpOverlay', () => ({
@@ -207,6 +386,18 @@ vi.mock('./utils/cursorMcpOverlay', () => ({
     installCursorMcpOverlay: () => {
         harness.overlayCleanup = vi.fn();
         return { cleanup: harness.overlayCleanup };
+    },
+}));
+
+vi.mock('./utils/cursorNotifyRuleOverlay', () => ({
+    installCursorNotifyRuleOverlay: (opts: {
+        cwd: string
+        project?: string | null
+        agentId?: string | null
+    }) => {
+        harness.notifyRuleInstallCalls.push(opts);
+        harness.notifyRuleCleanup = vi.fn();
+        return { rulePath: `${opts.cwd}/.cursor/rules/hapi-session.mdc`, cleanup: harness.notifyRuleCleanup };
     },
 }));
 
@@ -224,11 +415,16 @@ import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { CursorSession } from './session';
 import { ApiSessionClient } from '@/api/apiSession';
 import {
+    applyHubSessionSummaryContract,
+    resetSessionSummaryContractForTests
+} from '@/modules/common/sessionSummaryInstruction';
+import {
     _resetSharedCursorModelsCacheForTests,
     writeSharedCursorModelsCache
 } from '@/modules/common/cursorModelsSharedCache';
+import { setAutoBridgeTransientModelErrors } from './cursorModelErrorBridgePrefs';
 
-function makeSession(sessionId: string | null, closeQueue = true): CursorSession {
+function makeSession(sessionId: string | null, opts?: { keepQueueOpen?: boolean }): CursorSession {
     const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
     const client = makeClient();
 
@@ -247,7 +443,7 @@ function makeSession(sessionId: string | null, closeQueue = true): CursorSession
     });
 
     session.onSessionFoundWithProtocol = vi.fn();
-    if (closeQueue) {
+    if (!opts?.keepQueueOpen) {
         queue.close();
     }
 
@@ -265,6 +461,7 @@ function makeClient() {
             }),
             unregisterHandler: vi.fn()
         },
+        getMetadata: vi.fn(() => null),
         updateMetadata: vi.fn(),
         flushMetadata: vi.fn(async () => true),
         sendSessionEvent: vi.fn(),
@@ -279,16 +476,143 @@ function makeClient() {
 }
 
 describe('cursorAcpRemoteLauncher', () => {
+
+
+    it.each(['initialize', 'loadSession'] as const)('disconnects during a stalled %s', async (phase) => {
+        const session = makeSession('resume-me', { keepQueueOpen: true });
+        const blocked = Promise.withResolvers<never>();
+        void blocked.promise.catch(() => undefined);
+        const entered = vi.fn();
+        const disconnect = vi.fn(async () => { blocked.reject(new Error('stopped during startup')) });
+        const create = vi.mocked(createCursorAcpBackend);
+        const factory = create.getMockImplementation()!;
+        create.mockImplementationOnce((...args) => {
+            const backend = factory(...args);
+            vi.mocked(backend[phase]).mockImplementation(async () => {
+                entered();
+                return blocked.promise;
+            });
+            vi.mocked(backend.disconnect).mockImplementation(disconnect);
+            return backend;
+        });
+        const running = cursorAcpRemoteLauncher(session);
+        const failure = running.catch(() => undefined);
+        try {
+            await vi.waitFor(() => expect(entered).toHaveBeenCalledOnce());
+            const killing = session.kill();
+            void killing.catch(() => undefined);
+            await vi.waitFor(() => expect(disconnect).toHaveBeenCalledOnce(), { timeout: 350 });
+            await expect(killing).resolves.toBeUndefined();
+            await expect(running).resolves.toBe('exit');
+        } finally {
+            blocked.reject(new Error('test cleanup'));
+            session.queue.close();
+            await failure;
+        }
+    });
+
+    it.each(['rejects', 'hangs'] as const)('settles kill when disconnect %s', async (outcome) => {
+        const session = makeSession(null, { keepQueueOpen: true });
+        const waiting = vi.spyOn(session.queue, 'waitForMessagesAndGetAsString');
+        const running = cursorAcpRemoteLauncher(session);
+        const failure = running.catch(() => undefined);
+        const disconnect = Promise.withResolvers<void>();
+        try {
+            await vi.waitFor(() => expect(waiting).toHaveBeenCalled());
+            const backend = vi.mocked(createCursorAcpBackend).mock.results.at(-1)!.value;
+            vi.mocked(backend.disconnect).mockReturnValue(disconnect.promise);
+            const kill = session.kill;
+            vi.useFakeTimers();
+            const settled = vi.fn();
+            const killing = kill().then(settled);
+            void killing.catch(() => undefined);
+            if (outcome === 'rejects') disconnect.reject(new Error('disconnect failed'));
+            await vi.advanceTimersByTimeAsync(5_000);
+            expect(settled).toHaveBeenCalledOnce();
+            expect(backend.disconnect).toHaveBeenCalledOnce();
+        } finally {
+            vi.useRealTimers();
+            disconnect.resolve();
+            session.queue.close();
+            await failure;
+        }
+    });
+
+    it('ends an active prompt and wins over a pending switch to local', async () => {
+        const session = makeSession(null, { keepQueueOpen: true });
+        const waiting = vi.spyOn(session.queue, 'waitForMessagesAndGetAsString');
+        const running = cursorAcpRemoteLauncher(session);
+        const prompt = Promise.withResolvers<boolean>();
+        const settle = vi.spyOn(shutdown, 'settleAcpLauncherShutdown');
+        const switching = Promise.withResolvers<void>();
+        try {
+            await vi.waitFor(() => expect(waiting).toHaveBeenCalled());
+            const backend = vi.mocked(createCursorAcpBackend).mock.results.at(-1)!.value;
+            vi.mocked(backend.prompt).mockReturnValue(prompt.promise);
+            vi.mocked(backend.cancelPrompt).mockReturnValueOnce(switching.promise);
+            vi.mocked(backend.disconnect).mockImplementation(async () => { prompt.reject(new Error('ACP transport closed')) });
+            session.queue.push('active', { permissionMode: 'default', model: undefined });
+            await vi.waitFor(() => expect(backend.prompt).toHaveBeenCalledOnce());
+            const manager = session.client.rpcHandlerManager as unknown as {
+                handlers: Map<string, () => Promise<void>>
+            };
+            const switchToLocal = manager.handlers.get(RPC_METHODS.Switch)!;
+            const switched = switchToLocal();
+            const kill = session.kill;
+            await kill();
+            switching.resolve();
+            await switched;
+            // Check the base loop result before launch() applies its final shutdown guard.
+            await expect(settle.mock.calls[0][0].running).resolves.toBe('exit');
+            await expect(running).resolves.toBe('exit');
+            expect(session.client.sendAgentMessage).not.toHaveBeenCalledWith({
+                type: 'error',
+                message: expect.stringContaining('ACP transport closed')
+            });
+        } finally {
+            settle.mockRestore();
+            switching.resolve();
+            prompt.resolve(true);
+            session.queue.close();
+            await running;
+        }
+    });
+
+    it('waits for one backend disconnect when killed', async () => {
+        const session = makeSession(null, { keepQueueOpen: true })
+        const setKillHandler = vi.spyOn(session, 'setKillHandler');
+        const waitForMessage = vi.spyOn(session.queue, 'waitForMessagesAndGetAsString');
+        const running = cursorAcpRemoteLauncher(session);
+        try {
+            await vi.waitFor(() => expect(waitForMessage).toHaveBeenCalled());
+            expect(setKillHandler).toHaveBeenCalled();
+            const backend = vi.mocked(createCursorAcpBackend).mock.results.at(-1)!.value;
+            await expectAcpKill(session.kill, vi.mocked(backend.disconnect), running);
+        } finally {
+            session.queue.close();
+            await running;
+        }
+    });
     beforeEach(() => {
         harness.initializeError = null;
         harness.initializeAttempts = 0;
         harness.loadSessionError = null;
         harness.newSessionError = null;
         harness.failSetConfigOption = false;
+        harness.failFastConfigOption = false;
+        harness.modelOptionValues = [
+            'default[]',
+            'composer-2.5[fast=true]',
+            'composer-2.5[fast=false]',
+            'gpt-5.3-codex[reasoning=medium,fast=false]',
+            'gpt-5.3-codex[reasoning=medium,fast=true]',
+            'cursor-grok-4.5-medium',
+            'cursor-grok-4.5-medium-fast',
+        ];
         harness.supportsLoadSession = true;
         harness.loadSessionCalled = false;
-        harness.newSessionCalled = false;
         harness.newSessionAttempts = 0;
+        harness.newSessionCalled = false;
         harness.promptCalls = 0;
         harness.prompts = [];
         harness.deferPrompt = null;
@@ -303,20 +627,322 @@ describe('cursorAcpRemoteLauncher', () => {
         harness.setConfigOptionCalls = [];
         harness.deferSetConfigOption = null;
         harness.releaseSetConfigOption = null;
+        harness.deferModeConfigOption = false;
+        harness.setConfigOptionWaiting = 0;
         harness.deferLoadSession = null;
         harness.releaseLoadSession = null;
         harness.stderrErrorHandler = null;
+        harness.emitStderrOnPrompt = null;
+        harness.emitStderrOnInitialize = null;
+        harness.emitStderrOnLoadSession = null;
+        harness.emitTextOnPrompt = null;
+        harness.activeOnMessage = null;
+        harness.promptReject = null;
+        harness.deferPrompt = null;
+        harness.releasePrompt = null;
+        harness.deferBeforeSend = null;
+        harness.releaseBeforeSend = null;
+        harness.promptSends = 0;
+        harness.rejectPromptOnCancel = null;
         harness.disconnectError = null;
         harness.overlayCleanup = null;
+        harness.notifyRuleInstallCalls = [];
+        harness.notifyRuleCleanup = null;
         harness.agentActivityListener = null;
+        resetSessionSummaryContractForTests();
+        delete process.env.HAPI_SESSION_SUMMARY_CONTRACT;
+        harness.titleSyncControllers = [];
+        harness.titleSyncRegistered = [];
+        harness.onChangeTitle = null;
+        harness.failNextInitialize = null;
+        harness.failInitializeTimes = 0;
+        harness.deferNextInitialize = null;
+        harness.spawnAutoReviewFlags = [];
+        harness.lastPromptOnUpdate = null;
+        harness.promptGeneration = 0;
         legacyLauncher.mockClear();
+        setAutoBridgeTransientModelErrors(false);
         process.stdin.isTTY = false;
         process.stdout.isTTY = false;
     });
 
     afterEach(() => {
         vi.clearAllMocks();
+        setAutoBridgeTransientModelErrors(false);
         _resetSharedCursorModelsCacheForTests();
+        resetSessionSummaryContractForTests();
+        delete process.env.HAPI_SESSION_SUMMARY_CONTRACT;
+    });
+
+    it('does not auto-bridge after a soft-steer accepted newer input', async () => {
+        // Cold-review Major 2026-09-12: steer B into prompt A, then A hits 429.
+        // Bridge must not replay A (would override the accepted correction).
+        setAutoBridgeTransientModelErrors(true);
+        let releasePrompt!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('prompt A', mode, 'first');
+
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+
+        session.queue.push('correction B', mode, 'steer');
+        await expect(client.rpcHandlerManager.handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.emitStderrOnPrompt = null;
+        harness.promptErrors = [new Error('status 429 ratelimitexceeded')];
+        harness.deferPrompt = null;
+        releasePrompt();
+
+        await vi.waitFor(() => expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        )).toBe(true));
+
+        expect(session.queue.queue.some(
+            (item) => item.internal?.kind === 'model-error-bridge'
+        )).toBe(false);
+        expect(session.queue.pendingLocalIds().some((id) => id.startsWith('bridge:'))).toBe(false);
+
+        const wroteBridgeableFalse = client.updateMetadata.mock.calls.some((call) => {
+            const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+            if (typeof updater !== 'function') return false;
+            const err = updater({}).lastModelError as { bridgeable?: boolean } | undefined;
+            return err?.bridgeable === false;
+        });
+        expect(wroteBridgeableFalse).toBe(true);
+
+        const bridgeHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.BridgeModelError) as
+            ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+        const recorded = client.updateMetadata.mock.calls
+            .map((call) => {
+                const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+                if (typeof updater !== 'function') return null;
+                return updater({}).lastModelError as {
+                    eventId?: string
+                    kind?: string
+                    rawSnippet?: string
+                    lastUserMessage?: string
+                    priorAssistantClaimsDone?: boolean
+                    transient?: boolean
+                    bridgeable?: boolean
+                } | null;
+            })
+            .find((err) => err?.bridgeable === false);
+        expect(recorded?.eventId).toBeTruthy();
+        expect(await bridgeHandler!({
+            eventId: recorded!.eventId,
+            kind: recorded!.kind,
+            transient: true,
+            rawSnippet: recorded!.rawSnippet,
+            lastUserMessage: recorded!.lastUserMessage || 'prompt A',
+            priorAssistantClaimsDone: recorded!.priorAssistantClaimsDone === true,
+            bridgeable: false
+        })).toEqual({ ok: false, reason: 'not_bridgeable' });
+
+        setAutoBridgeTransientModelErrors(false);
+        session.queue.close();
+        await launchPromise;
+    });
+
+    it('records a soft-steer inline failure that arrives after the primary prompt settles', async () => {
+        // Cold-review Major 2026-09-12: primary A succeeds; soft-steer B then emits
+        // Error: T while the launcher waits on softSteerWaiters. Must record modelError
+        // (and suppress ready) instead of discarding pendingTextFailure.
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('prompt A', mode, 'first');
+
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+
+        session.queue.push('soft steer B', mode, 'steer');
+        await expect(client.rpcHandlerManager.handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.deferPrompt = null;
+        releasePrompt();
+        // Primary settled successfully; launcher is parked on softSteerWaiters.
+        await vi.waitFor(() => expect(harness.activeOnMessage).toBeTruthy());
+        await new Promise((r) => setTimeout(r, 20));
+
+        harness.activeOnMessage!({
+            type: 'text',
+            text: 'Error: T: [resource_exhausted] capacity exceeded'
+        });
+        releaseSoftSteer();
+
+        await vi.waitFor(() => expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        )).toBe(true));
+
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'ready'
+        )).toBe(false);
+
+        const wroteKind = client.updateMetadata.mock.calls.some((call) => {
+            const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+            if (typeof updater !== 'function') return false;
+            const err = updater({}).lastModelError as { kind?: string } | undefined;
+            return err?.kind === 'quota_exhausted';
+        });
+        expect(wroteKind).toBe(true);
+
+        session.queue.close();
+        await launchPromise;
+    });
+
+    it('records a late soft-steer RetriableError that was stripped into pendingInlineRetryableError', async () => {
+        // Cold-review Major 2026-09-12: RetriableError text is stripped into
+        // pendingRetryableError and never reaches pendingTextFailure; late
+        // soft-steer finalization must still record modelError.
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('prompt A', mode, 'first');
+
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+
+        session.queue.push('soft steer B', mode, 'steer');
+        await expect(client.rpcHandlerManager.handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.deferPrompt = null;
+        releasePrompt();
+        await vi.waitFor(() => expect(harness.activeOnMessage).toBeTruthy());
+        await new Promise((r) => setTimeout(r, 20));
+
+        harness.activeOnMessage!({
+            type: 'text',
+            text: 'Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL'
+        });
+        releaseSoftSteer();
+
+        await vi.waitFor(() => expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        )).toBe(true));
+
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'ready'
+        )).toBe(false);
+
+        const wroteCanceled = client.updateMetadata.mock.calls.some((call) => {
+            const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+            if (typeof updater !== 'function') return false;
+            const err = updater({}).lastModelError as { kind?: string; bridgeable?: boolean } | undefined;
+            return err?.kind === 'canceled' && err?.bridgeable === false;
+        });
+        expect(wroteCanceled).toBe(true);
+
+        session.queue.close();
+        await launchPromise;
+    });
+
+    it('bridges with the live session mode/model, not the failed batch mode', async () => {
+        // Cold-review Major 2026-09-12: after transient failure, operator switches to
+        // plan (or a new model); Bridge must not reapply lastTurnMode from the failure.
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => {
+                    nextWait.release = resolve;
+                });
+            }
+            return originalWait(signal);
+        };
+
+        const client = session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+
+        harness.emitStderrOnPrompt = {
+            type: 'rate_limit',
+            message: 'status 429 ratelimitexceeded',
+            raw: 'status 429 ratelimitexceeded'
+        };
+        harness.promptErrors = [new Error('status 429 ratelimitexceeded')];
+        session.queue.push('failed turn', { permissionMode: 'default' }, 'first');
+
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        )).toBe(true));
+        await vi.waitFor(() => expect(nextWait.release).not.toBeNull());
+
+        session.setPermissionMode('plan');
+
+        const recorded = client.updateMetadata.mock.calls
+            .map((call) => {
+                const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+                if (typeof updater !== 'function') return null;
+                return updater({}).lastModelError as {
+                    eventId?: string
+                    kind?: string
+                    rawSnippet?: string
+                    lastUserMessage?: string
+                    priorAssistantClaimsDone?: boolean
+                    bridgeable?: boolean
+                    transient?: boolean
+                } | null;
+            })
+            .find((err) => err?.eventId);
+        expect(recorded?.eventId).toBeTruthy();
+        expect(recorded?.bridgeable).not.toBe(false);
+
+        const bridgeHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.BridgeModelError) as
+            ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+        expect(await bridgeHandler!({
+            eventId: recorded!.eventId,
+            kind: recorded!.kind,
+            transient: true,
+            rawSnippet: recorded!.rawSnippet,
+            lastUserMessage: recorded!.lastUserMessage || 'failed turn',
+            priorAssistantClaimsDone: recorded!.priorAssistantClaimsDone === true,
+            bridgeable: true
+        })).toEqual({ ok: true });
+
+        const bridged = session.queue.queue.find(
+            (item) => item.internal?.kind === 'model-error-bridge'
+        );
+        expect(bridged?.mode.permissionMode).toBe('plan');
+
+        session.queue.close();
+        nextWait.release?.();
+        await launchPromise;
     });
 
     it('ends the launcher when a soft steer outlives an abort', async () => {
@@ -325,7 +951,7 @@ describe('cursorAcpRemoteLauncher', () => {
         // Soft-steer completion never settles — simulates Cursor keeping the
         // concurrent request open after an ordinary Abort.
         harness.deferSoftSteer = new Promise(() => {});
-        const session = makeSession(null, false);
+        const session = makeSession(null, { keepQueueOpen: true });
         const mode = { permissionMode: 'default' } as EnhancedMode;
         session.queue.push('first', mode, 'first');
 
@@ -348,11 +974,221 @@ describe('cursorAcpRemoteLauncher', () => {
         await runPromise;
     }, 10_000);
 
+    it('requeues the never-ACKed batch when a plain Stop lands during the model apply', async () => {
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default', model: 'gpt-5.3-codex[reasoning=medium,fast=false]' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+        let releaseConfig!: () => void;
+        harness.deferSetConfigOption = new Promise<void>(resolve => { releaseConfig = resolve; });
+        const runPromise = cursorAcpRemoteLauncher(session);
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+        let releaseCancel: (() => void) | undefined;
+        try {
+            await vi.waitFor(() => {
+                const backend = vi.mocked(createCursorAcpBackend).mock.results.at(-1)!.value as {
+                    setConfigOption: ReturnType<typeof vi.fn>;
+                };
+                expect(backend.setConfigOption.mock.calls.some(call => call[1] === 'model-opt')).toBe(true);
+            });
+            // The model-opt apply parks on deferSetConfigOption: nothing has
+            // settled yet.
+            expect(harness.setConfigOptionCalls.filter(call => call.configId === 'model-opt')).toEqual([]);
+            // Park the Stop's cancelPrompt so the teardown is still in flight
+            // when the model apply settles.
+            const backend = vi.mocked(createCursorAcpBackend).mock.results.at(-1)!.value as {
+                cancelPrompt: ReturnType<typeof vi.fn>;
+            };
+            backend.cancelPrompt.mockImplementationOnce(() => new Promise<void>(resolve => { releaseCancel = resolve; }));
+            const stop = handlers.get(RPC_METHODS.Abort)!();
+            await vi.waitFor(() => expect(releaseCancel).toBeTypeOf('function'));
+            releaseConfig();
+            await new Promise<void>(resolve => setImmediate(resolve));
+            await new Promise<void>(resolve => setImmediate(resolve));
+            // The batch was dequeued but never hub-ACKed (the ACK is deferred
+            // to the dispatch point): the Stop must preserve it, not dispatch
+            // a cancelled turn behind the in-flight teardown.
+            expect(harness.promptCalls).toBe(0);
+            expect(session.client.emitMessagesConsumed).not.toHaveBeenCalled();
+            releaseCancel?.();
+            await stop;
+            await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+            expect(session.client.emitMessagesConsumed).toHaveBeenCalledExactlyOnceWith(['first']);
+            session.queue.close();
+            await runPromise;
+        } finally {
+            releaseConfig?.();
+            releaseCancel?.();
+            session.queue.close();
+            await runPromise.catch(() => {});
+        }
+    });
+
+    it('ends without dispatching when switch lands during the model apply', async () => {
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default', model: 'gpt-5.3-codex[reasoning=medium,fast=false]' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+        let releaseConfig!: () => void;
+        harness.deferSetConfigOption = new Promise<void>(resolve => { releaseConfig = resolve; });
+        const runPromise = cursorAcpRemoteLauncher(session);
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+        try {
+            await vi.waitFor(() => {
+                const backend = vi.mocked(createCursorAcpBackend).mock.results.at(-1)!.value as {
+                    setConfigOption: ReturnType<typeof vi.fn>;
+                };
+                expect(backend.setConfigOption.mock.calls.some(call => call[1] === 'model-opt')).toBe(true);
+            });
+            expect(harness.setConfigOptionCalls.filter(call => call.configId === 'model-opt')).toEqual([]);
+            const switchPromise = handlers.get(RPC_METHODS.Switch)!();
+            releaseConfig();
+            await switchPromise;
+            await new Promise<void>(resolve => setImmediate(resolve));
+            // The terminal teardown reset the queue: no dispatch, no bounce.
+            expect(harness.promptCalls).toBe(0);
+            expect(session.client.emitMessagesConsumed).not.toHaveBeenCalled();
+            expect(session.queue.pendingLocalIds()).toEqual([]);
+            session.queue.close();
+            expect(await runPromise).toBe('switch');
+        } finally {
+            releaseConfig?.();
+            session.queue.close();
+            await runPromise.catch(() => {});
+        }
+    });
+
+    it('releases a pre-dispatch parked steer reservation and reverts its hub stamp on switch', async () => {
+        let releasePrompt!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+        const stateCalls: Array<[string[], string]> = [];
+        let releaseDispatch!: () => void;
+        let dispatchParked = false;
+        const client = session.client as unknown as {
+            setSteerDeliveryState: (ids: string[], state: string) => Promise<boolean>;
+        };
+        const setSteerDeliveryState = session.client.setSteerDeliveryState as unknown as ReturnType<typeof vi.fn>;
+        setSteerDeliveryState.mockImplementation(async (localIds: string[], state: string) => {
+            stateCalls.push([localIds, state]);
+            if (state === 'dispatching' && !dispatchParked) {
+                dispatchParked = true;
+                await new Promise<void>(resolve => { releaseDispatch = resolve; });
+            }
+            return true;
+        });
+        try {
+            session.queue.push('correction', mode, 'steer');
+            const steering = handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' });
+            await vi.waitFor(() => expect(stateCalls).toContainEqual([['steer'], 'dispatching']));
+            const switchPromise = handlers.get(RPC_METHODS.Switch)!();
+            await switchPromise;
+            releaseDispatch();
+            expect(await steering).toEqual({ steered: false, error: 'Active turn changed' });
+            // Leaving remote undoes the 'dispatching' stamp and releases the
+            // held reservation instead of re-admitting the row.
+            await vi.waitFor(() => expect(stateCalls).toContainEqual([['steer'], 'queued']));
+            expect(session.queue.cancelByLocalId('steer')).toBe(false);
+            expect(session.queue.pendingLocalIds()).toEqual([]);
+            releasePrompt();
+            expect(await runPromise).toBe('switch');
+        } finally {
+            releaseDispatch?.();
+            setSteerDeliveryState.mockImplementation(async () => true);
+            releasePrompt?.();
+            session.queue.close();
+            await runPromise.catch(() => {});
+        }
+    });
+
+    it('preserves an origin-indeterminate steer reservation across a terminal switch', async () => {
+        let releasePrompt!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        const indeterminate = new Error('ACP write callback failed');
+        Object.defineProperty(indeterminate, ACP_INDETERMINATE_SYMBOL, { value: true });
+        harness.softSteerDispatchError = indeterminate;
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+
+        // Steer #1 ends indeterminate: the reservation is retained.
+        session.queue.push('correction', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: false, error: 'Steer outcome is being reconciled' });
+        expect(session.client.emitSteerIndeterminate).toHaveBeenCalledTimes(1);
+        harness.softSteerDispatchError = null;
+
+        // Steer #2 retries the retained reservation; park its durable
+        // 'dispatching' stamp so the terminal switch lands mid-retry, and
+        // make the dispatch itself fail definitively so the restore runs.
+        harness.softSteerDispatchError = new Error('stdin closed');
+        let releaseStamp!: () => void;
+        const setSteer = session.client.setSteerDeliveryState as unknown as ReturnType<typeof vi.fn>;
+        setSteer.mockImplementation(async (_localIds: string[], state: string) => {
+            if (state === 'dispatching') await new Promise<void>(resolve => { releaseStamp = resolve; });
+            return true;
+        });
+        let releaseCancel!: () => void;
+        const backend = vi.mocked(createCursorAcpBackend).mock.results.at(-1)!.value as {
+            cancelPrompt: ReturnType<typeof vi.fn>;
+        };
+        backend.cancelPrompt.mockImplementationOnce(() => new Promise<void>(resolve => { releaseCancel = resolve; }));
+
+        let retry: Promise<unknown> | undefined;
+        try {
+            retry = handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' });
+            await vi.waitFor(() => expect(releaseStamp).toBeTypeOf('function'));
+            const switchPromise = handlers.get(RPC_METHODS.Switch)!();
+            await new Promise<void>(resolve => setImmediate(resolve));
+            releaseStamp();
+            await new Promise<void>(resolve => setImmediate(resolve));
+            // The switch landed while the 'dispatching' stamp was parked:
+            // the pre-dispatch shouldExit check now returns before any
+            // dispatch attempt on the closing backend.
+            expect(await retry).toEqual({ steered: false, error: 'Active turn changed' });
+            releaseCancel();
+            await switchPromise;
+            // The origin-indeterminate reservation survives the terminal
+            // reset for explicit Cancel/Retry in local mode, and the hub
+            // stamp was reverted to 'indeterminate' — not deleted with a
+            // stuck 'dispatching'.
+            expect(session.client.emitSteerIndeterminate).toHaveBeenCalledTimes(2);
+            expect(session.queue.cancelByLocalId('steer')).toBe(true);
+            harness.deferPrompt = null;
+            releasePrompt();
+            session.queue.close();
+            expect(await runPromise).toBe('switch');
+        } finally {
+            releaseStamp?.();
+            releaseCancel?.();
+            setSteer.mockImplementation(async () => true);
+            harness.deferPrompt = null;
+            releasePrompt?.();
+            session.queue.close();
+            await Promise.all([runPromise.catch(() => {}), retry?.catch(() => {})]);
+        }
+    });
+
     it('restores a queued steer when ACP dispatch fails', async () => {
         let releasePrompt!: () => void;
         harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
         harness.softSteerDispatchError = new Error('stdin closed');
-        const session = makeSession(null, false);
+        const session = makeSession(null, { keepQueueOpen: true });
         const mode = { permissionMode: 'default' } as EnhancedMode;
         session.queue.push('first', mode, 'first');
 
@@ -379,7 +1215,7 @@ describe('cursorAcpRemoteLauncher', () => {
         let rejectSoftSteer!: (error: Error) => void;
         harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
         harness.deferSoftSteer = new Promise((_, reject) => { rejectSoftSteer = reject; });
-        const session = makeSession(null, false);
+        const session = makeSession(null, { keepQueueOpen: true });
         const mode = { permissionMode: 'default' } as EnhancedMode;
         session.queue.push('first', mode, 'first');
 
@@ -411,7 +1247,7 @@ describe('cursorAcpRemoteLauncher', () => {
         harness.deferSoftSteer = new Promise((_, reject) => { rejectSoftSteer = reject; });
         const indeterminate = new Error('ACP transport closed');
         Object.defineProperty(indeterminate, ACP_INDETERMINATE_SYMBOL, { value: true });
-        const session = makeSession(null, false);
+        const session = makeSession(null, { keepQueueOpen: true });
         const mode = { permissionMode: 'default' } as EnhancedMode;
         session.queue.push('first', mode, 'first');
 
@@ -441,7 +1277,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const indeterminate = new Error('ACP write callback failed');
         Object.defineProperty(indeterminate, ACP_INDETERMINATE_SYMBOL, { value: true });
         harness.softSteerDispatchError = indeterminate;
-        const session = makeSession(null, false);
+        const session = makeSession(null, { keepQueueOpen: true });
         const mode = { permissionMode: 'default' } as EnhancedMode;
         session.queue.push('first', mode, 'first');
 
@@ -468,7 +1304,7 @@ describe('cursorAcpRemoteLauncher', () => {
         let releaseDispatch!: () => void;
         harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
         harness.deferSoftSteerDispatch = new Promise((resolve) => { releaseDispatch = resolve; });
-        const session = makeSession(null, false);
+        const session = makeSession(null, { keepQueueOpen: true });
         const mode = { permissionMode: 'default' } as EnhancedMode;
         session.queue.push('first', mode, 'first');
 
@@ -499,7 +1335,7 @@ describe('cursorAcpRemoteLauncher', () => {
         harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
         harness.deferSoftSteerDispatch = new Promise((resolve) => { releaseDispatch = resolve; });
         harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
-        const session = makeSession(null, false);
+        const session = makeSession(null, { keepQueueOpen: true });
         const mode = { permissionMode: 'default' } as EnhancedMode;
         session.queue.push('first', mode, 'first');
 
@@ -527,12 +1363,779 @@ describe('cursorAcpRemoteLauncher', () => {
         await runPromise;
     });
 
+    it('drains an in-flight soft steer before sending an automatic retry', async () => {
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+        harness.promptErrors = [new Error('http/2 stream closed with error code CANCEL')];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.deferPrompt = null;
+        releasePrompt();
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        expect(harness.promptCalls).toBe(1);
+
+        releaseSoftSteer();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+        session.queue.close();
+        await runPromise;
+    });
+
+    it('drains an in-flight soft steer before sending post-tool auto-continue', async () => {
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+        harness.promptMessageBatches = [[{
+            type: 'tool_call',
+            id: 'tool-1',
+            name: 'shell',
+            input: { command: 'ls' },
+            status: 'completed'
+        }]];
+        harness.promptErrors = [new Error('http/2 stream closed with error code CANCEL')];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.deferPrompt = null;
+        releasePrompt();
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        expect(harness.promptCalls).toBe(1);
+
+        releaseSoftSteer();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'Continue.' }]);
+        session.queue.close();
+        await runPromise;
+    });
+
+    it('releases an in-loop retry soft-steer wait on Abort without sending a retry', async () => {
+        let releasePrompt!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise(() => {});
+        harness.promptErrors = [new Error('http/2 stream closed with error code CANCEL')];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.deferPrompt = null;
+        releasePrompt();
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        expect(harness.promptCalls).toBe(1);
+        expect(session.client.sendAgentMessage).not.toHaveBeenCalled();
+        expect(session.client.sendClaudeSessionMessage).not.toHaveBeenCalled();
+
+        await handlers.get(RPC_METHODS.Abort)!();
+        expect(harness.promptCalls).toBe(1);
+        expect(session.client.sendAgentMessage).not.toHaveBeenCalled();
+        expect(session.client.sendClaudeSessionMessage).not.toHaveBeenCalled();
+
+        session.queue.close();
+        await runPromise;
+    }, 10_000);
+
+    it('switches from replay to post-tool auto-continue when a soft steer emits tool activity during the retry drain', async () => {
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+        harness.promptErrors = [new Error('http/2 stream closed with error code CANCEL')];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.deferPrompt = null;
+        releasePrompt();
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        expect(harness.promptCalls).toBe(1);
+        expect(session.client.sendClaudeSessionMessage).not.toHaveBeenCalled();
+
+        harness.activeOnMessage!({
+            type: 'tool_call',
+            id: 'steer-tool-1',
+            name: 'shell',
+            input: { command: 'ls' },
+            status: 'completed'
+        });
+
+        releaseSoftSteer();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'Continue.' }]);
+        expect(session.client.sendClaudeSessionMessage).not.toHaveBeenCalled();
+        session.queue.close();
+        await runPromise;
+    });
+
+    it('publishes give-up failure and Blocked status before waiting on a pending soft steer when one-shot Continue fails', async () => {
+        let releasePrompt1!: () => void;
+        let releasePrompt2!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt1 = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+        harness.promptMessageBatches = [[{
+            type: 'tool_call',
+            id: 'tool-1',
+            name: 'shell',
+            input: { command: 'ls' },
+            status: 'completed'
+        }], []];
+        harness.promptErrors = [
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL')
+        ];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        let launcherFinished = false;
+        const runPromise = cursorAcpRemoteLauncher(session).then((result) => {
+            launcherFinished = true;
+            return result;
+        });
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt2 = resolve; });
+        releasePrompt1();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'Continue.' }]);
+
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.deferPrompt = null;
+        releasePrompt2();
+
+        await vi.waitFor(() => {
+            expect(session.client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+                type: 'error',
+                message: expect.stringContaining('auto-continue also failed')
+            }));
+        });
+        expect(session.client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/)
+        }));
+        expect(session.client.sendSessionEvent).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'modelError'
+        }));
+        expect(harness.promptCalls).toBe(2);
+        // Cleanup in finally still holds ready / turn exit until the steer completes.
+        expect(launcherFinished).toBe(false);
+
+        releaseSoftSteer();
+        session.queue.close();
+        await runPromise;
+        expect(launcherFinished).toBe(true);
+    });
+
+    it('publishes exhausted retries and Blocked when a soft steer stalls on the final attempt while holding next prompt behind cleanup', async () => {
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+        harness.promptErrors = [
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL')
+        ];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        let launcherFinished = false;
+        const runPromise = cursorAcpRemoteLauncher(session, { exhaustedRetrySteerWaitTimeoutMs: 40 }).then((result) => {
+            launcherFinished = true;
+            return result;
+        });
+
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+            await vi.waitFor(() => expect(harness.promptCalls).toBe(attempt));
+            const releaseCurrent = releasePrompt;
+            harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+            releaseCurrent();
+        }
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(4));
+
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        // Queue a subsequent turn while the stalled steer is still open.
+        session.queue.push('next turn', mode, 'next');
+
+        harness.deferPrompt = null;
+        releasePrompt();
+
+        await vi.waitFor(() => {
+            expect(session.client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+                type: 'error',
+                message: expect.stringContaining('Cursor Agent failed after 3 retries.')
+            }));
+        });
+        expect(session.client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/)
+        }));
+        expect(session.client.sendSessionEvent).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'modelError'
+        }));
+        // The next queued turn must still wait for cleanup to drain the stalled steer.
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        expect(harness.promptCalls).toBe(4);
+        expect(launcherFinished).toBe(false);
+
+        releaseSoftSteer();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(5));
+        expect(harness.prompts[4]).toEqual([{ type: 'text', text: 'next turn' }]);
+        session.queue.close();
+        await runPromise;
+        expect(launcherFinished).toBe(true);
+    });
+
+    it('switches to one-shot Continue when a soft steer settles with tool activity within the final-attempt decision window', async () => {
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+        harness.promptErrors = [
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL')
+        ];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session, { exhaustedRetrySteerWaitTimeoutMs: 250 });
+
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+            await vi.waitFor(() => expect(harness.promptCalls).toBe(attempt));
+            const releaseCurrent = releasePrompt;
+            harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+            releaseCurrent();
+        }
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(4));
+
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.deferPrompt = null;
+        releasePrompt();
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        expect(harness.promptCalls).toBe(4);
+
+        harness.activeOnMessage!({
+            type: 'tool_call',
+            id: 'steer-tool-final',
+            name: 'shell',
+            input: { command: 'ls' },
+            status: 'completed'
+        });
+        releaseSoftSteer();
+
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(5));
+        expect(harness.prompts[4]).toEqual([{ type: 'text', text: 'Continue.' }]);
+        expect(session.client.sendAgentMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+            type: 'error',
+            message: expect.stringContaining('Cursor Agent failed after 3 retries.')
+        }));
+        session.queue.close();
+        await runPromise;
+    });
+
+    it('reports pending-steer timeout instead of failed auto-continue when tool activity preceded a stalled steer on the final attempt', async () => {
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+        harness.promptErrors = [
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL')
+        ];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        let launcherFinished = false;
+        const runPromise = cursorAcpRemoteLauncher(session, { exhaustedRetrySteerWaitTimeoutMs: 40 }).then((result) => {
+            launcherFinished = true;
+            return result;
+        });
+
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+            await vi.waitFor(() => expect(harness.promptCalls).toBe(attempt));
+            const releaseCurrent = releasePrompt;
+            harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+            releaseCurrent();
+        }
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(4));
+
+        // Tool activity occurs on the final ordinary attempt before it fails.
+        harness.activeOnMessage!({
+            type: 'tool_call',
+            id: 'tool-before-stalled-steer',
+            name: 'shell',
+            input: { command: 'ls' },
+            status: 'completed'
+        });
+
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        session.queue.push('next turn', mode, 'next');
+
+        harness.deferPrompt = null;
+        releasePrompt();
+
+        await vi.waitFor(() => {
+            expect(session.client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+                type: 'error',
+                message: expect.stringContaining('pending soft steer')
+            }));
+        });
+        expect(session.client.sendAgentMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+            type: 'error',
+            message: expect.stringContaining('auto-continue also failed')
+        }));
+        expect(session.client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*pending soft steer.*\}/)
+        }));
+        expect(session.client.sendSessionEvent).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'modelError'
+        }));
+
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        expect(harness.promptCalls).toBe(4);
+        expect(launcherFinished).toBe(false);
+
+        releaseSoftSteer();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(5));
+        expect(harness.prompts[4]).toEqual([{ type: 'text', text: 'next turn' }]);
+        session.queue.close();
+        await runPromise;
+        expect(launcherFinished).toBe(true);
+    });
+
+    it('surfaces a status update when an unresolved soft steer stalls an earlier retry and resumes once it settles', async () => {
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+        harness.promptErrors = [new Error('http/2 stream closed with error code CANCEL')];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session, { exhaustedRetrySteerWaitTimeoutMs: 40 });
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.deferPrompt = null;
+        releasePrompt();
+
+        await vi.waitFor(() => {
+            expect(session.client.sendSessionEvent).toHaveBeenCalledWith({
+                type: 'message',
+                message: 'Waiting for a pending soft steer to finish before retrying Cursor Agent.'
+            });
+        });
+        expect(harness.promptCalls).toBe(1);
+        expect(session.client.sendClaudeSessionMessage).not.toHaveBeenCalled();
+
+        releaseSoftSteer();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'first' }]);
+        session.queue.close();
+        await runPromise;
+    });
+
+    it('releases an earlier stalled-steer status wait on Abort without sending a retry', async () => {
+        let releasePrompt!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise(() => {});
+        harness.promptErrors = [new Error('http/2 stream closed with error code CANCEL')];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session, { exhaustedRetrySteerWaitTimeoutMs: 40 });
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.deferPrompt = null;
+        releasePrompt();
+
+        await vi.waitFor(() => {
+            expect(session.client.sendSessionEvent).toHaveBeenCalledWith({
+                type: 'message',
+                message: 'Waiting for a pending soft steer to finish before retrying Cursor Agent.'
+            });
+        });
+        expect(harness.promptCalls).toBe(1);
+
+        await handlers.get(RPC_METHODS.Abort)!();
+        expect(harness.promptCalls).toBe(1);
+        expect(session.client.sendClaudeSessionMessage).not.toHaveBeenCalled();
+
+        session.queue.close();
+        await runPromise;
+    }, 10_000);
+
+    it('preserves the final prompt retryable RPC error when a pending steer emits a different inline error during the drain', async () => {
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+        harness.promptErrors = [
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('Error: T: [unavailable]')
+        ];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+            await vi.waitFor(() => expect(harness.promptCalls).toBe(attempt));
+            const releaseCurrent = releasePrompt;
+            harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+            releaseCurrent();
+        }
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(4));
+
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.deferPrompt = null;
+        releasePrompt();
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        expect(harness.promptCalls).toBe(4);
+
+        // Steer emits a different inline retryable error while the drain awaits it.
+        harness.activeOnMessage!({
+            type: 'text',
+            text: 'Error: T: [canceled]'
+        });
+        releaseSoftSteer();
+
+        await vi.waitFor(() => {
+            expect(session.client.sendSessionEvent).toHaveBeenCalledWith(expect.objectContaining({
+                type: 'modelError',
+                kind: 'unavailable',
+                rawSnippet: expect.stringContaining('[unavailable]')
+            }));
+        });
+        expect(session.client.sendSessionEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+            type: 'modelError',
+            kind: 'canceled'
+        }));
+
+        session.queue.close();
+        await runPromise;
+    });
+
+    it('preserves the final prompt inline retryable error when the RPC resolves and a pending steer emits a different error during the drain', async () => {
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+        harness.promptErrors = [
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL')
+        ];
+        harness.promptMessageBatches = [
+            [],
+            [],
+            [],
+            [{ type: 'text', text: 'Error: T: [unavailable]' }]
+        ];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+            await vi.waitFor(() => expect(harness.promptCalls).toBe(attempt));
+            const releaseCurrent = releasePrompt;
+            harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+            releaseCurrent();
+        }
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(4));
+
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        // Attempt 4 resolves after emitting Error: T: [unavailable] inline.
+        harness.deferPrompt = null;
+        releasePrompt();
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        expect(harness.promptCalls).toBe(4);
+
+        // Steer emits a different inline retryable error while the drain awaits it.
+        harness.activeOnMessage!({
+            type: 'text',
+            text: 'Error: T: [canceled]'
+        });
+        releaseSoftSteer();
+
+        await vi.waitFor(() => {
+            expect(session.client.sendSessionEvent).toHaveBeenCalledWith(expect.objectContaining({
+                type: 'modelError',
+                kind: 'unavailable',
+                rawSnippet: expect.stringContaining('[unavailable]')
+            }));
+        });
+        expect(session.client.sendSessionEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+            type: 'modelError',
+            kind: 'canceled'
+        }));
+
+        session.queue.close();
+        await runPromise;
+    });
+
+    it('preserves generic final RPC classification when a pending steer emits rate-limit stderr during the drain', async () => {
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+        harness.promptErrors = [
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL')
+        ];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+            await vi.waitFor(() => expect(harness.promptCalls).toBe(attempt));
+            const releaseCurrent = releasePrompt;
+            harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+            releaseCurrent();
+        }
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(4));
+
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        // Attempt 4 rejects with generic http/2 CANCEL and enters the drain.
+        harness.deferPrompt = null;
+        releasePrompt();
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        expect(harness.promptCalls).toBe(4);
+
+        // Steer logs typed rate_limit stderr while the drain awaits it.
+        harness.stderrErrorHandler?.({
+            type: 'rate_limit',
+            message: 'HTTP 429',
+            raw: 'status 429'
+        });
+        releaseSoftSteer();
+
+        await vi.waitFor(() => {
+            expect(session.client.sendSessionEvent).toHaveBeenCalledWith(expect.objectContaining({
+                type: 'modelError',
+                kind: 'prompt_failed',
+                rawSnippet: expect.stringContaining('http/2 stream closed')
+            }));
+        });
+        expect(session.client.sendSessionEvent).not.toHaveBeenCalledWith(expect.objectContaining({
+            type: 'modelError',
+            kind: 'rate_limited'
+        }));
+
+        session.queue.close();
+        await runPromise;
+    });
+
+    it('preserves primary stderr classification across the soft-steer drain', async () => {
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { releaseSoftSteer = resolve; });
+        harness.promptErrors = [
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL'),
+            new Error('http/2 stream closed with error code CANCEL')
+        ];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+            await vi.waitFor(() => expect(harness.promptCalls).toBe(attempt));
+            const releaseCurrent = releasePrompt;
+            harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+            releaseCurrent();
+        }
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(4));
+
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        // Attempt 4 emits typed rate_limit stderr while in flight, then rejects.
+        harness.stderrErrorHandler?.({
+            type: 'rate_limit',
+            message: 'HTTP 429',
+            raw: 'status 429'
+        });
+        harness.deferPrompt = null;
+        releasePrompt();
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        expect(harness.promptCalls).toBe(4);
+        releaseSoftSteer();
+
+        await vi.waitFor(() => {
+            expect(session.client.sendSessionEvent).toHaveBeenCalledWith(expect.objectContaining({
+                type: 'modelError',
+                kind: 'rate_limited',
+                rawSnippet: expect.stringContaining('status 429')
+            }));
+        });
+
+        session.queue.close();
+        await runPromise;
+    });
+
+    it('releases an in-loop retry soft-steer wait on Switch without sending a retry', async () => {
+        let releasePrompt!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise(() => {});
+        harness.promptErrors = [new Error('http/2 stream closed with error code CANCEL')];
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        harness.deferPrompt = null;
+        releasePrompt();
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        expect(harness.promptCalls).toBe(1);
+
+        await handlers.get(RPC_METHODS.Switch)!();
+        await expect(runPromise).resolves.toBe('switch');
+        expect(harness.promptCalls).toBe(1);
+    });
+
     it('acknowledges a steer dispatched before an overlapping abort', async () => {
         let releasePrompt!: () => void;
         let releaseDispatch!: () => void;
         harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
         harness.deferSoftSteerDispatch = new Promise((resolve) => { releaseDispatch = resolve; });
-        const session = makeSession(null, false);
+        const session = makeSession(null, { keepQueueOpen: true });
         const mode = { permissionMode: 'default' } as EnhancedMode;
         session.queue.push('first', mode, 'first');
 
@@ -559,13 +2162,44 @@ describe('cursorAcpRemoteLauncher', () => {
         await runPromise;
     });
 
+    it('holds a soft steer that an abort cancels for explicit resolution', async () => {
+        let releasePrompt!: () => void;
+        let finishSoftSteer!: (stopReason: string) => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { finishSoftSteer = resolve; });
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+        harness.deferPrompt = null;
+        releasePrompt();
+        const abort = handlers.get(RPC_METHODS.Abort)!();
+        finishSoftSteer('cancelled');
+        await abort;
+
+        await vi.waitFor(() => expect(session.client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer']));
+        expect(session.client.emitMessagesConsumed).not.toHaveBeenCalledWith(['steer'], { steered: true });
+
+        session.queue.close();
+        await runPromise;
+    });
+
     it('does not hang teardown while a soft steer completion is unresolved', async () => {
         let releasePrompt!: () => void;
         harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
         // Completion never resolves — simulates Cursor keeping the concurrent
         // request open past Exit/Switch.
         harness.deferSoftSteer = new Promise(() => {});
-        const session = makeSession(null, false);
+        const session = makeSession(null, { keepQueueOpen: true });
         const mode = { permissionMode: 'default' } as EnhancedMode;
         session.queue.push('first', mode, 'first');
 
@@ -596,7 +2230,100 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(legacyLauncher).not.toHaveBeenCalled();
     });
 
-    it('applies harness thinking transitions once per edge (#1470)', async () => {
+    it('shares one title-sync controller across backend (re)creation paths', async () => {
+        const session = makeSession(null);
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.titleSyncControllers).toHaveLength(1);
+        expect(harness.titleSyncRegistered.length).toBeGreaterThan(0);
+        for (const controller of harness.titleSyncRegistered) {
+            expect(controller).toBe(harness.titleSyncControllers[0]);
+        }
+    });
+
+    it('disconnects an unpublished replacement on kill during model relaunch', async () => {
+        const session = makeSession(null, { keepQueueOpen: true });
+        session.model = 'composer-2.5[fast=false]';
+        const running = cursorAcpRemoteLauncher(session);
+        const blocked = Promise.withResolvers<never>();
+        void blocked.promise.catch(() => undefined);
+        const entered = vi.fn();
+        const disconnect = vi.fn(async () => { blocked.reject(new Error('replacement stopped')); });
+        try {
+            await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+            const create = vi.mocked(createCursorAcpBackend);
+            const factory = create.getMockImplementation()!;
+            const before = create.mock.calls.length;
+            create.mockImplementationOnce((...args) => {
+                const backend = factory(...args);
+                vi.mocked(backend.initialize).mockImplementation(async () => {
+                    entered();
+                    return blocked.promise;
+                });
+                vi.mocked(backend.disconnect).mockImplementation(disconnect);
+                return backend;
+            });
+            const switching = session.applyModelConfig('auto');
+            void switching.catch(() => undefined);
+            await vi.waitFor(() => expect(entered).toHaveBeenCalledOnce());
+            const killing = session.kill();
+            void killing.catch(() => undefined);
+            await vi.waitFor(() => expect(disconnect).toHaveBeenCalledOnce(), { timeout: 350 });
+            await killing;
+            await expect(switching).rejects.toThrow();
+            await expect(running).resolves.toBe('exit');
+            expect(create).toHaveBeenCalledTimes(before + 1);
+        } finally {
+            blocked.reject(new Error('test cleanup'));
+            session.queue.close();
+            await running;
+        }
+    });
+
+    it.each([false, true])('keeps manual title precedence after live Auto relaunch (restore: %s)', async (restore) => {
+        const session = makeSession(null, { keepQueueOpen: true });
+        session.model = 'composer-2.5[fast=false]';
+        const runPromise = cursorAcpRemoteLauncher(session);
+        try {
+            await vi.waitFor(() => expect(harness.newSessionCalled).toBe(true));
+            await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+            const createdBefore = vi.mocked(createCursorAcpBackend).mock.results.length;
+            if (restore) {
+                harness.failNextInitialize = new Error('auto spawn refused');
+                await expect(session.applyModelConfig('auto')).rejects.toThrow(/relaunch with --model auto failed/i);
+            } else {
+                await session.applyModelConfig('auto');
+            }
+            expect(vi.mocked(createCursorAcpBackend).mock.results.length).toBe(createdBefore + (restore ? 2 : 1));
+            expect(harness.loadSessionCalled).toBe(true);
+            const replacement = vi.mocked(createCursorAcpBackend).mock.results.at(-1)!.value!;
+            const listener = vi.mocked(replacement.setSessionInfoUpdateListener).mock.calls.at(-1)![0]!;
+            const sendSummary = vi.mocked(session.client.sendClaudeSessionMessage);
+            sendSummary.mockClear();
+            listener({ sessionId: 'loaded-acp-session', title: 'Relaunched Native Title' });
+            expect(sendSummary).toHaveBeenCalledWith(expect.objectContaining({ type: 'summary', summary: 'Relaunched Native Title' }));
+
+            sendSummary.mockClear();
+            expect(harness.onChangeTitle).not.toBeNull();
+            harness.onChangeTitle!('Manual Title');
+            listener({ sessionId: 'loaded-acp-session', title: 'Later Native Title' });
+            expect(sendSummary).not.toHaveBeenCalled();
+        } finally {
+            session.queue.close();
+            await runPromise;
+        }
+    });
+
+    it('pins CLI auto with --model auto on spawn', async () => {
+        const session = makeSession(null);
+        session.model = 'auto';
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.backendArgs).toEqual({ command: 'agent', args: ['--model', 'auto', 'acp'] });
+        expect(session.model).toBe('auto');
+    });
+
+    it('ignores ambient state_update_running without a prompt; still applies idle/permission (#1553)', async () => {
         const keepAlive = vi.fn();
         const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
         const client = {
@@ -617,20 +2344,74 @@ describe('cursorAcpRemoteLauncher', () => {
             permissionMode: 'default'
         });
         session.onSessionFoundWithProtocol = vi.fn();
-        // Keep the launcher in the main loop long enough to wire the listener.
         const runPromise = cursorAcpRemoteLauncher(session);
         await vi.waitFor(() => expect(harness.agentActivityListener).not.toBeNull());
 
         expect(session.thinking).toBe(false);
         keepAlive.mockClear();
 
-        harness.agentActivityListener!(true);
-        harness.agentActivityListener!(true);
-        harness.agentActivityListener!(false);
-
+        // Ambient Cursor chatter while queue-idle must not float Working.
+        harness.agentActivityListener!(true, 'state_update_running');
         expect(session.thinking).toBe(false);
-        expect(keepAlive.mock.calls.map((call) => call[0])).toEqual([true, false]);
+        expect(keepAlive).not.toHaveBeenCalled();
 
+        harness.agentActivityListener!(true, 'permission');
+        expect(session.thinking).toBe(true);
+        expect(keepAlive).toHaveBeenCalled();
+
+        keepAlive.mockClear();
+        harness.agentActivityListener!(false, 'state_update_idle');
+        expect(session.thinking).toBe(false);
+        expect(keepAlive).toHaveBeenCalled();
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('applies state_update_running while a prompt is in flight (#1470)', async () => {
+        const keepAlive = vi.fn();
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = {
+            ...makeClient(),
+            keepAlive
+        } as unknown as ApiSessionClient;
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+
+        harness.deferPrompt = new Promise<void>((resolve) => {
+            harness.releasePrompt = resolve;
+        });
+        queue.push('do work', { permissionMode: 'default' });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBeGreaterThan(0));
+        await vi.waitFor(() => expect(harness.agentActivityListener).not.toBeNull());
+
+        // Prompt start already set thinking; clear so we can assert the listener edge.
+        session.onThinkingChange(false);
+        keepAlive.mockClear();
+        harness.agentActivityListener!(true, 'state_update_running');
+        expect(session.thinking).toBe(true);
+        expect(keepAlive).toHaveBeenCalled();
+
+        harness.agentActivityListener!(true, 'state_update_requires_action');
+        expect(session.thinking).toBe(true);
+
+        harness.releasePrompt?.();
+        harness.releasePrompt = null;
+        harness.deferPrompt = null;
         queue.close();
         await runPromise;
     });
@@ -869,16 +2650,264 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(harness.promptCalls).toBe(1);
     });
 
-    it('does not replay a prompt when a transient failure follows tool activity', async () => {
-        harness.promptMessages = [{
+    it('auto-continues once when a transient failure follows tool activity instead of replaying the prompt', async () => {
+        harness.promptMessageBatches = [[{
             type: 'tool_call',
             id: 'tool-1',
             name: 'shell',
             input: { command: 'touch output.txt' },
             status: 'completed'
-        }];
+        }], []];
         harness.promptErrors = [
             new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL')
+        ];
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = makeClient() as unknown as ApiSessionClient & {
+            sendAgentMessage: ReturnType<typeof vi.fn>;
+            sendSessionEvent: ReturnType<typeof vi.fn>;
+        };
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.push('finish the task', { permissionMode: 'default' });
+        queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.promptCalls).toBe(2);
+        expect(harness.prompts[0]).toEqual([{ type: 'text', text: 'finish the task' }]);
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'Continue.' }]);
+        // Successful auto-continue must not stamp Blocked / "not retried" give-up.
+        expect(client.sendAgentMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+            type: 'error',
+            message: expect.stringContaining('not retried')
+        }));
+        expect(client.sendAgentMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY \{.*"status":"blocked"/)
+        }));
+    });
+
+    it('stamps Blocked when auto-continue after tool activity also fails', async () => {
+        harness.promptMessageBatches = [[{
+            type: 'tool_call',
+            id: 'tool-1',
+            name: 'shell',
+            input: { command: 'touch output.txt' },
+            status: 'completed'
+        }], [{
+            type: 'tool_call',
+            id: 'tool-2',
+            name: 'shell',
+            input: { command: 'touch again.txt' },
+            status: 'completed'
+        }]];
+        harness.promptErrors = [
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL'),
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL')
+        ];
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = makeClient() as unknown as ApiSessionClient & {
+            sendAgentMessage: ReturnType<typeof vi.fn>;
+            sendSessionEvent: ReturnType<typeof vi.fn>;
+        };
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.push('finish the task', { permissionMode: 'default' });
+        queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.promptCalls).toBe(2);
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'Continue.' }]);
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'error',
+            message: expect.stringContaining('auto-continue also failed')
+        }));
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(
+                /AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/
+            )
+        }));
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        )).toBe(true);
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelErrorBridged'
+        )).toBe(false);
+    });
+
+    it('does not auto-bridge a transient failure after tool side effects, even once the one-shot Continue also fails', async () => {
+        // Cold-review Major 2026-09-08: ordinary retry respects
+        // attemptProducedToolActivity, but auto-Bridge only checked
+        // bridgeability/transience/settings — re-sending lastUserMessage
+        // would re-run completed shell/edit tools.
+        //
+        // The one-shot auto-Continue (#1724) now retries once with "Continue."
+        // instead of giving up immediately on tool-activity failures — spend
+        // that attempt too so this still reaches the give-up/bridgeable-false
+        // path the original regression guarded.
+        setAutoBridgeTransientModelErrors(true);
+        harness.promptMessageBatches = [[{
+            type: 'tool_call',
+            id: 'tool-1',
+            name: 'shell',
+            input: { command: 'touch output.txt' },
+            status: 'completed'
+        }], []];
+        harness.promptErrors = [
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL'),
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL')
+        ];
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = makeClient() as unknown as ApiSessionClient & {
+            sendAgentMessage: ReturnType<typeof vi.fn>;
+            sendSessionEvent: ReturnType<typeof vi.fn>;
+            updateMetadata: ReturnType<typeof vi.fn>;
+        };
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.push('finish the task', { permissionMode: 'default' });
+        queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.promptCalls).toBe(2);
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'Continue.' }]);
+        expect(queue.queue.some(
+            (item) => item.internal?.kind === 'model-error-bridge'
+        )).toBe(false);
+        expect(queue.pendingLocalIds().some((id) => id.startsWith('bridge:'))).toBe(false);
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelErrorBridged'
+        )).toBe(false);
+
+        const wroteBridgeableFalse = client.updateMetadata.mock.calls.some((call) => {
+            const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+            if (typeof updater !== 'function') return false;
+            const err = updater({}).lastModelError as { bridgeable?: boolean } | undefined;
+            return err?.bridgeable === false;
+        });
+        expect(wroteBridgeableFalse).toBe(true);
+
+        setAutoBridgeTransientModelErrors(false);
+    });
+
+    it('does not auto-bridge a non-retryable failure on the Continue attempt after tool side effects', async () => {
+        // Cold-review Major 2026-11-19: the retryable give-up branch forces
+        // bridgeable:false, but the non-retryable catch branch recorded the
+        // model error without checking postToolAutoContinueUsed — a rate-limit
+        // rejection (non-retryable, but transient/bridgeable by default) on the
+        // Continue attempt could still auto-Bridge and resend the *original*
+        // prompt into tools that already ran on the first attempt.
+        setAutoBridgeTransientModelErrors(true);
+        harness.promptMessageBatches = [[{
+            type: 'tool_call',
+            id: 'tool-1',
+            name: 'shell',
+            input: { command: 'touch output.txt' },
+            status: 'completed'
+        }], []];
+        harness.promptErrors = [
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL'),
+            new Error('Rate limit exceeded')
+        ];
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = makeClient() as unknown as ApiSessionClient & {
+            sendAgentMessage: ReturnType<typeof vi.fn>;
+            sendSessionEvent: ReturnType<typeof vi.fn>;
+            updateMetadata: ReturnType<typeof vi.fn>;
+        };
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.push('finish the task', { permissionMode: 'default' });
+        queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.promptCalls).toBe(2);
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'Continue.' }]);
+        // Non-retryable catch surfaces the raw error message, not the give-up copy.
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'error',
+            message: 'Rate limit exceeded'
+        }));
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/)
+        }));
+        expect(queue.queue.some(
+            (item) => item.internal?.kind === 'model-error-bridge'
+        )).toBe(false);
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelErrorBridged'
+        )).toBe(false);
+
+        const wroteBridgeableFalse = client.updateMetadata.mock.calls.some((call) => {
+            const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+            if (typeof updater !== 'function') return false;
+            const err = updater({}).lastModelError as { bridgeable?: boolean } | undefined;
+            return err?.bridgeable === false;
+        });
+        expect(wroteBridgeableFalse).toBe(true);
+
+        setAutoBridgeTransientModelErrors(false);
+    });
+
+    it('stamps Blocked when a settled text classification ends the turn without a thrown error', async () => {
+        // Cold-review Major 2026-11-19: this branch calls recordModelError but
+        // never surfaced a chat error or stamped the blocked footer at all —
+        // unlike every other path that ends the turn without recovering.
+        harness.promptMessages = [
+            { type: 'text', text: 'Error: RetriableError: [resource_exhausted] quota hit' }
         ];
         const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
         const client = makeClient() as unknown as ApiSessionClient & {
@@ -906,7 +2935,272 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(harness.promptCalls).toBe(1);
         expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
             type: 'error',
-            message: expect.stringContaining('not retried')
+            message: 'Error: RetriableError: [resource_exhausted] quota hit'
+        }));
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/)
+        }));
+    });
+
+    it('trims leading assistant prose from a settled failure before surfacing it', async () => {
+        // Minor (2026-11-19): Cursor can append `Error: T: […]` after real
+        // assistant prose in the same message; .raw is the whole message, so
+        // the chat error / blocked summary must not just echo it back.
+        harness.promptMessages = [{
+            type: 'text',
+            text: 'All done, wrapping up the task.\nError: RetriableError: [resource_exhausted] quota hit'
+        }];
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = makeClient() as unknown as ApiSessionClient & {
+            sendAgentMessage: ReturnType<typeof vi.fn>;
+        };
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.push('finish the task', { permissionMode: 'default' });
+        queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'error',
+            message: 'Error: RetriableError: [resource_exhausted] quota hit'
+        }));
+        expect(client.sendAgentMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+            type: 'error',
+            message: expect.stringContaining('wrapping up the task')
+        }));
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/)
+        }));
+        expect(client.sendAgentMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY.*wrapping up the task/)
+        }));
+    });
+
+    it('does not double the chat error for a settled stderr failure wireStderrErrorListener already announced', async () => {
+        // Minor (bot, 2026-11-19): wireStderrErrorListener sends a chat error
+        // row the moment a non-retryable stderr arrives while promptInFlight.
+        // The settled branch (added to fix the missing-footer Major) must not
+        // surface a second one for the same failure once it's picked up from
+        // pendingStderrFailure — only the footer/Bridge bookkeeping is new.
+        harness.promptStderrErrors = [{
+            type: 'rate_limit',
+            message: 'status 429',
+            raw: 'status 429'
+        }];
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = makeClient() as unknown as ApiSessionClient & {
+            sendAgentMessage: ReturnType<typeof vi.fn>;
+        };
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.push('finish the task', { permissionMode: 'default' });
+        queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        const errorCallsForThisFailure = client.sendAgentMessage.mock.calls.filter(
+            ([message]) => message?.type === 'error' && message.message === 'status 429'
+        );
+        expect(errorCallsForThisFailure).toHaveLength(1);
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/)
+        }));
+    });
+
+    it('does not auto-bridge a settled text classification on the Continue attempt after tool side effects', async () => {
+        // Audit (orchestrator-requested, 2026-11-19): the settled branch's
+        // postToolAutoContinueUsed gate was only exercised via the thrown-error
+        // branches before. Cover the same gap through the settled-text path.
+        setAutoBridgeTransientModelErrors(true);
+        harness.promptMessageBatches = [[{
+            type: 'tool_call',
+            id: 'tool-1',
+            name: 'shell',
+            input: { command: 'touch output.txt' },
+            status: 'completed'
+        }], [{
+            type: 'text',
+            text: 'Error: RetriableError: [resource_exhausted] quota hit'
+        }]];
+        harness.promptErrors = [
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL')
+        ];
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = makeClient() as unknown as ApiSessionClient & {
+            sendAgentMessage: ReturnType<typeof vi.fn>;
+            sendSessionEvent: ReturnType<typeof vi.fn>;
+            updateMetadata: ReturnType<typeof vi.fn>;
+        };
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.push('finish the task', { permissionMode: 'default' });
+        queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.promptCalls).toBe(2);
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'Continue.' }]);
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'error',
+            message: 'Error: RetriableError: [resource_exhausted] quota hit'
+        }));
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/)
+        }));
+        expect(queue.queue.some(
+            (item) => item.internal?.kind === 'model-error-bridge'
+        )).toBe(false);
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelErrorBridged'
+        )).toBe(false);
+
+        const wroteBridgeableFalse = client.updateMetadata.mock.calls.some((call) => {
+            const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+            if (typeof updater !== 'function') return false;
+            const err = updater({}).lastModelError as { bridgeable?: boolean } | undefined;
+            return err?.bridgeable === false;
+        });
+        expect(wroteBridgeableFalse).toBe(true);
+
+        setAutoBridgeTransientModelErrors(false);
+    });
+
+    it('stamps Blocked after exhausting all retries with no tool activity (no Bridge eligible)', async () => {
+        // Audit (orchestrator-requested, 2026-11-19): the exhausted-retries
+        // give-up branch was restructured to defer-then-stamp the footer like
+        // its siblings, but no test drove it all the way to exhaustion before.
+        harness.promptErrors = [
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL'),
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL'),
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL'),
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL')
+        ];
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = makeClient() as unknown as ApiSessionClient & {
+            sendAgentMessage: ReturnType<typeof vi.fn>;
+        };
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.push('finish the task', { permissionMode: 'default' });
+        queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.promptCalls).toBe(4);
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'error',
+            message: `Cursor Agent failed after ${3} retries.`
+        }));
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/)
+        }));
+    });
+
+    it('gives up after one Continue instead of retrying it when the continuation itself fails without tool activity', async () => {
+        harness.promptMessageBatches = [[{
+            type: 'tool_call',
+            id: 'tool-1',
+            name: 'shell',
+            input: { command: 'touch output.txt' },
+            status: 'completed'
+        }], []];
+        harness.promptErrors = [
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL'),
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL')
+        ];
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = makeClient() as unknown as ApiSessionClient & {
+            sendAgentMessage: ReturnType<typeof vi.fn>;
+        };
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.push('finish the task', { permissionMode: 'default' });
+        queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        // One-shot contract (#1724): the Continue attempt itself failing
+        // retryably (no new tool activity) must not spend the normal retry
+        // budget resending "Continue." — exactly 2 prompt calls total, not 3+.
+        expect(harness.promptCalls).toBe(2);
+        expect(harness.prompts[0]).toEqual([{ type: 'text', text: 'finish the task' }]);
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'Continue.' }]);
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'error',
+            message: expect.stringContaining('auto-continue also failed')
+        }));
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(
+                /AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/
+            )
         }));
     });
 
@@ -918,6 +3212,146 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(harness.overlayCleanup).toHaveBeenCalled();
     });
 
+    it('installs the notify-rule overlay when emit status summaries is on', async () => {
+        applyHubSessionSummaryContract(true);
+        const session = makeSession(null);
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.notifyRuleInstallCalls).toEqual([
+            { cwd: '/tmp/project', project: 'project', agentId: 'test-session-id' }
+        ]);
+        expect(harness.notifyRuleCleanup).toHaveBeenCalled();
+    });
+
+    it('skips the notify-rule overlay when emit status summaries is off', async () => {
+        applyHubSessionSummaryContract(false);
+        const session = makeSession(null);
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.notifyRuleInstallCalls).toEqual([]);
+        expect(harness.notifyRuleCleanup).toBeNull();
+    });
+
+    it('removes the notify-rule overlay even when backend.disconnect rejects', async () => {
+        applyHubSessionSummaryContract(true);
+        harness.disconnectError = new Error('disconnect failed');
+        const session = makeSession(null);
+
+        await expect(cursorAcpRemoteLauncher(session)).rejects.toThrow('disconnect failed');
+        expect(harness.notifyRuleCleanup).toHaveBeenCalled();
+    });
+
+    it('drops post-done harness speech after the HAPI prompt ends (#2267)', async () => {
+        const doneFooter =
+            'AGENT_NOTIFY_SUMMARY {"version":1,"agent":"a","project":"hapi","status":"done","summary":"Topic closed"}';
+        let releasePrompt!: () => void;
+        harness.deferPrompt = new Promise<void>((resolve) => {
+            releasePrompt = resolve;
+        });
+        harness.promptMessages = [
+            { type: 'text', text: `Finished.\n\n${doneFooter}` },
+            { type: 'turn_complete', stopReason: 'end_turn' }
+        ];
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as { sendAgentMessage: ReturnType<typeof vi.fn> };
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('finish the topic', mode);
+
+        const launched = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        await vi.waitFor(() => expect(harness.lastPromptOnUpdate).not.toBeNull());
+
+        // Prompt is still deferred → promptInFlight true; release so the finally clears it.
+        harness.deferPrompt = null;
+        releasePrompt();
+        await vi.waitFor(() => expect(session.thinking).toBe(false));
+
+        const beforeHarness = client.sendAgentMessage.mock.calls.length;
+        harness.lastPromptOnUpdate?.({ type: 'text', text: 'Shell finished; here is a redundant summary.' });
+        harness.agentActivityListener?.(true);
+
+        expect(client.sendAgentMessage.mock.calls.length).toBe(beforeHarness);
+        expect(session.thinking).toBe(false);
+
+        session.queue.close();
+        await launched;
+    });
+
+    it('forwards a coalesced done footer without the buried harness prose (#2268)', async () => {
+        const doneFooter =
+            'AGENT_NOTIFY_SUMMARY {"version":1,"agent":"a","project":"hapi","status":"done","summary":"Topic closed"}';
+        harness.promptMessages = [
+            {
+                type: 'text',
+                text: `Finished.\n\n${doneFooter}\nShell finished; here is a redundant summary.`
+            },
+            { type: 'turn_complete', stopReason: 'end_turn' }
+        ];
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as { sendAgentMessage: ReturnType<typeof vi.fn> };
+        session.queue.push('finish the topic', { permissionMode: 'default' } as EnhancedMode);
+        session.queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        const textBodies = client.sendAgentMessage.mock.calls
+            .map((call) => call[0] as { type?: string; message?: string })
+            .filter((msg) => msg.type === 'message' || typeof msg.message === 'string')
+            .map((msg) => msg.message ?? '');
+        expect(textBodies.some((body) => body.includes('Finished.') && body.includes(doneFooter))).toBe(true);
+        expect(textBodies.some((body) => body.includes('redundant summary'))).toBe(false);
+    });
+
+    it('does not truncate coalesced speech while a soft-steer is outstanding (#2268)', async () => {
+        const doneFooter =
+            'AGENT_NOTIFY_SUMMARY {"version":1,"agent":"a","project":"hapi","status":"done","summary":"Topic closed"}';
+        let releasePrompt!: () => void;
+        let releaseSoftSteer!: () => void;
+        harness.deferPrompt = new Promise<void>((resolve) => {
+            releasePrompt = resolve;
+        });
+        harness.deferSoftSteer = new Promise<void>((resolve) => {
+            releaseSoftSteer = resolve;
+        });
+        harness.promptMessages = [
+            { type: 'text', text: `Finished.\n\n${doneFooter}` },
+            { type: 'turn_complete', stopReason: 'end_turn' }
+        ];
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as { sendAgentMessage: ReturnType<typeof vi.fn> };
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('finish the topic', mode, 'first');
+
+        const launched = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        await vi.waitFor(() => expect(harness.lastPromptOnUpdate).not.toBeNull());
+
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+        session.queue.push('steer please', mode, 'steer');
+        await handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' });
+
+        harness.lastPromptOnUpdate?.({
+            type: 'text',
+            text: `Finished.\n\n${doneFooter}\nSteered follow-up the user asked for.`
+        });
+
+        const textBodies = client.sendAgentMessage.mock.calls
+            .map((call) => call[0] as { type?: string; message?: string })
+            .filter((msg) => msg.type === 'message')
+            .map((msg) => msg.message ?? '');
+        expect(textBodies.some((body) => body.includes('Steered follow-up the user asked for.'))).toBe(true);
+
+        harness.deferPrompt = null;
+        releasePrompt();
+        releaseSoftSteer();
+        session.queue.close();
+        await launched;
+    });
 
     it('throws on initialize failure without invoking legacy launcher', async () => {
         harness.initializeError = new Error('agent acp not found');
@@ -999,6 +3433,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -1087,6 +3522,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -1138,6 +3574,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -1351,6 +3788,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -1397,6 +3835,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -1443,6 +3882,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -1492,6 +3932,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -1533,16 +3974,17 @@ describe('cursorAcpRemoteLauncher', () => {
         await runPromise;
     });
 
-    it('applies ACP default model when setModel is cleared', async () => {
+    it('relaunches via setModel Auto when ACP has no auto option', async () => {
         const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
             keepAlive: vi.fn(),
-        emitSessionReady: vi.fn()
+            emitSessionReady: vi.fn()
         } as unknown as ApiSessionClient;
 
         const session = new CursorSession({
@@ -1558,7 +4000,9 @@ describe('cursorAcpRemoteLauncher', () => {
             startingMode: 'remote',
             permissionMode: 'default'
         });
-        session.onSessionFoundWithProtocol = vi.fn();
+        session.onSessionFoundWithProtocol = vi.fn((id: string) => {
+            session.sessionId = id;
+        });
         queue.push('hold-open', { permissionMode: 'default' });
 
         const runPromise = cursorAcpRemoteLauncher(session);
@@ -1575,16 +4019,15 @@ describe('cursorAcpRemoteLauncher', () => {
         });
 
         harness.setConfigOptionCalls.length = 0;
-        session.setModel(null);
+        harness.loadSessionCalled = false;
+        session.setModel('auto');
 
         await vi.waitFor(() => {
-            expect(
-                harness.setConfigOptionCalls.some(
-                    (call) => call.configId === 'model-opt' && call.value === 'default[]'
-                )
-            ).toBe(true);
-            expect(session.model).toBeUndefined();
+            expect(session.model).toBe('auto');
         });
+        expect(harness.backendArgs).toEqual({ command: 'agent', args: ['--model', 'auto', 'acp'] });
+        expect(harness.loadSessionCalled).toBe(true);
+        expect(harness.setConfigOptionCalls.filter((call) => call.configId === 'model-opt')).toEqual([]);
 
         queue.close();
         await runPromise;
@@ -1596,6 +4039,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -1634,16 +4078,703 @@ describe('cursorAcpRemoteLauncher', () => {
         await runPromise;
     });
 
-    it('applyModelConfig(null) resets ACP to the default model option', async () => {
+    it('relaunches in place with --model auto when ACP has no auto option', async () => {
         const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
             keepAlive: vi.fn(),
         emitSessionReady: vi.fn()
+        } as unknown as ApiSessionClient;
+
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn((id: string) => {
+            session.sessionId = id;
+        });
+        queue.push('hold-open', { permissionMode: 'default' });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.newSessionCalled).toBe(true));
+        await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+
+        await session.applyModelConfig('composer-2.5[fast=false]');
+        harness.setConfigOptionCalls.length = 0;
+        harness.loadSessionCalled = false;
+        const createCallsBefore = vi.mocked(createCursorAcpBackend).mock.calls.length;
+
+        await session.applyModelConfig('auto');
+
+        expect(session.model).toBe('auto');
+        expect(harness.backendArgs).toEqual({ command: 'agent', args: ['--model', 'auto', 'acp'] });
+        expect(harness.loadSessionCalled).toBe(true);
+        expect(vi.mocked(createCursorAcpBackend).mock.calls.length).toBeGreaterThan(createCallsBefore);
+        expect(harness.setConfigOptionCalls.filter((call) => call.configId === 'model-opt')).toEqual([]);
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('restores the prior ACP spawn when Auto relaunch initialize fails', async () => {
+        const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
+        const client = {
+            rpcHandlerManager: { registerHandler: vi.fn() },
+            updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
+            flushMetadata: vi.fn(async () => true),
+            sendSessionEvent: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            keepAlive: vi.fn(),
+            emitSessionReady: vi.fn()
+        } as unknown as ApiSessionClient;
+
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn((id: string) => {
+            session.sessionId = id;
+        });
+        queue.push('hold-open', { permissionMode: 'default' });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.newSessionCalled).toBe(true));
+        await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+
+        await session.applyModelConfig('composer-2.5[fast=false]');
+        expect(session.model).toBe('composer-2.5[fast=false]');
+
+        harness.failNextInitialize = new Error('auto spawn refused');
+        await expect(session.applyModelConfig('auto')).rejects.toThrow(/relaunch with --model auto failed/i);
+        expect(session.model).toBe('composer-2.5[fast=false]');
+
+        // Prior spawn restored — concrete model apply still works.
+        await session.applyModelConfig('composer-2.5[fast=true]');
+        expect(session.model).toBe('composer-2.5[fast=true]');
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('requeues a pending message when Auto relaunch and restore both fail', async () => {
+        const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
+        const emitMessagesConsumed = vi.fn();
+        const client = {
+            rpcHandlerManager: { registerHandler: vi.fn() },
+            updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
+            flushMetadata: vi.fn(async () => true),
+            sendSessionEvent: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            keepAlive: vi.fn(),
+            emitSessionReady: vi.fn(),
+            emitMessagesConsumed
+        } as unknown as ApiSessionClient;
+
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn((id: string) => {
+            session.sessionId = id;
+        });
+        queue.push('hold-open', { permissionMode: 'default' });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.newSessionCalled).toBe(true));
+        await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+        await session.applyModelConfig('composer-2.5[fast=false]');
+        emitMessagesConsumed.mockClear();
+
+        harness.failInitializeTimes = 2;
+        const autoSwitch = session.applyModelConfig('auto');
+        queue.push('must-survive-double-failure', { permissionMode: 'default' }, 'turn-local-1');
+        await expect(autoSwitch).rejects.toThrow(/relaunch with --model auto failed/i);
+
+        await vi.waitFor(() => expect(queue.size()).toBeGreaterThan(0));
+        expect(queue.hasMessageMatching((message) => message === 'must-survive-double-failure')).toBe(true);
+        expect(emitMessagesConsumed).not.toHaveBeenCalledWith(
+            expect.arrayContaining(['turn-local-1'])
+        );
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('re-queues Auto-review slash after relaunch when leaving and re-entering Auto-review', async () => {
+        const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
+        const client = {
+            rpcHandlerManager: { registerHandler: vi.fn() },
+            updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
+            flushMetadata: vi.fn(async () => true),
+            sendSessionEvent: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            keepAlive: vi.fn(),
+            emitSessionReady: vi.fn(),
+            emitMessagesConsumed: vi.fn()
+        } as unknown as ApiSessionClient;
+
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn((id: string) => {
+            session.sessionId = id;
+        });
+        queue.push('hold-open', { permissionMode: 'default' });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.newSessionCalled).toBe(true));
+        await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+
+        session.setPermissionMode('autoReview');
+        await vi.waitFor(() => {
+            expect(queue.hasMessageMatching((message) => message === '/auto-review')).toBe(true);
+        });
+        // Consume the slash so the old-process flag would otherwise block a re-queue.
+        await vi.waitFor(() => {
+            expect(
+                harness.prompts.some((prompt) => JSON.stringify(prompt).includes('/auto-review'))
+            ).toBe(true);
+        });
+
+        session.setPermissionMode('default');
+        await session.applyModelConfig('composer-2.5[fast=false]');
+        await session.applyModelConfig('auto');
+        session.setPermissionMode('autoReview');
+
+        await vi.waitFor(() => {
+            expect(
+                harness.prompts.filter((prompt) => JSON.stringify(prompt).includes('/auto-review')).length
+            ).toBeGreaterThanOrEqual(2);
+        });
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('queues Auto-review slash after Auto relaunch when session started with --auto-review', async () => {
+        const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
+        const client = {
+            rpcHandlerManager: { registerHandler: vi.fn() },
+            updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
+            flushMetadata: vi.fn(async () => true),
+            sendSessionEvent: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            keepAlive: vi.fn(),
+            emitSessionReady: vi.fn(),
+            emitMessagesConsumed: vi.fn()
+        } as unknown as ApiSessionClient;
+
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'autoReview'
+        });
+        session.onSessionFoundWithProtocol = vi.fn((id: string) => {
+            session.sessionId = id;
+        });
+        queue.push('hold-open', { permissionMode: 'autoReview' });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.newSessionCalled).toBe(true));
+        await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+        expect(harness.spawnAutoReviewFlags[0]).toBe(true);
+        // Spawned with --auto-review — no slash needed yet.
+        expect(queue.hasMessageMatching((message) => message === '/auto-review')).toBe(false);
+
+        session.setPermissionMode('default');
+        await session.applyModelConfig('composer-2.5[fast=false]');
+        await session.applyModelConfig('auto');
+
+        await vi.waitFor(() => {
+            expect(harness.spawnAutoReviewFlags.at(-1)).toBe(false);
+        });
+
+        session.setPermissionMode('autoReview');
+        await vi.waitFor(() => {
+            expect(
+                harness.prompts.some((prompt) => JSON.stringify(prompt).includes('/auto-review'))
+                || queue.hasMessageMatching((message) => message === '/auto-review')
+            ).toBe(true);
+        });
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('drops queued Auto-review slash when Auto relaunch spawns with --auto-review', async () => {
+        const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
+        const client = {
+            rpcHandlerManager: { registerHandler: vi.fn() },
+            updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
+            flushMetadata: vi.fn(async () => true),
+            sendSessionEvent: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            keepAlive: vi.fn(),
+            emitSessionReady: vi.fn(),
+            emitMessagesConsumed: vi.fn()
+        } as unknown as ApiSessionClient;
+
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn((id: string) => {
+            session.sessionId = id;
+        });
+        queue.push('hold-open', { permissionMode: 'default' });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.newSessionCalled).toBe(true));
+        await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+        await session.applyModelConfig('composer-2.5[fast=false]');
+
+        // Mode is Auto-review before relaunch so the replacement gets --auto-review.
+        session.setPermissionMode('autoReview');
+        await vi.waitFor(() => {
+            expect(
+                harness.prompts.some((prompt) => JSON.stringify(prompt).includes('/auto-review'))
+            ).toBe(true);
+        });
+        // Wait until the slash prompt finishes so relaunch is not blocked by promptInFlight.
+        await vi.waitFor(() => {
+            expect(queue.hasMessageMatching((message) => message === '/auto-review')).toBe(false);
+        });
+
+        let releaseInitialize!: () => void;
+        harness.deferNextInitialize = new Promise<void>((resolve) => {
+            releaseInitialize = resolve;
+        });
+        const autoSwitch = session.applyModelConfig('auto');
+        await vi.waitFor(() => expect(harness.deferNextInitialize).toBeNull());
+
+        // Leftover toggle from the old process still queued while replacement starts
+        // with --auto-review. Insert without waking the waiter so the message loop
+        // cannot dequeue it before bindFresh reconciles (mode+model race).
+        queue.queue.push({
+            message: '/auto-review',
+            mode: { permissionMode: 'autoReview', model: session.model },
+            modeHash: queue.modeHasher({ permissionMode: 'autoReview', model: session.model }),
+            isolate: true,
+            internal: { kind: 'control' },
+            enqueueOrder: 9999
+        });
+        expect(queue.hasMessageMatching((message) => message === '/auto-review')).toBe(true);
+
+        const promptsBeforeBind = harness.prompts.filter(
+            (prompt) => JSON.stringify(prompt).includes('/auto-review')
+        ).length;
+        releaseInitialize();
+        await autoSwitch;
+
+        expect(harness.spawnAutoReviewFlags.at(-1)).toBe(true);
+        expect(queue.hasMessageMatching((message) => message === '/auto-review')).toBe(false);
+        expect(
+            harness.prompts.filter((prompt) => JSON.stringify(prompt).includes('/auto-review')).length
+        ).toBe(promptsBeforeBind);
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('discards a dequeued internal Auto-review toggle held across Auto relaunch', async () => {
+        const queue = new MessageQueue2<EnhancedMode>((mode) =>
+            `${mode.permissionMode}:${mode.model ?? ''}`
+        );
+        const client = {
+            rpcHandlerManager: { registerHandler: vi.fn() },
+            updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
+            flushMetadata: vi.fn(async () => true),
+            sendSessionEvent: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            keepAlive: vi.fn(),
+            emitSessionReady: vi.fn(),
+            emitMessagesConsumed: vi.fn()
+        } as unknown as ApiSessionClient;
+
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn((id: string) => {
+            session.sessionId = id;
+        });
+        queue.push('hold-open', { permissionMode: 'default' });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.newSessionCalled).toBe(true));
+        await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+        await session.applyModelConfig('composer-2.5[fast=false]');
+
+        session.setPermissionMode('autoReview');
+        const slash = queue.queue.find((entry) => entry.message === '/auto-review');
+        expect(slash?.internal).toEqual({ kind: 'control' });
+        // Force the held batch to trigger Auto relaunch while dequeued (tip-bot Major).
+        slash!.mode = { permissionMode: 'autoReview', model: 'auto' };
+        slash!.modeHash = queue.modeHasher(slash!.mode);
+
+        await vi.waitFor(() => {
+            expect(harness.spawnAutoReviewFlags.at(-1)).toBe(true);
+        });
+        await vi.waitFor(() => expect(session.model).toBe('auto'));
+
+        // Internal toggle must not be prompted on a --auto-review replacement.
+        expect(
+            harness.prompts.filter((prompt) => JSON.stringify(prompt).includes('/auto-review')).length
+        ).toBe(0);
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('preserves a user-sent /auto-review across Auto relaunch with --auto-review', async () => {
+        const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
+        const client = {
+            rpcHandlerManager: { registerHandler: vi.fn() },
+            updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
+            flushMetadata: vi.fn(async () => true),
+            sendSessionEvent: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            keepAlive: vi.fn(),
+            emitSessionReady: vi.fn(),
+            emitMessagesConsumed: vi.fn()
+        } as unknown as ApiSessionClient;
+
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn((id: string) => {
+            session.sessionId = id;
+        });
+        queue.push('hold-open', { permissionMode: 'default' });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.newSessionCalled).toBe(true));
+        await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+        await session.applyModelConfig('composer-2.5[fast=false]');
+
+        session.setPermissionMode('autoReview');
+        await vi.waitFor(() => {
+            expect(
+                harness.prompts.some((prompt) => JSON.stringify(prompt).includes('/auto-review'))
+            ).toBe(true);
+        });
+        await vi.waitFor(() => {
+            expect(queue.hasMessageMatching((message) => message === '/auto-review')).toBe(false);
+        });
+
+        let releaseInitialize!: () => void;
+        harness.deferNextInitialize = new Promise<void>((resolve) => {
+            releaseInitialize = resolve;
+        });
+        const autoSwitch = session.applyModelConfig('auto');
+        await vi.waitFor(() => expect(harness.deferNextInitialize).toBeNull());
+
+        // User-authored command (no internal flag) must survive bindFresh reconcile.
+        queue.queue.push({
+            message: '/auto-review',
+            mode: { permissionMode: 'autoReview', model: session.model },
+            modeHash: queue.modeHasher({ permissionMode: 'autoReview', model: session.model }),
+            isolate: true,
+            localId: 'user-auto-review-1',
+            enqueueOrder: 9999
+        });
+        const promptsBeforeUserSlash = harness.prompts.filter(
+            (prompt) => JSON.stringify(prompt).includes('/auto-review')
+        ).length;
+
+        releaseInitialize();
+        await autoSwitch;
+        expect(harness.spawnAutoReviewFlags.at(-1)).toBe(true);
+        expect(queue.hasMessageMatching((message) => message === '/auto-review')).toBe(true);
+
+        // Silent insert during relaunch did not wake the idle waiter — nudge the loop.
+        queue.push('wake-loop', { permissionMode: 'default' });
+
+        await vi.waitFor(() => {
+            expect(
+                harness.prompts.filter((prompt) => JSON.stringify(prompt).includes('/auto-review')).length
+            ).toBeGreaterThan(promptsBeforeUserSlash);
+        });
+        expect(queue.hasMessageMatching((message) => message === '/auto-review')).toBe(false);
+        expect(vi.mocked(client.emitMessagesConsumed)).toHaveBeenCalledWith(
+            expect.arrayContaining(['user-auto-review-1'])
+        );
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('queues Auto-review slash when mode flips during Auto relaunch', async () => {
+        const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
+        const client = {
+            rpcHandlerManager: { registerHandler: vi.fn() },
+            updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
+            flushMetadata: vi.fn(async () => true),
+            sendSessionEvent: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            keepAlive: vi.fn(),
+            emitSessionReady: vi.fn(),
+            emitMessagesConsumed: vi.fn()
+        } as unknown as ApiSessionClient;
+
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn((id: string) => {
+            session.sessionId = id;
+        });
+        queue.push('hold-open', { permissionMode: 'default' });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.newSessionCalled).toBe(true));
+        await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+        await session.applyModelConfig('composer-2.5[fast=false]');
+
+        let releaseInitialize!: () => void;
+        harness.deferNextInitialize = new Promise<void>((resolve) => {
+            releaseInitialize = resolve;
+        });
+        const autoSwitch = session.applyModelConfig('auto');
+        await vi.waitFor(() => expect(harness.deferNextInitialize).toBeNull());
+
+        session.setPermissionMode('autoReview');
+        releaseInitialize();
+        await autoSwitch;
+
+        await vi.waitFor(() => {
+            expect(
+                harness.prompts.some((prompt) => JSON.stringify(prompt).includes('/auto-review'))
+                || (queue as unknown as { queue: Array<{ message: string }> }).queue
+                    ?.some((item) => item.message === '/auto-review')
+            ).toBe(true);
+        });
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('prompts a queued Auto-mode batch on the relaunched backend', async () => {
+        const queue = new MessageQueue2<EnhancedMode>((mode) =>
+            `${mode.permissionMode}:${mode.model ?? ''}`
+        );
+        const client = {
+            rpcHandlerManager: { registerHandler: vi.fn() },
+            updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
+            flushMetadata: vi.fn(async () => true),
+            sendSessionEvent: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            keepAlive: vi.fn(),
+            emitSessionReady: vi.fn(),
+            emitMessagesConsumed: vi.fn()
+        } as unknown as ApiSessionClient;
+
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn((id: string) => {
+            session.sessionId = id;
+        });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.newSessionCalled).toBe(true));
+        await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+
+        await session.applyModelConfig('composer-2.5[fast=false]');
+        expect(session.model).toBe('composer-2.5[fast=false]');
+        harness.promptCalls = 0;
+        harness.loadSessionCalled = false;
+
+        queue.push('switch-to-auto-turn', { permissionMode: 'default', model: 'auto' });
+        queue.close();
+
+        await runPromise;
+
+        expect(session.model).toBe('auto');
+        expect(harness.backendArgs).toEqual({ command: 'agent', args: ['--model', 'auto', 'acp'] });
+        expect(harness.loadSessionCalled).toBe(true);
+        expect(harness.promptCalls).toBeGreaterThanOrEqual(1);
+        expect(harness.prompts.at(-1)).toEqual([{ type: 'text', text: 'switch-to-auto-turn' }]);
+    });
+
+    it('keeps the launcher alive when a message arrives mid Auto relaunch', async () => {
+        const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
+        const client = {
+            rpcHandlerManager: { registerHandler: vi.fn() },
+            updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
+            flushMetadata: vi.fn(async () => true),
+            sendSessionEvent: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            keepAlive: vi.fn(),
+            emitSessionReady: vi.fn(),
+            emitMessagesConsumed: vi.fn()
+        } as unknown as ApiSessionClient;
+
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn((id: string) => {
+            session.sessionId = id;
+        });
+        queue.push('hold-open', { permissionMode: 'default' });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.newSessionCalled).toBe(true));
+        await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+        await session.applyModelConfig('composer-2.5[fast=false]');
+
+        let releaseInitialize!: () => void;
+        harness.deferNextInitialize = new Promise<void>((resolve) => {
+            releaseInitialize = resolve;
+        });
+        const autoSwitch = session.applyModelConfig('auto');
+        await vi.waitFor(() => expect(harness.deferNextInitialize).toBeNull());
+
+        queue.push('arrived-during-relaunch', { permissionMode: 'default' });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        releaseInitialize();
+        await autoSwitch;
+
+        expect(session.model).toBe('auto');
+        await vi.waitFor(() => {
+            expect(harness.prompts.some(
+                (prompt) => JSON.stringify(prompt).includes('arrived-during-relaunch')
+            )).toBe(true);
+        });
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('applies Auto via ACP when the catalog advertises auto', async () => {
+        harness.modelOptionValues = ['auto', 'composer-2.5[fast=false]'];
+        const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
+        const client = {
+            rpcHandlerManager: { registerHandler: vi.fn() },
+            updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
+            flushMetadata: vi.fn(async () => true),
+            sendSessionEvent: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            keepAlive: vi.fn(),
+            emitSessionReady: vi.fn()
         } as unknown as ApiSessionClient;
 
         const session = new CursorSession({
@@ -1669,13 +4800,146 @@ describe('cursorAcpRemoteLauncher', () => {
         await session.applyModelConfig('composer-2.5[fast=false]');
         harness.setConfigOptionCalls.length = 0;
 
-        await session.applyModelConfig(null);
+        await session.applyModelConfig('auto');
 
+        expect(session.model).toBe('auto');
         expect(
             harness.setConfigOptionCalls.some(
-                (call) => call.configId === 'model-opt' && call.value === 'default[]'
+                (call) => call.configId === 'model-opt' && call.value === 'auto'
             )
         ).toBe(true);
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('falls back to in-place relaunch when advertised auto cannot be set via ACP', async () => {
+        harness.modelOptionValues = ['auto', 'composer-2.5[fast=false]'];
+        harness.failSetConfigOption = true;
+        const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
+        const client = {
+            rpcHandlerManager: { registerHandler: vi.fn() },
+            updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
+            flushMetadata: vi.fn(async () => true),
+            sendSessionEvent: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            keepAlive: vi.fn(),
+            emitSessionReady: vi.fn()
+        } as unknown as ApiSessionClient;
+
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn((id: string) => {
+            session.sessionId = id;
+        });
+        queue.push('hold-open', { permissionMode: 'default' });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.newSessionCalled).toBe(true));
+        await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+
+        await session.applyModelConfig('auto');
+        expect(session.model).toBe('auto');
+        expect(harness.backendArgs).toEqual({ command: 'agent', args: ['--model', 'auto', 'acp'] });
+        expect(harness.loadSessionCalled).toBe(true);
+
+        queue.close();
+        await runPromise;
+    });
+
+    it.each([[false, false], [true, false], [false, true], [true, true]])('relaunches Auto after an Auto-spawned concrete switch (partial=%s, concurrent=%s)', async (partial, concurrent) => {
+        const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
+        const client = {
+            rpcHandlerManager: { registerHandler: vi.fn() },
+            updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
+            flushMetadata: vi.fn(async () => true),
+            sendSessionEvent: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            keepAlive: vi.fn(),
+            emitSessionReady: vi.fn()
+        } as unknown as ApiSessionClient;
+
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default',
+            model: 'auto'
+        });
+        session.onSessionFoundWithProtocol = vi.fn((id: string) => {
+            session.sessionId = id;
+        });
+        queue.push('hold-open', { permissionMode: 'default' });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.newSessionCalled).toBe(true));
+        await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+        expect(harness.backendArgs).toEqual({ command: 'agent', args: ['--model', 'auto', 'acp'] });
+
+        if (partial) {
+            harness.modelOptionValues = ['default', 'composer-2.5'];
+            harness.failFastConfigOption = true;
+        }
+        if (concurrent) {
+            harness.deferSetConfigOption = new Promise<void>((resolve) => {
+                harness.releaseSetConfigOption = resolve;
+            });
+        }
+        const concreteRequest = session.applyModelConfig('composer-2.5[fast=false]');
+        const autoRequest = concurrent
+            ? session.applyModelConfig('auto').then(
+                value => ({ value, error: null }),
+                error => ({ value: null, error })
+            )
+            : null;
+        if (concurrent) {
+            await new Promise<void>(resolve => setImmediate(resolve));
+            harness.releaseSetConfigOption?.();
+        }
+        if (partial) {
+            await expect(concreteRequest).rejects.toThrow(
+                'Cursor model is not available via ACP'
+            );
+        } else {
+            await concreteRequest;
+        }
+        if (autoRequest) {
+            const result = await autoRequest;
+            expect(result.error).toBeNull();
+            expect(result.value).toBe('auto');
+            expect(session.model).toBe('auto');
+        } else {
+            const concreteModel = partial ? 'composer-2.5' : 'composer-2.5[fast=false]';
+            expect(session.model).toBe(concreteModel);
+            harness.setConfigOptionCalls.length = 0;
+            harness.loadSessionCalled = false;
+
+            await session.applyModelConfig('auto');
+            expect(session.model).toBe('auto');
+            expect(harness.backendArgs).toEqual({ command: 'agent', args: ['--model', 'auto', 'acp'] });
+            expect(harness.loadSessionCalled).toBe(true);
+            expect(harness.setConfigOptionCalls.filter((call) => call.configId === 'model-opt')).toEqual([]);
+        }
 
         queue.close();
         await runPromise;
@@ -1686,6 +4950,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -1728,6 +4993,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
             updateMetadata: vi.fn(),
+            getMetadata: vi.fn(() => null),
             flushMetadata: vi.fn(async () => true),
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
@@ -1762,5 +5028,2752 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(JSON.stringify(harness.prompts[0])).not.toContain('$name');
         expect(JSON.stringify(harness.prompts[1])).toContain('second');
         expect(JSON.stringify(harness.prompts[1])).not.toContain('skill_lookup');
+    });
+
+    it('keeps generic unknown stderr status-only and still emits ready', async () => {
+        // Bot Major: type:unknown comes from any stderr with error/failed/exception.
+        // Must not set turnHasModelError / suppress ready / write lastModelError.
+        harness.emitStderrOnPrompt = {
+            type: 'unknown',
+            message: 'Some plugin failed to load: exception during init',
+            raw: 'Some plugin failed to load: exception during init'
+        };
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+            sendAgentMessage: ReturnType<typeof vi.fn>
+        };
+
+        session.queue.push('hello', { permissionMode: 'default' });
+        session.queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.promptCalls).toBe(1);
+        expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        )).toBe(false);
+        const wroteLastModelError = client.updateMetadata.mock.calls.some((call) => {
+            const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+            if (typeof updater !== 'function') return false;
+            return Boolean(updater({}).lastModelError);
+        });
+        expect(wroteLastModelError).toBe(false);
+    });
+
+    it('keeps weak typed authentication stderr status-only and still emits ready', async () => {
+        // Transport types "authentication provider initialized" as authentication
+        // via bare substring; strong-signature gate must keep it status-only.
+        harness.emitStderrOnPrompt = {
+            type: 'authentication',
+            message: 'authentication provider initialized',
+            raw: 'authentication provider initialized'
+        };
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            sendSessionEvent: ReturnType<typeof vi.fn>
+        };
+
+        session.queue.push('hello', { permissionMode: 'default' });
+        session.queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        )).toBe(false);
+    });
+
+    it('records modelError for model_not_found stderr during prompt and suppresses ready', async () => {
+        harness.emitStderrOnPrompt = {
+            type: 'model_not_found',
+            message: 'Cannot use this model: cursor-bad-id. Available models: auto',
+            raw: 'Cannot use this model: cursor-bad-id. Available models: auto'
+        };
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            sendSessionEvent: ReturnType<typeof vi.fn>
+        };
+
+        session.queue.push('hello', { permissionMode: 'default' });
+        session.queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError' && call[0]?.kind === 'model_not_found'
+        )).toBe(true);
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'ready'
+        )).toBe(false);
+    });
+
+    it('ignores Cannot use this model stderr during initialize/load so remap can succeed', async () => {
+        // Setup/load remap rejects a stale spawn model on stderr, then continues.
+        // Must not persist lastModelError / suppress later ready.
+        const stale = {
+            type: 'model_not_found' as const,
+            message: 'Cannot use this model: grok-4.5[fast=true]. Available models: auto',
+            raw: 'Cannot use this model: grok-4.5[fast=true]. Available models: auto'
+        };
+        harness.emitStderrOnInitialize = stale;
+        harness.emitStderrOnLoadSession = stale;
+
+        const session = makeSession('resume-remap-ok', { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+
+        session.queue.push('hello', { permissionMode: 'default' });
+        session.queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.loadSessionCalled).toBe(true);
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        )).toBe(false);
+        expect(client.updateMetadata.mock.calls.some((call) => {
+            const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+            if (typeof updater !== 'function') return false;
+            return Boolean(updater({}).lastModelError);
+        })).toBe(false);
+        expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+    });
+
+    it('still records modelError for typed rate_limit stderr and suppresses ready', async () => {
+        harness.emitStderrOnPrompt = {
+            type: 'rate_limit',
+            message: 'Rate limit exceeded.',
+            raw: 'status 429 ratelimitexceeded'
+        };
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+
+        session.queue.push('hello', { permissionMode: 'default' });
+        session.queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError' && call[0]?.kind === 'rate_limited'
+        )).toBe(true);
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'ready'
+        )).toBe(false);
+        const wroteLastModelError = client.updateMetadata.mock.calls.some((call) => {
+            const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+            if (typeof updater !== 'function') return false;
+            const next = updater({});
+            return (next.lastModelError as { kind?: string } | undefined)?.kind === 'rate_limited';
+        });
+        expect(wroteLastModelError).toBe(true);
+    });
+
+    it('prefers structural RPC classification over text fallback when both fire', async () => {
+        // Prompt callback emits wire text first (unknown_t_prefix / non-transient),
+        // then the promise rejects with WritableIterable (transport_closed).
+        harness.emitTextOnPrompt = '\n\nError: T: WritableIterable is closed';
+        harness.promptReject = new Error('WritableIterable is closed');
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+
+        session.queue.push('hello', { permissionMode: 'default' });
+        session.queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        const modelErrors = client.sendSessionEvent.mock.calls
+            .map((call) => call[0])
+            .filter((event) => event?.type === 'modelError');
+        expect(modelErrors).toHaveLength(1);
+        expect(modelErrors[0]?.kind).toBe('transport_closed');
+        expect(modelErrors[0]?.transient).toBe(false);
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'ready'
+        )).toBe(false);
+    });
+
+    // A done footer must not hide a model error that lands after it. The
+    // post-close harness-silence work truncates the tail of a coalesced
+    // segment and suppresses later ones; classification has to see the
+    // original settled text or the turn reports ready with no banner.
+    it('classifies an inline failure appended after a done footer in the same segment', async () => {
+        const doneFooter =
+            'AGENT_NOTIFY_SUMMARY {"version":1,"agent":"a","project":"hapi","status":"done","summary":"Topic closed"}';
+        harness.emitTextOnPrompt = `Done.\n${doneFooter}\nError: T: [resource_exhausted] Error`;
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            sendSessionEvent: ReturnType<typeof vi.fn>
+        };
+
+        session.queue.push('hello', { permissionMode: 'default' });
+        session.queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        const modelErrors = client.sendSessionEvent.mock.calls
+            .map((call) => call[0])
+            .filter((event) => event?.type === 'modelError');
+        expect(modelErrors).toHaveLength(1);
+        // The agent claimed completion immediately before failing.
+        expect(modelErrors[0]?.priorAssistantClaimsDone).toBe(true);
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'ready'
+        )).toBe(false);
+    });
+
+    it('classifies an inline failure arriving in a segment after a done footer', async () => {
+        const doneFooter =
+            'AGENT_NOTIFY_SUMMARY {"version":1,"agent":"a","project":"hapi","status":"done","summary":"Topic closed"}';
+        harness.promptMessageBatches = [[
+            { type: 'text', text: `Done.\n${doneFooter}` },
+            { type: 'text', text: 'Error: T: [resource_exhausted] Error' }
+        ] as AgentMessage[]];
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            sendSessionEvent: ReturnType<typeof vi.fn>
+        };
+
+        session.queue.push('hello', { permissionMode: 'default' });
+        session.queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        const modelErrors = client.sendSessionEvent.mock.calls
+            .map((call) => call[0])
+            .filter((event) => event?.type === 'modelError');
+        expect(modelErrors).toHaveLength(1);
+        expect(modelErrors[0]?.priorAssistantClaimsDone).toBe(true);
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'ready'
+        )).toBe(false);
+    });
+
+    // AcpSdkBackend.prompt drains the previous handler before installing the
+    // new one, and that drain runs the OLD closure against shared launcher
+    // state that the new turn has already reset. Turn A's buffered failure must
+    // stay attributed to A, or a perfectly good turn B is marked failed, has its
+    // ready suppressed, and can be auto-replayed.
+    it('does not let a previous turn drain mark the new turn failed', async () => {
+        let metadata: Record<string, unknown> = {
+            path: '/tmp/project',
+            host: 'localhost'
+        };
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            getMetadata: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+        client.getMetadata.mockImplementation(() => metadata);
+        client.updateMetadata.mockImplementation((updater: unknown) => {
+            if (typeof updater === 'function') {
+                metadata = (updater as (m: Record<string, unknown>) => Record<string, unknown>)(metadata)
+            }
+        });
+
+        session.queue.push('first', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        await vi.waitFor(() => expect(harness.promptSends).toBe(1));
+        const previousOnUpdate = harness.lastPromptOnUpdate;
+        expect(previousOnUpdate).toBeTypeOf('function');
+
+        // Park the second turn at the pre-swap point: promptCalls increments on
+        // entry, deferBeforeSend is awaited before the generation bump.
+        let releaseSend!: () => void;
+        harness.deferBeforeSend = new Promise<void>((resolve) => { releaseSend = resolve; });
+        session.queue.push('second', { permissionMode: 'default' });
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+
+        // Turn A's buffered failure drains through A's still-installed handler.
+        previousOnUpdate!({
+            type: 'text',
+            text: 'Error: RetriableError: [resource_exhausted] Error'
+        } as AgentMessage);
+
+        harness.deferBeforeSend = null;
+        releaseSend();
+        await vi.waitFor(() => expect(harness.promptSends).toBe(2));
+
+        session.queue.close();
+        await launchPromise;
+
+        // Turn B succeeded: no modelError, and ready was not suppressed.
+        expect(client.sendSessionEvent.mock.calls
+            .map((call) => call[0])
+            .filter((event) => event?.type === 'modelError')).toHaveLength(0);
+        expect(metadata.lastModelError).toBeUndefined();
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'ready'
+        )).toBe(true);
+    });
+
+    // Companion to the drain test above, covering the *other* path into failure
+    // state: a retryable marker is consumed by stripRetryableCursorError before
+    // classification runs, so it needs the same generation attribution. With
+    // tool activity on the new turn, a stale retry signal is recorded as that
+    // turn's modelError and pages the operator about a turn that worked.
+    it('does not let a previous turn retryable drain fail a new turn with tool activity', async () => {
+        let metadata: Record<string, unknown> = {
+            path: '/tmp/project',
+            host: 'localhost'
+        };
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            getMetadata: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+        client.getMetadata.mockImplementation(() => metadata);
+        client.updateMetadata.mockImplementation((updater: unknown) => {
+            if (typeof updater === 'function') {
+                metadata = (updater as (m: Record<string, unknown>) => Record<string, unknown>)(metadata)
+            }
+        });
+
+        session.queue.push('first', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        await vi.waitFor(() => expect(harness.promptSends).toBe(1));
+        const previousOnUpdate = harness.lastPromptOnUpdate;
+        expect(previousOnUpdate).toBeTypeOf('function');
+
+        // Turn B emits a tool call, then succeeds.
+        harness.promptMessageBatches = [[
+            { type: 'tool_call', name: 'shell' },
+            { type: 'text', text: 'All good.' },
+            { type: 'turn_complete', stopReason: 'end_turn' }
+        ] as unknown as AgentMessage[]];
+
+        // Park B pre-swap, then drain A's buffered retryable error through A's
+        // still-installed handler. `canceled` is stripped by
+        // stripRetryableCursorError, which is the path the other test misses.
+        let releaseSend!: () => void;
+        harness.deferBeforeSend = new Promise<void>((resolve) => { releaseSend = resolve; });
+        session.queue.push('second', { permissionMode: 'default' });
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+
+        previousOnUpdate!({
+            type: 'text',
+            text: 'Error: RetriableError: [canceled] Error'
+        } as AgentMessage);
+
+        harness.deferBeforeSend = null;
+        releaseSend();
+        await vi.waitFor(() => expect(harness.promptSends).toBe(2));
+
+        session.queue.close();
+        await launchPromise;
+
+        expect(client.sendSessionEvent.mock.calls
+            .map((call) => call[0])
+            .filter((event) => event?.type === 'modelError')).toHaveLength(0);
+        expect(metadata.lastModelError).toBeUndefined();
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'ready'
+        )).toBe(true);
+    });
+
+    it('prefers specific deferred stderr over generic transport_closed RPC', async () => {
+        // Strong quota stderr first, then generic transport close — keep the
+        // non-transient cause so retry copy is not “safe to retry”.
+        harness.emitStderrOnPrompt = {
+            type: 'quota_exceeded',
+            message: 'Quota exceeded.',
+            raw: 'resource exhausted'
+        };
+        harness.promptReject = new Error('WritableIterable is closed');
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            sendSessionEvent: ReturnType<typeof vi.fn>
+        };
+
+        session.queue.push('hello', { permissionMode: 'default' });
+        session.queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        const modelErrors = client.sendSessionEvent.mock.calls
+            .map((call) => call[0])
+            .filter((event) => event?.type === 'modelError');
+        expect(modelErrors).toHaveLength(1);
+        expect(modelErrors[0]?.kind).toBe('quota_exhausted');
+        expect(modelErrors[0]?.transient).toBe(false);
+    });
+
+    it('still records modelError for canceled RPC rejection without user abort', async () => {
+        harness.promptReject = new Error('Error: T: [canceled] Operation aborted');
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            sendSessionEvent: ReturnType<typeof vi.fn>
+        };
+
+        session.queue.push('hello', { permissionMode: 'default' });
+        session.queue.close();
+        await cursorAcpRemoteLauncher(session);
+
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError' && call[0]?.kind === 'canceled'
+        )).toBe(true);
+    });
+
+    it('does not promote user Abort cancel rejection to modelError', async () => {
+        // Cursor rejects session/prompt after session/cancel with this wire shape;
+        // classifier maps it to kind=canceled, but Abort must not page/notify.
+        // Switch → requestExit → handleAbort sets shouldExit + userAbortRequested
+        // before we settle the deferred prompt rejection (ordering matches
+        // cancel-then-reject on the wire; avoids queue.reset hang in tests).
+        harness.deferPrompt = new Promise<void>((resolve) => {
+            harness.releasePrompt = resolve;
+        });
+        harness.rejectPromptOnCancel = new Error('Error: T: [canceled] Operation aborted');
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+
+        session.queue.push('hello', { permissionMode: 'default' });
+
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+
+        const switchHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === 'switch'
+        )?.[1] as (() => Promise<void>) | undefined;
+        expect(switchHandler).toBeTypeOf('function');
+        await switchHandler!();
+        harness.releasePrompt?.();
+        await launchPromise;
+
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        )).toBe(false);
+        const wroteLastModelError = client.updateMetadata.mock.calls.some((call) => {
+            const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+            if (typeof updater !== 'function') return false;
+            return Boolean(updater({}).lastModelError);
+        });
+        expect(wroteLastModelError).toBe(false);
+    });
+
+    it('does not mark an in-flight bridge recovered when Abort wins the race', async () => {
+        // Enqueue bridge while idle, then hold the bridge prompt and abort before
+        // it settles — must NOT emit recovered.
+        const session = makeSession('acp-session', { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            // Park from the second wait (post-first-turn idle) so bridge stays queued.
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => {
+                    nextWait.release = resolve;
+                });
+            }
+            return originalWait(signal);
+        };
+
+        session.queue.push('hello', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        await vi.waitFor(() => nextWait.release !== null);
+
+        const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.BridgeModelError
+        )?.[1] as ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+        const eventId = '55555555-5555-4555-8555-555555555555';
+        expect(await bridgeHandler!({
+            eventId,
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'status 429',
+            lastUserMessage: 'hello',
+            priorAssistantClaimsDone: false
+        })).toEqual({ ok: true });
+
+        const bridgeGate = { release: null as (() => void) | null };
+        harness.deferPrompt = new Promise<void>((resolve) => {
+            bridgeGate.release = resolve;
+        });
+        nextWait.release?.();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+
+        const abortHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.Abort
+        )?.[1] as (() => Promise<void>) | undefined;
+        expect(abortHandler).toBeTypeOf('function');
+        await abortHandler!();
+        bridgeGate.release?.();
+        session.queue.close();
+        await launchPromise;
+
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelErrorBridged'
+        )).toBe(false);
+        const wroteBridgedForEventId = client.updateMetadata.mock.calls.some((call) => {
+            const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+            if (typeof updater !== 'function') return false;
+            const err = updater({}).lastModelError as { bridgedForEventId?: string } | undefined;
+            return err?.bridgedForEventId === eventId;
+        });
+        expect(wroteBridgedForEventId).toBe(false);
+    });
+
+    it('closes Bridge replay after Abort once the bridge turn produced tool activity', async () => {
+        // Cold-review Major 2026-09-12: Abort during an in-flight Bridge that already
+        // ran shell/edit tools must set bridgeable:false — otherwise a second Bridge
+        // replays the original prompt despite completed side effects.
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+        const session = makeSession('acp-session', { keepQueueOpen: true });
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => {
+                    nextWait.release = resolve;
+                });
+            }
+            return originalWait(signal);
+        };
+
+        const client = session.client as unknown as {
+            rpcHandlerManager: {
+                handlers: Map<string, (payload?: unknown) => Promise<unknown>>
+                registerHandler: ReturnType<typeof vi.fn>
+            }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+
+        harness.emitStderrOnPrompt = {
+            type: 'rate_limit',
+            message: 'status 429 ratelimitexceeded',
+            raw: 'status 429 ratelimitexceeded'
+        };
+        harness.promptErrors = [new Error('status 429 ratelimitexceeded')];
+        session.queue.push('do the work', { permissionMode: 'default' }, 'first');
+
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        )).toBe(true));
+        await vi.waitFor(() => expect(nextWait.release).not.toBeNull());
+        harness.emitStderrOnPrompt = null;
+        harness.promptErrors = [];
+
+        const recorded = client.updateMetadata.mock.calls
+            .map((call) => {
+                const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+                if (typeof updater !== 'function') return null;
+                return updater({}).lastModelError as {
+                    eventId?: string
+                    kind?: string
+                    rawSnippet?: string
+                    lastUserMessage?: string
+                    priorAssistantClaimsDone?: boolean
+                    bridgeable?: boolean
+                } | null;
+            })
+            .find((err) => err?.eventId);
+        expect(recorded?.eventId).toBeTruthy();
+        expect(recorded?.bridgeable).not.toBe(false);
+
+        const bridgeHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.BridgeModelError) as
+            ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+
+        expect(await bridgeHandler!({
+            eventId: recorded!.eventId,
+            kind: recorded!.kind,
+            transient: true,
+            rawSnippet: recorded!.rawSnippet,
+            lastUserMessage: recorded!.lastUserMessage || 'do the work',
+            priorAssistantClaimsDone: recorded!.priorAssistantClaimsDone === true,
+            bridgeable: true
+        })).toEqual({ ok: true });
+
+        let releaseBridge!: () => void;
+        harness.deferPrompt = new Promise<void>((resolve) => { releaseBridge = resolve; });
+        nextWait.release?.();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+        await vi.waitFor(() => expect(harness.activeOnMessage).toBeTruthy());
+
+        harness.activeOnMessage!({
+            type: 'tool_call',
+            id: 'tool-bridge-1',
+            name: 'shell',
+            input: { command: 'touch output.txt' },
+            status: 'completed'
+        });
+
+        await client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+        harness.deferPrompt = null;
+        releaseBridge();
+
+        await vi.waitFor(() => {
+            const closed = client.updateMetadata.mock.calls.some((call) => {
+                const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+                if (typeof updater !== 'function') return false;
+                const err = updater({}).lastModelError as { eventId?: string; bridgeable?: boolean } | undefined;
+                return err?.eventId === recorded!.eventId && err?.bridgeable === false;
+            });
+            expect(closed).toBe(true);
+        });
+
+        expect(await bridgeHandler!({
+            eventId: recorded!.eventId,
+            kind: recorded!.kind,
+            transient: true,
+            rawSnippet: recorded!.rawSnippet,
+            lastUserMessage: recorded!.lastUserMessage || 'do the work',
+            priorAssistantClaimsDone: recorded!.priorAssistantClaimsDone === true,
+            bridgeable: true
+        })).toEqual({ ok: false, reason: 'not_bridgeable' });
+
+        session.queue.close();
+        await launchPromise;
+    });
+
+    it('does not emit recovered after a permission-card abort during Bridge', async () => {
+        // Cold-review Major 2026-09-12: permission decision:abort sets
+        // userAbortRequested but never calls handleAbort — finally must still
+        // clear bridgingForEventId so a later normal turn cannot false-RECOVER.
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+        const session = makeSession('acp-session', { keepQueueOpen: true });
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => {
+                    nextWait.release = resolve;
+                });
+            }
+            return originalWait(signal);
+        };
+
+        const client = session.client as unknown as {
+            rpcHandlerManager: {
+                handlers: Map<string, (payload?: unknown) => Promise<unknown>>
+                registerHandler: ReturnType<typeof vi.fn>
+            }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+
+        harness.emitStderrOnPrompt = {
+            type: 'rate_limit',
+            message: 'status 429 ratelimitexceeded',
+            raw: 'status 429 ratelimitexceeded'
+        };
+        harness.promptErrors = [new Error('status 429 ratelimitexceeded')];
+        session.queue.push('do the work', { permissionMode: 'default' }, 'first');
+
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        )).toBe(true));
+        await vi.waitFor(() => expect(nextWait.release).not.toBeNull());
+        harness.emitStderrOnPrompt = null;
+        harness.promptErrors = [];
+
+        const recorded = client.updateMetadata.mock.calls
+            .map((call) => {
+                const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+                if (typeof updater !== 'function') return null;
+                return updater({}).lastModelError as {
+                    eventId?: string
+                    kind?: string
+                    rawSnippet?: string
+                    lastUserMessage?: string
+                    priorAssistantClaimsDone?: boolean
+                } | null;
+            })
+            .find((err) => err?.eventId);
+        expect(recorded?.eventId).toBeTruthy();
+
+        const bridgeHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.BridgeModelError) as
+            ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+        expect(await bridgeHandler!({
+            eventId: recorded!.eventId,
+            kind: recorded!.kind,
+            transient: true,
+            rawSnippet: recorded!.rawSnippet,
+            lastUserMessage: recorded!.lastUserMessage || 'do the work',
+            priorAssistantClaimsDone: recorded!.priorAssistantClaimsDone === true,
+            bridgeable: true
+        })).toEqual({ ok: true });
+
+        let releaseBridge!: () => void;
+        harness.deferPrompt = new Promise<void>((resolve) => { releaseBridge = resolve; });
+        nextWait.release?.();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+
+        const permissionHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.Permission) as
+            ((payload: unknown) => Promise<unknown>) | undefined;
+        expect(permissionHandler).toBeTypeOf('function');
+        await permissionHandler!({ id: 'perm-1', approved: false, decision: 'abort' });
+
+        harness.deferPrompt = null;
+        releaseBridge();
+
+        // Next normal turn succeeds — must not emit modelErrorBridged for the aborted Bridge.
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+        session.queue.push('continue normally', { permissionMode: 'default' }, 'next');
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(3));
+
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelErrorBridged'
+        )).toBe(false);
+
+        session.queue.close();
+        await launchPromise;
+    });
+
+    it('closes Bridge replay after Abort once a soft-steer was accepted on the Bridge turn', async () => {
+        // Cold-review Major 2026-09-12: Abort mid-Bridge after soft-steer (no tools)
+        // must stamp bridgeable:false — same protection as recordModelError's
+        // turnHasSteeredInput gate.
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+        const session = makeSession('acp-session', { keepQueueOpen: true });
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => {
+                    nextWait.release = resolve;
+                });
+            }
+            return originalWait(signal);
+        };
+
+        const client = session.client as unknown as {
+            rpcHandlerManager: {
+                handlers: Map<string, (payload?: unknown) => Promise<unknown>>
+                registerHandler: ReturnType<typeof vi.fn>
+            }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+
+        harness.emitStderrOnPrompt = {
+            type: 'rate_limit',
+            message: 'status 429 ratelimitexceeded',
+            raw: 'status 429 ratelimitexceeded'
+        };
+        harness.promptErrors = [new Error('status 429 ratelimitexceeded')];
+        session.queue.push('do the work', { permissionMode: 'default' }, 'first');
+
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        )).toBe(true));
+        await vi.waitFor(() => expect(nextWait.release).not.toBeNull());
+        harness.emitStderrOnPrompt = null;
+        harness.promptErrors = [];
+
+        const recorded = client.updateMetadata.mock.calls
+            .map((call) => {
+                const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+                if (typeof updater !== 'function') return null;
+                return updater({}).lastModelError as {
+                    eventId?: string
+                    kind?: string
+                    rawSnippet?: string
+                    lastUserMessage?: string
+                    priorAssistantClaimsDone?: boolean
+                    bridgeable?: boolean
+                } | null;
+            })
+            .find((err) => err?.eventId);
+        expect(recorded?.eventId).toBeTruthy();
+        expect(recorded?.bridgeable).not.toBe(false);
+
+        const bridgeHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.BridgeModelError) as
+            ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+        expect(await bridgeHandler!({
+            eventId: recorded!.eventId,
+            kind: recorded!.kind,
+            transient: true,
+            rawSnippet: recorded!.rawSnippet,
+            lastUserMessage: recorded!.lastUserMessage || 'do the work',
+            priorAssistantClaimsDone: recorded!.priorAssistantClaimsDone === true,
+            bridgeable: true
+        })).toEqual({ ok: true });
+
+        let releaseBridge!: () => void;
+        harness.deferPrompt = new Promise<void>((resolve) => { releaseBridge = resolve; });
+        nextWait.release?.();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+
+        session.queue.push('correction B', { permissionMode: 'default' }, 'steer');
+        await expect(client.rpcHandlerManager.handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+
+        await client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+        harness.deferPrompt = null;
+        releaseBridge();
+
+        await vi.waitFor(() => {
+            const closed = client.updateMetadata.mock.calls.some((call) => {
+                const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+                if (typeof updater !== 'function') return false;
+                const err = updater({}).lastModelError as { eventId?: string; bridgeable?: boolean } | undefined;
+                return err?.eventId === recorded!.eventId && err?.bridgeable === false;
+            });
+            expect(closed).toBe(true);
+        });
+
+        expect(await bridgeHandler!({
+            eventId: recorded!.eventId,
+            kind: recorded!.kind,
+            transient: true,
+            rawSnippet: recorded!.rawSnippet,
+            lastUserMessage: recorded!.lastUserMessage || 'do the work',
+            priorAssistantClaimsDone: recorded!.priorAssistantClaimsDone === true,
+            bridgeable: true
+        })).toEqual({ ok: false, reason: 'not_bridgeable' });
+
+        session.queue.close();
+        await launchPromise;
+    });
+
+    it('persists bridgeable:false before dispatching a Bridge prompt', async () => {
+        // Cold-review Major 2026-09-12: SIGTERM mid-Bridge skips handleAbort; without a
+        // durable gate before send, reopen hydrates a still-bridgeable error and
+        // replays after tools already ran.
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+        const session = makeSession('acp-session', { keepQueueOpen: true });
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => {
+                    nextWait.release = resolve;
+                });
+            }
+            return originalWait(signal);
+        };
+
+        let metadata: Record<string, unknown> = {
+            path: '/tmp/project',
+            host: 'localhost'
+        };
+        const client = session.client as unknown as {
+            rpcHandlerManager: {
+                handlers: Map<string, (payload?: unknown) => Promise<unknown>>
+            }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+            flushMetadata: ReturnType<typeof vi.fn>
+            getMetadata: ReturnType<typeof vi.fn>
+        };
+        client.getMetadata.mockImplementation(() => metadata);
+        client.updateMetadata.mockImplementation((updater: unknown) => {
+            if (typeof updater === 'function') {
+                metadata = (updater as (m: Record<string, unknown>) => Record<string, unknown>)(metadata);
+            }
+        });
+        const flushOrder: string[] = [];
+        client.flushMetadata.mockImplementation(async () => {
+            const err = metadata.lastModelError as { bridgeable?: boolean } | undefined;
+            flushOrder.push(err?.bridgeable === false ? 'flush-after-gate' : 'flush-other');
+            return true;
+        });
+
+        harness.emitStderrOnPrompt = {
+            type: 'rate_limit',
+            message: 'status 429 ratelimitexceeded',
+            raw: 'status 429 ratelimitexceeded'
+        };
+        harness.promptErrors = [new Error('status 429 ratelimitexceeded')];
+        session.queue.push('do the work', { permissionMode: 'default' }, 'first');
+
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        )).toBe(true));
+        await vi.waitFor(() => expect(nextWait.release).not.toBeNull());
+        harness.emitStderrOnPrompt = null;
+        harness.promptErrors = [];
+
+        const recorded = metadata.lastModelError as {
+            eventId?: string
+            kind?: string
+            rawSnippet?: string
+            lastUserMessage?: string
+            priorAssistantClaimsDone?: boolean
+            bridgeable?: boolean
+        };
+        expect(recorded?.eventId).toBeTruthy();
+        expect(recorded?.bridgeable).not.toBe(false);
+
+        const bridgeHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.BridgeModelError) as
+            ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+        expect(await bridgeHandler!({
+            eventId: recorded!.eventId,
+            kind: recorded!.kind,
+            transient: true,
+            rawSnippet: recorded!.rawSnippet,
+            lastUserMessage: recorded!.lastUserMessage || 'do the work',
+            priorAssistantClaimsDone: recorded!.priorAssistantClaimsDone === true,
+            bridgeable: true
+        })).toEqual({ ok: true });
+
+        let releaseBridge!: () => void;
+        harness.deferPrompt = new Promise<void>((resolve) => { releaseBridge = resolve; });
+        const flushesBeforeBridge = flushOrder.length;
+        nextWait.release?.();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+
+        expect((metadata.lastModelError as { bridgeable?: boolean })?.bridgeable).toBe(false);
+        expect(flushOrder.slice(flushesBeforeBridge)).toContain('flush-after-gate');
+
+        // SIGTERM-shaped exit: cancel without success write. Durable gate remains.
+        await client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!();
+        harness.deferPrompt = null;
+        releaseBridge();
+        session.queue.close();
+        await launchPromise;
+
+        const session2 = makeSession('acp-session', { keepQueueOpen: true });
+        const park2 = { release: null as (() => void) | null };
+        let wait2 = 0;
+        const originalWait2 = session2.queue.waitForMessagesAndGetAsString.bind(session2.queue);
+        session2.queue.waitForMessagesAndGetAsString = async (signal) => {
+            wait2 += 1;
+            if (wait2 === 1 && park2.release === null) {
+                await new Promise<void>((resolve) => {
+                    park2.release = resolve;
+                });
+            }
+            return originalWait2(signal);
+        };
+        const client2 = session2.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> }
+            getMetadata: ReturnType<typeof vi.fn>
+        };
+        client2.getMetadata.mockImplementation(() => metadata);
+        const launch2 = cursorAcpRemoteLauncher(session2);
+        await vi.waitFor(() => expect(park2.release).not.toBeNull());
+
+        expect((metadata.lastModelError as { bridgeable?: boolean })?.bridgeable).toBe(false);
+        const bridge2 = client2.rpcHandlerManager.handlers.get(RPC_METHODS.BridgeModelError) as
+            ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+        expect(await bridge2!({
+            eventId: recorded!.eventId,
+            kind: recorded!.kind,
+            transient: true,
+            rawSnippet: recorded!.rawSnippet,
+            lastUserMessage: recorded!.lastUserMessage || 'do the work',
+            priorAssistantClaimsDone: false,
+            bridgeable: true
+        })).toEqual({ ok: false, reason: 'not_bridgeable' });
+
+        session2.queue.close();
+        park2.release?.();
+        await launch2;
+    });
+
+    it('does not dispatch Bridge when the durable replay-gate flush fails', async () => {
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+        const session = makeSession('acp-session', { keepQueueOpen: true });
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => {
+                    nextWait.release = resolve;
+                });
+            }
+            return originalWait(signal);
+        };
+
+        const client = session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+            flushMetadata: ReturnType<typeof vi.fn>
+        };
+
+        harness.emitStderrOnPrompt = {
+            type: 'rate_limit',
+            message: 'status 429 ratelimitexceeded',
+            raw: 'status 429 ratelimitexceeded'
+        };
+        harness.promptErrors = [new Error('status 429 ratelimitexceeded')];
+        session.queue.push('do the work', { permissionMode: 'default' }, 'first');
+
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        )).toBe(true));
+        await vi.waitFor(() => expect(nextWait.release).not.toBeNull());
+        harness.emitStderrOnPrompt = null;
+        harness.promptErrors = [];
+
+        const recorded = client.updateMetadata.mock.calls
+            .map((call) => {
+                const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+                if (typeof updater !== 'function') return null;
+                return updater({}).lastModelError as {
+                    eventId?: string
+                    kind?: string
+                    rawSnippet?: string
+                    lastUserMessage?: string
+                    priorAssistantClaimsDone?: boolean
+                } | null;
+            })
+            .find((err) => err?.eventId);
+        expect(recorded?.eventId).toBeTruthy();
+
+        const bridgeHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.BridgeModelError) as
+            ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+        expect(await bridgeHandler!({
+            eventId: recorded!.eventId,
+            kind: recorded!.kind,
+            transient: true,
+            rawSnippet: recorded!.rawSnippet,
+            lastUserMessage: recorded!.lastUserMessage || 'do the work',
+            priorAssistantClaimsDone: recorded!.priorAssistantClaimsDone === true,
+            bridgeable: true
+        })).toEqual({ ok: true });
+
+        client.flushMetadata.mockResolvedValue(false);
+        nextWait.release?.();
+        await vi.waitFor(() => expect(client.flushMetadata).toHaveBeenCalled());
+        await new Promise((r) => setTimeout(r, 30));
+
+        expect(harness.promptCalls).toBe(1);
+        expect(JSON.stringify(harness.prompts)).not.toContain('[HAPI bridge');
+
+        session.queue.close();
+        await launchPromise;
+    });
+
+    it('does not promote ACP process-exit rejection after deliberate abort to modelError', async () => {
+        harness.deferPrompt = new Promise<void>((resolve) => {
+            harness.releasePrompt = resolve;
+        });
+
+        // Non-null Cursor session id so handleAbort reaches backend.cancelPrompt.
+        const session = makeSession('acp-session', { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+
+        session.queue.push('hello', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+
+        harness.rejectPromptOnCancel = new Error('ACP process exited (code=143, signal=null)');
+        const abortHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.Abort
+        )?.[1] as (() => Promise<void>) | undefined;
+        expect(abortHandler).toBeTypeOf('function');
+        await abortHandler!();
+        harness.releasePrompt?.();
+        session.queue.close();
+        await launchPromise;
+
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        )).toBe(false);
+        const wroteLastModelError = client.updateMetadata.mock.calls.some((call) => {
+            const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+            if (typeof updater !== 'function') return false;
+            return Boolean(updater({}).lastModelError);
+        });
+        expect(wroteLastModelError).toBe(false);
+        expect(session.queue.pendingLocalIds().some((id) => id.startsWith('bridge:'))).toBe(false);
+    });
+
+    it('rejects manual bridge while a normal prompt is in flight', async () => {
+        harness.deferPrompt = new Promise<void>((resolve) => {
+            harness.releasePrompt = resolve;
+        });
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+        };
+
+        session.queue.push('hello', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+
+        const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.BridgeModelError
+        )?.[1] as ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+
+        const eventId = '66666666-6666-4666-8666-666666666666';
+        expect(await bridgeHandler!({
+            eventId,
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'status 429',
+            lastUserMessage: 'older failed turn',
+            priorAssistantClaimsDone: false
+        })).toEqual({ ok: false, reason: 'prompt_in_flight' });
+        expect(session.queue.pendingLocalIds().some((id) => id.startsWith('bridge:'))).toBe(false);
+
+        session.queue.close();
+        harness.releasePrompt?.();
+        await launchPromise;
+    });
+
+    it('clears pending bridge on abort so the same event can be bridged again', async () => {
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+        };
+
+        // Park the post-turn wait so a manual bridge stays queued (idle, not mid-prompt).
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => {
+                    nextWait.release = resolve;
+                });
+            }
+            return originalWait(signal);
+        };
+
+        session.queue.push('hello', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        await vi.waitFor(() => nextWait.release !== null);
+
+        const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.BridgeModelError
+        )?.[1] as ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+        expect(bridgeHandler).toBeTypeOf('function');
+
+        const eventId = '11111111-1111-4111-8111-111111111111';
+        const bridgePayload = {
+            eventId,
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'status 429',
+            lastUserMessage: 'hello',
+            priorAssistantClaimsDone: false
+        };
+
+        expect(await bridgeHandler!(bridgePayload)).toEqual({ ok: true });
+        expect(session.queue.queue.some((item) => item.internal?.kind === 'model-error-bridge' && item.internal.eventId === eventId)).toBe(true);
+        expect(session.queue.pendingLocalIds().some((id) => id.startsWith('bridge:'))).toBe(false);
+        expect(await bridgeHandler!(bridgePayload)).toEqual({
+            ok: false,
+            reason: 'not_bridgeable'
+        });
+
+        const abortHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.Abort
+        )?.[1] as (() => Promise<void>) | undefined;
+        expect(abortHandler).toBeTypeOf('function');
+        await abortHandler!();
+
+        expect(session.queue.pendingLocalIds().some((id) => id.startsWith('bridge:'))).toBe(false);
+        expect(await bridgeHandler!(bridgePayload)).toEqual({ ok: true });
+        expect(session.queue.queue.some((item) => item.internal?.kind === 'model-error-bridge' && item.internal.eventId === eventId)).toBe(true);
+        expect(session.queue.pendingLocalIds().some((id) => id.startsWith('bridge:'))).toBe(false);
+
+        session.queue.close();
+        nextWait.release?.();
+        await launchPromise;
+    });
+
+    it('treats a forged bridge: localId user turn as normal and refuses Bridge overtake', async () => {
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+        };
+
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => {
+                    nextWait.release = resolve;
+                });
+            }
+            return originalWait(signal);
+        };
+
+        session.queue.push('first', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        await vi.waitFor(() => nextWait.release !== null);
+
+        // Forged localId must not count as queue-owned Bridge provenance.
+        session.queue.push('forged', { permissionMode: 'default' }, 'bridge:evt-forged');
+        expect(session.queue.hasPendingNonBridgeTurn()).toBe(true);
+
+        const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.BridgeModelError
+        )?.[1] as ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+
+        expect(await bridgeHandler!({
+            eventId: '55555555-5555-4555-8555-555555555555',
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'status 429',
+            lastUserMessage: 'first',
+            priorAssistantClaimsDone: false
+        })).toEqual({ ok: false, reason: 'superseded_by_newer_turn' });
+        expect(session.queue.queue.some((item) => item.internal?.kind === 'model-error-bridge')).toBe(false);
+
+        session.queue.close();
+        nextWait.release?.();
+        await launchPromise;
+    });
+
+    it('rejects Bridge when the last user prompt exceeds the exact-replay limit', async () => {
+        const { MAX_LAST_USER_MESSAGE_CHARS } = await import('./cursorModelErrorBridge');
+        harness.emitStderrOnPrompt = {
+            type: 'rate_limit',
+            message: 'Rate limit exceeded.',
+            raw: 'status 429 ratelimitexceeded'
+        };
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+
+        const longPrompt = 'x'.repeat(MAX_LAST_USER_MESSAGE_CHARS + 1);
+        session.queue.push(longPrompt, { permissionMode: 'default' });
+        session.queue.close();
+        await cursorAcpRemoteLauncher(session);
+
+        await vi.waitFor(() => client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        ));
+
+        const recorded = client.updateMetadata.mock.calls
+            .map((c) => {
+                const u = c[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+                if (typeof u !== 'function') return null;
+                return u({}).lastModelError as {
+                    eventId?: string
+                    bridgeable?: boolean
+                    lastUserMessage?: string
+                } | undefined;
+            })
+            .find((err) => typeof err?.eventId === 'string');
+        expect(recorded?.bridgeable).toBe(false);
+        expect(recorded?.lastUserMessage).toBe('');
+
+        const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.BridgeModelError
+        )?.[1] as ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+        expect(await bridgeHandler!({
+            eventId: recorded?.eventId,
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'status 429',
+            lastUserMessage: longPrompt,
+            priorAssistantClaimsDone: false
+        })).toEqual({ ok: false, reason: 'not_bridgeable' });
+    });
+
+    it('does not wrap pass-through slash commands as Bridge prompts', async () => {
+        harness.emitStderrOnPrompt = {
+            type: 'rate_limit',
+            message: 'Rate limit exceeded.',
+            raw: 'status 429 ratelimitexceeded'
+        };
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+
+        session.queue.push('/compact keep recap', { permissionMode: 'default' });
+        session.queue.close();
+        await cursorAcpRemoteLauncher(session);
+
+        await vi.waitFor(() => client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        ));
+
+        const recorded = client.updateMetadata.mock.calls
+            .map((c) => {
+                const u = c[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+                if (typeof u !== 'function') return null;
+                return u({}).lastModelError as {
+                    eventId?: string
+                    bridgeable?: boolean
+                    lastUserMessage?: string
+                } | undefined;
+            })
+            .find((err) => typeof err?.eventId === 'string');
+        expect(recorded?.bridgeable).toBe(false);
+        expect(recorded?.lastUserMessage).toBe('');
+
+        const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.BridgeModelError
+        )?.[1] as ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+        expect(await bridgeHandler!({
+            eventId: recorded?.eventId,
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'status 429',
+            lastUserMessage: '/compact keep recap',
+            priorAssistantClaimsDone: false
+        })).toEqual({ ok: false, reason: 'not_bridgeable' });
+    });
+
+    it('rejects manual bridge when a newer user turn is already queued', async () => {
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => {
+                    nextWait.release = resolve;
+                });
+            }
+            return originalWait(signal);
+        };
+
+        session.queue.push('first', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        await vi.waitFor(() => nextWait.release !== null);
+
+        const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.BridgeModelError
+        )?.[1] as ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+
+        session.queue.push('correction instead of retry', { permissionMode: 'default' });
+        expect(await bridgeHandler!({
+            eventId: '44444444-4444-4444-8444-444444444444',
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'status 429',
+            lastUserMessage: 'first',
+            priorAssistantClaimsDone: false
+        })).toEqual({ ok: false, reason: 'superseded_by_newer_turn' });
+
+        expect(session.queue.pendingLocalIds().some((id) => id.startsWith('bridge:'))).toBe(false);
+        expect(session.queue.queue.some((item) => item.message === 'correction instead of retry')).toBe(true);
+
+        session.queue.close();
+        nextWait.release?.();
+        await launchPromise;
+    });
+
+    it('does not auto-bridge ahead of a newer queued user turn', async () => {
+        const { setAutoBridgeTransientModelErrors } = await import('./cursorModelErrorBridgePrefs');
+        setAutoBridgeTransientModelErrors(true);
+
+        harness.deferPrompt = new Promise<void>((resolve) => {
+            harness.releasePrompt = resolve;
+        });
+        harness.promptReject = new Error('status 429 ratelimitexceeded');
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            sendSessionEvent: ReturnType<typeof vi.fn>
+        };
+
+        session.queue.push('first', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+
+        // User queues a replacement while the failing turn is still settling.
+        session.queue.push('do something else', { permissionMode: 'default' });
+        harness.releasePrompt?.();
+
+        await vi.waitFor(() => client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        ));
+        expect(session.queue.pendingLocalIds().some((id) => id.startsWith('bridge:'))).toBe(false);
+        expect(session.queue.queue[0]?.message).toBe('do something else');
+
+        setAutoBridgeTransientModelErrors(false);
+        session.queue.close();
+        await launchPromise;
+    });
+
+    it('drops an already-queued Bridge when a newer user turn arrives before dequeue', async () => {
+        harness.emitStderrOnPrompt = {
+            type: 'rate_limit',
+            message: 'Rate limit exceeded.',
+            raw: 'status 429 ratelimitexceeded'
+        };
+
+        let metadata: Record<string, unknown> = {
+            path: '/tmp/project',
+            host: 'localhost'
+        };
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            getMetadata: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+        client.getMetadata.mockImplementation(() => metadata);
+        client.updateMetadata.mockImplementation((updater: unknown) => {
+            if (typeof updater === 'function') {
+                metadata = (updater as (m: Record<string, unknown>) => Record<string, unknown>)(metadata);
+            }
+        });
+
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => {
+                    nextWait.release = resolve;
+                });
+            }
+            return originalWait(signal);
+        };
+
+        session.queue.push('first', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        await vi.waitFor(() => client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        ));
+        await vi.waitFor(() => nextWait.release !== null);
+
+        const recorded = metadata.lastModelError as {
+            eventId?: string
+            kind?: string
+            rawSnippet?: string
+        } | undefined;
+        expect(recorded?.eventId).toBeTypeOf('string');
+
+        const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.BridgeModelError
+        )?.[1] as ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+        expect(bridgeHandler).toBeTypeOf('function');
+        expect(await bridgeHandler!({
+            eventId: recorded?.eventId,
+            kind: recorded?.kind ?? 'rate_limited',
+            transient: true,
+            rawSnippet: recorded?.rawSnippet ?? 'status 429',
+            lastUserMessage: 'first',
+            priorAssistantClaimsDone: false
+        })).toEqual({ ok: true });
+        expect(session.queue.queue.some((item) => item.internal?.kind === 'model-error-bridge' && item.internal.eventId === recorded?.eventId)).toBe(true);
+        expect(session.queue.pendingLocalIds().some((id) => id.startsWith('bridge:'))).toBe(false);
+
+        // Newer user intent arrives after Bridge is already at the head.
+        session.queue.push('correction instead of retry', { permissionMode: 'default' });
+        harness.emitStderrOnPrompt = null;
+        nextWait.release?.();
+
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+        const secondPrompt = JSON.stringify(harness.prompts[1] ?? []);
+        expect(secondPrompt).toContain('correction instead of retry');
+        expect(session.queue.queue.some((item) => item.internal?.kind === 'model-error-bridge')).toBe(false);
+        // Bridge was dropped (not executed); subsequent Bridge RPC must fail closed.
+        expect(await bridgeHandler!({
+            eventId: recorded?.eventId,
+            kind: recorded?.kind ?? 'rate_limited',
+            transient: true,
+            rawSnippet: recorded?.rawSnippet ?? 'status 429',
+            lastUserMessage: 'first',
+            priorAssistantClaimsDone: false
+        })).toEqual({ ok: false, reason: 'superseded_by_newer_turn' });
+
+        session.queue.close();
+        await launchPromise;
+    });
+
+    it('records idle stderr as non-bridgeable so it cannot replay a finished turn', async () => {
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => {
+                    nextWait.release = resolve;
+                });
+            }
+            return originalWait(signal);
+        };
+
+        session.queue.push('first', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        await vi.waitFor(() => nextWait.release !== null);
+
+        harness.stderrErrorHandler!({
+            type: 'rate_limit',
+            message: 'Rate limit exceeded.',
+            raw: 'status 429 ratelimitexceeded'
+        });
+        await vi.waitFor(() => client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        ));
+
+        const recorded = client.updateMetadata.mock.calls
+            .map((c) => {
+                const u = c[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+                if (typeof u !== 'function') return null;
+                return u({}).lastModelError as {
+                    eventId?: string
+                    bridgeable?: boolean
+                } | undefined;
+            })
+            .find((err) => typeof err?.eventId === 'string');
+        expect(recorded?.bridgeable).toBe(false);
+
+        const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.BridgeModelError
+        )?.[1] as ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+
+        expect(await bridgeHandler!({
+            eventId: recorded?.eventId,
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'status 429',
+            lastUserMessage: 'first',
+            priorAssistantClaimsDone: false
+        })).toEqual({ ok: false, reason: 'not_bridgeable' });
+
+        session.queue.close();
+        nextWait.release?.();
+        await launchPromise;
+    });
+
+    it('hydrates persisted lastModelError so a post-restart turn supersedes it', async () => {
+        const eventId = '33333333-3333-4333-8333-333333333333';
+        let metadata: Record<string, unknown> = {
+            path: '/tmp/project',
+            host: 'localhost',
+            lastModelError: {
+                eventId,
+                atTs: 1000,
+                kind: 'rate_limited',
+                transient: true,
+                rawSnippet: 'status 429',
+                priorAssistantClaimsDone: false,
+                lastUserMessage: 'old failed turn'
+            }
+        };
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            getMetadata: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+        };
+        client.getMetadata.mockImplementation(() => metadata);
+        client.updateMetadata.mockImplementation((updater: unknown) => {
+            if (typeof updater === 'function') {
+                metadata = (updater as (m: Record<string, unknown>) => Record<string, unknown>)(metadata);
+            }
+        });
+
+        session.queue.push('continue after restart', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        await vi.waitFor(() => {
+            const err = metadata.lastModelError as { supersededByUserTurn?: boolean } | undefined;
+            expect(err?.supersededByUserTurn).toBe(true);
+        });
+
+        const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.BridgeModelError
+        )?.[1] as ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+        expect(bridgeHandler).toBeTypeOf('function');
+
+        expect(await bridgeHandler!({
+            eventId,
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'status 429',
+            lastUserMessage: 'old failed turn',
+            priorAssistantClaimsDone: false
+        })).toEqual({ ok: false, reason: 'superseded_by_newer_turn' });
+
+        session.queue.close();
+        await launchPromise;
+    });
+
+    it('rejects bridge after a newer normal turn succeeds', async () => {
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+            updateMetadata: ReturnType<typeof vi.fn>
+            sendSessionEvent: ReturnType<typeof vi.fn>
+        };
+
+        const readLastModelError = (): {
+            eventId?: string
+            supersededByUserTurn?: boolean
+        } | undefined => {
+            for (let i = client.updateMetadata.mock.calls.length - 1; i >= 0; i -= 1) {
+                const updater = client.updateMetadata.mock.calls[i]?.[0] as
+                    | ((m: Record<string, unknown>) => Record<string, unknown>)
+                    | undefined;
+                if (typeof updater !== 'function') continue;
+                const err = updater({}).lastModelError as {
+                    eventId?: string
+                    supersededByUserTurn?: boolean
+                } | undefined;
+                if (typeof err?.eventId === 'string') {
+                    return err;
+                }
+            }
+            return undefined;
+        };
+
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => {
+                    nextWait.release = resolve;
+                });
+            }
+            return originalWait(signal);
+        };
+
+        session.queue.push('first', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        await vi.waitFor(() => nextWait.release !== null);
+
+        // Idle structural stderr records a durable modelError (no auto-bridge).
+        expect(harness.stderrErrorHandler).toBeTypeOf('function');
+        harness.stderrErrorHandler!({
+            type: 'rate_limit',
+            message: 'Rate limit exceeded.',
+            raw: 'status 429 ratelimitexceeded'
+        });
+        await vi.waitFor(() => client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        ));
+
+        const eventId = readLastModelError()?.eventId;
+        expect(eventId).toEqual(expect.any(String));
+
+        const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.BridgeModelError
+        )?.[1] as ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+        expect(bridgeHandler).toBeTypeOf('function');
+
+        // Newer normal turn starts → durable supersededByUserTurn gate.
+        session.queue.push('continue without bridging', { permissionMode: 'default' });
+        nextWait.release?.();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+        await vi.waitFor(() => readLastModelError()?.supersededByUserTurn === true);
+
+        expect(await bridgeHandler!({
+            eventId,
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'status 429',
+            lastUserMessage: 'first',
+            priorAssistantClaimsDone: false
+        })).toEqual({ ok: false, reason: 'superseded_by_newer_turn' });
+
+        session.queue.close();
+        await launchPromise;
+    });
+
+    // An internal control command is HAPI's own, not a newer task instruction.
+    // Letting the dequeued `/auto-review` toggle slash set supersededByUserTurn
+    // durably removed Bridge & retry for an error the operator never replaced.
+    it('keeps a bridgeable modelError when only an internal control command is dequeued', async () => {
+        harness.emitStderrOnPrompt = {
+            type: 'rate_limit',
+            message: 'Rate limit exceeded.',
+            raw: 'status 429 ratelimitexceeded'
+        };
+
+        let metadata: Record<string, unknown> = {
+            path: '/tmp/project',
+            host: 'localhost'
+        };
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            getMetadata: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+        client.getMetadata.mockImplementation(() => metadata);
+        client.updateMetadata.mockImplementation((updater: unknown) => {
+            if (typeof updater === 'function') {
+                metadata = (updater as (m: Record<string, unknown>) => Record<string, unknown>)(metadata);
+            }
+        });
+
+        session.queue.push('first', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        await vi.waitFor(() => client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        ));
+        await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+
+        const recorded = metadata.lastModelError as { eventId?: string } | undefined;
+        expect(recorded?.eventId).toBeTypeOf('string');
+
+        // Switching to Auto-review enqueues an internal control slash, which is
+        // then dequeued and prompted as a batch of its own.
+        harness.emitStderrOnPrompt = null;
+        session.setPermissionMode('autoReview');
+        await vi.waitFor(() => {
+            expect(
+                harness.prompts.some((prompt) => JSON.stringify(prompt).includes('/auto-review'))
+            ).toBe(true);
+        });
+
+        // The control command is HAPI's own and must not supersede the error.
+        expect((metadata.lastModelError as { supersededByUserTurn?: boolean } | undefined)
+            ?.supersededByUserTurn).not.toBe(true);
+
+        const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.BridgeModelError
+        )?.[1] as ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+        expect(bridgeHandler).toBeTypeOf('function');
+
+        // Bridge & retry is still offered for the unreplaced error.
+        expect(await bridgeHandler!({
+            eventId: recorded?.eventId,
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'status 429',
+            lastUserMessage: 'first',
+            priorAssistantClaimsDone: false
+        })).toEqual({ ok: true });
+
+        session.queue.close();
+        await launchPromise;
+    });
+
+    // Nothing was dispatched, so this is not a recovery. Swapping the backend
+    // while the replay-gate flush is awaited leaves promptInFlight false, so an
+    // Auto relaunch is allowed and the captured liveBackend goes stale — the
+    // turn requeues without ever prompting. Marking RECOVERED there would
+    // replace the amber warning before the retry runs, and stick if the
+    // relaunch never restores.
+    it('does not mark recovery when the backend goes stale during the replay-gate flush', async () => {
+        harness.emitStderrOnPrompt = {
+            type: 'rate_limit',
+            message: 'Rate limit exceeded.',
+            raw: 'status 429 ratelimitexceeded'
+        };
+
+        let metadata: Record<string, unknown> = {
+            path: '/tmp/project',
+            host: 'localhost'
+        };
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            getMetadata: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+            flushMetadata: ReturnType<typeof vi.fn>
+        };
+        client.getMetadata.mockImplementation(() => metadata);
+        client.updateMetadata.mockImplementation((updater: unknown) => {
+            if (typeof updater === 'function') {
+                metadata = (updater as (m: Record<string, unknown>) => Record<string, unknown>)(metadata)
+            }
+        });
+
+        session.queue.push('first', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        await vi.waitFor(() => client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        ));
+        await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+        harness.emitStderrOnPrompt = null;
+
+        const recorded = metadata.lastModelError as { eventId?: string } | undefined;
+        expect(recorded?.eventId).toBeTypeOf('string');
+
+        // The gate stamps bridgeable:false and then awaits flushMetadata —
+        // relaunch in that window, which is the race the guard covers.
+        let swapped = false;
+        client.flushMetadata.mockImplementation(async () => {
+            const gate = metadata.lastModelError as { bridgeable?: boolean } | undefined;
+            if (!swapped && gate?.bridgeable === false) {
+                swapped = true;
+                await session.applyModelConfig('auto').catch(() => {});
+            }
+            return true;
+        });
+
+        // Hold the requeued attempt in flight so the assertions below observe
+        // the non-dispatched turn, not the retry that follows it.
+        let releaseRetry!: () => void;
+        harness.deferPrompt = new Promise<void>((resolve) => { releaseRetry = resolve; });
+
+        const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.BridgeModelError
+        )?.[1] as ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+        expect(await bridgeHandler!({
+            eventId: recorded?.eventId,
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'status 429',
+            lastUserMessage: 'first',
+            priorAssistantClaimsDone: false
+        })).toEqual({ ok: true });
+
+        await vi.waitFor(() => expect(swapped).toBe(true));
+        // Wait until the requeued attempt has started: promptCalls increments on
+        // prompt entry, so reaching 2 proves the non-dispatched turn already ran
+        // its cleanup. deferPrompt keeps that retry in flight, so any
+        // modelErrorBridged seen here came from the turn that never sent.
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+
+        // No false recovery for the turn that never dispatched: neither the
+        // event nor the durable stamp.
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelErrorBridged'
+        )).toBe(false);
+        expect((metadata.lastModelError as { bridgedForEventId?: string } | undefined)
+            ?.bridgedForEventId).toBeUndefined();
+        // ...and no ready either. The queue is only momentarily empty while the
+        // batch is reinserted; announcing completion there would have
+        // NotificationHub page the operator that a turn finished when it
+        // never ran.
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'ready'
+        )).toBe(false);
+
+        harness.deferPrompt = null;
+        releaseRetry();
+        session.queue.close();
+        await launchPromise.catch(() => {});
+    });
+
+    it('cancels a pending bridge when a newer modelError supersedes it', async () => {
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+        };
+
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => {
+                    nextWait.release = resolve;
+                });
+            }
+            return originalWait(signal);
+        };
+
+        session.queue.push('first', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        await vi.waitFor(() => nextWait.release !== null);
+
+        const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.BridgeModelError
+        )?.[1] as ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+
+        const staleEventId = '22222222-2222-4222-8222-222222222222';
+        expect(await bridgeHandler!({
+            eventId: staleEventId,
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'status 429',
+            lastUserMessage: 'first',
+            priorAssistantClaimsDone: false
+        })).toEqual({ ok: true });
+        expect(session.queue.queue.some((item) => item.internal?.kind === 'model-error-bridge' && item.internal.eventId === staleEventId)).toBe(true);
+        expect(session.queue.pendingLocalIds().some((id) => id.startsWith('bridge:'))).toBe(false);
+
+        // Idle structural stderr supersedes the displayed error and drops the pending bridge.
+        expect(harness.stderrErrorHandler).toBeTypeOf('function');
+        harness.stderrErrorHandler!({
+            type: 'rate_limit',
+            message: 'Rate limit exceeded again.',
+            raw: 'status 429 ratelimitexceeded again'
+        });
+        await vi.waitFor(() => client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        ));
+
+        expect(session.queue.queue.some((item) => item.internal?.kind === 'model-error-bridge' && item.internal.eventId === staleEventId)).toBe(false);
+        expect(await bridgeHandler!({
+            eventId: staleEventId,
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'status 429',
+            lastUserMessage: 'first',
+            priorAssistantClaimsDone: false
+        })).toEqual({ ok: false, reason: 'model_error_changed' });
+
+        session.queue.close();
+        nextWait.release?.();
+        await launchPromise;
+    });
+
+    it('does not dispatch Bridge session/prompt after a newer turn arrives during pre-send drain', async () => {
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+        };
+
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => {
+                    nextWait.release = resolve;
+                });
+            }
+            return originalWait(signal);
+        };
+
+        session.queue.push('first', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptSends).toBe(1));
+        await vi.waitFor(() => nextWait.release !== null);
+
+        const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.BridgeModelError
+        )?.[1] as ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+
+        expect(await bridgeHandler!({
+            eventId: '33333333-3333-4333-8333-333333333333',
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'status 429',
+            lastUserMessage: 'first',
+            priorAssistantClaimsDone: false
+        })).toEqual({ ok: true });
+
+        harness.deferBeforeSend = new Promise<void>((resolve) => {
+            harness.releaseBeforeSend = resolve;
+        });
+        nextWait.release?.();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+
+        session.queue.push('correction instead of retry', { permissionMode: 'default' });
+        harness.releaseBeforeSend?.();
+
+        await vi.waitFor(() => expect(harness.promptSends).toBe(2));
+        const dispatched = JSON.stringify(harness.prompts);
+        expect(dispatched).not.toContain('[HAPI bridge');
+        expect(dispatched).toContain('correction instead of retry');
+
+        session.queue.close();
+        await launchPromise;
+    });
+
+    it('does not dispatch a Bridge after Abort during pre-send drain', async () => {
+        // Cold-review Major 2026-09-12: handleAbort clears bridgingForEventId
+        // before prompt exists; shouldSend must still refuse on userAbortRequested.
+        const session = makeSession('acp-session', { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => {
+                    nextWait.release = resolve;
+                });
+            }
+            return originalWait(signal);
+        };
+
+        session.queue.push('hello', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptSends).toBe(1));
+        await vi.waitFor(() => nextWait.release !== null);
+
+        const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.BridgeModelError
+        )?.[1] as ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+
+        expect(await bridgeHandler!({
+            eventId: '77777777-7777-4777-8777-777777777777',
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'status 429',
+            lastUserMessage: 'hello',
+            priorAssistantClaimsDone: false
+        })).toEqual({ ok: true });
+
+        harness.deferBeforeSend = new Promise<void>((resolve) => {
+            harness.releaseBeforeSend = resolve;
+        });
+        nextWait.release?.();
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(2));
+
+        const abortHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.Abort
+        )?.[1] as (() => Promise<void>) | undefined;
+        await abortHandler!();
+        harness.releaseBeforeSend?.();
+
+        session.queue.close();
+        await launchPromise;
+
+        expect(harness.promptSends).toBe(1);
+        const dispatched = JSON.stringify(harness.prompts);
+        expect(dispatched).not.toContain('[HAPI bridge');
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelErrorBridged'
+        )).toBe(false);
+    });
+
+    it('does not dispatch a Bridge after Abort during mode apply', async () => {
+        // Cold-review Major 2026-09-12: Abort during applyCursorAcpMode must
+        // survive — resetting userAbortRequested only after setup erased it.
+        const session = makeSession('acp-session', { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { registerHandler: ReturnType<typeof vi.fn> }
+            sendSessionEvent: ReturnType<typeof vi.fn>
+        };
+
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => {
+                    nextWait.release = resolve;
+                });
+            }
+            return originalWait(signal);
+        };
+
+        session.queue.push('hello', { permissionMode: 'default' });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptSends).toBe(1));
+        await vi.waitFor(() => nextWait.release !== null);
+
+        const bridgeHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.BridgeModelError
+        )?.[1] as ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+
+        expect(await bridgeHandler!({
+            eventId: '88888888-8888-4888-8888-888888888888',
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'status 429',
+            lastUserMessage: 'hello',
+            priorAssistantClaimsDone: false
+        })).toEqual({ ok: true });
+
+        harness.deferSetConfigOption = new Promise<void>((resolve) => {
+            harness.releaseSetConfigOption = resolve;
+        });
+        harness.deferModeConfigOption = true;
+        nextWait.release?.();
+        await vi.waitFor(() => expect(harness.setConfigOptionWaiting).toBeGreaterThan(0));
+
+        const abortHandler = client.rpcHandlerManager.registerHandler.mock.calls.find(
+            (call) => call[0] === RPC_METHODS.Abort
+        )?.[1] as (() => Promise<void>) | undefined;
+        await abortHandler!();
+        harness.releaseSetConfigOption?.();
+        harness.deferSetConfigOption = null;
+        harness.releaseSetConfigOption = null;
+        harness.deferModeConfigOption = false;
+
+        session.queue.close();
+        await launchPromise;
+
+        expect(harness.promptSends).toBe(1);
+        expect(JSON.stringify(harness.prompts)).not.toContain('[HAPI bridge');
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelErrorBridged'
+        )).toBe(false);
+    });
+
+    it('permission-card abort during mode apply requeues the never-ACKed batch', async () => {
+        const session = makeSession('acp-session', { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+            emitMessagesConsumed: ReturnType<typeof vi.fn>;
+        };
+        const unshiftSpy = vi.spyOn(session.queue, 'unshift');
+        const unshiftIsoSpy = vi.spyOn(session.queue, 'unshiftIsolated');
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        const handlers = client.rpcHandlerManager.handlers;
+        try {
+            // The startup permission-mode sync runs before the abort handlers
+            // are registered; waiting for the handler guarantees that sync has
+            // finished, so the parks below belong to the batch's own mode
+            // apply only.
+            await vi.waitFor(() => expect(handlers.has(RPC_METHODS.Abort)).toBe(true));
+            // Park the batch's mode apply; the permission-card abort lands
+            // mid-apply without calling handleAbort (the dequeue signal stays
+            // live).
+            harness.deferSetConfigOption = new Promise<void>((resolve) => { harness.releaseSetConfigOption = resolve; });
+            harness.deferModeConfigOption = true;
+            session.queue.push('hello', { permissionMode: 'default' }, 'first');
+            await vi.waitFor(() => expect(harness.setConfigOptionWaiting).toBe(1));
+            await handlers.get(RPC_METHODS.Permission)!({ id: 'perm-1', approved: false, decision: 'abort' });
+            harness.releaseSetConfigOption?.();
+            harness.deferSetConfigOption = null;
+            harness.releaseSetConfigOption = null;
+            // The aborted window must end the turn attempt before any hub ACK
+            // or prompt: the guard requeues the batch, the loop re-dequeues
+            // it, and its mode apply parks again — freeze that bail boundary.
+            let releasePark2: (() => void) | null = null;
+            harness.deferSetConfigOption = new Promise<void>((resolve) => { releasePark2 = resolve; harness.releaseSetConfigOption = resolve; });
+            await new Promise<void>(resolve => setImmediate(resolve));
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(unshiftSpy.mock.calls.length + unshiftIsoSpy.mock.calls.length).toBeGreaterThan(0); // the bail requeued the batch
+            expect(harness.setConfigOptionWaiting).toBe(1); // the re-dispatch parked at mode apply
+            expect(harness.promptCalls).toBe(0);
+            expect(client.emitMessagesConsumed).not.toHaveBeenCalled();
+            // Releasing the park proves the batch survived the abort: it is
+            // re-dispatched instead of being dropped with a false ready.
+            releasePark2!();
+            harness.deferSetConfigOption = null;
+            harness.releaseSetConfigOption = null;
+            harness.deferModeConfigOption = false;
+            await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+            session.queue.close();
+            await launchPromise;
+        } finally {
+            harness.releaseSetConfigOption?.();
+            harness.deferSetConfigOption = null;
+            harness.deferModeConfigOption = false;
+            session.queue.close();
+            await launchPromise.catch(() => {});
+        }
+    });
+
+    it('permission-card abort during the model apply does not erase the cancel', async () => {
+        const session = makeSession('acp-session', { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+            emitMessagesConsumed: ReturnType<typeof vi.fn>;
+        };
+        session.queue.push('hello', {
+            permissionMode: 'default',
+            model: 'gpt-5.3-codex[reasoning=medium,fast=false]'
+        } as EnhancedMode, 'first');
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        const handlers = client.rpcHandlerManager.handlers;
+        try {
+            // Park the model apply (configId 'model-opt').
+            harness.deferSetConfigOption = new Promise<void>((resolve) => { harness.releaseSetConfigOption = resolve; });
+            await vi.waitFor(() => expect(harness.setConfigOptionWaiting).toBeGreaterThan(0));
+            await handlers.get(RPC_METHODS.Permission)!({ id: 'perm-1', approved: false, decision: 'abort' });
+            harness.releaseSetConfigOption?.();
+            harness.deferSetConfigOption = null;
+            harness.releaseSetConfigOption = null;
+            // The pre-dispatch userAbortRequested check must see the flag the
+            // card set — the stale in-try reset must not erase it. The guard
+            // requeues the batch and the loop re-dequeues it; park its mode
+            // apply to freeze the bail boundary.
+            let releasePark2: (() => void) | null = null;
+            harness.deferSetConfigOption = new Promise<void>((resolve) => { releasePark2 = resolve; harness.releaseSetConfigOption = resolve; });
+            harness.deferModeConfigOption = true;
+            await new Promise<void>(resolve => setImmediate(resolve));
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(harness.setConfigOptionWaiting).toBe(1); // the re-dispatch parked at mode apply
+            expect(harness.promptCalls).toBe(0);
+            expect(client.emitMessagesConsumed).not.toHaveBeenCalled();
+            // The batch survived: it re-dispatches once the park releases.
+            releasePark2!();
+            harness.deferSetConfigOption = null;
+            harness.releaseSetConfigOption = null;
+            harness.deferModeConfigOption = false;
+            await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+            session.queue.close();
+            await launchPromise;
+        } finally {
+            harness.releaseSetConfigOption?.();
+            harness.deferSetConfigOption = null;
+            harness.deferModeConfigOption = false;
+            session.queue.close();
+            await launchPromise.catch(() => {});
+        }
+    });
+
+    it('a plain Stop during mode apply drops a canceled Bridge instead of resurrecting it', async () => {
+        const session = makeSession('acp-session', { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: {
+                handlers: Map<string, (payload?: unknown) => Promise<unknown>>;
+                registerHandler: ReturnType<typeof vi.fn>;
+            };
+            sendSessionEvent: ReturnType<typeof vi.fn>;
+            updateMetadata: ReturnType<typeof vi.fn>;
+            emitMessagesConsumed: ReturnType<typeof vi.fn>;
+        };
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => { nextWait.release = resolve; });
+            }
+            return originalWait(signal);
+        };
+
+        harness.emitStderrOnPrompt = {
+            type: 'rate_limit',
+            message: 'status 429 ratelimitexceeded',
+            raw: 'status 429 ratelimitexceeded'
+        };
+        harness.promptErrors = [new Error('status 429 ratelimitexceeded')];
+        session.queue.push('do the work', { permissionMode: 'default' }, 'first');
+
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        try {
+            await vi.waitFor(() => expect(client.sendSessionEvent.mock.calls.some(
+                (call) => call[0]?.type === 'modelError'
+            )).toBe(true));
+            await vi.waitFor(() => expect(nextWait.release).not.toBeNull());
+            harness.emitStderrOnPrompt = null;
+            harness.promptErrors = [];
+
+            const recorded = client.updateMetadata.mock.calls
+                .map((call) => {
+                    const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+                    if (typeof updater !== 'function') return null;
+                    return updater({}).lastModelError as { eventId?: string; kind?: string; rawSnippet?: string; lastUserMessage?: string; priorAssistantClaimsDone?: boolean } | null;
+                })
+                .find((err) => err?.eventId);
+            expect(recorded?.eventId).toBeTruthy();
+
+            const bridgeHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.BridgeModelError) as
+                ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+            expect(await bridgeHandler!({
+                eventId: recorded!.eventId,
+                kind: recorded!.kind,
+                transient: true,
+                rawSnippet: recorded!.rawSnippet,
+                lastUserMessage: recorded!.lastUserMessage || 'do the work',
+                priorAssistantClaimsDone: recorded!.priorAssistantClaimsDone === true,
+                bridgeable: true
+            })).toEqual({ ok: true });
+
+            // The Bridge batch parks in mode apply BEFORE its prompt runs.
+            harness.deferSetConfigOption = new Promise<void>((resolve) => { harness.releaseSetConfigOption = resolve; });
+            harness.deferModeConfigOption = true;
+            nextWait.release?.();
+            await vi.waitFor(() => expect(harness.setConfigOptionWaiting).toBeGreaterThan(0));
+            expect(harness.promptCalls).toBe(1);
+
+            // Plain Stop lands during the parked mode apply; handleAbort
+            // intentionally cancels the pending Bridge.
+            const abort = client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)! as () => Promise<void>;
+            await abort();
+            harness.releaseSetConfigOption?.();
+            harness.deferSetConfigOption = null;
+            harness.releaseSetConfigOption = null;
+            harness.deferModeConfigOption = false;
+
+            // Give a pre-fix resurrect its dispatch window, then prove no
+            // Bridge prompt ever ran after the operator's Stop.
+            await new Promise<void>(resolve => setTimeout(resolve, 120));
+            session.queue.push('after stop', { permissionMode: 'default' }, 'next');
+            await vi.waitFor(() => {
+                expect(JSON.stringify(harness.prompts)).toContain('after stop');
+            });
+            expect(JSON.stringify(harness.prompts)).not.toContain('[HAPI bridge');
+            session.queue.close();
+            await launchPromise;
+        } finally {
+            harness.releaseSetConfigOption?.();
+            harness.deferSetConfigOption = null;
+            session.queue.close();
+            await launchPromise.catch(() => {});
+        }
+    });
+
+    it('a plain Stop during the replay-gate persist drops the Bridge batch', async () => {
+        const session = makeSession('acp-session', { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: {
+                handlers: Map<string, (payload?: unknown) => Promise<unknown>>;
+            };
+            sendSessionEvent: ReturnType<typeof vi.fn>;
+            updateMetadata: ReturnType<typeof vi.fn>;
+            flushMetadata: ReturnType<typeof vi.fn>;
+            emitMessagesConsumed: ReturnType<typeof vi.fn>;
+        };
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => { nextWait.release = resolve; });
+            }
+            return originalWait(signal);
+        };
+
+        harness.emitStderrOnPrompt = {
+            type: 'rate_limit',
+            message: 'status 429 ratelimitexceeded',
+            raw: 'status 429 ratelimitexceeded'
+        };
+        harness.promptErrors = [new Error('status 429 ratelimitexceeded')];
+        session.queue.push('do the work', { permissionMode: 'default' }, 'first');
+
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        let releaseFlush: (() => void) | undefined;
+        try {
+            await vi.waitFor(() => expect(client.sendSessionEvent.mock.calls.some(
+                (call) => call[0]?.type === 'modelError'
+            )).toBe(true));
+            await vi.waitFor(() => expect(nextWait.release).not.toBeNull());
+            harness.emitStderrOnPrompt = null;
+            harness.promptErrors = [];
+
+            const recorded = client.updateMetadata.mock.calls
+                .map((call) => {
+                    const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+                    if (typeof updater !== 'function') return null;
+                    return updater({}).lastModelError as { eventId?: string; kind?: string; rawSnippet?: string; lastUserMessage?: string; priorAssistantClaimsDone?: boolean } | null;
+                })
+                .find((err) => err?.eventId);
+
+            const bridgeHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.BridgeModelError) as
+                ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+            expect(await bridgeHandler!({
+                eventId: recorded!.eventId,
+                kind: recorded!.kind,
+                transient: true,
+                rawSnippet: recorded!.rawSnippet,
+                lastUserMessage: recorded!.lastUserMessage || 'do the work',
+                priorAssistantClaimsDone: recorded!.priorAssistantClaimsDone === true,
+                bridgeable: true
+            })).toEqual({ ok: true });
+
+            // Park the first metadata flush that happens after the Bridge
+            // batch is dequeued (waitCount >= 2) — the durable replay-gate
+            // persist; the Stop lands inside it.
+            let releaseFlush: (() => void) | undefined;
+            client.flushMetadata.mockImplementation(async () => {
+                if (waitCount >= 2 && !releaseFlush) {
+                    await new Promise<void>(resolve => { releaseFlush = resolve; });
+                }
+                return true as unknown as boolean;
+            });
+            nextWait.release?.();
+            await vi.waitFor(() => expect(releaseFlush).toBeTypeOf('function'));
+            expect(harness.promptCalls).toBe(1);
+
+            const abort = client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)! as () => Promise<void>;
+            const stopped = abort();
+            releaseFlush?.();
+            await stopped;
+
+            // Give a pre-fix resurrect its dispatch window, then prove no
+            // Bridge prompt ever ran after the operator's Stop.
+            await new Promise<void>(resolve => setTimeout(resolve, 120));
+            session.queue.push('after stop', { permissionMode: 'default' }, 'next');
+            await vi.waitFor(() => {
+                expect(JSON.stringify(harness.prompts)).toContain('after stop');
+            });
+            expect(JSON.stringify(harness.prompts)).not.toContain('[HAPI bridge');
+            session.queue.close();
+            await launchPromise;
+        } finally {
+            client.flushMetadata.mockImplementation(async () => true as unknown as boolean);
+            releaseFlush?.();
+            session.queue.close();
+            await launchPromise.catch(() => {});
+        }
+    });
+
+    it('switch during the steer queued-persist releases the reservation instead of restoring it', async () => {
+        let releasePrompt!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.softSteerDispatchError = new Error('stdin closed');
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+        const runPromise = cursorAcpRemoteLauncher(session);
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+        let releaseQueued: (() => void) | undefined;
+        const setSteer = session.client.setSteerDeliveryState as unknown as ReturnType<typeof vi.fn>;
+        try {
+            await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+            // Park the restore's durable 'queued' persist (the 2nd steer
+            // state call; the 1st is the 'dispatching' stamp).
+            let steerStateCalls = 0;
+            setSteer.mockImplementation(async (_ids: unknown[], state: string) => {
+                steerStateCalls += 1;
+                if (state === 'queued' && steerStateCalls === 2) {
+                    await new Promise<void>(resolve => { releaseQueued = resolve; });
+                }
+                return true;
+            });
+            session.queue.push('correction', mode, 'steer');
+            const steering = handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }) as Promise<{ steered: boolean; error?: string }>;
+            await vi.waitFor(() => expect(releaseQueued).toBeTypeOf('function'));
+            const switchPromise = handlers.get(RPC_METHODS.Switch)!() as Promise<void>;
+            await new Promise<void>(resolve => setImmediate(resolve));
+            releaseQueued!();
+            // The steer's dispatch already failed (stdin closed) and the
+            // terminal switch landed inside the restore's 'queued' persist:
+            // the reservation must be released, not restored.
+            expect(await steering).toEqual({ steered: false, error: 'Failed to soft-steer into active turn' });
+            await switchPromise;
+            // The terminal reset already ran: the steer must not bounce the
+            // terminal straight back into remote mode.
+            expect(session.queue.pendingLocalIds()).toEqual([]);
+            harness.softSteerDispatchError = null;
+            releasePrompt();
+            expect(await runPromise).toBe('switch');
+        } finally {
+            harness.softSteerDispatchError = null;
+            setSteer.mockImplementation(async () => true);
+            releasePrompt?.();
+            session.queue.close();
+            await runPromise.catch(() => {});
+        }
+    });
+
+    it('an idle switch teardown does not run model setup on a newly arrived row', async () => {
+        let releaseCancel: (() => void) | undefined;
+        const session = makeSession('acp-session', { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+            emitMessagesConsumed: ReturnType<typeof vi.fn>;
+        };
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        const handlers = client.rpcHandlerManager.handlers;
+        try {
+            await vi.waitFor(() => expect(vi.mocked(createCursorAcpBackend).mock.results.length).toBeGreaterThan(0));
+            // Park the terminal teardown's cancelPrompt; a row with a model
+            // arrives while it is pending.
+            let releaseCancel!: () => void;
+            const backend = vi.mocked(createCursorAcpBackend).mock.results.at(-1)!.value as {
+                cancelPrompt: ReturnType<typeof vi.fn>;
+                setModel: ReturnType<typeof vi.fn>;
+            };
+            backend.cancelPrompt.mockImplementationOnce(() => new Promise<void>(resolve => { releaseCancel = resolve; }));
+            const switchPromise = handlers.get(RPC_METHODS.Switch)!() as Promise<void>;
+            await vi.waitFor(() => expect(releaseCancel).toBeTypeOf('function'));
+            session.queue.push('late', {
+                permissionMode: 'default',
+                model: 'gpt-5.3-codex[reasoning=medium,fast=false]'
+            } as EnhancedMode, 'late');
+            await new Promise<void>(resolve => setImmediate(resolve));
+            await new Promise<void>(resolve => setImmediate(resolve));
+            // The closing backend must not run live model switching for a
+            // row that the terminal reset is about to clear.
+            const modelCalls = (backend.setModel as ReturnType<typeof vi.fn>).mock.calls
+                .filter((call) => call[1] === 'gpt-5.3-codex[reasoning=medium,fast=false]');
+            expect(modelCalls).toHaveLength(0);
+            expect(client.emitMessagesConsumed).not.toHaveBeenCalled();
+            expect(harness.promptCalls).toBe(0);
+            releaseCancel();
+            await switchPromise;
+            session.queue.close();
+            expect(await launchPromise).toBe('switch');
+        } finally {
+            releaseCancel?.();
+            session.queue.close();
+            await launchPromise.catch(() => {});
+        }
+    });
+
+    it('a manual Bridge enqueued mid-setup is superseded at commit and never replays after the user turn', async () => {
+        // Round-7 Major 1: the supersede runs at the dispatch commit, so a
+        // manual BridgeModelError RPC landing while the user batch sits in
+        // setup must not leave a bridge row that replays AFTER the user turn.
+        const session = makeSession('acp-session', { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+            sendSessionEvent: ReturnType<typeof vi.fn>;
+            updateMetadata: ReturnType<typeof vi.fn>;
+            emitMessagesConsumed: ReturnType<typeof vi.fn>;
+        };
+        let waitCount = 0;
+        const nextWait = { release: null as (() => void) | null };
+        const originalWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue);
+        session.queue.waitForMessagesAndGetAsString = async (signal) => {
+            waitCount += 1;
+            if (waitCount >= 2 && nextWait.release === null) {
+                await new Promise<void>((resolve) => { nextWait.release = resolve; });
+            }
+            return originalWait(signal);
+        };
+
+        harness.emitStderrOnPrompt = {
+            type: 'rate_limit',
+            message: 'status 429 ratelimitexceeded',
+            raw: 'status 429 ratelimitexceeded'
+        };
+        harness.promptErrors = [new Error('status 429 ratelimitexceeded')];
+        session.queue.push('do the work', { permissionMode: 'default' }, 'first');
+
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        try {
+            await vi.waitFor(() => expect(client.sendSessionEvent.mock.calls.some(
+                (call) => call[0]?.type === 'modelError'
+            )).toBe(true));
+            await vi.waitFor(() => expect(nextWait.release).not.toBeNull());
+            harness.emitStderrOnPrompt = null;
+            harness.promptErrors = [];
+
+            const recorded = client.updateMetadata.mock.calls
+                .map((call) => {
+                    const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+                    if (typeof updater !== 'function') return null;
+                    return updater({}).lastModelError as { eventId?: string; kind?: string; rawSnippet?: string; lastUserMessage?: string; priorAssistantClaimsDone?: boolean } | null;
+                })
+                .find((err) => err?.eventId);
+            expect(recorded?.eventId).toBeTruthy();
+
+            const bridgeHandler = client.rpcHandlerManager.handlers.get(RPC_METHODS.BridgeModelError) as
+                ((payload: unknown) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+
+            // The user batch parks in the model apply; the manual Bridge
+            // enqueues mid-setup (promptInFlight false, supersede not yet
+            // stamped, queue empty because the batch was dequeued).
+            harness.deferSetConfigOption = new Promise<void>((resolve) => { harness.releaseSetConfigOption = resolve; });
+            session.queue.push('do the work again', {
+                permissionMode: 'default',
+                model: 'gpt-5.3-codex[reasoning=medium,fast=false]'
+            } as EnhancedMode, 'second');
+            nextWait.release?.();
+            await vi.waitFor(() => expect(harness.setConfigOptionWaiting).toBe(1));
+            expect(await bridgeHandler!({
+                eventId: recorded!.eventId,
+                kind: recorded!.kind,
+                transient: true,
+                rawSnippet: recorded!.rawSnippet,
+                lastUserMessage: recorded!.lastUserMessage || 'do the work',
+                priorAssistantClaimsDone: recorded!.priorAssistantClaimsDone === true,
+                bridgeable: true
+            })).toEqual({ ok: true });
+
+            harness.releaseSetConfigOption?.();
+            harness.deferSetConfigOption = null;
+            harness.releaseSetConfigOption = null;
+
+            // The user turn dispatches; the superseded bridge must never run
+            // after it.
+            await vi.waitFor(() => {
+                expect(JSON.stringify(harness.prompts)).toContain('do the work again');
+            });
+            await new Promise<void>(resolve => setTimeout(resolve, 120));
+            expect(JSON.stringify(harness.prompts)).not.toContain('[HAPI bridge');
+            session.queue.close();
+            await launchPromise;
+        } finally {
+            harness.releaseSetConfigOption?.();
+            harness.deferSetConfigOption = null;
+            session.queue.close();
+            await launchPromise.catch(() => {});
+        }
+    });
+
+    it('tracks in-flight during deferred setup and clears it on commit so later idle cancels return false and retries can cancel', async () => {
+        const session = makeSession('acp-session', { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            emitMessagesConsumed: ReturnType<typeof vi.fn>;
+        };
+        harness.deferSetConfigOption = new Promise<void>((resolve) => { harness.releaseSetConfigOption = resolve; });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        try {
+            session.queue.push('work', {
+                permissionMode: 'default',
+                model: 'gpt-5.3-codex[reasoning=medium,fast=false]'
+            } as EnhancedMode, 'in-window');
+            await vi.waitFor(() => expect(harness.setConfigOptionWaiting).toBe(1));
+
+            // Inside the dequeue→commit window: cancel answers 'in-flight'.
+            expect(session.queue.cancelByLocalId('in-window')).toBe('in-flight');
+            expect(client.emitMessagesConsumed).not.toHaveBeenCalled();
+
+            harness.releaseSetConfigOption?.();
+            harness.deferSetConfigOption = null;
+            harness.releaseSetConfigOption = null;
+
+            await vi.waitFor(() => expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['in-window']));
+            // Committed on an idle queue: entry is cleared, and a later cancel succeeds.
+            expect(session.queue.cancelByLocalId('in-window')).toBe(false);
+            session.queue.push('retry', { permissionMode: 'default' } as EnhancedMode, 'in-window');
+            expect(session.queue.takeByLocalId('in-window')).not.toBeNull();
+            expect(session.queue.cancelByLocalId('in-window')).toBe(true);
+
+            session.queue.close();
+            await launchPromise;
+        } finally {
+            harness.releaseSetConfigOption?.();
+            harness.deferSetConfigOption = null;
+            session.queue.close();
+            await launchPromise.catch(() => {});
+        }
+    });
+
+    it('a batch resolved while shouldExit flips breaks before any setup', async () => {
+        // Round-7 Minor 2: the dequeue can resolve a real batch right as the
+        // terminal teardown flips shouldExit (collectBatch wins the race
+        // against the entry abort); the loop must break before the model
+        // switch instead of mutating ACP state on a closing backend.
+        const session = makeSession('acp-session', { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+            emitMessagesConsumed: ReturnType<typeof vi.fn>;
+        };
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        const handlers = client.rpcHandlerManager.handlers;
+        try {
+            // The override is installed before launch so the loop's very first
+            // wait resolves the synthetic batch; the switch fires lazily once
+            // the teardown RPC is wireable (requestExit sets shouldExit
+            // synchronously before the teardown's first await).
+            let switchFired = false;
+            session.queue.waitForMessagesAndGetAsString = async () => {
+                if (!switchFired) {
+                    switchFired = true;
+                    await vi.waitFor(() => expect(handlers.has(RPC_METHODS.Switch)).toBe(true));
+                    void (handlers.get(RPC_METHODS.Switch)!() as Promise<void>);
+                }
+                return {
+                    message: 'late',
+                    mode: {
+                        permissionMode: 'default',
+                        model: 'gpt-5.3-codex[reasoning=medium,fast=false]'
+                    } as EnhancedMode,
+                    isolate: false,
+                    hash: 'synthetic',
+                    items: [{ message: 'late', localId: 'late' }]
+                };
+            };
+            session.queue.close();
+            expect(await launchPromise).toBe('switch');
+            // The closing launcher must not run the batch's model setup.
+            expect(harness.setConfigOptionCalls.filter((call) => call.configId === 'model-opt')).toEqual([]);
+            expect(harness.promptCalls).toBe(0);
+            expect(client.emitMessagesConsumed).not.toHaveBeenCalled();
+        } finally {
+            session.queue.close();
+            await launchPromise.catch(() => {});
+        }
+    });
+
+    it('does not record deferred stderr from a prior retry attempt after success', async () => {
+        // Cold-review Major 2026-09-12: pendingStderrFailure survived continue
+        // and poisoned a later successful attempt.
+        harness.promptStderrErrors = [{
+            type: 'rate_limit',
+            message: 'status 429 ratelimitexceeded',
+            raw: 'status 429 ratelimitexceeded'
+        }];
+        harness.promptErrors = [
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL')
+        ];
+        harness.promptMessageBatches = [
+            [],
+            [{ type: 'turn_complete', stopReason: 'end_turn' }]
+        ];
+
+        const session = makeSession(null, { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            sendSessionEvent: ReturnType<typeof vi.fn>
+            updateMetadata: ReturnType<typeof vi.fn>
+        };
+        session.queue.push('finish the task', { permissionMode: 'default' });
+        session.queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.promptCalls).toBe(2);
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelError'
+        )).toBe(false);
+        const wroteLastModelError = client.updateMetadata.mock.calls.some((call) => {
+            const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+            if (typeof updater !== 'function') return false;
+            return Boolean(updater({}).lastModelError);
+        });
+        expect(wroteLastModelError).toBe(false);
     });
 });

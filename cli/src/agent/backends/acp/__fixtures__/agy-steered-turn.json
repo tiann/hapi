@@ -1,0 +1,220 @@
+{
+  "source": "agy 1.5.2 `agy acp`, Gemini 3.8 Flash (Low), recorded 2026-11-07: a steer sent while run_command runs",
+  "frames": [
+    {
+      "t": 10.8,
+      "direction": "client->agy",
+      "message": {
+        "id": 104,
+        "method": "session/prompt",
+        "params": {
+          "sessionId": "agy-conv-1",
+          "prompt": [
+            {
+              "type": "text",
+              "text": "Respond in English only. Use your terminal tool to run exactly: sleep 6 && echo first-done . Then report its output in one short sentence."
+            }
+          ]
+        }
+      }
+    },
+    {
+      "t": 10.9,
+      "direction": "agy->client",
+      "message": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "agy-conv-1",
+          "update": {
+            "sessionUpdate": "user_message_chunk",
+            "content": {
+              "type": "text",
+              "text": "Respond in English only. Use your terminal tool to run exactly: sleep 6 && echo first-done . Then report its output in one short sentence."
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": 14.22,
+      "direction": "agy->client",
+      "message": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "agy-conv-1",
+          "update": {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "call_1",
+            "name": "run_command",
+            "args": {
+              "CommandLine": "sleep 6 && echo first-done",
+              "WaitMsBeforeAsync": 8000,
+              "toolSummary": "Run sleep and echo command"
+            },
+            "status": "in_progress",
+            "kind": "execute",
+            "title": "sleep 6 && echo first-done",
+            "rawInput": {
+              "CommandLine": "sleep 6 && echo first-done",
+              "WaitMsBeforeAsync": 8000,
+              "toolSummary": "Run sleep and echo command"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": 15.72,
+      "direction": "client->agy",
+      "message": {
+        "id": 105,
+        "method": "session/prompt",
+        "params": {
+          "sessionId": "agy-conv-1",
+          "prompt": [
+            {
+              "type": "text",
+              "text": "Additional instructions:\n- End your final sentence with the word BANANA.\n-   Keep it short.  "
+            }
+          ]
+        }
+      }
+    },
+    {
+      "t": 15.72,
+      "direction": "agy->client",
+      "message": {
+        "jsonrpc": "2.0",
+        "result": {
+          "stopReason": "end_turn",
+          "usage": {
+            "inputTokens": 15172,
+            "outputTokens": 44,
+            "cachedReadTokens": 0,
+            "cachedWriteTokens": 0,
+            "thoughtTokens": 0,
+            "totalTokens": 15216
+          }
+        },
+        "id": 104
+      }
+    },
+    {
+      "t": 20.47,
+      "direction": "agy->client",
+      "message": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "agy-conv-1",
+          "update": {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "call_1",
+            "name": "run_command",
+            "args": {
+              "CommandLine": "sleep 6 && echo first-done",
+              "WaitMsBeforeAsync": 8000,
+              "toolSummary": "Run sleep and echo command"
+            },
+            "status": "completed",
+            "kind": "execute",
+            "title": "sleep 6 && echo first-done",
+            "rawInput": {
+              "CommandLine": "sleep 6 && echo first-done",
+              "WaitMsBeforeAsync": 8000,
+              "toolSummary": "Run sleep and echo command"
+            },
+            "rawOutput": {
+              "output": "Command exited with code 0.\n\nCommand output:\nfirst-done\r\n",
+              "exit_code": 0
+            },
+            "content": [
+              {
+                "type": "content",
+                "content": {
+                  "type": "text",
+                  "text": "Command exited with code 0.\n\nCommand output:\nfirst-done\r\n"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "t": 20.6,
+      "direction": "agy->client",
+      "message": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "agy-conv-1",
+          "update": {
+            "sessionUpdate": "user_message_chunk",
+            "content": {
+              "type": "text",
+              "text": "Additional instructions:\n- End your final sentence with the word BANANA.\n-   Keep it short.  "
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": 23.22,
+      "direction": "agy->client",
+      "message": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "agy-conv-1",
+          "update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": {
+              "type": "text",
+              "text": "The command"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": 23.27,
+      "direction": "agy->client",
+      "message": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "agy-conv-1",
+          "update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": {
+              "type": "text",
+              "text": " executed successfully and printed `first-done` BANANA."
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": 23.43,
+      "direction": "agy->client",
+      "message": {
+        "jsonrpc": "2.0",
+        "result": {
+          "stopReason": "end_turn",
+          "usage": {
+            "inputTokens": 15286,
+            "outputTokens": 14,
+            "cachedReadTokens": 0,
+            "cachedWriteTokens": 0,
+            "thoughtTokens": 0,
+            "totalTokens": 15300
+          }
+        },
+        "id": 105
+      }
+    }
+  ]
+}

@@ -1,3 +1,5 @@
+import java.util.Properties
+import groovy.json.JsonSlurper
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -6,6 +8,8 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     // New-session form draft + prefs persist as JSON blobs in DataStore (B-M3d).
     alias(libs.plugins.kotlin.serialization)
+    // Visual specimens: `./gradlew :app:recordRoborazziDebug` (README).
+    alias(libs.plugins.roborazzi)
     // com.google.gms.google-services is applied CONDITIONALLY below (B-M4a):
     // the plugin hard-fails when app/google-services.json is missing, and the
     // repo must build green without any Firebase project configured.
@@ -15,8 +19,76 @@ plugins {
 // drop in their own (see ../README.md "Firebase / push"); everyone else builds
 // without it — Firebase then never initializes and PushBinding reports push as
 // unavailable, so every push code path no-ops cleanly.
-if (file("google-services.json").exists()) {
+val officialBuild = providers.gradleProperty("hapiOfficialBuild").map(String::toBooleanStrict).orElse(false).get()
+val googleServicesFile = file("google-services.json")
+if (officialBuild) {
+    require(googleServicesFile.isFile) { "Official builds require app/google-services.json" }
+    val expectedProject = providers.gradleProperty("hapiFirebaseProjectId").orNull?.trim()
+    require(!expectedProject.isNullOrBlank()) { "Official builds require -PhapiFirebaseProjectId=<official relay project>" }
+    val firebase = JsonSlurper().parse(googleServicesFile) as? Map<*, *>
+    val project = firebase?.get("project_info") as? Map<*, *>
+    require(project?.get("project_id") == expectedProject) { "Firebase project must match the official relay project" }
+    val clients = firebase?.get("client") as? List<*>
+    require(clients?.any { client ->
+        val info = (client as? Map<*, *>)?.get("client_info") as? Map<*, *>
+        val android = info?.get("android_client_info") as? Map<*, *>
+        android?.get("package_name") == "run.hapi.companion"
+    } == true) { "Official Firebase configuration must include run.hapi.companion" }
+}
+if (googleServicesFile.exists()) {
     apply(plugin = "com.google.gms.google-services")
+}
+
+// Release signing: an UPLOAD key only — Play App Signing holds the real
+// distribution key, so a lost upload key is recoverable via Play Console.
+// Resolved from gradle properties (user-global ~/.gradle/gradle.properties
+// or -P), environment (CI secrets), or android/local.properties (the
+// conventional gitignored home for machine-local secrets — NOT part of
+// gradle's own property chain, hence loaded explicitly):
+//   hapiUploadKeystore          / HAPI_UPLOAD_KEYSTORE           keystore path (~ ok)
+//   hapiUploadKeystorePassword  / HAPI_UPLOAD_KEYSTORE_PASSWORD
+//   hapiUploadKeyAlias          / HAPI_UPLOAD_KEY_ALIAS          default "upload"
+//   hapiUploadKeyPassword       / HAPI_UPLOAD_KEY_PASSWORD       default: store password
+// All unset → release builds unsigned; the repo needs no secrets to build.
+val localProperties = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+
+fun signingSecret(property: String, env: String): String? =
+    (findProperty(property) as String?)?.takeIf { it.isNotBlank() }
+        ?: System.getenv(env)?.takeIf { it.isNotBlank() }
+        ?: localProperties.getProperty(property)?.takeIf { it.isNotBlank() }
+
+val uploadKeystorePath = signingSecret("hapiUploadKeystore", "HAPI_UPLOAD_KEYSTORE")
+    ?.replaceFirst(Regex("^~"), System.getProperty("user.home"))
+
+if (officialBuild) {
+    require(uploadKeystorePath != null && file(uploadKeystorePath).isFile) { "Official builds require a release signing keystore" }
+    require(signingSecret("hapiUploadKeystorePassword", "HAPI_UPLOAD_KEYSTORE_PASSWORD") != null) {
+        "Official builds require a release signing password"
+    }
+}
+
+// versionCode = number of commits reachable from HEAD. Official builds run
+// from main only, so it increases monotonically with no manual bookkeeping.
+// A shallow clone undercounts, so official builds require full history;
+// local builds without git (e.g. a source tarball) fall back to 1.
+fun git(vararg args: String): String? = runCatching {
+    val exec = providers.exec {
+        commandLine("git", *args)
+        workingDir = rootDir
+        isIgnoreExitValue = true
+    }
+    exec.standardOutput.asText.get().trim().takeIf { exec.result.get().exitValue == 0 }
+}.getOrNull()
+
+val gitCommitCount = git("rev-list", "--count", "HEAD")?.toIntOrNull()?.takeIf { it > 0 }
+if (officialBuild) {
+    require(gitCommitCount != null) { "Official builds require git to derive versionCode" }
+    require(git("rev-parse", "--is-shallow-repository") == "false") {
+        "Official builds require full git history (shallow clones undercount versionCode)"
+    }
 }
 
 android {
@@ -27,8 +99,22 @@ android {
         applicationId = "run.hapi.companion"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = gitCommitCount ?: 1
+        // Tracks the hapi CLI/hub release train.
+        versionName = providers.gradleProperty("hapiVersionName").orElse("0.36.7").get()
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        if (uploadKeystorePath != null) {
+            create("release") {
+                storeFile = File(uploadKeystorePath)
+                storePassword = signingSecret("hapiUploadKeystorePassword", "HAPI_UPLOAD_KEYSTORE_PASSWORD")
+                keyAlias = signingSecret("hapiUploadKeyAlias", "HAPI_UPLOAD_KEY_ALIAS") ?: "upload"
+                keyPassword = signingSecret("hapiUploadKeyPassword", "HAPI_UPLOAD_KEY_PASSWORD")
+                    ?: signingSecret("hapiUploadKeystorePassword", "HAPI_UPLOAD_KEYSTORE_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
@@ -39,8 +125,21 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // null when no upload key is configured → unsigned release.
+            signingConfig = signingConfigs.findByName("release")
+        }
+        create("profile") {
+            initWith(getByName("release"))
+            // Optimized/non-debuggable, but unminified so diagnostic stacks
+            // and instrumentation access remain readable. Never distributed.
+            isMinifyEnabled = false
+            isShrinkResources = false
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += "release"
         }
     }
+
+    testBuildType = providers.gradleProperty("hapiTestBuildType").orElse("debug").get()
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -54,6 +153,8 @@ android {
     }
 
     testOptions {
+        // Robolectric specimens resolve fonts, drawables and strings.
+        unitTests.isIncludeAndroidResources = true
         unitTests.all { test ->
             // Chat pipeline smoke tests replay golden fixtures from the repo
             // root (same wiring as :core:protocol / :core:data).
@@ -87,12 +188,19 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
 
+    // Passkey sign-in + management (Credential Manager; RP ID hapi.run).
+    implementation(libs.androidx.credentials)
+    implementation(libs.androidx.credentials.play.services.auth)
+
     // QR pairing (ScanContract activity-result API; no Play Services).
     implementation(libs.zxing.android.embedded)
 
     // Generated images (chat, B-M2d2): loader wired in HubGraph over the
     // authed + disk-cached hub image client.
     implementation(libs.coil.compose)
+    // Generated media (chat, C): raw byte download of non-image generated
+    // media (video/audio/file) through the same authed hub client Coil uses.
+    implementation(libs.okhttp)
 
     // FCM push + notification actions (B-M4a). firebase-messaging is always on
     // the classpath; whether it *activates* depends on google-services.json
@@ -119,10 +227,23 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.ui.tooling.preview)
     debugImplementation(libs.androidx.compose.ui.tooling)
+    debugImplementation(libs.androidx.compose.ui.test.manifest)
+    add("profileImplementation", libs.androidx.compose.ui.test.manifest)
+    androidTestImplementation(platform(libs.androidx.compose.bom))
+    androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+    androidTestImplementation(libs.androidx.test.runner)
 
     // JVM unit tests (ViewModel combine logic with fake stores).
     testImplementation(libs.junit)
     testImplementation(libs.kotlin.test)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.turbine)
+    // Generated media fetch tests: real HTTP round-trip against localhost.
+    testImplementation(libs.okhttp.mockwebserver)
+    // Visual specimens (Compose rendered under Robolectric native graphics).
+    testImplementation(platform(libs.androidx.compose.bom))
+    testImplementation(libs.androidx.compose.ui.test.junit4)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.roborazzi)
+    testImplementation(libs.roborazzi.compose)
 }

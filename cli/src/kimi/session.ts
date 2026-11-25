@@ -58,6 +58,10 @@ export class KimiSession extends AgentSessionBase<KimiMode> {
         this.model = model;
     };
 
+    setEffort = (effort: string | null): void => {
+        this.effort = effort;
+    };
+
     recordLocalLaunchFailure = (message: string, exitReason: LocalLaunchExitReason): void => {
         this.localLaunchFailure = { message, exitReason };
     };

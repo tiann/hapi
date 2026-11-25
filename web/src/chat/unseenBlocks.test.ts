@@ -95,9 +95,13 @@ function sidechainMsg(id: string, parentToolUseId: string, createdAt: number): N
     } as NormalizedMessage
 }
 
-function visible(messages: NormalizedMessage[], hasMoreMessages = false): VisibleChatBlock[] {
+function visible(
+    messages: NormalizedMessage[],
+    hasMoreMessages = false,
+    groupingMode: 'grouped' | 'classified' = 'classified'
+): VisibleChatBlock[] {
     const reduced = reduceChatBlocks(messages, null)
-    return buildVisibleChatBlocks(reduced.blocks, { hasMoreMessages })
+    return buildVisibleChatBlocks(reduced.blocks, { hasMoreMessages, groupingMode })
 }
 
 describe('countUnseenBlocks', () => {
@@ -253,5 +257,20 @@ describe('countUnseenBlocks', () => {
         // must still land on it, not fall back to the block before it.
         const stored = [...earlier, { ...optimistic, id: 'srv-1' }]
         expect(countUnseenBlocks(stored, watermark)).toBe(0)
+    })
+
+    it('does not count group members as new after switching display modes', () => {
+        const seed = [userMsg('u1', 'go', BASE_AT)]
+        const reads = [
+            toolCall('read-0', 'Read', BASE_AT + 1, { file_path: '/a.ts' }),
+            toolCall('read-1', 'Read', BASE_AT + 2, { file_path: '/b.ts' }),
+        ]
+        const grouped = visible([...seed, ...reads], false, 'grouped')
+        expect(grouped.at(-1)?.kind).toBe('tool-group')
+
+        const watermark = createUnseenWatermark(grouped)
+        const classified = visible([...seed, ...reads], false, 'classified')
+        expect(classified.slice(-2).map((block) => block.id)).toEqual(['tc-read-0', 'tc-read-1'])
+        expect(countUnseenBlocks(classified, watermark)).toBe(0)
     })
 })

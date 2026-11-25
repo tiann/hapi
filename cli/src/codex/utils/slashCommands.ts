@@ -1,5 +1,5 @@
-import { CODEX_PERMISSION_MODES } from '@hapi/protocol/modes';
-import type { CodexPermissionMode } from '@hapi/protocol/types';
+import { Flavors } from '@hapi/protocol/modes';
+import type { PermissionModeOf } from '@hapi/protocol/types';
 import type { ReasoningEffort } from '../appServerTypes';
 import type { CodexPersonality, EnhancedMode } from '../loop';
 import type { SlashCommand } from '@/modules/common/slashCommands';
@@ -31,7 +31,7 @@ export type CodexSlashResolution =
         message: string;
         updates?: {
             collaborationMode?: EnhancedMode['collaborationMode'];
-            permissionMode?: CodexPermissionMode;
+            permissionMode?: PermissionModeOf<typeof Flavors.codex>;
             model?: string | null;
             modelReasoningEffort?: ReasoningEffort | null;
             serviceTier?: string | null;
@@ -45,7 +45,7 @@ export type CodexSlashResolution =
         message?: string;
         updates?: {
             collaborationMode?: EnhancedMode['collaborationMode'];
-            permissionMode?: CodexPermissionMode;
+            permissionMode?: PermissionModeOf<typeof Flavors.codex>;
             model?: string | null;
             modelReasoningEffort?: ReasoningEffort | null;
             serviceTier?: string | null;
@@ -64,7 +64,7 @@ export function resolveCodexSlashCommand(
     text: string,
     state: {
         commands?: readonly SlashCommand[];
-        permissionMode: CodexPermissionMode;
+        permissionMode: PermissionModeOf<typeof Flavors.codex>;
         collaborationMode: EnhancedMode['collaborationMode'];
         model?: string;
         modelReasoningEffort?: ReasoningEffort;
@@ -288,7 +288,7 @@ export function resolveCodexSlashCommand(
         if (!rest) {
             return { kind: 'handled', message: `Codex permission mode: ${state.permissionMode}` };
         }
-        if (!(CODEX_PERMISSION_MODES as readonly string[]).includes(rest)) {
+        if (!Flavors.codex.allowsPermissionMode(rest)) {
             return {
                 kind: 'handled',
                 message: `Unknown Codex permission mode: ${rest}`
@@ -297,7 +297,7 @@ export function resolveCodexSlashCommand(
         return {
             kind: 'handled',
             message: `Codex permission mode set to ${rest}`,
-            updates: { permissionMode: rest as CodexPermissionMode }
+            updates: { permissionMode: rest }
         };
     }
 
@@ -318,7 +318,7 @@ export function resolveCodexSlashCommand(
                 '- `/reasoning [level|default]` — show or set reasoning effort',
                 '- `/personality [friendly|pragmatic|none]` — show or set response style (sticky on thread)',
                 '- `/fast [on|off|status]` — toggle Fast mode (GPT-5.5 / GPT-5.4, ChatGPT login)',
-                '- `/permissions [default|read-only|safe-yolo|yolo]` — show or set permission mode',
+                '- `/permissions [default|read-only|autoReview|yolo]` — show or set permission mode',
                 '',
                 'Custom `/commands` from `.codex/prompts` are expanded before sending.'
             ].join('\n')

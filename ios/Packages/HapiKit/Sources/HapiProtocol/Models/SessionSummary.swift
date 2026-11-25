@@ -50,6 +50,7 @@ public struct SessionSummaryMetadata: Codable, Equatable, Sendable {
     }
 
     public var name: String?
+    public var promptTitle: String?
     public var path: String
     public var machineId: String?
     public var summary: Summary?
@@ -62,6 +63,7 @@ public struct SessionSummaryMetadata: Codable, Equatable, Sendable {
 
     public init(
         name: String? = nil,
+        promptTitle: String? = nil,
         path: String,
         machineId: String? = nil,
         summary: Summary? = nil,
@@ -72,6 +74,7 @@ public struct SessionSummaryMetadata: Codable, Equatable, Sendable {
         hapiMcpUrl: String? = nil
     ) {
         self.name = name
+        self.promptTitle = promptTitle
         self.path = path
         self.machineId = machineId
         self.summary = summary
@@ -89,6 +92,10 @@ public struct SessionSummaryMetadata: Codable, Equatable, Sendable {
 /// hub-derived: badges must use `pendingRequestsCount` (authoritative total),
 /// never `pendingRequests.count` (capped at 5, oldest first).
 public struct SessionSummary: Codable, Equatable, Sendable {
+    public var contentRevision: Int?
+    public var readState: SessionReadState?
+    /// Hub-computed eligibility for session references; empty stubs are excluded.
+    public var hasConversationContent: Bool?
     /// Server-side cap on `pendingRequests` entries
     /// (`PENDING_REQUEST_SUMMARY_CAP`, `shared/src/sessionSummary.ts`).
     public static let pendingRequestSummaryCap = 5
@@ -97,6 +104,8 @@ public struct SessionSummary: Codable, Equatable, Sendable {
     public var active: Bool
     public var thinking: Bool
     public var activeAt: Int
+    public var createdAt: Int?
+    public var lastUserMessageAt: Int?
     public var updatedAt: Int
     public var pinned: Bool?
     public var globalPinned: Bool?
@@ -114,16 +123,26 @@ public struct SessionSummary: Codable, Equatable, Sendable {
     public var futureScheduledMessageCount: Int
     /// Epoch ms of the soonest uninvoked scheduled message, or `nil`.
     public var nextScheduledAt: Int?
+    /// Primary session-attached job (tiann/hapi#1404), or `nil`.
+    public var attachedJob: AttachedJob?
+    /// Watermark for versioned `attachedJob` patches; absent (older hub or
+    /// snapshot) gates as 0.
+    public var attachedJobUpdatedAt: Int?
     public var model: String?
     public var modelReasoningEffort: String?
     public var effort: String?
 
     public init(
+        contentRevision: Int? = nil,
+        readState: SessionReadState? = nil,
+        hasConversationContent: Bool? = nil,
         id: String,
         active: Bool,
         thinking: Bool,
         activeAt: Int,
         updatedAt: Int,
+        createdAt: Int? = nil,
+        lastUserMessageAt: Int? = nil,
         pinned: Bool? = nil,
         globalPinned: Bool? = nil,
         metadata: SessionSummaryMetadata? = nil,
@@ -137,15 +156,22 @@ public struct SessionSummary: Codable, Equatable, Sendable {
         backgroundTaskCount: Int = 0,
         futureScheduledMessageCount: Int = 0,
         nextScheduledAt: Int? = nil,
+        attachedJob: AttachedJob? = nil,
+        attachedJobUpdatedAt: Int? = nil,
         model: String? = nil,
         modelReasoningEffort: String? = nil,
         effort: String? = nil
     ) {
         self.id = id
+        self.contentRevision = contentRevision
+        self.readState = readState
+        self.hasConversationContent = hasConversationContent
         self.active = active
         self.thinking = thinking
         self.activeAt = activeAt
         self.updatedAt = updatedAt
+        self.lastUserMessageAt = lastUserMessageAt
+        self.createdAt = createdAt
         self.pinned = pinned
         self.globalPinned = globalPinned
         self.metadata = metadata
@@ -159,6 +185,8 @@ public struct SessionSummary: Codable, Equatable, Sendable {
         self.backgroundTaskCount = backgroundTaskCount
         self.futureScheduledMessageCount = futureScheduledMessageCount
         self.nextScheduledAt = nextScheduledAt
+        self.attachedJob = attachedJob
+        self.attachedJobUpdatedAt = attachedJobUpdatedAt
         self.model = model
         self.modelReasoningEffort = modelReasoningEffort
         self.effort = effort

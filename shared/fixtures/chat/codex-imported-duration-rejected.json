@@ -1,0 +1,100 @@
+{
+    "description": "A completed Codex tail contains duration metadata without its initiating user row. Imported history cannot supply trusted timing. Metadata adds no visible chat row or duplicate usage.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "duration-tail-0:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "Completed Codex answer"
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": {
+            "contextSize": 100,
+            "contextWindow": null,
+            "inputTokens": 100,
+            "outputTokens": 10
+        },
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "duration-tail-0:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "Completed Codex answer"
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": "Completed Codex answer",
+                            "turn_id": "round",
+                            "type": "message"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000000,
+                "id": "duration-tail-0",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "hapiUsageScope": "imported-history",
+                            "info": {
+                                "last_token_usage": {
+                                    "input_tokens": 100,
+                                    "output_tokens": 10
+                                }
+                            },
+                            "model": "gpt-5.4",
+                            "turn_id": "round",
+                            "type": "token_count"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000001000,
+                "id": "duration-tail-1",
+                "localId": null,
+                "seq": 2
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "durationMs": 39426,
+                            "flavor": "codex",
+                            "hapiUsageScope": "imported-history",
+                            "turn_id": "round",
+                            "type": "turn_duration"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000002000,
+                "id": "duration-tail-2",
+                "localId": null,
+                "seq": 3
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "codex-imported-duration-rejected"
+}

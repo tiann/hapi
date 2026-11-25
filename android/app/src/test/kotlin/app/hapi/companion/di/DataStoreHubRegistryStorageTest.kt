@@ -69,13 +69,13 @@ class DataStoreHubRegistryStorageTest {
             val first = HubRegistry(storage)
             first.load()
             first.addHub("https://a.example")
-            first.addHub("http://b.example:8080", makeActive = false)
+            first.addHub("https://b.example:8443", makeActive = false)
 
             val second = HubRegistry(storage)
             second.load()
             assertEquals(
                 HubRegistryState(
-                    hubs = listOf("https://a.example", "http://b.example:8080"),
+                    hubs = listOf("https://a.example", "https://b.example:8443"),
                     activeHubUrl = "https://a.example",
                 ),
                 second.state.value,

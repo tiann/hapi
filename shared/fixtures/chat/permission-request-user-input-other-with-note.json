@@ -1,0 +1,259 @@
+{
+    "description": "Authoritatively recorded other answer, with an optional note; both result history and permission answers preserve canonical wire values. Not a locally inferred shared-session winner.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "shared-user",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Choose an option."
+            },
+            {
+                "createdAt": 1755000001000,
+                "id": "other-call",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "other-call",
+                    "input": {
+                        "isBlocking": true,
+                        "questions": [
+                            {
+                                "header": "Choice",
+                                "id": "choice",
+                                "isOther": true,
+                                "options": [
+                                    {
+                                        "description": "First choice",
+                                        "label": "A"
+                                    },
+                                    {
+                                        "description": "Second choice",
+                                        "label": "B"
+                                    }
+                                ],
+                                "question": "Which option?"
+                            }
+                        ]
+                    },
+                    "name": "request_user_input",
+                    "permission": {
+                        "answers": {
+                            "choice": {
+                                "answers": [
+                                    "None of the above",
+                                    "user_note: 自定义\n说明"
+                                ]
+                            }
+                        },
+                        "status": "approved"
+                    },
+                    "result": {
+                        "answers": {
+                            "choice": {
+                                "answers": [
+                                    "None of the above",
+                                    "user_note: 自定义\n说明"
+                                ]
+                            }
+                        }
+                    },
+                    "state": "completed"
+                }
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "shared-user",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Choose an option."
+            },
+            {
+                "createdAt": 1755000001000,
+                "id": "other-call",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "other-call",
+                    "input": {
+                        "isBlocking": true,
+                        "questions": [
+                            {
+                                "header": "Choice",
+                                "id": "choice",
+                                "isOther": true,
+                                "options": [
+                                    {
+                                        "description": "First choice",
+                                        "label": "A"
+                                    },
+                                    {
+                                        "description": "Second choice",
+                                        "label": "B"
+                                    }
+                                ],
+                                "question": "Which option?"
+                            }
+                        ]
+                    },
+                    "name": "request_user_input",
+                    "permission": {
+                        "answers": {
+                            "choice": {
+                                "answers": [
+                                    "None of the above",
+                                    "user_note: 自定义\n说明"
+                                ]
+                            }
+                        },
+                        "status": "approved"
+                    },
+                    "result": {
+                        "answers": {
+                            "choice": {
+                                "answers": [
+                                    "None of the above",
+                                    "user_note: 自定义\n说明"
+                                ]
+                            }
+                        }
+                    },
+                    "state": "completed"
+                }
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": {
+            "completedRequests": {
+                "other-request": {
+                    "answers": {
+                        "choice": {
+                            "answers": [
+                                "None of the above",
+                                "user_note: 自定义\n说明"
+                            ]
+                        }
+                    },
+                    "arguments": {
+                        "isBlocking": true,
+                        "questions": [
+                            {
+                                "header": "Choice",
+                                "id": "choice",
+                                "isOther": true,
+                                "options": [
+                                    {
+                                        "description": "First choice",
+                                        "label": "A"
+                                    },
+                                    {
+                                        "description": "Second choice",
+                                        "label": "B"
+                                    }
+                                ],
+                                "question": "Which option?"
+                            }
+                        ]
+                    },
+                    "completedAt": 1755000005000,
+                    "createdAt": 1755000001100,
+                    "status": "approved",
+                    "tool": "request_user_input",
+                    "toolCallId": "other-call"
+                }
+            },
+            "requests": {}
+        },
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Choose an option.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "shared-user",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "other-call",
+                            "input": {
+                                "isBlocking": true,
+                                "questions": [
+                                    {
+                                        "header": "Choice",
+                                        "id": "choice",
+                                        "isOther": true,
+                                        "options": [
+                                            {
+                                                "description": "First choice",
+                                                "label": "A"
+                                            },
+                                            {
+                                                "description": "Second choice",
+                                                "label": "B"
+                                            }
+                                        ],
+                                        "question": "Which option?"
+                                    }
+                                ]
+                            },
+                            "name": "request_user_input",
+                            "type": "tool-call"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000001000,
+                "id": "other-question",
+                "localId": null,
+                "seq": 2
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "other-call",
+                            "is_error": false,
+                            "output": {
+                                "answers": {
+                                    "choice": {
+                                        "answers": [
+                                            "None of the above",
+                                            "user_note: 自定义\n说明"
+                                        ]
+                                    }
+                                }
+                            },
+                            "type": "tool-call-result"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000005000,
+                "id": "other-result",
+                "localId": null,
+                "seq": 3
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "permission-request-user-input-other-with-note"
+}

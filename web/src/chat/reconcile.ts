@@ -10,6 +10,9 @@ import type {
     ToolCallBlock,
     ToolPermission,
     UserTextBlock,
+    RoundSummary,
+    RoundModelUsage,
+    UsageData,
 } from '@/chat/types'
 import { areInlineMediaSourcesEqual } from '@/chat/inlineMediaSource'
 
@@ -22,6 +25,49 @@ function indexBlocks(blocks: ChatBlock[], map: ChatBlocksById): void {
             indexBlocks(block.children, map)
         }
     }
+}
+
+function areUsageDataEqual(left?: UsageData, right?: UsageData): boolean {
+    if (left === right) return true
+    if (!left || !right) return false
+    return left.input_tokens === right.input_tokens
+        && left.output_tokens === right.output_tokens
+        && left.cache_creation_input_tokens === right.cache_creation_input_tokens
+        && left.cache_read_input_tokens === right.cache_read_input_tokens
+        && left.context_tokens === right.context_tokens
+        && left.context_window === right.context_window
+        && left.thread_id === right.thread_id
+        && left.scope_role === right.scope_role
+        && left.service_tier === right.service_tier
+}
+
+function areRoundModelUsagesEqual(left: RoundModelUsage, right: RoundModelUsage): boolean {
+    return left.inputTokens === right.inputTokens
+        && left.outputTokens === right.outputTokens
+        && left.cacheReadInputTokens === right.cacheReadInputTokens
+        && left.cacheCreationInputTokens === right.cacheCreationInputTokens
+}
+
+function areRoundSummariesEqual(left?: RoundSummary, right?: RoundSummary): boolean {
+    if (left === right) return true
+    if (!left || !right) return false
+    const leftModels = Object.keys(left.modelUsage)
+    const rightModels = Object.keys(right.modelUsage)
+    return left.provider === right.provider
+        && left.agyUsage?.input_tokens === right.agyUsage?.input_tokens
+        && left.agyUsage?.output_tokens === right.agyUsage?.output_tokens
+        && left.agyUsage?.thinking_tokens === right.agyUsage?.thinking_tokens
+        && left.agyUsage?.cache_read_tokens === right.agyUsage?.cache_read_tokens
+        && left.agyUsage?.total_tokens === right.agyUsage?.total_tokens
+        && left.totalCostUsd === right.totalCostUsd
+        && left.numTurns === right.numTurns
+        && left.durationMs === right.durationMs
+        && left.generationMs === right.generationMs
+        && left.generationOutputTokens === right.generationOutputTokens
+        && areUsageDataEqual(left.usage, right.usage)
+        && leftModels.length === rightModels.length
+        && leftModels.every(model => right.modelUsage[model] !== undefined
+            && areRoundModelUsagesEqual(left.modelUsage[model], right.modelUsage[model]))
 }
 
 function areStringArraysEqual(left?: string[] | null, right?: string[] | null): boolean {
@@ -118,16 +164,20 @@ function areUserTextBlocksEqual(left: UserTextBlock, right: UserTextBlock): bool
 
 function areAgentTextBlocksEqual(left: AgentTextBlock, right: AgentTextBlock): boolean {
     return left.text === right.text
+        && areStringArraysEqual(left.sourceMessageIds, right.sourceMessageIds)
         && left.localId === right.localId
         && left.createdAt === right.createdAt
         && left.meta === right.meta
+        && areRoundSummariesEqual(left.roundSummary, right.roundSummary)
 }
 
 function areAgentReasoningBlocksEqual(left: AgentReasoningBlock, right: AgentReasoningBlock): boolean {
     return left.text === right.text
+        && areStringArraysEqual(left.sourceMessageIds, right.sourceMessageIds)
         && left.localId === right.localId
         && left.createdAt === right.createdAt
         && left.meta === right.meta
+        && areRoundSummariesEqual(left.roundSummary, right.roundSummary)
 }
 
 function areCliOutputBlocksEqual(left: CliOutputBlock, right: CliOutputBlock): boolean {
@@ -136,6 +186,7 @@ function areCliOutputBlocksEqual(left: CliOutputBlock, right: CliOutputBlock): b
         && left.createdAt === right.createdAt
         && left.source === right.source
         && left.meta === right.meta
+        && areRoundSummariesEqual(left.roundSummary, right.roundSummary)
 }
 
 function areGeneratedImageBlocksEqual(left: GeneratedImageBlock, right: GeneratedImageBlock): boolean {
@@ -146,6 +197,7 @@ function areGeneratedImageBlocksEqual(left: GeneratedImageBlock, right: Generate
         && left.mimeType === right.mimeType
         && areInlineMediaSourcesEqual(left.source, right.source)
         && left.meta === right.meta
+        && areRoundSummariesEqual(left.roundSummary, right.roundSummary)
 }
 
 function areCodexReviewBlocksEqual(left: CodexReviewBlock, right: CodexReviewBlock): boolean {
@@ -153,6 +205,7 @@ function areCodexReviewBlocksEqual(left: CodexReviewBlock, right: CodexReviewBlo
         && left.localId === right.localId
         && left.createdAt === right.createdAt
         && left.meta === right.meta
+        && areRoundSummariesEqual(left.roundSummary, right.roundSummary)
 }
 
 function areAgentEventBlocksEqual(left: AgentEventBlock, right: AgentEventBlock): boolean {
@@ -174,10 +227,13 @@ function areToolCallsEqual(left: ToolCallBlock, right: ToolCallBlock, childrenSa
         && left.tool.description === right.tool.description
         && left.tool.createdAt === right.tool.createdAt
         && left.tool.startedAt === right.tool.startedAt
+        && left.tool.startUnavailable === right.tool.startUnavailable
+        && left.tool.executionDurationMs === right.tool.executionDurationMs
         && left.tool.completedAt === right.tool.completedAt
         && left.tool.execStartedAt === right.tool.execStartedAt
         && left.tool.execCompletedAt === right.tool.execCompletedAt
         && arePermissionsEqual(left.tool.permission, right.tool.permission)
+        && areRoundSummariesEqual(left.roundSummary, right.roundSummary)
 }
 
 function reconcileBlockList(blocks: ChatBlock[], prevById: ChatBlocksById): ChatBlock[] {

@@ -40,7 +40,7 @@ public enum PermissionMode: String, Codable, CaseIterable, Sendable {
         case .plan: return "Plan Mode"
         case .ask: return "Ask Mode"
         case .debug: return "Debug Mode"
-        case .autoReview: return "Auto-review"
+        case .autoReview: return "Auto"
         case .readOnly: return "Read Only"
         case .safeYolo: return "Safe Yolo"
         case .yolo: return "Yolo"
@@ -89,14 +89,18 @@ extension AgentFlavor {
     /// Claude set, and Pi offers none (its RPC mode always auto-approves).
     public var permissionModes: [PermissionMode] {
         switch self {
-        case .codex, .gemini, .kimi, .copilot:
+        case .codex:
+            return [.default, .readOnly, .autoReview, .yolo]
+        case .gemini, .kimi, .copilot:
             return [.default, .readOnly, .safeYolo, .yolo]
         case .grok:
             return [.default, .auto, .plan, .bypassPermissions]
         case .opencode:
             return [.default, .plan, .yolo]
+        case .dsh:
+            return []
         case .agy:
-            return [.requestReview, .alwaysProceed]
+            return [.requestReview, .acceptEdits, .plan, .alwaysProceed]
         case .cursor:
             return [.default, .plan, .ask, .debug, .autoReview, .yolo]
         case .pi:

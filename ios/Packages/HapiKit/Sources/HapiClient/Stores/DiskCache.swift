@@ -12,10 +12,11 @@ import Foundation
 /// repopulates.
 ///
 /// `@MainActor` by design: the owning stores are main-actor `@Observable`
-/// classes, so the pending-value bookkeeping needs no locking; only the
-/// actual file write hops off the main actor.
+/// classes, so the pending-value bookkeeping needs no locking; encoding and
+/// the file write hop off the main actor (a large hub's session list is
+/// megabytes of JSON — tens of ms per flush on the main thread).
 @MainActor
-public final class DiskCache<Value: Codable> {
+public final class DiskCache<Value: Codable & Sendable> {
     /// Snapshot location: `<directory>/<filename>`.
     public let fileURL: URL
 
@@ -70,21 +71,18 @@ public final class DiskCache<Value: Codable> {
         guard let value = pending else { return }
         let flushedGeneration = generation
         let url = fileURL
-        // Encode on the main actor (small JSON), write off it.
-        let data = try? HapiJSON.encoder.encode(value)
-        if let data {
-            await Task.detached(priority: .utility) {
-                do {
-                    try FileManager.default.createDirectory(
-                        at: url.deletingLastPathComponent(),
-                        withIntermediateDirectories: true
-                    )
-                    try data.write(to: url, options: .atomic)
-                } catch {
-                    // A failed snapshot write only costs the next cold start.
-                }
-            }.value
-        }
+        await Task.detached(priority: .utility) {
+            do {
+                let data = try HapiJSON.encoder.encode(value)
+                try FileManager.default.createDirectory(
+                    at: url.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try data.write(to: url, options: .atomic)
+            } catch {
+                // A failed snapshot write only costs the next cold start.
+            }
+        }.value
         // Cleared only when no newer value arrived during the write — a
         // superseding scheduleWrite keeps its value pending for its own
         // flush (same guarantee as the reference's identity check).

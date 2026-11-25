@@ -1,6 +1,6 @@
 import { useMutation } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
-import { markMessagesConsumed } from '@/lib/message-window-store'
+import { getMessageWindowState, markMessagesConsumed, markMessagesDispatching, markMessagesIndeterminate, markMessagesRequeued, reconcileQueuedLocalIds } from '@/lib/message-window-store'
 import { useTranslation } from '@/lib/use-translation'
 import { useToast } from '@/lib/toast-context'
 
@@ -30,7 +30,7 @@ export function useSteerQueuedMessage(api: ApiClient | null) {
             }
             return api.steerMessage(input.sessionId, input.messageId)
         },
-        onSuccess: (result, input) => {
+        onSuccess: async (result, input) => {
             if (result.status === 'failed') {
                 addToast({
                     title: t('queuedMessages.steerFailed'),
@@ -47,7 +47,36 @@ export function useSteerQueuedMessage(api: ApiClient | null) {
                 // stale actionable row (mirrors useCancelQueuedMessage).
                 markMessagesConsumed(input.sessionId, [result.message.localId], result.message.invokedAt)
             }
-            // status === 'steered': the messages-consumed SSE will remove the row.
+            if (result.status === 'steered' && result.localId && api) {
+                const localId = result.localId
+                const current = () => getMessageWindowState(input.sessionId).messages.find(message => message.localId === localId)
+                const before = current()
+                // A successful RPC can beat the pending SSE. Hold the row without
+                // claiming invocation, but never replace an already observed outcome.
+                if (!before || before.invokedAt !== null || before.deliveryState === 'indeterminate') return
+                markMessagesDispatching(input.sessionId, [localId])
+                const pending = current()
+                try {
+                    const state = await api.getQueuedState(input.sessionId, [localId])
+                    const invoked = state.invokedLocalMessages.find(message => message.localId === localId)
+                    if (invoked) {
+                        markMessagesConsumed(input.sessionId, [localId], invoked.invokedAt)
+                    } else if (current() === pending) {
+                        if (state.dispatchingLocalIds?.includes(localId)) {
+                            markMessagesDispatching(input.sessionId, [localId])
+                        } else if (state.indeterminateLocalIds?.includes(localId)) {
+                            markMessagesIndeterminate(input.sessionId, [localId])
+                        } else if (state.queuedLocalIds.includes(localId)) {
+                            markMessagesRequeued(input.sessionId, [localId])
+                        } else {
+                            reconcileQueuedLocalIds(input.sessionId, [localId], [])
+                        }
+                    }
+                } catch {
+                    // An unavailable readback is not evidence of rejection or
+                    // delivery. Preserve the hold until SSE/reconnect reconciles it.
+                }
+            }
         },
         onError: (error, input) => {
             addToast({

@@ -1,8 +1,9 @@
-import type { KimiPermissionMode } from '@hapi/protocol/types';
+import type { PermissionModeOf, Flavors } from '@hapi/protocol/types';
 
-export type PermissionMode = KimiPermissionMode;
+export type PermissionMode = PermissionModeOf<typeof Flavors.kimi>;
 
 export interface KimiMode {
     permissionMode: PermissionMode;
     model?: string;
+    effort?: string | null;
 }

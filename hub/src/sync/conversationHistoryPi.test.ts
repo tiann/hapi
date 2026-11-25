@@ -22,12 +22,13 @@ describe('Pi conversation-history hub integration', () => {
             store.messages.markMessagesInvoked(session.id, ['local-boundary'], Date.now())
             ;(engine as any).rpcGateway.rewindConversation = async () => ({
                 success: false,
-                error: 'Pi rewind was cancelled',
-                outcome: 'cancelled',
+                error: 'Codex native boundary is ambiguous',
+                code: 'ambiguous_native_boundary',
+                outcome: 'rejected',
             })
 
             await expect(engine.rewindConversation(session.id, 'default', 'local-boundary')).resolves.toEqual({
-                type: 'error', message: 'Pi rewind was cancelled',
+                type: 'error', message: 'Codex native boundary is ambiguous', code: 'ambiguous_native_boundary',
             })
             expect(engine.getSession(session.id)?.metadata?.conversationHistoryDiverged).not.toBe(true)
         } finally {
@@ -68,6 +69,7 @@ describe('Pi conversation-history hub integration', () => {
                 machineId: 'machine-1',
                 flavor: 'pi',
                 piSessionId: 'pi-source-native',
+                summary: { text: 'Pi source title', updatedAt: 100 },
                 capabilities: { conversationHistory: { forkCurrent: true, forkAtMessage: true, rewindToMessage: true } },
                 conversationHistoryPoints: { local1: true, local2: true },
                 conversationHistoryEntryIds: { local1: 'entry-1', local2: 'entry-2' },
@@ -125,15 +127,82 @@ describe('Pi conversation-history hub integration', () => {
             expect(capturedChildMetadata).toMatchObject({
                 flavor: 'pi',
                 piSessionId: 'pi-clone-native',
+                summary: { text: 'Fork: Pi source title', updatedAt: expect.any(Number) },
                 conversationHistoryEntryIds: { local1: 'entry-1', local2: 'entry-2', local3: 'entry-3' },
                 conversationHistoryPoints: { local1: true, local2: true, local3: true },
             })
             expect(store.messages.getAllMessages(result.sessionId).map((message) => message.localId)).toContain('local3')
+            expect(engine.getSession(result.sessionId)?.metadata?.summary).toMatchObject({
+                text: 'Fork: Pi source title',
+                updatedAt: expect.any(Number),
+            })
             expect(exactBinds).toEqual([[result.sessionId, 'pi-clone-native', 'piSessionId', true]])
             expect(spawnArgs[3]).toBeUndefined()
             expect(spawnArgs[9]).toBeUndefined()
             expect(engine.getSession(result.sessionId)?.model).toBeNull()
             expect(engine.getSession(result.sessionId)?.effort).toBeNull()
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it.each([true, false])('requires a child checkpoint and exact native binding for opencode (checkpoint=%s)', async (validCheckpoint) => {
+        const { store, engine } = createEngine()
+        try {
+            const source = engine.getOrCreateSession('oc-source', {
+                path: '/tmp/project',
+                host: 'localhost',
+                machineId: 'machine-1',
+                flavor: 'opencode',
+                capabilities: { conversationHistory: { forkCurrent: true, forkAtMessage: true, rewindToMessage: false } },
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: source.id, time: Date.now(), mode: 'remote' })
+            store.messages.addMessage(source.id, { role: 'user', content: 'one' }, 'local1')
+            store.messages.markMessagesInvoked(source.id, ['local1'], Date.now())
+
+            const checkpoint = { sessionId: 'oc-clone-native', messageIds: ['child-user'], userMessageIds: ['child-user'], localMessageIds: [] }
+            ;(engine as any).rpcGateway.forkConversation = async () => ({ nativeSessionId: 'oc-clone-native', opencodeHistoryCheckpoint: validCheckpoint ? checkpoint : undefined })
+            let spawnCalls = 0
+            ;(engine as any).rpcGateway.spawnSession = async (...args: unknown[]) => {
+                spawnCalls++
+                return { type: 'success', sessionId: args[12] }
+            }
+            ;(engine as any).rpcGateway.stopSession = async () => true
+            const exactBinds: unknown[][] = []
+            ;(engine as any).waitForExactNativeForkBound = async (...args: unknown[]) => {
+                expect(engine.getSession(String(args[0]))?.metadata?.opencodeForkPending).toBe(true)
+                exactBinds.push(args)
+                return true
+            }
+
+            const result = await engine.forkConversation(source.id, 'default')
+            if (!validCheckpoint) {
+                expect(result).toEqual({ type: 'error', message: 'OpenCode fork did not return a verified child history checkpoint' })
+                expect(spawnCalls).toBe(0)
+                return
+            }
+            if (result.type !== 'success') throw new Error(result.message)
+            expect(exactBinds).toEqual([[result.sessionId, 'oc-clone-native', 'opencodeSessionId', true]])
+            expect((store.sessions.getSession(result.sessionId)?.metadata as { opencodeHistoryCheckpoint?: unknown })?.opencodeHistoryCheckpoint).toEqual(checkpoint)
+            expect(engine.getSession(result.sessionId)?.metadata?.opencodeForkPending).toBeUndefined()
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it.each(['matching', 'mismatch', 'pending-publication'])('commits OpenCode child readiness even after requester loss only for verified identities (%s)', (state) => {
+        const matches = state === 'matching'
+        const { engine } = createEngine()
+        try {
+            const child = engine.getOrCreateSession('recovered-oc-child', {
+                path: '/tmp/project', host: 'fixture', flavor: 'opencode', opencodeForkPending: true,
+                opencodeSessionId: 'native-child',
+                opencodeHistoryCheckpoint: { sessionId: state === 'mismatch' ? 'wrong-native' : 'native-child', messageIds: [], userMessageIds: [], localMessageIds: [],
+                    ...(state === 'pending-publication' ? { localPublicationPending: true as const } : {}) }
+            }, null, 'default')
+            engine.handleSessionReady({ sid: child.id, time: Date.now() })
+            expect((engine as any).sessionReadyIds.has(child.id)).toBe(matches)
+            expect(engine.getSession(child.id)?.metadata?.opencodeForkPending).toBe(matches ? undefined : true)
         } finally {
             engine.stop()
         }

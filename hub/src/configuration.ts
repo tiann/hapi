@@ -23,7 +23,8 @@
  * - FCM_SERVICE_ACCOUNT_PATH: Firebase service-account JSON for Android push (settings: fcmServiceAccountPath;
  *   the project id comes from the JSON itself)
  * - HAPI_IOS_PUSH: iOS push transport apns|relay|off (default: relay; settings: iosPushMode)
- * - HAPI_PUSH_RELAY_URL: iOS push relay URL (settings: iosPushRelayUrl)
+ * - HAPI_ANDROID_PUSH: Android push transport auto|relay|fcm|off (default: auto; settings: androidPushMode)
+ * - HAPI_PUSH_RELAY_URL: shared native push relay URL (settings: iosPushRelayUrl)
  * - APNS_KEY_P8_PATH, APNS_KEY_ID, APNS_TEAM_ID, APNS_BUNDLE_ID, APNS_ENV:
  *   direct-APNs credentials (settings: apnsKeyP8Path, apnsKeyId, apnsTeamId, apnsBundleId, apnsEnv)
  * - HAPI_HOME: Data directory (default: ~/.hapi)
@@ -35,7 +36,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { getOrCreateCliApiToken } from './config/cliApiToken'
 import { applyProviderCredentialsFromSettings } from './config/providerCredentials'
-import { getSettingsFile } from './config/settings'
+import { getSettingsFile, updateSettings } from './config/settings'
 import { loadServerSettings, type ServerSettings, type ServerSettingsResult } from './config/serverSettings'
 
 export type ConfigSource = 'env' | 'file' | 'default'
@@ -50,6 +51,8 @@ export interface ConfigSources {
     listenPort: ConfigSource
     publicUrl: ConfigSource
     corsOrigins: ConfigSource
+    githubPrAwareness: ConfigSource
+    androidPushMode: ConfigSource
     fcmServiceAccountPath: ConfigSource
     iosPushMode: ConfigSource
     iosPushRelayUrl: ConfigSource
@@ -110,8 +113,15 @@ class Configuration {
     /** Allowed CORS origins for Mini App + Socket.IO (comma-separated env override) */
     public readonly corsOrigins: string[]
 
+    /**
+     * Opt-in GitHub PR awareness (session↔PR attach + chip). Mutable via PATCH /api/features
+     * unless pinned by HAPI_GITHUB_PR_AWARENESS. tiann/hapi#1162.
+     */
+    public githubPrAwareness: boolean
+
     // Push delivery (FCM + iOS/APNs) — nullable strings interpreted by
     // fcm/fcmConfig.ts and push-ios/iosPushConfig.ts.
+    public readonly androidPushMode: string | null
     public readonly fcmServiceAccountPath: string | null
     public readonly iosPushMode: string | null
     public readonly iosPushRelayUrl: string | null
@@ -146,6 +156,8 @@ class Configuration {
         this.listenPort = serverSettings.listenPort
         this.publicUrl = serverSettings.publicUrl
         this.corsOrigins = serverSettings.corsOrigins
+        this.githubPrAwareness = serverSettings.githubPrAwareness
+        this.androidPushMode = serverSettings.androidPushMode
         this.fcmServiceAccountPath = serverSettings.fcmServiceAccountPath
         this.iosPushMode = serverSettings.iosPushMode
         this.iosPushRelayUrl = serverSettings.iosPushRelayUrl
@@ -221,10 +233,31 @@ class Configuration {
         this.cliApiTokenIsNew = isNew
         ;(this.sources as { cliApiToken: string }).cliApiToken = source
     }
+
+    /**
+     * Persist githubPrAwareness to settings.json and update in-memory state.
+     * Refuses when the value is pinned by HAPI_GITHUB_PR_AWARENESS.
+     */
+    async setGithubPrAwareness(enabled: boolean): Promise<void> {
+        if (this.sources.githubPrAwareness === 'env') {
+            throw new Error('githubPrAwareness is pinned by HAPI_GITHUB_PR_AWARENESS')
+        }
+        await updateSettings(this.settingsFile, (settings) => ({
+            settings: { ...settings, githubPrAwareness: enabled },
+            result: undefined
+        }))
+        this.githubPrAwareness = enabled
+        ;(this.sources as { githubPrAwareness: ConfigSource }).githubPrAwareness = 'file'
+    }
 }
 
 // Singleton instance (set by createConfiguration)
 let _configuration: Configuration | null = null
+
+/** @internal Reset the singleton after a test removes its data directory. */
+export function resetConfigurationForTests(dataDir?: string): void {
+    if (dataDir === undefined || _configuration?.dataDir === dataDir) _configuration = null
+}
 
 /**
  * Create and initialize configuration asynchronously.

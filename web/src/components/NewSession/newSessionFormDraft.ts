@@ -1,14 +1,16 @@
 import {
     CREATABLE_AGENT_FLAVORS,
-    GROK_PERMISSION_MODES,
+    Flavors,
+    getYoloToggleMigrationMode,
     getPermissionModesForFlavor,
     normalizeCopilotAgentMode,
     type CodexCollaborationMode,
     type CopilotAgentMode,
-    type GrokPermissionMode,
+    type PermissionModeOf,
     type PermissionMode
 } from '@hapi/protocol'
 import type { AgentType, LaunchEffort, CodexReasoningEffort, NewSessionServiceTier, SessionType } from './types'
+import { resolvePermissionModeForFlavor } from '@hapi/protocol/peerSpawnDefaults'
 
 const DRAFT_STORAGE_KEY = 'hapi:new-session-form-draft'
 
@@ -23,8 +25,8 @@ export type NewSessionFormDraft = {
     collaborationMode: CodexCollaborationMode
     copilotAgentMode: CopilotAgentMode
     yoloMode: boolean
-    codexFamilyPermissionMode: PermissionMode
-    grokPermissionMode: GrokPermissionMode
+    nativePermissionMode: PermissionMode
+    grokPermissionMode: PermissionModeOf<typeof Flavors.grok>
     sessionType: SessionType
     worktreeName: string
 }
@@ -72,20 +74,22 @@ export function loadNewSessionFormDraft(): NewSessionFormDraft | null {
                 ? normalizeCopilotAgentMode(parsed.copilotAgentMode)
                 : 'interactive',
             yoloMode: Boolean(parsed.yoloMode),
-            codexFamilyPermissionMode: (() => {
+            nativePermissionMode: (() => {
                 const modes = getPermissionModesForFlavor(restoredAgent)
-                const parsedMode = parsed.codexFamilyPermissionMode as PermissionMode | undefined
+                const parsedMode = parsed.nativePermissionMode as PermissionMode | undefined
                 if (agentPreserved && parsedMode && modes.includes(parsedMode)) {
                     return parsedMode
                 }
-                if (agentPreserved && parsed.yoloMode && modes.includes('yolo')) {
-                    return 'yolo'
+                const yoloMigrationMode = getYoloToggleMigrationMode(restoredAgent)
+                if (agentPreserved && parsedMode === undefined && parsed.yoloMode && yoloMigrationMode && modes.includes(yoloMigrationMode)) {
+                    return yoloMigrationMode
                 }
-                return 'default'
+                return resolvePermissionModeForFlavor('default', restoredAgent)
             })(),
             grokPermissionMode: agentPreserved
-                && GROK_PERMISSION_MODES.includes(parsed.grokPermissionMode as GrokPermissionMode)
-                ? parsed.grokPermissionMode as GrokPermissionMode
+                && typeof parsed.grokPermissionMode === 'string'
+                && Flavors.grok.allowsPermissionMode(parsed.grokPermissionMode)
+                ? parsed.grokPermissionMode
                 : 'default',
             sessionType: (parsed.sessionType as SessionType | undefined) ?? 'simple',
             worktreeName: typeof parsed.worktreeName === 'string' ? parsed.worktreeName : ''

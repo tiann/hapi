@@ -37,7 +37,7 @@ class CatalogTest {
         assertEquals(PermissionModeTone.Info, PermissionMode.Plan.tone)
         assertEquals("Accept Edits", PermissionMode.AcceptEdits.label)
         assertEquals(PermissionModeTone.Warning, PermissionMode.AcceptEdits.tone)
-        assertEquals("Auto-review", PermissionMode.AutoReview.label)
+        assertEquals("Auto", PermissionMode.AutoReview.label)
         assertEquals("Read Only", PermissionMode.ReadOnly.label)
         assertEquals(PermissionModeTone.Neutral, PermissionMode.Default.tone)
         assertEquals(PermissionModeTone.Danger, PermissionMode.AlwaysProceed.tone)
@@ -50,13 +50,16 @@ class CatalogTest {
             PermissionModes.forFlavor("claude").map { it.wireId }
         )
         assertEquals(
-            listOf("default", "read-only", "safe-yolo", "yolo"),
+            listOf("default", "read-only", "autoReview", "yolo"),
             PermissionModes.forFlavor("codex").map { it.wireId }
         )
-        // gemini/kimi/copilot share the codex list.
-        assertEquals(PermissionModes.forFlavor("codex"), PermissionModes.forFlavor("gemini"))
-        assertEquals(PermissionModes.forFlavor("codex"), PermissionModes.forFlavor("kimi"))
-        assertEquals(PermissionModes.forFlavor("codex"), PermissionModes.forFlavor("copilot"))
+        assertEquals(
+            listOf("default", "read-only", "safe-yolo", "yolo"),
+            PermissionModes.forFlavor("gemini").map { it.wireId }
+        )
+        // kimi/copilot share the gemini list.
+        assertEquals(PermissionModes.forFlavor("gemini"), PermissionModes.forFlavor("kimi"))
+        assertEquals(PermissionModes.forFlavor("gemini"), PermissionModes.forFlavor("copilot"))
         assertEquals(
             listOf("default", "auto", "plan", "bypassPermissions"),
             PermissionModes.forFlavor("grok").map { it.wireId }
@@ -66,7 +69,7 @@ class CatalogTest {
             PermissionModes.forFlavor("opencode").map { it.wireId }
         )
         assertEquals(
-            listOf("request-review", "always-proceed"),
+            listOf("request-review", "acceptEdits", "plan", "always-proceed"),
             PermissionModes.forFlavor("agy").map { it.wireId }
         )
         assertEquals(
@@ -90,7 +93,7 @@ class CatalogTest {
     @Test
     fun `agent flavors match AGENT_FLAVORS and CREATABLE excludes gemini`() {
         assertEquals(
-            listOf("agy", "claude", "codex", "copilot", "cursor", "gemini", "grok", "kimi", "opencode", "pi"),
+            listOf("agy", "claude", "codex", "dsh", "copilot", "cursor", "gemini", "grok", "kimi", "opencode", "pi"),
             AgentFlavor.KNOWN.map { it.id }
         )
         assertFalse(AgentFlavor.CREATABLE.contains(AgentFlavor.Gemini))
@@ -109,11 +112,13 @@ class CatalogTest {
         assertTrue(Flavors.supportsEffort("pi"))
         assertFalse(Flavors.supportsEffort("codex"))
         assertFalse(Flavors.supportsEffort(null))
-        assertTrue(AgentFlavor.KNOWN.all { Flavors.supportsModelChange(it.id) })
+        assertTrue(AgentFlavor.KNOWN.filter { it != AgentFlavor.Dsh }.all { Flavors.supportsModelChange(it.id) })
+        assertFalse(Flavors.supportsModelChange("dsh"))
         assertFalse(Flavors.supportsModelChange("unknown"))
         assertEquals("Antigravity", Flavors.label("agy"))
         assertEquals("Grok Build", Flavors.label("grok"))
         assertEquals("OpenCode", Flavors.label("opencode"))
+        assertEquals("DeepSeek Harness", Flavors.label("dsh"))
         assertEquals("Unknown", Flavors.label("mystery"))
         assertTrue(Flavors.isCodexFamily("copilot"))
         assertFalse(Flavors.isCodexFamily("claude"))

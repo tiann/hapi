@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import type { Session } from '@hapi/protocol/types'
 import { Store } from '../store'
 import { RpcRegistry } from '../socket/rpcRegistry'
@@ -28,6 +28,16 @@ describe('SyncEngine reopen/resume PTY session id preservation', () => {
 
     const NAMESPACE = 'default'
 
+    /** Minimal MachineCache stand-in; must include expireInactive (SyncEngine's 5s timer). */
+    function fakeMachineCache() {
+        return {
+            getOnlineMachinesByNamespace: () => [
+                { id: 'machine-x', metadata: { host: 'localhost' } }
+            ],
+            expireInactive: () => {}
+        }
+    }
+
     function baseMetadata(overrides: Record<string, unknown> = {}): Record<string, unknown> {
         return {
             path: '/tmp/proj',
@@ -50,13 +60,7 @@ describe('SyncEngine reopen/resume PTY session id preservation', () => {
 
     function installFakeRunner(): void {
         const cache = (engine as unknown as { sessionCache: import('./sessionCache').SessionCache }).sessionCache
-        ;(engine as unknown as { machineCache: unknown }).machineCache = {
-            getOnlineMachinesByNamespace: () => [
-                { id: 'machine-x', metadata: { host: 'localhost' } }
-            ],
-            expireInactive: () => {}
-        }
-        ;(engine as unknown as { waitForSessionActive: unknown }).waitForSessionActive = async () => true
+        ;(engine as unknown as { machineCache: unknown }).machineCache = fakeMachineCache()        ;(engine as unknown as { waitForSessionActive: unknown }).waitForSessionActive = async () => true
         ;(engine as unknown as { waitForSessionReady: unknown }).waitForSessionReady = async () => 'ready'
         ;(engine as unknown as { rpcGateway: { spawnSession: unknown } }).rpcGateway.spawnSession =
             async (...args: unknown[]) => {
@@ -99,6 +103,10 @@ describe('SyncEngine reopen/resume PTY session id preservation', () => {
         installFakeRunner()
     })
 
+    afterEach(() => {
+        engine.stop()
+    })
+
     it('clears stale readiness before spawning the same-id PTY replacement', async () => {
         const sessionId = insertSession(
             'pty-session-stale-ready',
@@ -131,15 +139,12 @@ describe('SyncEngine reopen/resume PTY session id preservation', () => {
 
 
 
-    it('keeps the archive snapshot persisted across a PTY reopen so a hub restart can still recover it', async () => {
-        // The snapshot used for rollback lives only in memory, so clearing the
-        // archive metadata before the resume is durably recorded leaves an
-        // inactive, non-archived ghost row if the hub restarts in between. The
-        // CLI's sessionFactory re-stamps lifecycleState='running' on boot (and
-        // drops archivedBy/archiveReason, which it never preserves), so keeping
-        // the snapshot until then is safe — this is the same reason Pi defers it.
+    it('clears archive metadata on PTY reopen before spawn (#1911 M1)', async () => {
+        // Hub store rejects un-archive without allowUnarchive, so reopen must
+        // clear archive before spawn (same as non-PTY). Attempt row carries
+        // archiveSnapshot for rollback / quarantine durability.
         const sessionId = insertSession(
-            'pty-session-archive-durable',
+            'pty-session-archive-clear',
             baseMetadata({ lifecycleState: 'archived', archivedBy: 'hub', archiveReason: 'inactivity' }),
             { startingMode: 'pty' }
         ).id
@@ -148,7 +153,106 @@ describe('SyncEngine reopen/resume PTY session id preservation', () => {
 
         expect(result).toEqual({ type: 'success', sessionId, resumed: true })
         const metadata = store.sessions.getSession(sessionId)?.metadata as Record<string, unknown> | undefined
+        expect(metadata?.lifecycleState).not.toBe('archived')
+        expect(metadata?.archivedBy).toBeUndefined()
+        expect(metadata?.archiveReason).toBeUndefined()
+    })
+
+    it('keeps archiveSnapshot on PTY quarantine after clear-before-spawn (#1911 Major 2)', async () => {
+        // Clear-before-spawn + rollbackSafe:false must not lose archive fields —
+        // they live on ptyResumeAttempt.archiveSnapshot (mirror Pi).
+        const sessionId = insertSession(
+            'pty-session-archive-durable',
+            baseMetadata({ lifecycleState: 'archived', archivedBy: 'hub', archiveReason: 'inactivity' }),
+            { startingMode: 'pty' }
+        ).id
+        ;(engine as any).rpcGateway.spawnSession = async () => {
+            engine.handleSessionAlive({ sid: sessionId, time: Date.now() })
+            return { type: 'success', sessionId }
+        }
+        ;(engine as any).waitForSessionReady = async () => 'timeout'
+        ;(engine as any).rpcGateway.stopRunnerSession = async () => 'still_alive'
+
+        const first = await engine.reopenSession(sessionId, NAMESPACE)
+
+        expect(first).toMatchObject({ type: 'error', code: 'resume_failed', rollbackSafe: false })
+        const metadata = engine.getSessionByNamespace(sessionId, NAMESPACE)?.metadata as any
+        expect(metadata?.lifecycleState).not.toBe('archived')
+        expect(metadata?.ptyResumeAttempt).toMatchObject({
+            state: 'quarantined',
+            machineId: 'machine-x',
+            archiveSnapshot: {
+                lifecycleState: 'archived',
+                archivedBy: 'hub',
+                archiveReason: 'inactivity',
+            },
+        })
+    })
+
+    it('restores archive from PTY archiveSnapshot when a failed resume child is gone', async () => {
+        // Clear-before-spawn drops live archive fields; when the child is then
+        // confirmed gone, writePtyResumeAttempt(..., restoreArchive) must put
+        // them back from the attempt snapshot (mirror Pi).
+        const sessionId = insertSession(
+            'pty-session-archive-restore',
+            baseMetadata({ lifecycleState: 'archived', archivedBy: 'hub', archiveReason: 'inactivity' }),
+            { startingMode: 'pty' }
+        ).id
+        ;(engine as any).rpcGateway.spawnSession = async () => ({ type: 'success', sessionId })
+        ;(engine as any).waitForSessionActive = async () => false
+        ;(engine as any).rpcGateway.stopRunnerSession = async () => 'already_gone'
+
+        const result = await engine.reopenSession(sessionId, NAMESPACE)
+
+        expect(result).toMatchObject({ type: 'error', code: 'resume_failed' })
+        expect((engine.getSessionByNamespace(sessionId, NAMESPACE)?.metadata as any)?.ptyResumeAttempt)
+            .toBeUndefined()
+        const metadata = engine.getSessionByNamespace(sessionId, NAMESPACE)?.metadata as any
         expect(metadata?.lifecycleState).toBe('archived')
+        expect(metadata?.archivedBy).toBe('hub')
+        expect(metadata?.archiveReason).toBe('inactivity')
+    })
+
+    it('restores archive from a persisted PTY quarantine snapshot when the child is already gone', async () => {
+        const sessionId = insertSession(
+            'pty-session-archive-restore-persisted',
+            baseMetadata({
+                lifecycleState: 'running',
+                ptyResumeAttempt: {
+                    state: 'quarantined',
+                    machineId: 'machine-x',
+                    startedAt: 1,
+                    archiveSnapshot: {
+                        lifecycleState: 'archived',
+                        lifecycleStateSince: 100,
+                        archivedBy: 'hub',
+                        archiveReason: 'inactivity',
+                    },
+                },
+            }),
+            { startingMode: 'pty' }
+        ).id
+        engine.handleSessionAlive({ sid: sessionId, time: Date.now() })
+        let spawnCalls = 0
+        ;(engine as any).rpcGateway.stopRunnerSession = async () => 'already_gone'
+        ;(engine as any).rpcGateway.spawnSession = async () => {
+            spawnCalls += 1
+            // After reconcile restores archive, reopen continues into resume —
+            // refuse spawn so we can assert the restored archive stuck.
+            return { type: 'error', message: 'spawn refused for assert' }
+        }
+
+        const result = await engine.reopenSession(sessionId, NAMESPACE)
+
+        expect(result).toMatchObject({ type: 'error', message: 'spawn refused for assert' })
+        expect(spawnCalls).toBe(1)
+        const metadata = engine.getSessionByNamespace(sessionId, NAMESPACE)?.metadata as any
+        // resumeSession clear-before-spawn will have cleared again after the
+        // reconcile restore; the attempt snapshot must still re-restore on the
+        // failed spawn finally path.
+        expect(metadata?.ptyResumeAttempt).toBeUndefined()
+        expect(metadata?.lifecycleState).toBe('archived')
+        expect(metadata?.lifecycleStateSince).toBe(100)
         expect(metadata?.archivedBy).toBe('hub')
         expect(metadata?.archiveReason).toBe('inactivity')
     })
@@ -236,11 +340,7 @@ describe('SyncEngine reopen/resume PTY session id preservation', () => {
         engine.handleSessionAlive({ sid: sessionId, time: Date.now() })
 
         const restarted = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
-        ;(restarted as any).machineCache = {
-            getOnlineMachinesByNamespace: () => [{ id: 'machine-x', metadata: { host: 'localhost' } }],
-            expireInactive: () => {}
-        }
-        ;(restarted as any).rpcGateway.stopRunnerSession = async () => 'still_alive'
+        ;(restarted as any).machineCache = fakeMachineCache()        ;(restarted as any).rpcGateway.stopRunnerSession = async () => 'still_alive'
 
         const result = await restarted.reopenSession(sessionId, NAMESPACE)
 
@@ -262,11 +362,7 @@ describe('SyncEngine reopen/resume PTY session id preservation', () => {
         engine.handleSessionAlive({ sid: sessionId, time: Date.now() })
 
         const restarted = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
-        ;(restarted as any).machineCache = {
-            getOnlineMachinesByNamespace: () => [{ id: 'machine-x', metadata: { host: 'localhost' } }],
-            expireInactive: () => {}
-        }
-        ;(restarted as any).rpcGateway.stopRunnerSession = async () => 'already_gone'
+        ;(restarted as any).machineCache = fakeMachineCache()        ;(restarted as any).rpcGateway.stopRunnerSession = async () => 'already_gone'
         ;(restarted as any).rpcGateway.spawnSession = async () => {
             restarted.handleSessionAlive({ sid: sessionId, time: Date.now() })
             restarted.handleSessionReady({ sid: sessionId, time: Date.now() })

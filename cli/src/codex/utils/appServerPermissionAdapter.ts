@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { logger } from '@/ui/logger';
-import type { CodexPermissionMode } from '@hapi/protocol/types';
+import type { PermissionModeOf, Flavors } from '@hapi/protocol/types';
 import type { CodexPermissionHandler } from './permissionHandler';
 import type { CodexAppServerClient } from '../codexAppServerClient';
 
@@ -22,6 +22,7 @@ type ElicitationSchemaProperty = {
 };
 
 type UserInputAnswer = Record<string, string[]> | Record<string, { answers: string[] }>;
+export const IGNORE_SHARED_REQUEST = Symbol('ignore-shared-request');
 
 function asRecord(value: unknown): Record<string, unknown> | null {
     if (!value || typeof value !== 'object') {
@@ -370,15 +371,20 @@ function buildElicitationContent(params: unknown, answers: UserInputAnswer): Rec
     return content;
 }
 
-function isHapiBridgeElicitation(params: unknown): boolean {
+function elicitationServerName(params: unknown): string | undefined {
     const record = asRecord(params);
-    return record?.serverName === 'hapi';
+    return asString(record?.serverName);
+}
+
+function isHapiBridgeElicitation(params: unknown): boolean {
+    return elicitationServerName(params) === 'hapi';
 }
 
 export function registerAppServerPermissionHandlers(args: {
-    client: CodexAppServerClient;
-    permissionHandler: CodexPermissionHandler;
-    getPermissionMode?: () => CodexPermissionMode | undefined;
+    client: Pick<CodexAppServerClient, 'registerRequestHandler'>;
+    permissionHandler: Pick<CodexPermissionHandler, 'handleToolCall'>;
+    shared?: boolean;
+    getPermissionMode?: () => PermissionModeOf<typeof Flavors.codex> | undefined;
     onUserInputRequest?: (request: { id: string; input: unknown }) => Promise<
         | { decision: 'accept'; answers: UserInputAnswer }
         | { decision: 'decline' | 'cancel' }
@@ -482,7 +488,8 @@ export function registerAppServerPermissionHandlers(args: {
         const request = unwrapElicitationRequest(params);
 
         // HAPI's own bridge only asks for values whose safe defaults are defined by HAPI.
-        if (isHapiBridgeElicitation(params)) {
+        // MCP tool-call approvals still route through the permission handler (trusted envelope provenance).
+        if (isHapiBridgeElicitation(params) && !getMcpToolApprovalMeta(params)) {
             return {
                 action: 'accept',
                 content: buildAcceptedElicitationContent(request),
@@ -497,13 +504,15 @@ export function registerAppServerPermissionHandlers(args: {
             const result = await permissionHandler.handleToolCall(
                 requestId,
                 approval.toolName,
-                approval.input
+                approval.input,
+                { trustedHapiMcp: isHapiBridgeElicitation(params) }
             ) as PermissionResult;
             return mapMcpToolApprovalDecision(result.decision, approvalMeta);
         }
 
         const input = buildElicitationUserInput(params);
         if (!onUserInputRequest || !input) {
+            if (args.shared) return IGNORE_SHARED_REQUEST;
             logger.debug('[CodexAppServer] Cancelling unsupported MCP elicitation request', {
                 serverName: record.serverName,
                 mode: request.mode,

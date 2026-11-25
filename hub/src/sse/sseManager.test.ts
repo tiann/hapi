@@ -1,6 +1,26 @@
 import { describe, expect, it } from 'bun:test'
 import { SSEManager } from './sseManager'
 import type { SyncEvent } from '../sync/syncEngine'
+
+it('closes a stalled subscriber once pending writes reach the bound', () => {
+    const manager = new SSEManager(0, new VisibilityTracker())
+    let closed = 0
+    manager.subscribe({ id: 'slow', namespace: 'default', all: true,
+        send: () => new Promise<void>(() => {}), sendHeartbeat: () => {}, close: () => { closed++ } })
+    for (let i = 0; i < 4200; i++) manager.broadcast({ type: 'session-updated', sessionId: 's', namespace: 'default' })
+    expect(closed).toBe(1)
+    expect(manager.hasSubscription('slow')).toBe(false)
+})
+
+it('also bounds stalled subscriber writes by bytes', () => {
+    const manager = new SSEManager(0, new VisibilityTracker())
+    let closed = 0
+    manager.subscribe({ id: 'slow-bytes', namespace: 'default', all: true,
+        send: () => new Promise<void>(() => {}), sendHeartbeat: () => {}, close: () => { closed++ } })
+    for (let i = 0; i < 10; i++) manager.broadcast({ type: 'session-updated', sessionId: 'x'.repeat(512 * 1024), namespace: 'default' })
+    expect(closed).toBe(1)
+    expect(manager.hasSubscription('slow-bytes')).toBe(false)
+})
 import { VisibilityTracker } from '../visibility/visibilityTracker'
 
 describe('SSEManager namespace filtering', () => {
@@ -332,5 +352,105 @@ describe('SSEManager reconnect replay', () => {
         expect(fresh.resume).toBe('ok')
         expect(fresh.replay).toHaveLength(1)
         expect(fresh.replay[0]?.event).toMatchObject({ sessionId: 'big-3' })
+    })
+})
+
+describe('SSEManager agy catalog announcements', () => {
+    it('reaches the global connection the app always keeps open, and no other namespace', () => {
+        // The app runs one `all` connection plus a session-scoped one
+        // (web/src/lib/appSseSubscriptions.ts), so this is what decides whether
+        // an open in-session picker hears about a new catalog.
+        const manager = new SSEManager(0, new VisibilityTracker())
+        const globalAlpha: SyncEvent[] = []
+        const sessionAlpha: SyncEvent[] = []
+        const machineAlpha: SyncEvent[] = []
+        const globalBeta: SyncEvent[] = []
+
+        manager.subscribe({
+            id: 'alpha-global', namespace: 'alpha', all: true,
+            send: (event) => { globalAlpha.push(event) }, sendHeartbeat: () => {}
+        })
+        manager.subscribe({
+            id: 'alpha-session', namespace: 'alpha', all: false, sessionId: 's1',
+            send: (event) => { sessionAlpha.push(event) }, sendHeartbeat: () => {}
+        })
+        manager.subscribe({
+            id: 'alpha-machine', namespace: 'alpha', all: false, machineId: 'm1',
+            send: (event) => { machineAlpha.push(event) }, sendHeartbeat: () => {}
+        })
+        manager.subscribe({
+            id: 'beta-global', namespace: 'beta', all: true,
+            send: (event) => { globalBeta.push(event) }, sendHeartbeat: () => {}
+        })
+
+        manager.broadcast({ type: 'machine-agy-models-updated', machineId: 'm1', namespace: 'alpha' })
+
+        expect(globalAlpha).toHaveLength(1)
+        expect(machineAlpha).toHaveLength(1)
+        // A session-scoped connection carries no machineId, so it is not the
+        // route: the global connection is.
+        expect(sessionAlpha).toHaveLength(0)
+        expect(globalBeta).toHaveLength(0)
+    })
+
+    it('serializes each broadcast once and shares the encoded payload across live and replayed subscribers', () => {
+        const manager = new SSEManager(0, new VisibilityTracker())
+        const payloadsA: Array<string | undefined> = []
+        const payloadsB: Array<string | undefined> = []
+
+        const sub1 = manager.subscribe({
+            id: 'a',
+            namespace: 'alpha',
+            all: true,
+            send: (_event, _eventId, serialized) => { payloadsA.push(serialized) },
+            sendHeartbeat: () => {}
+        })
+        manager.subscribe({
+            id: 'b',
+            namespace: 'alpha',
+            all: true,
+            send: (_event, _eventId, serialized) => { payloadsB.push(serialized) },
+            sendHeartbeat: () => {}
+        })
+        expect(sub1.resume).toBe('gap')
+
+        const stringifyCallsBefore = JSON.stringify
+        let calls = 0
+        JSON.stringify = ((...args: Parameters<typeof JSON.stringify>) => {
+            calls += 1
+            return stringifyCallsBefore(...args)
+        }) as typeof JSON.stringify
+        try {
+            const seenCursorIds: string[] = []
+            manager.subscribe({
+                id: 'c',
+                namespace: 'alpha',
+                all: true,
+                send: (_event, id) => { if (id) seenCursorIds.push(id) },
+                sendHeartbeat: () => {}
+            })
+            const event1: SyncEvent = { type: 'session-updated', sessionId: 's-1', namespace: 'alpha' }
+            const event2: SyncEvent = { type: 'session-updated', sessionId: 's-2', namespace: 'alpha' }
+            manager.broadcast(event1)
+            manager.broadcast(event2)
+
+            expect(calls).toBe(2)
+            expect(payloadsA).toEqual([stringifyCallsBefore(event1), stringifyCallsBefore(event2)])
+            expect(payloadsB).toEqual([stringifyCallsBefore(event1), stringifyCallsBefore(event2)])
+
+            const reconnect = manager.subscribe({
+                id: 'd',
+                namespace: 'alpha',
+                all: true,
+                resumeFrom: seenCursorIds[0],
+                send: () => {},
+                sendHeartbeat: () => {}
+            })
+            expect(calls).toBe(2)
+            expect(reconnect.resume).toBe('ok')
+            expect(reconnect.replay.map((entry) => entry.serialized)).toEqual([stringifyCallsBefore(event2)])
+        } finally {
+            JSON.stringify = stringifyCallsBefore
+        }
     })
 })

@@ -50,6 +50,7 @@ public final class WindowMessage: Sendable, Equatable {
     // MARK: Wire fields (`DecryptedMessageSchema`, with tri-state invokedAt)
 
     /// Server uuid. Optimistic rows use the client `localId` until echoed.
+    public let contentRevision: Int?
     public let id: String
     /// Per-session insert counter; `nil` on optimistic rows.
     public let seq: Int?
@@ -69,6 +70,7 @@ public final class WindowMessage: Sendable, Equatable {
     public let status: MessageStatus?
 
     public init(
+        contentRevision: Int? = nil,
         id: String,
         seq: Int? = nil,
         localId: String? = nil,
@@ -78,6 +80,7 @@ public final class WindowMessage: Sendable, Equatable {
         scheduledAt: Int? = nil,
         status: MessageStatus? = nil
     ) {
+        self.contentRevision = contentRevision
         self.id = id
         self.seq = seq
         self.localId = localId
@@ -95,6 +98,7 @@ public final class WindowMessage: Sendable, Equatable {
     /// tri-state and this initializer picks it up).
     public convenience init(wire: DecryptedMessage, status: MessageStatus? = nil) {
         self.init(
+            contentRevision: wire.contentRevision,
             id: wire.id,
             seq: wire.seq,
             localId: wire.localId,
@@ -146,6 +150,7 @@ public final class WindowMessage: Sendable, Equatable {
     /// Copy with `invokedAt` stamped to an explicit number.
     public func withInvokedAt(_ invokedAt: Int) -> WindowMessage {
         WindowMessage(
+            contentRevision: contentRevision,
             id: id, seq: seq, localId: localId, content: content,
             createdAt: createdAt, invokedAt: .number(invokedAt),
             scheduledAt: scheduledAt, status: status
@@ -159,6 +164,7 @@ public final class WindowMessage: Sendable, Equatable {
     /// Copy with the client-side status replaced.
     public func withStatus(_ status: MessageStatus) -> WindowMessage {
         WindowMessage(
+            contentRevision: contentRevision,
             id: id, seq: seq, localId: localId, content: content,
             createdAt: createdAt, invokedAt: invokedAt,
             scheduledAt: scheduledAt, status: status
@@ -169,6 +175,7 @@ public final class WindowMessage: Sendable, Equatable {
     /// `normalizeDecryptedMessage`).
     public var asDecryptedMessage: DecryptedMessage {
         DecryptedMessage(
+            contentRevision: contentRevision,
             id: id,
             seq: seq,
             localId: localId,
@@ -189,6 +196,7 @@ public final class WindowMessage: Sendable, Equatable {
 /// when explicit null.
 extension WindowMessage: Codable {
     private enum CodingKeys: String, CodingKey {
+        case contentRevision
         case id, seq, localId, content, createdAt, invokedAt, scheduledAt, status
     }
 
@@ -205,6 +213,7 @@ extension WindowMessage: Codable {
             invokedAt = .absent
         }
         self.init(
+            contentRevision: try container.decodeIfPresent(Int.self, forKey: .contentRevision),
             id: try container.decode(String.self, forKey: .id),
             seq: try container.decodeIfPresent(Int.self, forKey: .seq),
             localId: try container.decodeIfPresent(String.self, forKey: .localId),
@@ -221,6 +230,7 @@ extension WindowMessage: Codable {
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(contentRevision, forKey: .contentRevision)
         try container.encode(id, forKey: .id)
         // Optional-encoding writes explicit `null`s for seq/localId, matching
         // the wire rows the hub emits.

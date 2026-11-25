@@ -1,12 +1,35 @@
-import type { AgentState, Metadata, Session, TodoItem, WorktreeMetadata } from './schemas'
+import type { AgentState, AttachedJob, ExternalRef, Metadata, Session, TodoItem, WorktreeMetadata } from './schemas'
+import type { SessionReadState } from './sessionReadState'
+import type { ConversationHistoryCapabilities } from './conversationHistory'
 import { isKnownFlavor } from './flavors'
 import type { AgentFlavor } from './modes'
+
+export type ForkSessionSummary = {
+    text: string
+    updatedAt: number
+}
+
+/** Seed a fork's generated/native title without claiming manual-name ownership. */
+export function buildForkSessionSummary(
+    metadata: { name?: string; summary?: { text?: string } | null } | null | undefined,
+    updatedAt: number = Date.now()
+): ForkSessionSummary | undefined {
+    const sourceTitle = metadata?.name?.trim() || metadata?.summary?.text?.trim()
+    if (!sourceTitle) return undefined
+
+    return {
+        text: `Fork: ${sourceTitle}`,
+        updatedAt
+    }
+}
 
 export type PendingRequestKind = 'permission' | 'input'
 
 const INPUT_REQUEST_TOOLS = new Set([
     'AskUserQuestion',
     'ask_user_question',
+    'CursorAskQuestion',
+    'cursor_ask_question',
     'ExitPlanMode',
     'exit_plan_mode',
     'request_user_input'
@@ -28,29 +51,58 @@ export type PendingRequest = {
     since: number
 }
 
-function classifyKind(tool: string): PendingRequestKind {
+/** Whether a request asks the user to answer something (a question, a plan)
+ *  or to allow a tool. */
+export function classifyKind(tool: string): PendingRequestKind {
     return INPUT_REQUEST_TOOLS.has(tool) ? 'input' : 'permission'
 }
 
 export type SessionSummaryMetadata = {
     name?: string
+    titleLocked?: boolean
     path: string
     machineId?: string
     summary?: { text: string }
+    promptTitle?: string
     flavor?: string | null
     worktree?: WorktreeMetadata
     agentSessionId?: string
+    codexImportedAt?: number | null
     lifecycleState?: string
+    /** Structured contribution links (GitHub PRs, …). tiann/hapi#1160. */
+    externalRefs?: ExternalRef[]
+    conversationHistory?: ConversationHistoryCapabilities
     /** Loopback MCP URL when session CLI happy server is running (#956). */
     hapiMcpUrl?: string
+    lastModelError?: {
+        eventId: string
+        kind: string
+        transient: boolean
+        rawSnippet: string
+        atTs: number
+        priorAssistantClaimsDone: boolean
+        bridgedForEventId?: string
+        retriedAndFailed?: boolean
+        supersededByUserTurn?: boolean
+        bridgeable?: boolean
+        acknowledgedAt?: number
+        notifiedAt?: number
+    }
 }
 
 export type SessionSummary = {
+    contentRevision?: number
+    readState?: SessionReadState
+    hasConversationContent?: boolean
     id: string
     active: boolean
     thinking: boolean
     activeAt: number
     updatedAt: number
+    /** Creation time is the stable order key before the first user message. */
+    createdAt?: number
+    /** Original timestamp of the latest user message; absent before any input. */
+    lastUserMessageAt?: number
     pinned?: boolean
     globalPinned?: boolean
     metadata: SessionSummaryMetadata | null
@@ -68,9 +120,24 @@ export type SessionSummary = {
      *  `pendingRequestsCount`. */
     pendingRequests: PendingRequest[]
     backgroundTaskCount: number
+    /**
+     * Hub-derived "open tool work exists in the transcript tail" (work-scoped
+     * liveness). True when the hub's sweep found a tool call that started but
+     * never settled — the autonomous-round case where `thinking` is false and
+     * no background task is declared, yet the agent is demonstrably working.
+     * Optional because older hubs never send it.
+     */
+    derivedToolWork?: boolean
     futureScheduledMessageCount: number
     /** Epoch ms of the soonest uninvoked future scheduled message, or null. */
     nextScheduledAt: number | null
+    /**
+     * Primary running session-attached job (tiann/hapi#1404), or null.
+     * Independent of agent `active` / thinking — work that outlives the agent.
+     */
+    attachedJob: AttachedJob | null
+    /** Watermark for versioned `attachedJob` SSE patches (dual EventSource race). */
+    attachedJobUpdatedAt: number
     model: string | null
     modelReasoningEffort?: string | null
     effort: string | null
@@ -148,7 +215,7 @@ export function computeTodoProgress(todos: TodoItem[] | undefined): SessionSumma
     }
 }
 
-const AGENT_SESSION_ID_FIELD_BY_FLAVOR = {
+const AGENT_SESSION_ID_FIELD_BY_FLAVOR: Partial<Record<AgentFlavor, keyof Metadata>> = {
     claude: 'claudeSessionId',
     codex: 'codexSessionId',
     gemini: 'geminiSessionId',
@@ -158,13 +225,15 @@ const AGENT_SESSION_ID_FIELD_BY_FLAVOR = {
     cursor: 'cursorSessionId',
     kimi: 'kimiSessionId',
     copilot: 'copilotSessionId',
-    pi: 'piSessionId'
-} as const satisfies Record<AgentFlavor, keyof Metadata>
+    pi: 'piSessionId',
+    dsh: 'dshSessionId'
+}
 
 function getSummaryAgentSessionId(metadata: Metadata): string | undefined {
     const flavor = metadata.flavor
     if (isKnownFlavor(flavor)) {
         const flavorField = AGENT_SESSION_ID_FIELD_BY_FLAVOR[flavor]
+        if (!flavorField) return undefined
         const flavorSessionId = metadata[flavorField]
         return typeof flavorSessionId === 'string' && flavorSessionId.trim()
             ? flavorSessionId.trim()
@@ -181,6 +250,7 @@ function getSummaryAgentSessionId(metadata: Metadata): string | undefined {
         ?? metadata.cursorSessionId
         ?? metadata.kimiSessionId
         ?? metadata.copilotSessionId
+        ?? metadata.dshSessionId
         ?? undefined
 }
 
@@ -190,24 +260,54 @@ export function toSessionSummaryMetadata(metadata: Metadata | null | undefined):
     }
     return {
         name: metadata.name,
+        titleLocked: metadata.titleLocked,
         path: metadata.path,
         machineId: metadata.machineId ?? undefined,
         summary: metadata.summary ? { text: metadata.summary.text } : undefined,
+        promptTitle: metadata.promptTitle,
         flavor: metadata.flavor ?? null,
         worktree: metadata.worktree,
         agentSessionId: getSummaryAgentSessionId(metadata),
+        codexImportedAt: metadata.codexImportedAt,
         lifecycleState: metadata.lifecycleState,
-        hapiMcpUrl: metadata.hapiMcpUrl ?? undefined
+        externalRefs: metadata.externalRefs,
+        conversationHistory: metadata.capabilities?.conversationHistory,
+        hapiMcpUrl: metadata.hapiMcpUrl ?? undefined,
+        // Omit lastUserMessage — bridge recovery text stays in full session
+        // metadata only; list/SSE summaries must not ship up to 32 KB of prompt.
+        lastModelError: metadata.lastModelError
+            ? (() => {
+                const {
+                    lastUserMessage: _omitLastUserMessage,
+                    ...summaryError
+                } = metadata.lastModelError
+                return summaryError
+            })()
+            : undefined
     }
 }
 
-export function toSessionSummary(session: Session): SessionSummary {
+export function toSessionSummary(
+    session: Session,
+    extras?: {
+        attachedJob?: AttachedJob | null
+        /** Explicit SSE/list watermark; required when attachedJob is null so
+         *  a REST refetch does not reset the client gate to 0. */
+        attachedJobUpdatedAt?: number
+    }
+): SessionSummary {
+    const attachedJob = extras?.attachedJob ?? null
     return {
+        hasConversationContent: session.hasConversationContent ?? false,
         id: session.id,
         active: session.active,
         thinking: session.thinking,
         activeAt: session.activeAt,
         updatedAt: session.updatedAt,
+        contentRevision: session.contentRevision,
+        readState: session.readState,
+        createdAt: session.createdAt,
+        lastUserMessageAt: session.lastUserMessageAt,
         pinned: session.pinned ?? false,
         globalPinned: session.globalPinned ?? false,
         metadata: toSessionSummaryMetadata(session.metadata),
@@ -219,8 +319,13 @@ export function toSessionSummary(session: Session): SessionSummary {
         pendingRequestKinds: computePendingRequestKinds(session.agentState),
         pendingRequests: computePendingRequests(session.agentState, session.updatedAt),
         backgroundTaskCount: session.backgroundTaskCount ?? 0,
+        derivedToolWork: session.derivedToolWork === true,
         futureScheduledMessageCount: 0,
         nextScheduledAt: null,
+        attachedJob,
+        attachedJobUpdatedAt: extras?.attachedJobUpdatedAt
+            ?? attachedJob?.updatedAt
+            ?? 0,
         model: session.model,
         modelReasoningEffort: session.modelReasoningEffort,
         effort: session.effort

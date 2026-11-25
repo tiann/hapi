@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { ChatToolCall } from '@/chat/types'
 import { Badge } from '@/components/ui/badge'
@@ -7,48 +7,21 @@ import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 import { isAskUserQuestionToolName, parseAskUserQuestionInput, type AskUserQuestionQuestion } from '@/components/ToolCard/askUserQuestion'
 import { isCursorAskQuestionToolName, parseCursorAskQuestionInput } from '@/components/ToolCard/cursorAskQuestion'
 import {
-    AskUserQuestionOptionBody,
+    AskUserQuestionOptionRow,
+    askUserQuestionNavButtonClassName,
     askUserQuestionQuoteClassName,
-    getAskUserQuestionOptionFrameClassName,
     type AskUserQuestionChoiceMode
 } from '@/components/ToolCard/askUserQuestionOptionCard'
+import {
+    askUserQuestionDraftKey,
+    clearAskUserQuestionDraft,
+    getAskUserQuestionDraft,
+    saveAskUserQuestionDraft,
+} from '@/lib/ask-user-question-drafts'
 import { cn } from '@/lib/utils'
 import { usePlatform } from '@/hooks/usePlatform'
 import { Spinner } from '@/components/Spinner'
 import { useTranslation } from '@/lib/use-translation'
-
-const questionNavButtonClassName = 'h-8 rounded-full border-[var(--app-border)] bg-[var(--app-tool-card-bg)] px-3.5 text-[var(--app-fg)] hover:border-[var(--app-md-quote-border)] hover:bg-[var(--app-subtle-bg)]'
-
-function OptionRow(props: {
-    checked: boolean
-    mode: AskUserQuestionChoiceMode
-    disabled: boolean
-    title: string
-    description?: string | null
-    onClick: () => void
-}) {
-    return (
-        <button
-            type="button"
-            role={props.mode === 'multi' ? 'checkbox' : 'radio'}
-            aria-checked={props.checked}
-            className={getAskUserQuestionOptionFrameClassName(
-                props.checked,
-                'w-full text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] disabled:pointer-events-none disabled:opacity-50'
-            )}
-            disabled={props.disabled}
-            onClick={props.onClick}
-        >
-            <AskUserQuestionOptionBody
-                checked={props.checked}
-                mode={props.mode}
-                title={props.title}
-                description={props.description}
-                interactive
-            />
-        </button>
-    )
-}
 
 function computeAnswersForQuestion(
     question: AskUserQuestionQuestion,
@@ -101,6 +74,8 @@ export function AskUserQuestionFooter(props: {
     ), [props.tool.name, props.tool.input, useStableQuestionIds])
     const questions = parsed.questions
 
+    const draftKey = askUserQuestionDraftKey(props.sessionId, props.tool.id)
+
     const [step, setStep] = useState(0)
     const [selectedByQuestion, setSelectedByQuestion] = useState<number[][]>([])
     const [otherSelectedByQuestion, setOtherSelectedByQuestion] = useState<boolean[]>([])
@@ -110,15 +85,52 @@ export function AskUserQuestionFooter(props: {
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
 
+    // Mirrors the answer-in-progress fields above so the cleanup below can
+    // persist the latest values without depending on them (which would tear
+    // down and rebuild the draft-restore effect on every keystroke).
+    const draftStateRef = useRef({ step, selectedByQuestion, otherSelectedByQuestion, otherTextByQuestion, fallbackText })
+    draftStateRef.current = { step, selectedByQuestion, otherSelectedByQuestion, otherTextByQuestion, fallbackText }
+    // Set once `run` below submits or denies successfully, so an unmount that
+    // follows (e.g. a session switch right after answering) can't resurrect
+    // the just-cleared draft via the cleanup's own save.
+    const submittedRef = useRef(false)
+
     useEffect(() => {
-        setStep(0)
-        setSelectedByQuestion(questions.map(() => []))
-        setOtherSelectedByQuestion(questions.map(() => false))
-        setOtherTextByQuestion(questions.map(() => ''))
-        setFallbackText('')
+        // Restores a session-switch remount's own in-progress answer (SessionChat
+        // keys the whole subtree by session.id — see its own comment), and, since
+        // draftKey also changes for a genuinely new question, still resets to
+        // blank when this instance is reused for a different tool call (hapi#1734).
+        submittedRef.current = false
+        const draft = getAskUserQuestionDraft(draftKey)
+        const restored = {
+            step: draft?.step ?? 0,
+            selectedByQuestion: draft?.selectedByQuestion ?? questions.map(() => []),
+            otherSelectedByQuestion: draft?.otherSelectedByQuestion ?? questions.map(() => false),
+            otherTextByQuestion: draft?.otherTextByQuestion ?? questions.map(() => ''),
+            fallbackText: draft?.fallbackText ?? '',
+        }
+        // React (StrictMode, dev only) replays this effect as setup → cleanup →
+        // setup right on mount, before the setState calls below have flowed
+        // through a render. Without this, the cleanup's save would read the
+        // ref's still-pre-restore render values and, being blank, delete the
+        // draft this same effect just loaded — so the replayed setup restores
+        // nothing. Setting the ref here makes the premature cleanup a harmless
+        // re-save of exactly what was just loaded.
+        draftStateRef.current = restored
+        setStep(restored.step)
+        setSelectedByQuestion(restored.selectedByQuestion)
+        setOtherSelectedByQuestion(restored.otherSelectedByQuestion)
+        setOtherTextByQuestion(restored.otherTextByQuestion)
+        setFallbackText(restored.fallbackText)
         setLoading(false)
         setError(null)
-    }, [props.tool.id])
+
+        return () => {
+            if (!submittedRef.current) {
+                saveAskUserQuestionDraft(draftKey, draftStateRef.current)
+            }
+        }
+    }, [draftKey])
 
     if (!permission || permission.status !== 'pending') return null
     if (!isAskUserQuestionToolName(props.tool.name)) return null
@@ -128,6 +140,8 @@ export function AskUserQuestionFooter(props: {
         setError(null)
         try {
             await action()
+            submittedRef.current = true
+            clearAskUserQuestionDraft(draftKey)
             haptic.notification(hapticType)
             props.onDone()
         } catch (e) {
@@ -194,6 +208,15 @@ export function AskUserQuestionFooter(props: {
 
         setLoading(true)
         await run(() => props.api.approvePermission(props.sessionId, permission.id, { answers }), 'success')
+        setLoading(false)
+    }
+
+    // Dismisses the question without answering it (agy's "esc Skip"): the
+    // backend maps the denial to a decline / cancel for the agent.
+    const skip = async () => {
+        if (loading || props.disabled) return
+        setLoading(true)
+        await run(() => props.api.denyPermission(props.sessionId, permission.id), 'success')
         setLoading(false)
     }
 
@@ -283,7 +306,23 @@ export function AskUserQuestionFooter(props: {
     }
 
     return (
-        <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
+        <div
+            className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg)] p-3"
+            onKeyDown={(e) => {
+                if (e.key !== 'Escape' || e.defaultPrevented || e.nativeEvent.isComposing) return
+                e.preventDefault()
+                // Esc in a text field only leaves it, so typed text isn't discarded.
+                const target = e.target
+                if (target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement) {
+                    target.blur()
+                    return
+                }
+                void skip()
+            }}
+        >
+            <div className="mb-2 text-xs text-[var(--app-hint)]">
+                {t('tool.waitingForReply')}
+            </div>
             <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                     <div className="flex items-center gap-2">
@@ -320,7 +359,7 @@ export function AskUserQuestionFooter(props: {
                 <div className="mt-3">
                     <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0 flex-1">
-                            {questions[clampedStep]?.header ? (
+                            {questions.length > 1 && questions[clampedStep]?.header ? (
                                 <div className="flex items-center gap-2">
                                     <Badge variant="default">
                                         {questions[clampedStep].header}
@@ -342,7 +381,7 @@ export function AskUserQuestionFooter(props: {
                         {questions[clampedStep].options.map((opt, optIdx) => {
                             const selected = (selectedByQuestion[clampedStep] ?? []).includes(optIdx)
                             return (
-                                <OptionRow
+                                <AskUserQuestionOptionRow
                                     key={optIdx}
                                     checked={selected}
                                     mode={mode}
@@ -354,16 +393,18 @@ export function AskUserQuestionFooter(props: {
                             )
                         })}
 
-                        <OptionRow
-                            checked={otherSelectedByQuestion[clampedStep] ?? false}
-                            mode={mode}
-                            disabled={props.disabled || loading}
-                            title={t('tool.other')}
-                            description={t('tool.otherDescription')}
-                            onClick={() => toggleOther(clampedStep)}
-                        />
+                        {questions[clampedStep].allowFreeText ? (
+                            <AskUserQuestionOptionRow
+                                checked={otherSelectedByQuestion[clampedStep] ?? false}
+                                mode={mode}
+                                disabled={props.disabled || loading}
+                                title={t('tool.other')}
+                                description={t('tool.otherDescription')}
+                                onClick={() => toggleOther(clampedStep)}
+                            />
+                        ) : null}
 
-                        {(otherSelectedByQuestion[clampedStep] ?? false) ? (
+                        {questions[clampedStep].allowFreeText && (otherSelectedByQuestion[clampedStep] ?? false) ? (
                             <textarea
                                 value={otherTextByQuestion[clampedStep] ?? ''}
                                 onChange={(e) => updateOtherText(clampedStep, e.target.value)}
@@ -385,7 +426,7 @@ export function AskUserQuestionFooter(props: {
                             size="sm"
                             disabled={props.disabled || loading || clampedStep === 0}
                             onClick={prev}
-                            className={questionNavButtonClassName}
+                            className={askUserQuestionNavButtonClassName}
                         >
                             {t('tool.prev')}
                         </Button>
@@ -393,6 +434,16 @@ export function AskUserQuestionFooter(props: {
                 </div>
 
                 <div className="flex items-center gap-2">
+                    <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={props.disabled || loading}
+                        onClick={skip}
+                        className={askUserQuestionNavButtonClassName}
+                    >
+                        {t('tool.skip')}
+                    </Button>
                     {questions.length > 1 && clampedStep < questions.length - 1 ? (
                         <Button
                             type="button"
@@ -400,7 +451,7 @@ export function AskUserQuestionFooter(props: {
                             size="sm"
                             disabled={props.disabled || loading}
                             onClick={next}
-                            className={questionNavButtonClassName}
+                            className={askUserQuestionNavButtonClassName}
                         >
                             {t('tool.next')}
                         </Button>
@@ -412,16 +463,13 @@ export function AskUserQuestionFooter(props: {
                             disabled={props.disabled || loading}
                             onClick={submit}
                             aria-busy={loading}
-                            className={cn(questionNavButtonClassName, 'gap-2')}
+                            className={cn(askUserQuestionNavButtonClassName, 'gap-2')}
                         >
                             {loading ? (
-                                <>
-                                    <Spinner size="sm" label={null} className="text-[var(--app-fg)]" />
-                                    {t('tool.submitting')}
-                                </>
-                            ) : (
-                                t('tool.submit')
-                            )}
+                                <Spinner size="sm" label={null} className="text-[var(--app-fg)]" />
+                            ) : null}
+                            {/* Keep the label element stable if browser translation replaces its text node. */}
+                            <span>{loading ? t('tool.submitting') : t('tool.submit')}</span>
                         </Button>
                     )}
                 </div>

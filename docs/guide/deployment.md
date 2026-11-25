@@ -1,6 +1,15 @@
+---
+description: "Run the HAPI hub and runner as persistent background services and expose the hub through the relay, a tunnel or a reverse proxy."
+---
+
 # Deployment
 
 Run the hub and runner as persistent background services, and configure remote access tunnels.
+
+[Native iOS / Android apps](./native-apps.md#pair-with-your-hub) connect to the
+same hub as the web app. Provide an HTTPS hub origin for pairing; Android
+rejects cleartext URLs. The push relay used for native notifications is a
+separate service from the network tunnels described here.
 
 ## Relay tunnel details
 
@@ -50,22 +59,39 @@ https://tailscale.com/download
 
 ```bash
 sudo tailscale up
-hapi hub
 ```
 
-Access via your Tailscale IP:
+The default hub listens only on loopback. For browser access directly via
+your Tailscale IP, start it with:
+
+```bash
+HAPI_LISTEN_HOST=0.0.0.0 hapi hub
+```
+
+Restrict inbound access to the trusted network with your firewall, then open:
 
 ```
 http://100.x.x.x:3006
 ```
+
+For native apps and HTTPS-only browser features, use an HTTPS endpoint
+(for example, Tailscale Serve forwarding to the loopback hub) instead.
 </details>
 
 <details>
 <summary>Public IP / Reverse Proxy</summary>
 
-If the hub has a public IP, access directly via `http://your-hub-ip:3006`.
+Keep the hub on its default `127.0.0.1:3006` and put an HTTPS reverse proxy
+(Nginx, Caddy, etc.) in front of it. A public IP alone does not make the
+loopback listener remotely accessible. Set `HAPI_LISTEN_HOST` only when you
+need another bind address, and restrict direct access with your firewall.
 
-Use HTTPS (via Nginx, Caddy, etc.) for production.
+Set `HAPI_PUBLIC_URL` to the proxy's HTTPS origin (for example
+`https://hapi.example.com`, without a path). Passkeys, the Telegram Mini App
+and the default CORS origin depend on it; see
+[Authentication](./authentication.md#passkeys). Proxy the hub at the root of
+that origin, not under a path prefix, and keep long-lived SSE and WebSocket
+connections open (no response buffering).
 
 **Self-signed certificates (HTTPS)**
 
@@ -104,6 +130,7 @@ Simple one-liner for quick background runs:
 
 ```bash
 # Hub
+mkdir -p ~/.hapi/logs
 nohup hapi hub --relay > ~/.hapi/logs/hub.log 2>&1 &
 
 # Runner
@@ -282,7 +309,7 @@ RestartSec=5
 WantedBy=default.target
 ```
 
-> **Why `KillMode=process`?** The runner spawns each agent session as a detached child process (`detached: true` in `cli/src/runner/run.ts`) so that sessions stay alive when the runner exits. Without `KillMode=process`, systemd's default `KillMode=control-group` sends SIGTERM to every PID in the runner's cgroup when the unit stops, defeating the detach and forcibly archiving every running session. `KillMode=process` preserves the contract: stopping or restarting the runner only signals the runner itself; agent sessions stay alive, and a fresh runner re-establishes control via the existing socket.io reconnect path. This applies to runner upgrades, manual restarts, and any reboot in which the runner unit is stopped before agents have finished.
+> **Why `KillMode=process`?** Agent sessions are detached from the runner. The default `KillMode=control-group` would terminate them when the runner service stops; `KillMode=process` preserves them during runner restarts and upgrades. It does not keep processes running through an operating-system shutdown or sleep.
 
 Enable and start:
 

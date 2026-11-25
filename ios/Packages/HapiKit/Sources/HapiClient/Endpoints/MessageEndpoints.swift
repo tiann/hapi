@@ -109,4 +109,15 @@ extension APIClient {
             body: QueuedStateRequest(localIds: localIds)
         )
     }
+
+    /// `GET /api/sessions/:id/messages/:messageId/context` — a bounded history
+    /// window centered on one message, or null when it does not resolve. The
+    /// gap-recovery sweep re-reads out-of-page merged rows through it (web
+    /// `getMessageContext`).
+    public func messageContext(sessionId: String, messageId: String) async throws -> MessageContextResponse? {
+        try await request(
+            .get,
+            "/api/sessions/\(encodePathComponent(sessionId))/messages/\(encodePathComponent(messageId))/context"
+        )
+    }
 }

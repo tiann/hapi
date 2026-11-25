@@ -30,7 +30,6 @@ function getParentUuid(message: NormalizedMessage): string | null {
 }
 
 function getParentToolUseId(message: NormalizedMessage): string | null {
-    if (message.role !== 'agent') return null
     return message.parentToolUseId ?? null
 }
 
@@ -111,10 +110,14 @@ export function traceMessages(messages: NormalizedMessage[]): TracedMessage[] {
             }
         }
 
-        if (sidechainId && uuid) {
-            state.uuidToSidechainId.set(uuid, sidechainId)
+        if (sidechainId) {
+            if (uuid) {
+                state.uuidToSidechainId.set(uuid, sidechainId)
+            }
             results.push({ ...message, sidechainId })
-            results.push(...processOrphans(state, uuid, sidechainId))
+            if (uuid) {
+                results.push(...processOrphans(state, uuid, sidechainId))
+            }
             continue
         }
 

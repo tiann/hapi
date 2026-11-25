@@ -17,6 +17,7 @@
         ],
         "newestCursor": null,
         "olderCursor": null,
+        "readThroughRevision": null,
         "viewMode": "tail"
     },
     "fixtureVersion": 1,

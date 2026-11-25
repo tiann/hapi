@@ -2,6 +2,7 @@ package app.hapi.companion.feature.settings
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.edit
+import app.hapi.companion.ui.theme.ColorThemePreset
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -77,12 +78,55 @@ class ThemePrefsTest {
             dataStore.edit {
                 it[ThemePrefs.MODE_KEY] = "amoled-ultra"
                 it[LanguagePrefs.LANGUAGE_KEY] = "klingon"
+                it[ThemePrefs.PRESET_KEY] = "windows-95"
             }
             assertEquals(ThemeMode.SYSTEM, ThemePrefs(dataStore).settings.first().mode)
             // Unknown language keys degrade to follow-system (B-M5a default).
             assertEquals(AppLanguage.SYSTEM, LanguagePrefs(dataStore).language.first())
+            // Unknown preset ids degrade to the built-in schemes.
+            assertEquals(
+                ColorThemePreset.DEFAULT,
+                ThemePrefs(dataStore).settings.first().preset,
+            )
         } finally {
             scope.coroutineContext[Job]?.cancelAndJoin()
+        }
+    }
+
+    @Test
+    fun `color theme preset round-trips and survives a cold start`() = runTest {
+        val file = storeFile("preset")
+
+        val firstScope = newScope()
+        try {
+            val prefs = ThemePrefs(PreferenceDataStoreFactory.create(scope = firstScope) { file })
+            prefs.setPreset(ColorThemePreset.NORD)
+            assertEquals(
+                ColorThemePreset.NORD,
+                prefs.settings.first().preset,
+            )
+            // Switching back stores "default" explicitly: "never configured"
+            // and "deliberately default" persist identically on Android,
+            // where the key always carries a value.
+            prefs.setPreset(ColorThemePreset.DEFAULT)
+            assertEquals(
+                ColorThemePreset.DEFAULT,
+                prefs.settings.first().preset,
+            )
+            prefs.setPreset(ColorThemePreset.NORD)
+        } finally {
+            firstScope.coroutineContext[Job]?.cancelAndJoin()
+        }
+
+        val secondScope = newScope()
+        try {
+            val prefs = ThemePrefs(PreferenceDataStoreFactory.create(scope = secondScope) { file })
+            assertEquals(
+                ColorThemePreset.NORD,
+                prefs.settings.first().preset,
+            )
+        } finally {
+            secondScope.coroutineContext[Job]?.cancelAndJoin()
         }
     }
 

@@ -1,0 +1,142 @@
+{
+    "description": "Before the native tool_use arrives, synthesize one local question card keyed by toolCallId, with the independent reply ID preserved.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "local-user",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Choose a database."
+            },
+            {
+                "createdAt": 1755000001100,
+                "id": "toolu_local_question",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "toolu_local_question",
+                    "input": {
+                        "questions": [
+                            {
+                                "header": "Database",
+                                "multiSelect": false,
+                                "options": [
+                                    {
+                                        "description": "Local file",
+                                        "label": "SQLite"
+                                    },
+                                    {
+                                        "description": "Server",
+                                        "label": "Postgres"
+                                    }
+                                ],
+                                "question": "Which database?"
+                            }
+                        ]
+                    },
+                    "name": "AskUserQuestion",
+                    "permission": {
+                        "status": "pending"
+                    },
+                    "state": "pending"
+                }
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "local-user",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Choose a database."
+            },
+            {
+                "createdAt": 1755000001100,
+                "id": "toolu_local_question",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "toolu_local_question",
+                    "input": {
+                        "questions": [
+                            {
+                                "header": "Database",
+                                "multiSelect": false,
+                                "options": [
+                                    {
+                                        "description": "Local file",
+                                        "label": "SQLite"
+                                    },
+                                    {
+                                        "description": "Server",
+                                        "label": "Postgres"
+                                    }
+                                ],
+                                "question": "Which database?"
+                            }
+                        ]
+                    },
+                    "name": "AskUserQuestion",
+                    "permission": {
+                        "status": "pending"
+                    },
+                    "state": "pending"
+                }
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": {
+            "controlledByUser": true,
+            "requests": {
+                "claude-local:reply-1": {
+                    "arguments": {
+                        "questions": [
+                            {
+                                "header": "Database",
+                                "multiSelect": false,
+                                "options": [
+                                    {
+                                        "description": "Local file",
+                                        "label": "SQLite"
+                                    },
+                                    {
+                                        "description": "Server",
+                                        "label": "Postgres"
+                                    }
+                                ],
+                                "question": "Which database?"
+                            }
+                        ]
+                    },
+                    "createdAt": 1755000001100,
+                    "tool": "AskUserQuestion",
+                    "toolCallId": "toolu_local_question"
+                }
+            }
+        },
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Choose a database.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "local-user",
+                "localId": null,
+                "seq": 1
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "permission-local-question-synthesized"
+}

@@ -45,6 +45,12 @@ data class SessionMetadata(
     val kimiSessionId: String? = null,
     val copilotSessionId: String? = null,
     val piSessionId: String? = null,
+    val dshSessionId: String? = null,
+    /**
+     * Hub-owned "translate my messages to English" toggle; written only via
+     * `PATCH /api/sessions/:id {translateInput}`. Absent ⇒ off.
+     */
+    val translateInput: Boolean? = null,
 )
 
 /** `metadata.summary` on the detail session (`{text, updatedAt}`). */
@@ -67,6 +73,7 @@ data class WorktreeMetadata(
 /** `SessionCapabilitiesSchema`. */
 @Serializable
 data class SessionCapabilities(
+    val concurrentClients: Boolean? = null,
     val terminal: Boolean? = null,
     val conversationHistory: ConversationHistoryCapabilities? = null,
 )

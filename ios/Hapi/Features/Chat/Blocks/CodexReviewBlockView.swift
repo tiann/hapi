@@ -8,8 +8,13 @@ import SwiftUI
 struct CodexReviewBlockView: View {
     let block: CodexReviewBlock
 
-    @State private var findingsOpen = false
+    @ChatStoredState private var findingsOpen: Bool
     @Environment(\.hapiTheme) private var theme
+
+    init(block: CodexReviewBlock) {
+        self.block = block
+        _findingsOpen = ChatStoredState(wrappedValue: false, id: block.id, field: "findings")
+    }
 
     var body: some View {
         let review = block.review
@@ -33,7 +38,7 @@ struct CodexReviewBlockView: View {
             if let explanation = review.overallExplanation,
                !explanation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Divider()
-                MarkdownView(markdown: explanation)
+                CachedMarkdownView(markdown: explanation)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
             }
@@ -100,7 +105,7 @@ private struct FindingRow: View {
             HStack(spacing: 6) {
                 if let priority = finding.priority {
                     let value = Int(priority.rounded())
-                    Text("P\(value)")
+                    Text(verbatim: "P\(value)")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(value <= 1 ? Color.red : Color.secondary)
                         .padding(.horizontal, 4)
@@ -117,7 +122,7 @@ private struct FindingRow: View {
                 .font(.footnote)
             if let location = formatLocation(finding) {
                 Text(location)
-                    .font(.system(size: 10, design: .monospaced))
+                    .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
             }
         }

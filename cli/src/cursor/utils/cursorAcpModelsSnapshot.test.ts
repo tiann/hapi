@@ -48,7 +48,7 @@ describe('buildCursorModelsSnapshotFromAcp', () => {
         expect(snapshot?.availableModels).toHaveLength(2);
     });
 
-    it('synthesizes Composer fast variants from parameterized model + fast config options', () => {
+    it('keeps parameterized model + fast options as bare bases without synthesizing wires', () => {
         const backend = {
             getSessionModelsMetadata: () => ({
                 availableModels: [{ modelId: 'composer-2.5', name: 'Composer 2.5' }],
@@ -87,10 +87,10 @@ describe('buildCursorModelsSnapshotFromAcp', () => {
 
         const snapshot = buildCursorModelsSnapshotFromAcp(backend, 's1');
 
-        expect(snapshot?.availableModels.map((entry) => entry.modelId).sort()).toEqual([
-            'composer-2.5[fast=false]',
-            'composer-2.5[fast=true]'
-        ]);
-        expect(snapshot?.currentModelId).toBe('composer-2.5[fast=false]');
+        // `composer-2.5[fast=…]` is rejected by Cursor's `--model` whenever the wire
+        // omits another parameter of the model, so only the bare base is advertised.
+        expect(snapshot?.availableModels.map((entry) => entry.modelId)).toEqual(['composer-2.5']);
+        expect(snapshot?.currentModelId).toBe('composer-2.5');
+        expect(snapshot?.parameterized).toBe(true);
     });
 });

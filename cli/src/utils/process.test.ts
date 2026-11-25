@@ -1,0 +1,647 @@
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+
+const { spawnSyncMock } = vi.hoisted(() => ({
+    spawnSyncMock: vi.fn()
+}))
+
+vi.mock('cross-spawn', () => ({
+    default: {
+        sync: spawnSyncMock
+    }
+}))
+
+import { getHapiRunnerProcessIdentity, killProcess, killProcessTreeByPid } from './process'
+import { monotonicTimeMs } from './time'
+import { windowsSystemTool } from './windowsSystemTools'
+
+vi.mock('@/utils/time', async (original) => ({
+    ...await original<typeof import('@/utils/time')>(), monotonicTimeMs: () => Date.now()
+}))
+
+const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')
+
+function setPlatform(value: NodeJS.Platform): void {
+    Object.defineProperty(process, 'platform', {
+        value,
+        configurable: true
+    })
+}
+
+function completed(stdout: string, status = 0) {
+    return {
+        status,
+        stdout: Buffer.from(stdout),
+        stderr: Buffer.from('')
+    }
+}
+
+function unavailable(command: string) {
+    const error = new Error(`spawnSync ${command} ENOENT`) as NodeJS.ErrnoException
+    error.code = 'ENOENT'
+    return {
+        status: null,
+        stdout: Buffer.from(''),
+        stderr: Buffer.from(''),
+        error
+    }
+}
+
+describe('preparation signal deadline on POSIX', () => {
+    beforeEach(() => {
+        setPlatform('linux')
+        vi.useFakeTimers()
+        spawnSyncMock.mockReset()
+        spawnSyncMock.mockReturnValue({ status: 1, stdout: '', stderr: '' })
+        vi.spyOn(process, 'kill').mockReturnValue(true)
+    })
+    afterEach(() => {
+        vi.useRealTimers()
+        vi.restoreAllMocks()
+        if (originalPlatformDescriptor) Object.defineProperty(process, 'platform', originalPlatformDescriptor)
+    })
+    it('does not signal a tree after its preparation authorization expired', async () => {
+        expect(await killProcessTreeByPid(5544, false, undefined, monotonicTimeMs() - 1)).toBe(false)
+        expect(vi.mocked(process.kill).mock.calls.filter(([, signal]) => signal !== 0)).toEqual([])
+    })
+    it('does not escalate to SIGKILL after the lease expires during the graceful wait', async () => {
+        const stopped = killProcess(5544, false, monotonicTimeMs() + 100)
+        await vi.advanceTimersByTimeAsync(2500)
+        expect(await stopped).toBe(false)
+        expect(vi.mocked(process.kill).mock.calls.filter(([, signal]) => signal !== 0)).toEqual([[5544, 'SIGTERM']])
+    })
+})
+
+describe('getHapiRunnerProcessIdentity on Windows', () => {
+    it.each(['', '[]', '{}', '{broken', JSON.stringify([{ ProcessId: 100, CreationDate: 'generation' }]),
+        JSON.stringify([{ ProcessId: process.pid }, { ProcessId: process.pid }]),
+        JSON.stringify([{ ProcessId: process.pid }, { ProcessId: 1.5 }]),
+        JSON.stringify([{ ProcessId: process.pid }, { ProcessId: -1 }])])(
+        'rejects an unverifiable complete process-generation snapshot: %s', async (stdout) => {
+            const { readWindowsProcessStartMarkers } = await import('./process')
+            spawnSyncMock.mockReturnValue(completed(stdout))
+            expect(readWindowsProcessStartMarkers()).toBeNull()
+        }
+    )
+
+    it('keeps present processes with unknown creation times distinct from absent processes', async () => {
+        const { readWindowsProcessStartMarkers } = await import('./process')
+        spawnSyncMock.mockReturnValue(completed(JSON.stringify([
+            { ProcessId: process.pid, CreationDate: 'scanner-generation' },
+            { ProcessId: 100, CreationDate: null }
+        ])))
+        const snapshot = readWindowsProcessStartMarkers()!
+        expect(snapshot.has(100)).toBe(true)
+        expect(snapshot.get(100)).toBeNull()
+        expect(snapshot.has(200)).toBe(false)
+    })
+
+    it('does not use stdout as a complete snapshot after a failed OS query', async () => {
+        const { readWindowsProcessStartMarkers } = await import('./process')
+        const stdout = JSON.stringify([{ ProcessId: process.pid, CreationDate: 'scanner-generation' }])
+        spawnSyncMock.mockReturnValue(completed(stdout, 1))
+        expect(readWindowsProcessStartMarkers()).toBeNull()
+        spawnSyncMock.mockReturnValue({ ...completed(stdout), error: new Error('query failed') })
+        expect(readWindowsProcessStartMarkers()).toBeNull()
+    })
+    it('reads the generation directly from CIM without a redundant tasklist probe', async () => {
+        const { getProcessStartMarker } = await import('./process')
+        spawnSyncMock.mockImplementation((command: string) => command === windowsSystemTool('powershell')
+            ? completed('generation-100') : completed('hapi.exe 100 Console'))
+        expect(getProcessStartMarker(100)).toBe('generation-100')
+        expect(spawnSyncMock.mock.calls.filter(call => call[0] === windowsSystemTool('tasklist'))).toHaveLength(0)
+    })
+
+    it('keeps a missing CIM generation unknown and rejects invalid PIDs without probing', async () => {
+        const { getProcessStartMarker } = await import('./process')
+        spawnSyncMock.mockReturnValue(completed(''))
+        expect(getProcessStartMarker(100)).toBeNull()
+        spawnSyncMock.mockClear()
+        for (const pid of [0, -1, 1.5, NaN, Infinity]) expect(getProcessStartMarker(pid)).toBeNull()
+        expect(spawnSyncMock).not.toHaveBeenCalled()
+    })
+    beforeAll(() => {
+        if (!originalPlatformDescriptor?.configurable) {
+            throw new Error('process.platform is not configurable in this runtime')
+        }
+    })
+
+    beforeEach(() => {
+        setPlatform('win32')
+        spawnSyncMock.mockReset()
+        // Prefer signal-0 probe in these identity tests: tasklist falls through.
+        spawnSyncMock.mockImplementation((cmd: string, ...rest: unknown[]) => {
+            if (cmd === windowsSystemTool('tasklist')) return unavailable(cmd)
+            return completed('')
+        })
+        vi.spyOn(process, 'kill').mockReturnValue(true)
+    })
+
+    afterEach(() => {
+        vi.restoreAllMocks()
+    })
+
+    afterAll(() => {
+        if (originalPlatformDescriptor) {
+            Object.defineProperty(process, 'platform', originalPlatformDescriptor)
+        }
+    })
+
+    it('reports a foreign process when CIM identifies it', () => {
+        spawnSyncMock.mockImplementation((cmd: string, args?: string[]) => {
+            if (cmd === windowsSystemTool('tasklist')) return unavailable(cmd)
+            if (cmd === windowsSystemTool('powershell')) return completed('C:\\Windows\\System32\\conhost.exe')
+            return completed('')
+        })
+
+        expect(getHapiRunnerProcessIdentity(8328)).toBe('foreign')
+        expect(spawnSyncMock.mock.calls.some((call) => call[0] === windowsSystemTool('powershell'))).toBe(true)
+    })
+
+    it('reports the runner when CIM identifies it', () => {
+        spawnSyncMock.mockImplementation((cmd: string) => {
+            if (cmd === windowsSystemTool('tasklist')) return unavailable(cmd)
+            if (cmd === windowsSystemTool('powershell')) return completed('hapi-local.exe runner start-sync')
+            return completed('')
+        })
+
+        expect(getHapiRunnerProcessIdentity(9124)).toBe('runner')
+    })
+
+    it('falls back to WMIC when PowerShell is unavailable', () => {
+        spawnSyncMock.mockImplementation((cmd: string) => {
+            if (cmd === windowsSystemTool('tasklist')) return unavailable(cmd)
+            if (cmd === windowsSystemTool('powershell')) return unavailable(cmd)
+            if (cmd === windowsSystemTool('wmic')) return completed('hapi-local.exe runner start-sync')
+            return completed('')
+        })
+
+        expect(getHapiRunnerProcessIdentity(9124)).toBe('runner')
+        expect(spawnSyncMock.mock.calls.some((call) => call[0] === windowsSystemTool('wmic'))).toBe(true)
+    })
+
+    it('falls back to WMIC when CIM reports no command line', () => {
+        let powershellCalls = 0
+        spawnSyncMock.mockImplementation((cmd: string) => {
+            if (cmd === windowsSystemTool('tasklist')) return unavailable(cmd)
+            if (cmd === windowsSystemTool('powershell')) {
+                powershellCalls += 1
+                return completed('')
+            }
+            if (cmd === windowsSystemTool('wmic')) return completed('CommandLine\r\nhapi-local.exe runner start-sync\r\n')
+            return completed('')
+        })
+
+        expect(getHapiRunnerProcessIdentity(9124)).toBe('runner')
+        expect(spawnSyncMock.mock.calls.some((call) => call[0] === windowsSystemTool('wmic'))).toBe(true)
+    })
+
+    it('reports unknown when WMIC prints only the column header', () => {
+        spawnSyncMock.mockImplementation((cmd: string) => {
+            if (cmd === windowsSystemTool('tasklist')) return unavailable(cmd)
+            if (cmd === windowsSystemTool('powershell')) return completed('')
+            if (cmd === windowsSystemTool('wmic')) return completed('CommandLine\r\n\r\n')
+            return completed('')
+        })
+
+        expect(getHapiRunnerProcessIdentity(8328)).toBe('unknown')
+    })
+
+    it('falls back to WMIC when PowerShell exits non-zero', () => {
+        spawnSyncMock.mockImplementation((cmd: string) => {
+            if (cmd === windowsSystemTool('tasklist')) return unavailable(cmd)
+            if (cmd === windowsSystemTool('powershell')) return completed('', 1)
+            if (cmd === windowsSystemTool('wmic')) return completed('hapi-local.exe runner start-sync')
+            return completed('')
+        })
+
+        expect(getHapiRunnerProcessIdentity(9124)).toBe('runner')
+    })
+
+    it('reports unknown when no probe reports a command line', () => {
+        spawnSyncMock.mockImplementation((cmd: string) => {
+            if (cmd === windowsSystemTool('tasklist')) return unavailable(cmd)
+            if (cmd === windowsSystemTool('powershell')) return completed('')
+            if (cmd === windowsSystemTool('wmic')) return unavailable(cmd)
+            return completed('')
+        })
+
+        expect(getHapiRunnerProcessIdentity(8328)).toBe('unknown')
+    })
+
+    it('reports dead when the pid exits while the probes run', () => {
+        vi.spyOn(process, 'kill')
+            .mockReturnValueOnce(true)
+            .mockImplementationOnce(() => {
+                throw new Error('ESRCH')
+            })
+        spawnSyncMock.mockImplementation((cmd: string) => {
+            if (cmd === windowsSystemTool('tasklist')) return unavailable(cmd)
+            return unavailable(cmd)
+        })
+
+        expect(getHapiRunnerProcessIdentity(8328)).toBe('dead')
+    })
+
+    it('reports dead without probing when the pid is already gone', () => {
+        vi.spyOn(process, 'kill').mockImplementation(() => {
+            throw new Error('ESRCH')
+        })
+        spawnSyncMock.mockImplementation((cmd: string) => {
+            if (cmd === windowsSystemTool('tasklist')) return unavailable(cmd)
+            return completed('')
+        })
+
+        expect(getHapiRunnerProcessIdentity(8328)).toBe('dead')
+        expect(spawnSyncMock.mock.calls.every((call) => call[0] === windowsSystemTool('tasklist'))).toBe(true)
+    })
+})
+
+describe('killProcess on Windows (orphanReap / stopSession)', () => {
+    it('includes slow liveness probes in the graceful shutdown deadline', async () => {
+        let graceStarted: number | undefined
+        let alive = true
+        let forcedAt: number | undefined
+        spawnSyncMock.mockImplementation((command: string, args: string[] = []) => {
+            if (command === windowsSystemTool('tasklist')) {
+                // A synchronous OS query consumes real time even though it is
+                // not part of the timer used to yield between observations.
+                vi.setSystemTime(Date.now() + 400)
+                return completed(alive ? 'hapi.exe 7788 Console' : 'INFO: No tasks')
+            }
+            if (command === windowsSystemTool('taskkill') && args.includes('/F')) {
+                forcedAt = Date.now()
+                alive = false
+            } else if (command === windowsSystemTool('taskkill')) {
+                graceStarted = Date.now()
+            }
+            return completed('')
+        })
+        const stopped = killProcess(7788)
+        await vi.runAllTimersAsync()
+        await expect(stopped).resolves.toBe(true)
+        expect(forcedAt).toBeDefined()
+        expect(graceStarted).toBeDefined()
+        // The two-second wait plus the final observation and taskkill's own
+        // liveness recheck, each taking 400ms in this scenario.
+        expect(forcedAt! - graceStarted!).toBeLessThanOrEqual(2_800)
+    })
+
+    it('bounds slow probes after forced shutdown without treating a live process as stopped', async () => {
+        const started = Date.now()
+        spawnSyncMock.mockImplementation((command: string) => {
+            if (command === windowsSystemTool('tasklist')) {
+                vi.setSystemTime(Date.now() + 400)
+                return completed('hapi.exe 7788 Console')
+            }
+            return completed('')
+        })
+        const stopped = killProcess(7788, true)
+        await vi.runAllTimersAsync()
+        await expect(stopped).resolves.toBe(false)
+        expect(Date.now() - started).toBeLessThanOrEqual(3_200)
+    })
+
+    beforeAll(() => {
+        if (!originalPlatformDescriptor?.configurable) {
+            throw new Error('process.platform is not configurable in this runtime')
+        }
+    })
+
+    beforeEach(() => {
+        setPlatform('win32')
+        spawnSyncMock.mockReset()
+        vi.useFakeTimers()
+    })
+
+    afterEach(() => {
+        vi.useRealTimers()
+        vi.restoreAllMocks()
+    })
+
+    afterAll(() => {
+        if (originalPlatformDescriptor) {
+            Object.defineProperty(process, 'platform', originalPlatformDescriptor)
+        }
+    })
+
+    it('retains the upstream stop report while an expired lease prevents signalling', async () => {
+        const reports: Array<import('./windowsProcessStop').WindowsStopReport> = []
+        spawnSyncMock.mockImplementation((cmd: string, args: string[] = []) => {
+            if (cmd === windowsSystemTool('tasklist')) return completed('hapi.exe 5544 Console')
+            if (cmd === windowsSystemTool('powershell')) return completed(args.join(' ').includes('$children=') ? 'OK:5544' : 'generation')
+            return completed('')
+        })
+        const stopped = killProcessTreeByPid(5544, false, (report) => reports.push(report), monotonicTimeMs() - 1)
+        await vi.advanceTimersByTimeAsync(2500)
+        expect(await stopped).toBe(false)
+        expect(spawnSyncMock.mock.calls.filter(([cmd]) => cmd === windowsSystemTool('taskkill'))).toHaveLength(0)
+        expect(reports).toHaveLength(1)
+        expect(reports[0]).toMatchObject({ confirmed: false, phase: 'initial-snapshot' })
+    })
+
+    it.each([false, true])('does not invoke taskkill when authority expires inside its liveness probe (force=%s)', async (force) => {
+        const deadline = monotonicTimeMs() + 100
+        let delayed = false
+        spawnSyncMock.mockImplementation((cmd: string) => {
+            if (cmd === windowsSystemTool('tasklist')) {
+                if (!delayed) { delayed = true; vi.advanceTimersByTime(100) }
+                return completed('hapi.exe 5544 Console')
+            }
+            return completed('')
+        })
+        const stopped = killProcess(5544, force, deadline)
+        await vi.advanceTimersByTimeAsync(2500)
+        expect(await stopped).toBe(false)
+        expect(spawnSyncMock.mock.calls.filter(([cmd]) => cmd === windowsSystemTool('taskkill'))).toHaveLength(0)
+    })
+
+    it('does not force taskkill when preparation expires during a refused soft signal', async () => {
+        const deadline = monotonicTimeMs() + 100
+        spawnSyncMock.mockImplementation((cmd: string) => {
+            if (cmd === windowsSystemTool('tasklist')) return completed('hapi.exe 5544 Console')
+            if (cmd === windowsSystemTool('taskkill')) { vi.advanceTimersByTime(100); return completed('', 1) }
+            return completed('')
+        })
+        const stopped = killProcess(5544, false, deadline)
+        await vi.advanceTimersByTimeAsync(2500)
+        expect(await stopped).toBe(false)
+        expect(spawnSyncMock.mock.calls.filter(([cmd]) => cmd === windowsSystemTool('taskkill'))).toHaveLength(1)
+    })
+
+    it('escalates soft taskkill to /F when the process stays alive (mirrors SIGTERM→SIGKILL)', async () => {
+        // Soft taskkill on win32 console trees often fails with
+        // "can only be terminated forcefully" — orphanReap must escalate.
+        let alive = true
+        // Match @types/node process.kill(pid, signal?: string | number): true
+        vi.spyOn(process, 'kill').mockImplementation((_pid: number, signal?: string | number) => {
+            if (signal === 0 || signal === undefined) {
+                if (!alive) {
+                    const err = new Error('ESRCH') as NodeJS.ErrnoException
+                    err.code = 'ESRCH'
+                    throw err
+                }
+                return true
+            }
+            return true
+        })
+        spawnSyncMock.mockImplementation((cmd: string, args: string[] = []) => {
+            if (cmd === windowsSystemTool('tasklist')) {
+                if (!alive) {
+                    return completed('INFO: No tasks are running which match the specified criteria.')
+                }
+                return completed(`hapi.exe                      5544 Console                    1     5,000 K`)
+            }
+            if (cmd !== windowsSystemTool('taskkill')) {
+                return completed('')
+            }
+            if (args.includes('/F')) {
+                alive = false
+                return completed('', 0)
+            }
+            // Soft refuse — process still alive (real Windows console-tree behavior)
+            return {
+                status: 1,
+                stdout: Buffer.from(''),
+                stderr: Buffer.from('ERROR: This process can only be terminated forcefully (with /F option).')
+            }
+        })
+
+        const done = killProcess(5544, false)
+        // Soft fails → immediate /F; then brief death-poll timers
+        await vi.advanceTimersByTimeAsync(500)
+        await expect(done).resolves.toBe(true)
+
+        const taskkills = spawnSyncMock.mock.calls.filter((call) => call[0] === windowsSystemTool('taskkill'))
+        expect(taskkills.length).toBeGreaterThanOrEqual(2)
+        expect(taskkills[0]![1]).toEqual(['/T', '/PID', '5544'])
+        expect(taskkills.some((call) => (call[1] as string[]).includes('/F'))).toBe(true)
+    })
+
+    it('waits for grace when soft taskkill succeeds before escalating to /F', async () => {
+        // Soft status=0 but PID still draining archive flush — do not /F immediately.
+        let alive = true
+        let softCalls = 0
+        vi.spyOn(process, 'kill').mockImplementation((_pid: number, signal?: string | number) => {
+            if (signal === 0 || signal === undefined) {
+                if (!alive) {
+                    const err = new Error('ESRCH') as NodeJS.ErrnoException
+                    err.code = 'ESRCH'
+                    throw err
+                }
+                return true
+            }
+            return true
+        })
+        spawnSyncMock.mockImplementation((cmd: string, args: string[] = []) => {
+            if (cmd === windowsSystemTool('tasklist')) {
+                if (!alive) {
+                    return completed('INFO: No tasks are running which match the specified criteria.')
+                }
+                return completed(`hapi.exe                      7788 Console                    1     5,000 K`)
+            }
+            if (cmd === windowsSystemTool('taskkill') && args.includes('/F')) {
+                alive = false
+                return completed('', 0)
+            }
+            if (cmd === windowsSystemTool('taskkill')) {
+                softCalls += 1
+                // Succeeds, but process remains alive until grace elapses
+                return completed('', 0)
+            }
+            return completed('')
+        })
+
+        const done = killProcess(7788, false)
+        // During grace, process exits without needing /F
+        await vi.advanceTimersByTimeAsync(100)
+        alive = false
+        await vi.advanceTimersByTimeAsync(2_500)
+        await expect(done).resolves.toBe(true)
+
+        expect(softCalls).toBeGreaterThanOrEqual(1)
+        const forceKills = spawnSyncMock.mock.calls.filter(
+            (call) => call[0] === windowsSystemTool('taskkill') && (call[1] as string[]).includes('/F')
+        )
+        expect(forceKills).toHaveLength(0)
+    })
+
+    it('uses forced taskkill immediately when force=true', async () => {
+        let alive = true
+        vi.spyOn(process, 'kill').mockImplementation((_pid: number, signal?: string | number) => {
+            if (signal === 0 || signal === undefined) {
+                if (!alive) {
+                    const err = new Error('ESRCH') as NodeJS.ErrnoException
+                    err.code = 'ESRCH'
+                    throw err
+                }
+                return true
+            }
+            return true
+        })
+        spawnSyncMock.mockImplementation((cmd: string, args: string[] = []) => {
+            if (cmd === windowsSystemTool('tasklist')) {
+                if (!alive) {
+                    return completed('INFO: No tasks are running which match the specified criteria.')
+                }
+                return completed(`hapi.exe                      9901 Console                    1     5,000 K`)
+            }
+            if (cmd === windowsSystemTool('taskkill') && args.includes('/F')) {
+                alive = false
+                return completed('', 0)
+            }
+            return completed('', 1)
+        })
+
+        const done = killProcess(9901, true)
+        await vi.advanceTimersByTimeAsync(500)
+        await expect(done).resolves.toBe(true)
+
+        const taskkills = spawnSyncMock.mock.calls.filter((call) => call[0] === windowsSystemTool('taskkill'))
+        expect(taskkills).toHaveLength(1)
+        expect(taskkills[0]![1]).toEqual(['/F', '/T', '/PID', '9901'])
+    })
+
+    it('windowsProcessTreeCimCommand is newline-separated (WinPS-parseable)', async () => {
+        // #1911 bot Major: `.join(' ')` yields `$seen=@{} $bfs=@()` — parse error.
+        // Assert generated command text, not mocked stdout (mocks never parse PS).
+        const { windowsProcessTreeCimCommand } = await import('./process')
+        const cmd = windowsProcessTreeCimCommand(4242)
+        expect(cmd).toContain('$root=[long]4242')
+        expect(cmd).toContain('ParentProcessId')
+        // Statements must be on separate lines — spaces between `$x=@{}` tokens fail.
+        expect(cmd).toContain('\n$seen=@{}')
+        expect(cmd).toContain('\n$bfs=@()')
+        expect(cmd).toContain('\n$queue=@($root)')
+        expect(cmd).toContain('\nwhile($queue.Count -gt 0){')
+        // Space-join regression: adjacent statement tokens on one line (not newline).
+        expect(cmd).not.toMatch(/\$seen=@\{\}[ ]+\$bfs=@\(\)/)
+        expect(cmd).not.toMatch(/\$bfs=@\(\)[ ]+\$queue=@/)
+        // Do not terminate `while(...){` with `;` (also invalid).
+        expect(cmd).not.toMatch(/while\(\$queue\.Count -gt 0\)\{\s*;/)
+        // #1911 B1: never SilentlyContinue — CIM failure must not look like childless root.
+        expect(cmd).toContain("$ErrorActionPreference='Stop'")
+        expect(cmd).toContain('trap { exit 1 }')
+        expect(cmd).not.toContain('SilentlyContinue')
+        expect(cmd).toContain('Write-Output ("OK:" + ($bfs -join ","))')
+    })
+
+    it('parseWindowsProcessTreeStdout requires OK: sentinel (B1 root-only is scan_failed)', async () => {
+        const { parseWindowsProcessTreeStdout } = await import('./process')
+        // Overseer measured: CIM failure with SilentlyContinue prints "1234" exit 0 —
+        // byte-identical to healthy childless. Without OK: that must be scan_failed.
+        expect(parseWindowsProcessTreeStdout('1234', 1234)).toBe('scan_failed')
+        expect(parseWindowsProcessTreeStdout('4000,3000,2000,1234', 1234)).toBe('scan_failed')
+        expect(parseWindowsProcessTreeStdout('', 1234)).toBe('scan_failed')
+        expect(parseWindowsProcessTreeStdout('OK:', 1234)).toBe('scan_failed')
+        expect(parseWindowsProcessTreeStdout('OK:1234', 1234)).toEqual([1234])
+        expect(parseWindowsProcessTreeStdout('OK:4000,3000,2000,1234', 1234)).toEqual([
+            4000, 3000, 2000, 1234,
+        ])
+        expect(parseWindowsProcessTreeStdout('OK:200,100', 100)).toEqual([200, 100])
+        expect(parseWindowsProcessTreeStdout('OK:200,100', 999)).toBe('scan_failed')
+    })
+
+})
+
+describe('killProcessTreeByPid on POSIX (pgrep tree scan)', () => {
+    beforeEach(() => {
+        setPlatform('linux')
+        spawnSyncMock.mockReset()
+        vi.spyOn(process, 'kill').mockReturnValue(true)
+        vi.useFakeTimers()
+    })
+
+    afterEach(() => {
+        vi.useRealTimers()
+        vi.restoreAllMocks()
+    })
+
+    afterAll(() => {
+        if (originalPlatformDescriptor) {
+            Object.defineProperty(process, 'platform', originalPlatformDescriptor)
+        }
+    })
+
+    it('returns false when pgrep is missing (signal root, never claim stopped)', async () => {
+        const { killProcessTreeByPid } = await import('./process')
+        let dead = false
+        vi.spyOn(process, 'kill').mockImplementation((_pid: number, signal?: string | number) => {
+            if (signal === 0 || signal === undefined) {
+                if (dead) {
+                    const err = new Error('ESRCH') as NodeJS.ErrnoException
+                    err.code = 'ESRCH'
+                    throw err
+                }
+                return true
+            }
+            dead = true
+            return true
+        })
+        spawnSyncMock.mockImplementation((cmd: string) => {
+            if (cmd === 'pgrep') return unavailable('pgrep')
+            return completed('')
+        })
+        const done = killProcessTreeByPid(4242, true)
+        await vi.advanceTimersByTimeAsync(3000)
+        await expect(done).resolves.toBe(false)
+        // Root still signalled — partial kill > zero kill on hosts without pgrep.
+        expect(process.kill).toHaveBeenCalledWith(4242, 'SIGKILL')
+    })
+
+    it('returns false when pgrep is signalled (status null — partial tree)', async () => {
+        const { killProcessTreeByPid } = await import('./process')
+        let dead = false
+        vi.spyOn(process, 'kill').mockImplementation((_pid: number, signal?: string | number) => {
+            if (signal === 0 || signal === undefined) {
+                if (dead) {
+                    const err = new Error('ESRCH') as NodeJS.ErrnoException
+                    err.code = 'ESRCH'
+                    throw err
+                }
+                return true
+            }
+            dead = true
+            return true
+        })
+        spawnSyncMock.mockImplementation((cmd: string) => {
+            if (cmd === 'pgrep') {
+                return { status: null, stdout: '999\n', stderr: '', error: null }
+            }
+            return completed('')
+        })
+        const done = killProcessTreeByPid(4242, true)
+        await vi.advanceTimersByTimeAsync(3000)
+        await expect(done).resolves.toBe(false)
+        expect(process.kill).toHaveBeenCalledWith(4242, 'SIGKILL')
+    })
+})
+
+describe('getHapiRunnerProcessIdentity on POSIX', () => {
+    beforeEach(() => {
+        setPlatform('linux')
+        spawnSyncMock.mockReset()
+        vi.spyOn(process, 'kill').mockReturnValue(true)
+    })
+
+    afterEach(() => {
+        vi.restoreAllMocks()
+    })
+
+    afterAll(() => {
+        if (originalPlatformDescriptor) {
+            Object.defineProperty(process, 'platform', originalPlatformDescriptor)
+        }
+    })
+
+    it('reports the runner from the ps command line', () => {
+        spawnSyncMock.mockReturnValueOnce(completed('hapi runner start-sync'))
+
+        expect(getHapiRunnerProcessIdentity(9124)).toBe('runner')
+    })
+
+    it('reports unknown when ps cannot report a command line', () => {
+        spawnSyncMock.mockReturnValueOnce(completed(''))
+
+        expect(getHapiRunnerProcessIdentity(8328)).toBe('unknown')
+    })
+})

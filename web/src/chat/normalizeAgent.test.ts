@@ -253,3 +253,68 @@ describe('normalizeAgentRecord — imported pi compact-summary (codex envelope)'
         expect((normalized as { content: { tokensBefore?: number } }).content.tokensBefore).toBeUndefined()
     })
 })
+
+describe('normalizeAgentRecord — Codex usage provenance', () => {
+    it('preserves the Codex marker and model on token-count events', () => {
+        const normalized = normalizeAgentRecord('codex-token-count', null, 1, {
+            type: 'codex',
+            data: {
+                type: 'token_count',
+                flavor: 'codex',
+                model: 'gpt-5.4',
+                info: {
+                    last_token_usage: { input_tokens: 321, output_tokens: 12 },
+                    model_context_window: 200_000
+                }
+            }
+        })
+
+        expect(normalized).toMatchObject({
+            role: 'event',
+            content: {
+                type: 'token-count',
+                provider: 'codex',
+                model: 'gpt-5.4'
+            },
+            usage: { input_tokens: 321, output_tokens: 12 }
+        })
+    })
+})
+
+
+describe('persisted Codex duration provenance', () => {
+    it('accepts an observed zero-duration Codex turn', () => {
+        expect(normalizeAgentRecord('duration', null, 1, { type: 'codex', data: {
+            type: 'turn_duration', flavor: 'codex', turn_id: 'turn', durationMs: 0
+        } })).toMatchObject({ role: 'event', content: { type: 'turn-duration', durationMs: 0, turnId: 'turn' } })
+    })
+    it.each([{ scope_role: 'child' }, { scopeRole: 'child' }, { scope: { role: 'child' } }])('rejects child timing with scope %j', scope => {
+        expect(normalizeAgentRecord('duration', null, 1, { type: 'codex', data: {
+            type: 'turn_duration', flavor: 'codex', turn_id: 'turn', durationMs: 123, ...scope
+        } })).toBeNull()
+    })
+    it.each([-1, NaN, Infinity, '123', undefined])('rejects invalid duration %s', durationMs => {
+        expect(normalizeAgentRecord('duration', null, 1, { type: 'codex', data: {
+            type: 'turn_duration', flavor: 'codex', turn_id: 'turn', durationMs
+        } })).toBeNull()
+    })
+    it('rejects imported history even when it carries a duration', () => {
+        expect(normalizeAgentRecord('duration', null, 1, { type: 'codex', data: {
+            type: 'turn_duration', flavor: 'codex', turn_id: 'turn', durationMs: 123, hapiUsageScope: 'imported-history'
+        } })).toBeNull()
+    })
+})
+
+describe('compact-summary exact and estimated token propagation', () => {
+    it.each(['event', 'codex'])('preserves distinct exact and estimated facts in the %s envelope', type => {
+        const data = { type: 'compact-summary', summary: '', tokensBefore: 300, tokensAfter: 20, estimatedTokensAfter: 25 }
+        const normalized = normalizeAgentRecord('compact-facts', null, 1, { type, data })
+        expect(normalized).toMatchObject({ role: 'event', content: data })
+    })
+})
+
+it('does not invent content or a zero before count for a native completion boundary', () => {
+    const normalized = normalizeAgentRecord('boundary', null, 1, { type: 'codex', data: { type: 'context_compacted', id: 'native-compact' } })
+    expect(normalized).toMatchObject({ role: 'event', content: { type: 'compact-summary', summary: '', compactionId: 'native-compact' } })
+    expect(normalized?.role === 'event' && normalized.content).not.toHaveProperty('tokensBefore', 0)
+})

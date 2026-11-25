@@ -221,13 +221,20 @@ final class FakeTransport: SSETransport, @unchecked Sendable {
 
 final class FakePathObserver: NetworkPathObserving, @unchecked Sendable {
     private let lock = NSLock()
+    private let initialPath: NetworkPathUpdate
     private var continuations: [AsyncStream<NetworkPathUpdate>.Continuation] = []
+
+    init(initialPath: NetworkPathUpdate = NetworkPathUpdate(isSatisfied: true)) {
+        self.initialPath = initialPath
+    }
 
     func pathUpdates() -> AsyncStream<NetworkPathUpdate> {
         let (stream, continuation) = AsyncStream.makeStream(of: NetworkPathUpdate.self)
-        lock.withLock { continuations.append(continuation) }
-        // NWPathMonitor always fires the current path on subscription.
-        continuation.yield(NetworkPathUpdate(isSatisfied: true))
+        lock.withLock {
+            // Publish the baseline before making the subscriber visible.
+            continuation.yield(initialPath)
+            continuations.append(continuation)
+        }
         return stream
     }
 
@@ -237,10 +244,10 @@ final class FakePathObserver: NetworkPathObserving, @unchecked Sendable {
         lock.withLock { continuations.count }
     }
 
-    func emitChange(isSatisfied: Bool = true) {
+    func emitChange(_ path: NetworkPathUpdate) {
         let all = lock.withLock { continuations }
         for continuation in all {
-            continuation.yield(NetworkPathUpdate(isSatisfied: isSatisfied))
+            continuation.yield(path)
         }
     }
 }

@@ -1,9 +1,24 @@
 package app.hapi.companion.feature.chat
 
+import androidx.annotation.MainThread
 import app.hapi.companion.feature.chat.attachments.ComposerAttachments
+import app.hapi.companion.feature.chat.attachments.PrepareResult
+import app.hapi.companion.feature.chat.composer.appendSharedText
+import app.hapi.companion.feature.share.PendingShare
+import app.hapi.companion.feature.share.SharedFile
+import app.hapi.companion.feature.share.SharedFileStatus
+import app.hapi.companion.feature.chat.blocks.planProposalMarkdown
 import app.hapi.companion.feature.chat.composer.ChatDrafts
+import app.hapi.companion.feature.chat.composer.MentionSuggestion
+import app.hapi.companion.feature.chat.composer.Mentions
+import app.hapi.companion.feature.chat.composer.PendingSchedule
+import app.hapi.companion.feature.chat.composer.ScheduleSend
 import app.hapi.companion.feature.chat.composer.SlashCommands
 import app.hapi.companion.feature.chat.composer.appendTranscript
+import app.hapi.companion.ui.markdown.MarkdownRenderCache
+import app.hapi.protocol.chat.AgentTextBlock
+import app.hapi.protocol.chat.AgentReasoningBlock
+import app.hapi.protocol.chat.AggregatedAssistantMeta
 import app.hapi.companion.feature.sessions.SessionListViewModel
 import app.hapi.companion.feature.sessions.formatReopenError
 import app.hapi.data.api.ApiError
@@ -16,6 +31,7 @@ import app.hapi.data.store.LastSeenStore
 import app.hapi.data.store.MachineListStore
 import app.hapi.data.store.MessageWindowStore
 import app.hapi.data.store.MessageWindowStores
+import app.hapi.data.store.ChatHistoryPagingState
 import app.hapi.data.store.ScratchlistCreateResult
 import app.hapi.data.store.SessionDetailStore
 import app.hapi.data.store.SessionScratchlist
@@ -24,16 +40,21 @@ import app.hapi.protocol.catalog.Flavors
 import app.hapi.protocol.catalog.ModelCatalog
 import app.hapi.protocol.catalog.PermissionMode
 import app.hapi.protocol.catalog.PermissionModes
+import app.hapi.protocol.chat.ChatBlock
 import app.hapi.protocol.chat.NormalizedMessage
 import app.hapi.protocol.chat.ToolGroupBlock
+import app.hapi.protocol.chat.ToolCallBlock
 import app.hapi.protocol.chat.ToolGroupingOptions
 import app.hapi.protocol.chat.VisibleChatBlock
+import app.hapi.protocol.chat.aggregateResponseGroups
 import app.hapi.protocol.chat.buildVisibleChatBlocks
 import app.hapi.protocol.chat.getInputStringAny
 import app.hapi.protocol.chat.normalizeDecryptedMessage
 import app.hapi.protocol.chat.reduceChatBlocks
 import app.hapi.protocol.window.MessageStatus
 import app.hapi.protocol.window.MessageWindowState
+import app.hapi.protocol.window.MessageViewMode
+import app.hapi.protocol.window.OlderLoadOutcome
 import app.hapi.protocol.window.WindowMessage
 import app.hapi.protocol.window.asWindowMessage
 import app.hapi.protocol.wire.AgentState
@@ -44,14 +65,19 @@ import app.hapi.protocol.wire.HapiJson
 import app.hapi.protocol.wire.Machine
 import app.hapi.protocol.wire.SendMessageRequest
 import app.hapi.protocol.wire.Session
+import app.hapi.protocol.wire.SessionReadState
 import app.hapi.protocol.wire.SessionSummary
 import app.hapi.protocol.wire.SlashCommand
 import app.hapi.protocol.wire.arrayOrNull
 import app.hapi.protocol.wire.objOrNull
 import app.hapi.protocol.wire.stringOrNull
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -69,6 +95,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
@@ -78,6 +105,11 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.transform
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
@@ -96,6 +128,8 @@ data class ChatHeaderUi(
     val name: String? = null,
     val active: Boolean,
     val thinking: Boolean,
+    /** Hub-owned `metadata.translateInput` from the detail (the list summary does not carry it). */
+    val translateInput: Boolean = false,
 )
 
 /** Optimistic-permission UI state layered over the reduced blocks (M3b). */
@@ -106,7 +140,6 @@ enum class PermissionRowOverride {
     /** The hub said the request is no longer pending (404/409) — benign. */
     AlreadyHandled,
 }
-
 /** What [ChatScreen] renders. */
 data class ChatUiState(
     val sessionId: String,
@@ -127,8 +160,18 @@ data class ChatUiState(
     val loadFailed: Boolean,
     /** Tail sync warning — the connection/staleness banner. */
     val warning: String?,
-    /** Bumps on tail-side content changes; drives the new-messages pill. */
+    /** Bumps on tail-side content changes. */
     val tailRevision: Long,
+    val historyVersion: Long = 0,
+    val messagesVersion: Long = 0,
+    val requiresLatestReset: Boolean = false,
+    val processSteps: Map<String, Int> = emptyMap(),
+    val readThroughRevision: Long? = null,
+    val renderedReadState: SessionReadState? = null,
+    /** Summed usage metadata per response group, keyed by first-block id. */
+    val messageAggregates: Map<String, AggregatedAssistantMeta> = emptyMap(),
+    /** Context-remaining readout for the composer strip; null until usage arrives. */
+    val contextUsage: ContextUsageIndicator? = null,
 )
 
 /** Composer bar state (M3a). */
@@ -136,9 +179,20 @@ data class ComposerUiState(
     val text: String,
     /** A send (or its inactive-session resume) is in flight — spinner on the send button. */
     val isSending: Boolean,
-    /** A turn is active: long-press send offers Steer, and Abort is shown. */
+    /** A turn is active: long-press send offers Steer; an empty draft shows Stop. */
     val canSteer: Boolean,
+    /** Local focus intent; does not replace or send the draft. */
+    val focusRequest: Long = 0,
+    val isImportingShare: Boolean = false,
+    /**
+     * Where the caret rests after a VM-driven text change (mention insert,
+     * draft prefill, send-clear) — consumed by the composer when it adopts
+     * external text. `-1` ⇒ the text tail; tracks the live caret otherwise.
+     */
+    val caretPosition: Int = -1,
 )
+
+data class ShareImportFailure(val fileId: String, val status: SharedFileStatus)
 
 /** One row of the queued-messages bar (uninvoked sends). */
 data class QueuedRowUi(
@@ -204,6 +258,8 @@ sealed interface ChatNotice {
     data object AttachmentsUploading : ChatNotice
     data object ResumeFailed : ChatNotice
     data object QueuedEditKeptDraft : ChatNotice
+    data object QueuedEditScheduleDropped : ChatNotice
+    data object ScheduleAttachmentConflict : ChatNotice
     data object QueuedAlreadyDelivered : ChatNotice
     data object PermissionAlreadyHandled : ChatNotice
 
@@ -218,7 +274,9 @@ sealed interface ChatNotice {
     data class SteerFailed(val detail: String?) : ChatNotice
     data class PermissionRequestFailed(val detail: String?) : ChatNotice
     data class ModelsLoadFailed(val detail: String?) : ChatNotice
+    data class ReadStateFailed(val detail: String?) : ChatNotice
     data class ConfigUpdateFailed(val detail: String?) : ChatNotice
+    data class TranslateInputFailed(val detail: String?) : ChatNotice
 }
 
 /** A permission decision the UI can request (bodies mirror `PermissionFooter.tsx`). */
@@ -286,6 +344,22 @@ sealed interface PermissionAction {
  *   reopen reusing the supersede path (window seed + draft move +
  *   [ChatEvent.SessionSuperseded]) and [formatReopenError] for 422s.
  *
+ * B-M16a adds:
+ * - **Composer mentions** ([mentionSuggestions]/[selectMentionSuggestion]): an
+ *   active `@word` at the composer tail opens the mention dropdown. Sources:
+ *   cached session rows (`matchSessionsForMention` — content gate, scored,
+ *   self-excluded) merged ahead of `GET /files` hits (codex/copilot only,
+ *   limit 50, silent on failure); selection swaps the whole word for the
+ *   suggestion's insert text (Copy-reference prose / flavor `@path` form).
+ *
+ * B-M16b adds:
+ * - **Scheduled send** ([pendingSchedule]/[setPendingSchedule]): the composer
+ *   clock pick (web `ScheduleTimePicker`) resolves `scheduledAt` at the send
+ *   instant inside [sendMessage] (a pending pick downgrades steer to queue),
+ *   absolute picks auto-clear when their instant passes, and the queued
+ *   bar's Edit re-arms a future fire time as a new pick
+ *   (`computeEditPendingSchedule`).
+ *
  * M2 core (unchanged): owns the session-scope SSE subscription while
  * [start]ed (dual-subscription model: `HubGraph` owns the global pipe) and
  * routes engine events into the shared [SyncTargets]; opens the
@@ -316,7 +390,15 @@ class ChatViewModel(
     private val now: () -> Long = System::currentTimeMillis,
     /** Web `makeClientSideId('local')` twin; injectable for deterministic tests. */
     private val localIdGenerator: () -> String = { "local-${UUID.randomUUID()}" },
+    /** Serialized UI event loop; JVM tests inject their UI dispatcher. */
+    uiDispatcher: CoroutineDispatcher = Dispatchers.Main,
 ) {
+    // The holder's scope is a Default worker scope, NOT the coordinator's
+    // executor. Share its lifetime, but serialize all history/lifecycle state
+    // with Compose callbacks. Use queued Main (not Main.immediate), so a
+    // synchronous completion cannot clear a job before its handle is assigned.
+    private val uiScope = CoroutineScope(scope.coroutineContext + uiDispatcher)
+    private val workerContext = scope.coroutineContext.minusKey(Job)
     private val router = SyncEventRouter(syncTargets)
     private val subscriptionKey = SseSubscriptionKey.Session(sessionId)
 
@@ -325,14 +407,121 @@ class ChatViewModel(
 
     private var sseJob: Job? = null
     private var initJob: Job? = null
-    private var seenJob: Job? = null
     private var olderJob: Job? = null
+    private var jumpJob: Job? = null
+    private val mutableHistoryPaging = MutableStateFlow(ChatHistoryPagingState())
+    val historyPaging: StateFlow<ChatHistoryPagingState> = mutableHistoryPaging.asStateFlow()
+    private val mutableJumpToken = MutableStateFlow(0L)
+    val jumpToken: StateFlow<Long> = mutableJumpToken.asStateFlow()
+    private val mutableJumpingLatest = MutableStateFlow(false)
+    val jumpingLatest: StateFlow<Boolean> = mutableJumpingLatest.asStateFlow()
+    private var historyObserver: Job? = null
+    private var historyRetryJob: Job? = null
+    private var historyCancellation: Job? = null
+    private var windowModeJob: Job? = null
+    private var historyGate: AtomicBoolean? = null
+    private var historyDemand = false
+    private var readerFollowsTail = true
+    private var transcriptVisible = true
+    internal val inspection = ChatInspectionState()
+    private val transcriptProjection = TranscriptProjection()
+    val reconnecting: StateFlow<Boolean> = sseEngine.reconnecting(subscriptionKey)
+        .stateIn(scope, SharingStarted.Eagerly, false)
+
+    @MainThread
+    internal fun setTranscriptVisible(visible: Boolean) {
+        transcriptVisible = visible
+        if (!visible) {
+            historyDemand = false
+            cancelHistory()
+        }
+    }
+
+    /** The UI calls only after laying out the observed tail in a resumed screen. */
+    @MainThread
+    internal fun markDisplayed(revision: Long?, serverState: SessionReadState?) {
+        val rendered = uiState.value
+        if (!started || !transcriptVisible || !readerFollowsTail || revision == null ||
+            rendered.isSyncingTail || rendered.isInitialLoading || rendered.loadFailed ||
+            rendered.warning != null || rendered.requiresLatestReset) return
+        scope.launch {
+            try { lastSeenStore.markSeen(sessionId, revision, serverState) }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) { _events.tryEmit(ChatEvent.Notice(ChatNotice.ReadStateFailed(error.message))) }
+        }
+    }
+
+    @MainThread
+    internal fun beginInspection() {
+        jumpJob?.cancel()
+        jumpJob = null
+        mutableJumpingLatest.value = false
+        readingViewportChanged(followsTail = false, needsOlder = false)
+        setTranscriptVisible(false)
+    }
+    private var historyPumpScheduled = false
+    private var lastHistoryLayout: Pair<Long, Boolean>? = null
+    private var lastHistoryEpoch: Long? = null
+    private var started = false
+    private var everStarted = false
     private var draftJob: Job? = null
 
     // ------------------------------------------------------------ M3 state --
 
-    private val composerText = MutableStateFlow("")
+    /** Composer text + live caret, updated atomically (mirrors the composer's TextFieldValue). */
+    private data class ComposerDraft(
+        val text: String = "",
+        val selectionStart: Int = 0,
+        val selectionEnd: Int = 0,
+    )
+
+    private val composerDraft = MutableStateFlow(ComposerDraft())
     private val sendInFlight = MutableStateFlow(false)
+    private val importingShare = MutableStateFlow(false)
+    private val draftReady = CompletableDeferred<Unit>()
+    private val importedShares = mutableSetOf<String>()
+    private val importedShareTexts = mutableSetOf<String>()
+    private val importedSharedFiles = mutableSetOf<String>()
+    private val shareImportMutex = Mutex()
+
+    /**
+     * Pending scheduled-send pick (B-M16b, web SessionChat `pendingSchedule`):
+     * null = immediate send; a pick makes the next Send carry
+     * `scheduledAt` resolved at the send instant. Owned here so the queued
+     * bar's Edit can re-arm it ([editQueuedMessage]) and the expiry auto-clear
+     * below survives UI recomposition.
+     */
+    private val mutablePendingSchedule = MutableStateFlow<PendingSchedule?>(null)
+
+    /** The composer clock-button state; collected by [ChatScreen]. */
+    val pendingSchedule: StateFlow<PendingSchedule?> = mutablePendingSchedule.asStateFlow()
+
+    /**
+     * Monotonic revision of the pending-schedule slot (web
+     * `pendingScheduleRevision`): bumped by EVERY schedule interaction —
+     * picks, clears, send-consume clears, expiry auto-clears and edit
+     * restores. Value equality cannot tell a pick from a pick→clear→re-pick
+     * of the same value; the revision can, which is what the queued-edit
+     * restore guard ([editQueuedMessage]) needs.
+     */
+    private val pendingScheduleRevision = AtomicLong(0L)
+
+    /**
+     * Serializes the pending-schedule transition (value swap + expiry
+     * registration) across the Main thread (picker callbacks, send) and the
+     * edit-restore coroutine on the holder's Default scope. Without the lock
+     * an AtomicReference job handle still leaves a window: a restore could
+     * publish pick A, a Main callback could select B before A's expiry job
+     * is stored (B finds no timer to cancel), and A's stale timer would then
+     * clear B at A's deadline — the next Send going out immediately despite
+     * the newer pick. The mutex makes value+timer one critical section; the
+     * revision check inside the timer is the second layer (an obsolete timer
+     * can never clear a newer pick). Guarded by [scheduleMutex].
+     */
+    private val scheduleMutex = Mutex()
+
+    /** Expiry auto-clear job for the current pick; guarded by [scheduleMutex]. */
+    private var pendingScheduleExpiryJob: Job? = null
 
     /**
      * Composer attachment tray (B-M3f). The screen feeds prepared picks in
@@ -342,6 +531,14 @@ class ChatViewModel(
     private val queuedOpPending = MutableStateFlow(false)
     private val permissionOverrides = MutableStateFlow<Map<String, PermissionRowOverride>>(emptyMap())
     private val configOpPending = MutableStateFlow(false)
+    private val composerFocusRequest = MutableStateFlow(0L)
+    private data class CodexPlanOperations(
+        val pendingPlanId: String? = null,
+        val implementedPlanIds: Set<String> = emptySet(),
+        val continuedPlanIds: Set<String> = emptySet(),
+        val errors: Map<String, CodexPlanFailure> = emptyMap(),
+    )
+    private val codexPlanOperations = MutableStateFlow(CodexPlanOperations())
 
     private sealed interface CodexModels {
         data object Idle : CodexModels
@@ -361,6 +558,20 @@ class ChatViewModel(
 
     private val slashFetch = MutableStateFlow<SlashFetch>(SlashFetch.Idle)
     private val sessionOpPending = MutableStateFlow(false)
+    private val translateTogglePending = AtomicBoolean(false)
+    private var featuresRequested = false
+    private val mutableInputTranslationAvailable = MutableStateFlow(false)
+
+    /**
+     * `GET /api/features` `inputTranslation.available` — the hub has a
+     * translation provider. With [ChatHeaderUi.translateInput] it gates the
+     * menu toggle (web: `available || metadata.translateInput === true`, so a
+     * session left on can still be switched off).
+     */
+    val inputTranslationAvailable: StateFlow<Boolean> = mutableInputTranslationAvailable.asStateFlow()
+
+    /** Hub-wide `translateInputByDefault`; sessions without an explicit choice follow it. */
+    private val translateInputByDefault = MutableStateFlow(false)
 
     private val _events = MutableSharedFlow<ChatEvent>(extraBufferCapacity = 16)
 
@@ -370,6 +581,8 @@ class ChatViewModel(
     // Pipeline memo state — touched only inside the single uiState map stage.
     private val normalizeCache = HashMap<String, NormalizeCacheEntry>()
     private var previousGroups: List<ToolGroupBlock> = emptyList()
+    internal val markdownCache = MarkdownRenderCache()
+    private var previousMarkdownSources = emptySet<String>()
 
     private class NormalizeCacheEntry(val source: WindowMessage, val normalized: NormalizedMessage?)
 
@@ -380,6 +593,7 @@ class ChatViewModel(
         val machines: List<Machine>,
         val detailLoadFailed: Boolean,
         val permissionOverrides: Map<String, PermissionRowOverride>,
+        val translateInputByDefault: Boolean,
     )
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -393,6 +607,7 @@ class ChatViewModel(
                 machineStore.machines,
                 detailLoadFailed,
                 permissionOverrides,
+                translateInputByDefault,
             ) { values: Array<Any?> -> pipelineInputs(values) }
         }
         // The web samples pipeline runs through React batching; here: emit the
@@ -408,14 +623,19 @@ class ChatViewModel(
 
     /** Composer bar state (text is VM-owned so drafts and edit-prefill flow through it). */
     val composer: StateFlow<ComposerUiState> = combine(
-        composerText,
+        composerDraft,
         sendInFlight,
         sessionStateFlow(),
-    ) { text, sending, session ->
+        composerFocusRequest,
+        importingShare,
+    ) { draft, sending, session, focusRequest, importing ->
         ComposerUiState(
-            text = text,
+            text = draft.text,
             isSending = sending,
             canSteer = session.thinking && session.active,
+            focusRequest = focusRequest,
+            isImportingShare = importing,
+            caretPosition = draft.selectionEnd,
         )
     }.stateIn(scope, SharingStarted.Eagerly, ComposerUiState(text = "", isSending = false, canSteer = false))
 
@@ -429,6 +649,13 @@ class ChatViewModel(
             }
         }
         .stateIn(scope, SharingStarted.Eagerly, emptyList())
+
+    /** Plan availability updates independently of the transcript pipeline. */
+    val codexPlanActions: StateFlow<CodexPlanActions> = combine(
+        sessionStore.sessionDetail(sessionId), codexPlanOperations, sendInFlight, configOpPending,
+    ) { detail, operations, sending, configuring ->
+        buildCodexPlanActions(detail, operations, sending || configuring)
+    }.stateIn(scope, SharingStarted.Eagerly, CodexPlanActions())
 
     /** Session config sheet model. */
     val config: StateFlow<SessionConfigUi> = combine(
@@ -447,14 +674,68 @@ class ChatViewModel(
      * the first `/`), RPC entries winning dedupe.
      */
     val slashSuggestions: StateFlow<List<SlashCommand>> = combine(
-        composerText,
+        composerDraft,
         slashFetch,
         sessionStore.sessionDetail(sessionId),
-    ) { text, fetch, detail ->
-        val query = SlashCommands.queryOf(text) ?: return@combine emptyList()
+    ) { draft, fetch, detail ->
+        val query = SlashCommands.queryOf(draft.text) ?: return@combine emptyList()
         val fetched = (fetch as? SlashFetch.Loaded)?.commands
         SlashCommands.filter(SlashCommands.merge(detail?.metadata?.slashCommands, fetched), query)
     }.stateIn(scope, SharingStarted.Eagerly, emptyList())
+
+    /**
+     * Mention dropdown rows (B-M16a): non-empty only while the composer caret
+     * sits in an active `@word` (web `findActiveWord` rules — see [Mentions];
+     * a selected range suppresses detection). Sources merge like the web
+     * (`[...sessionHits, ...fileHits]`):
+     * - Sessions from the cached list (`matchSessionsForMention`: content
+     *   filter + score, current session excluded, limit 20) — pure client.
+     * - Files via `GET /api/sessions/:id/files` (limit 50) — codex/copilot
+     *   flavors only; RPC failure is silently an empty file leg (web parity).
+     * Each query change restarts the file leg (flatMapLatest = the web's
+     * generation guard); the file leg emits an empty batch BEFORE awaiting
+     * the RPC, so the new query's session hits publish immediately and the
+     * previous query's rows never linger through the request (the web hides
+     * suggestions the moment the input no longer matches).
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val mentionSuggestions: StateFlow<List<MentionSuggestion>> = composerDraft
+        .map { Mentions.mentionQueryOf(it.text, it.selectionStart, it.selectionEnd) }
+        .distinctUntilChanged()
+        .flatMapLatest { query ->
+            if (query == null) {
+                flowOf(emptyList())
+            } else {
+                val sessionFlow = sessionStore.sessions
+                    .map { sessions -> Mentions.sessionSuggestions(sessions, query, excludeId = sessionId) }
+                val fileFlow = sessionStore.sessionDetail(sessionId)
+                    .map { detail -> detail?.metadata?.flavor }
+                    .distinctUntilChanged()
+                    .flatMapLatest { flavor ->
+                        if (flavor == null || flavor !in Mentions.FILE_MENTION_FLAVORS) {
+                            flowOf(emptyList())
+                        } else {
+                            flow {
+                                // Invalidate the previous query's rows right away
+                                // (review fix): `combine` can publish this query's
+                                // session hits while the file RPC is in flight.
+                                emit(emptyList())
+                                val files = try {
+                                    val response = api.searchSessionFiles(sessionId, query, Mentions.FILE_SEARCH_LIMIT)
+                                    if (response.success) response.files.orEmpty() else emptyList()
+                                } catch (cancellation: CancellationException) {
+                                    throw cancellation
+                                } catch (_: Exception) {
+                                    emptyList()
+                                }
+                                emit(files.map { Mentions.fileSuggestion(flavor, it) })
+                            }
+                        }
+                    }
+                combine(sessionFlow, fileFlow) { sessionHits, fileHits -> sessionHits + fileHits }
+            }
+        }
+        .stateIn(scope, SharingStarted.Eagerly, emptyList())
 
     /**
      * Entry count for the top-bar scratchlist badge (B-M4d); stays 0 without
@@ -470,14 +751,36 @@ class ChatViewModel(
 
     // ------------------------------------------------------------ lifecycle --
 
-    /** Idempotent; call from the screen's composition, paired with [stop]. */
+    /** Idempotent; the conversation host starts this, the holder calls [stop] on exit. */
+    @MainThread
     fun start() {
-        if (initJob?.isActive == true || sseJob?.isActive == true) return
+        if (started) return
+        val preservingHistory = everStarted && (!readerFollowsTail || windowStore.value?.state?.value?.requiresLatestReset == true)
+        started = true
+        everStarted = true
 
-        initJob = scope.launch {
-            val store = messageWindows.open(sessionId)
-            store.activate()
+        initJob = uiScope.launch {
+            val store = withContext(workerContext) {
+                messageWindows.open(sessionId).also {
+                    if (preservingHistory) it.setViewMode(MessageViewMode.History) else it.activate()
+                }
+            }
             windowStore.value = store
+            historyObserver?.cancel()
+            historyObserver = uiScope.launch {
+                store.state.collect { window ->
+                    mutableHistoryPaging.value = mutableHistoryPaging.value.refreshAvailability(window.hasMore)
+                    val epoch = window.epoch
+                    if (epoch != null) {
+                        if (lastHistoryEpoch != null && lastHistoryEpoch != epoch) {
+                            cancelHistory()
+                            mutableJumpToken.value += 1
+                        }
+                        lastHistoryEpoch = epoch
+                    }
+                    scheduleHistoryPump()
+                }
+            }
 
             // Subscribe only after the window exists: every routed message
             // event / gap resync then finds a peekable window, and the
@@ -489,40 +792,39 @@ class ChatViewModel(
                     .collect { router.route(subscriptionKey, it) }
             }
 
-            launch {
+            launch(workerContext) {
+                if (preservingHistory) return@launch
                 runCatching { store.syncTail() }
                 // Now that sends exist, verify optimistic queued rows against
                 // the hub on every chat open (web queued-state reconciliation).
                 runCatching { store.reconcileQueuedState() }
             }
-            launch { restoreDraft() }
-            loadDetail()
+            launch(workerContext) { restoreDraft() }
+            if (!featuresRequested) {
+                featuresRequested = true
+                launch(workerContext) { loadFeatures() }
+            }
+            withContext(workerContext) { loadDetail() }
         }
 
         // Badge count + SSE-triggered refetches while this chat is on screen.
         scratchlist?.open(sessionId)
 
-        seenJob = scope.launch {
-            // Watermark = updatedAt currently on screen, from whichever cache
-            // is fresher (summary via global events, detail via this pipe).
-            merge(
-                sessionStore.sessions
-                    .map { list -> list.firstOrNull { it.id == sessionId }?.updatedAt },
-                sessionStore.sessionDetail(sessionId).map { it?.updatedAt },
-            )
-                .filterNotNull()
-                .distinctUntilChanged()
-                .collect { updatedAt -> lastSeenStore.markSeen(sessionId, updatedAt) }
-        }
     }
 
     /** Tears the session pipe down (engine keeps the resume cursor). */
+    @MainThread
     fun stop() {
+        started = false
+        historyObserver?.cancel()
+        historyObserver = null
         sseJob?.cancel()
         sseJob = null
         initJob?.cancel()
-        seenJob?.cancel()
-        olderJob?.cancel()
+        cancelHistory()
+        jumpJob?.cancel()
+        jumpJob = null
+        mutableJumpingLatest.value = false
         flushPendingDraft()
         sseEngine.unsubscribe(subscriptionKey)
         sessionStore.releaseDetail(sessionId)
@@ -540,7 +842,7 @@ class ChatViewModel(
         draftJob?.cancel()
         if (!pending) return
         val store = drafts ?: return
-        val text = composerText.value
+        val text = composerDraft.value.text
         kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
             runCatching { store.save(sessionId, text) }
         }
@@ -548,18 +850,151 @@ class ChatViewModel(
 
     /** Initial-load error state → try again (detail + tail). */
     fun retry() {
+        sseEngine.requestReconnect(subscriptionKey)
         scope.launch {
             loadDetail()
             windowStore.value?.let { store -> runCatching { store.syncTail(ensureAfterCurrent = true) } }
         }
     }
 
-    /** Top-edge reached: one older page (no-ops while one is in flight). */
+    /** Explicit retry/continue. Ordinary paging is driven by viewport coverage. */
+    @MainThread
     fun loadOlder() {
+        mutableHistoryPaging.value = mutableHistoryPaging.value.resume()
+        historyDemand = true
+        scheduleHistoryPump()
+    }
+
+    @MainThread
+    fun readingViewportChanged(followsTail: Boolean, needsOlder: Boolean) {
+        if (!transcriptVisible) return
+        val changed = readerFollowsTail != followsTail
+        readerFollowsTail = followsTail
+        historyDemand = needsOlder
+        val store = windowStore.value
+        if (changed && !mutableJumpingLatest.value && store != null) {
+            if (followsTail && store.state.value.requiresLatestReset) { jumpToLatest(); return }
+            val previous = windowModeJob
+            windowModeJob = uiScope.launch {
+                previous?.join()
+                withContext(workerContext) {
+                    store.setViewMode(if (followsTail) MessageViewMode.Tail else MessageViewMode.History)
+                }
+            }
+        }
+        if (!needsOlder && (olderJob != null || mutableHistoryPaging.value.phase == ChatHistoryPagingState.Phase.Retrying)) {
+            cancelHistory()
+        }
+        scheduleHistoryPump()
+    }
+
+    @MainThread
+    fun historyLaidOut(version: Long, madeProgress: Boolean) {
+        val old = lastHistoryLayout
+        lastHistoryLayout = version to (madeProgress || (old?.first == version && old.second))
+        acknowledgeHistoryLayout()
+    }
+
+    private fun acknowledgeHistoryLayout() {
+        val layout = lastHistoryLayout ?: return
+        val old = mutableHistoryPaging.value
+        val next = old.laidOut(layout.first, layout.second)
+        mutableHistoryPaging.value = next
+        if (next != old) scheduleHistoryPump()
+    }
+
+    private fun scheduleHistoryPump() {
+        if (historyPumpScheduled) return
+        historyPumpScheduled = true
+        uiScope.launch {
+            yield()
+            historyPumpScheduled = false
+            pumpHistory()
+        }
+    }
+
+    private fun pumpHistory() {
         val store = windowStore.value ?: return
-        if (olderJob?.isActive == true) return
-        olderJob = scope.launch {
-            runCatching { store.fetchOlder() }
+        val window = store.state.value
+        if (!started || !transcriptVisible || mutableJumpingLatest.value || !historyDemand || !window.hasMore ||
+            window.isSyncingTail || window.isLoadingMore || olderJob != null ||
+            mutableHistoryPaging.value.phase != ChatHistoryPagingState.Phase.Idle) return
+        val request = mutableHistoryPaging.value.begin()
+        mutableHistoryPaging.value = request
+        val gate = AtomicBoolean(true)
+        historyGate = gate
+        val cancellation = historyCancellation
+        val modeChange = windowModeJob
+        olderJob = uiScope.launch {
+            cancellation?.join()
+            modeChange?.join()
+            if (!gate.get()) return@launch
+            val outcome = withContext(workerContext) { store.fetchOlder(onBeforeApply = { gate.get() }) }
+            if (mutableHistoryPaging.value.generation != request.generation) return@launch
+            olderJob = null
+            historyGate = null
+            mutableHistoryPaging.value = mutableHistoryPaging.value.received(outcome, request.generation)
+            acknowledgeHistoryLayout()
+            // Tail sync may have completed while olderJob blocked observer
+            // pumps. An invalidated page has no layout callback to wake us.
+            if (outcome == OlderLoadOutcome.Stopped(OlderLoadOutcome.StopReason.Invalidated) ||
+                outcome == OlderLoadOutcome.Stopped(OlderLoadOutcome.StopReason.EpochReset)) {
+                scheduleHistoryPump()
+            }
+            mutableHistoryPaging.value.retryDelayMillis?.let { milliseconds ->
+                historyRetryJob = uiScope.launch {
+                    delay(milliseconds)
+                    mutableHistoryPaging.value = mutableHistoryPaging.value.retryElapsed(request.generation)
+                    scheduleHistoryPump()
+                }
+            }
+        }
+    }
+
+    private fun cancelHistory() {
+        historyGate?.set(false)
+        historyGate = null
+        olderJob?.cancel()
+        olderJob = null
+        historyRetryJob?.cancel()
+        historyRetryJob = null
+        mutableHistoryPaging.value = mutableHistoryPaging.value.cancel()
+        lastHistoryLayout = null
+        windowStore.value?.let { store ->
+            val previous = historyCancellation
+            historyCancellation = uiScope.launch {
+                previous?.join()
+                withContext(workerContext) { store.cancelOlderLoad() }
+            }
+        }
+    }
+
+    @MainThread
+    fun jumpToLatest() {
+        if (!started || mutableJumpingLatest.value) return
+        val store = windowStore.value ?: return
+        cancelHistory()
+        historyDemand = false
+        mutableJumpingLatest.value = true
+        val cancellation = historyCancellation
+        val modeChange = windowModeJob
+        jumpJob = uiScope.launch {
+            cancellation?.join()
+            modeChange?.join()
+            if (store.state.value.requiresLatestReset) {
+                withContext(workerContext) { store.syncTail(ensureAfterCurrent = true, allowingHistoryReset = true) }
+            }
+            if (!started) return@launch
+            if (store.state.value.requiresLatestReset) {
+                mutableJumpingLatest.value = false
+                jumpJob = null
+                return@launch
+            }
+            withContext(workerContext) { store.setViewMode(MessageViewMode.Tail) }
+            mutableJumpingLatest.value = false
+            jumpJob = null
+            readerFollowsTail = true
+            mutableJumpToken.value += 1
         }
     }
 
@@ -576,13 +1011,24 @@ class ChatViewModel(
 
     // ------------------------------------------------------------- composer --
 
-    fun setComposerText(text: String) {
+    fun setComposerText(text: String) = setComposerText(text, text.length)
+
+    /**
+     * [setComposerText] with an explicit resting caret (mention insert lands
+     * mid-draft); every other programmatic set rests at the tail. The caret
+     * only moves when the text actually changes, so a same-text call never
+     * teleports the user's caret.
+     */
+    private fun setComposerText(text: String, caret: Int) {
+        if (importingShare.value) return
         // Fetch the RPC command list on the transition INTO slash mode (the
         // web refetches when the menu opens) — not on every keystroke, so a
         // wedged CLI cannot be hammered while the user types a command.
         val enteredSlashMode = SlashCommands.queryOf(text) != null &&
-            SlashCommands.queryOf(composerText.value) == null
-        composerText.value = text
+            SlashCommands.queryOf(composerDraft.value.text) == null
+        if (text != composerDraft.value.text) {
+            composerDraft.value = ComposerDraft(text, caret, caret)
+        }
         if (enteredSlashMode) loadSlashCommands()
         draftJob?.cancel()
         val store = drafts ?: return
@@ -592,9 +1038,89 @@ class ChatViewModel(
         }
     }
 
+    /**
+     * User edit from the composer's TextFieldValue — one atomic text+caret
+     * update, so detection never observes a transient text/selection mix.
+     */
+    fun onComposerChange(text: String, selectionStart: Int, selectionEnd: Int) {
+        if (importingShare.value) return
+        // Fetch the RPC command list on the transition INTO slash mode (the
+        // web refetches when the menu opens) — not on every keystroke, so a
+        // wedged CLI cannot be hammered while the user types a command.
+        val enteredSlashMode = SlashCommands.queryOf(text) != null &&
+            SlashCommands.queryOf(composerDraft.value.text) == null
+        composerDraft.value = ComposerDraft(text, selectionStart, selectionEnd)
+        if (enteredSlashMode) loadSlashCommands()
+        draftJob?.cancel()
+        val store = drafts ?: return
+        draftJob = scope.launch {
+            delay(draftSaveDebounceMs)
+            runCatching { store.save(sessionId, text) }
+        }
+    }
+
+    /**
+     * Raw text swap for paths that must bypass [setComposerText]'s guards
+     * (share import) or skip its draft debounce (send-clear, prefill
+     * restore) — keeps the caret resting at the tail.
+     */
+    private fun replaceComposerTextRaw(text: String) {
+        if (text == composerDraft.value.text) return
+        val tail = text.length
+        composerDraft.value = ComposerDraft(text, tail, tail)
+    }
+
+    /** Commit the latest keystrokes before a share picker can reopen this session under a new ID. */
+    suspend fun persistComposerDraft() {
+        draftReady.await()
+        draftJob?.cancelAndJoin()
+        drafts?.save(sessionId, composerDraft.value.text)
+    }
+
+    /** Caller is the chat entry's Main-thread effect; cancellation preserves the inbox batch. */
+    suspend fun importShare(
+        share: PendingShare,
+        complete: suspend (ShareImportFailure?) -> Unit = {},
+        prepare: suspend (SharedFile) -> PrepareResult,
+    ): ShareImportFailure? = shareImportMutex.withLock {
+        check(share.canImport)
+        importingShare.value = true
+        try {
+            if (share.id in importedShares) {
+                complete(null)
+                return@withLock null
+            }
+            draftReady.await()
+            draftJob?.cancelAndJoin()
+            if (share.text.isNotBlank() && share.id !in importedShareTexts) {
+                val appended = drafts?.appendSharedText(sessionId, share.id, composerDraft.value.text, share.text)
+                    ?: appendSharedText(composerDraft.value.text, share.text)
+                replaceComposerTextRaw(appended)
+                importedShareTexts += share.id
+            }
+            for (file in share.files) {
+                if (file.id in importedSharedFiles) continue
+                when (val result = prepare(file)) {
+                    is PrepareResult.Ready -> {
+                        attachments.add(result.attachment)
+                        importedSharedFiles += file.id
+                    }
+                    is PrepareResult.TooLarge -> return@withLock ShareImportFailure(file.id, SharedFileStatus.TooLarge).also { complete(it) }
+                    is PrepareResult.Unreadable -> return@withLock ShareImportFailure(file.id, SharedFileStatus.Unreadable).also { complete(it) }
+                }
+            }
+            importedShares += share.id
+            complete(null)
+            composerFocusRequest.value += 1
+            null
+        } finally {
+            importingShare.value = false
+        }
+    }
+
     /** Dictation transcript arrived: append with a space separator (web `appendTranscript`). */
     fun appendDictatedText(transcript: String) {
-        setComposerText(appendTranscript(composerText.value, transcript))
+        setComposerText(appendTranscript(composerDraft.value.text, transcript))
     }
 
     /**
@@ -605,7 +1131,7 @@ class ChatViewModel(
      */
     fun insertComposerText(text: String) {
         if (text.isBlank()) return
-        val current = composerText.value
+        val current = composerDraft.value.text
         setComposerText(if (current.isBlank()) text else "${current.trimEnd()}\n$text")
     }
 
@@ -617,14 +1143,14 @@ class ChatViewModel(
      */
     fun parkComposerDraft() {
         val store = scratchlist ?: return
-        val text = composerText.value
+        val text = composerDraft.value.text
         if (text.isBlank()) return
         scope.launch {
             when (val result = store.createEntry(sessionId, text)) {
                 is ScratchlistCreateResult.Created -> {
                     // Clear only when the draft is still what we parked (the
                     // operator may have kept typing while the POST ran).
-                    if (composerText.value == text) setComposerText("")
+                    if (composerDraft.value.text == text) setComposerText("")
                     _events.tryEmit(ChatEvent.Notice(ChatNotice.DraftParked))
                 }
                 ScratchlistCreateResult.AtCap ->
@@ -638,6 +1164,82 @@ class ChatViewModel(
     /** Dropdown tap: replace the slash token with `/name ` ready for arguments. */
     fun selectSlashCommand(command: SlashCommand) {
         setComposerText("/${command.name} ")
+    }
+
+    /**
+     * Mention dropdown tap: replace the active `@word` at the composer caret
+     * with the suggestion's insert text (web `applySuggestion` — whole-word
+     * swap + trailing space, cursor landing after the insertion). Replacing
+     * the word closes the menu.
+     */
+    fun selectMentionSuggestion(suggestion: MentionSuggestion) {
+        val draft = composerDraft.value
+        val edit = Mentions.applySuggestion(draft.text, draft.selectionStart, draft.selectionEnd, suggestion.insertText)
+        setComposerText(edit.text, edit.cursorPosition)
+    }
+
+    /**
+     * Schedule-picker selection / clock-button clear (B-M16b). Mirrors the
+     * web SessionChat `updatePendingSchedule`: every call — including clears
+     * — bumps [pendingScheduleRevision], and absolute picks also arm an
+     * expiry auto-clear (a pick whose instant passes stops highlighting the
+     * clock instead of silently scheduling into the past; a within-grace
+     * past pick — still valid at validation time — clears immediately, the
+     * web's exact `remaining <= 0` behavior). Presets are send-relative and
+     * never expire on a timer.
+     *
+     * Mutual exclusion (wire: `scheduledAt` excludes attachments): arming a
+     * pick while the tray holds any chip is REJECTED here. The clock button
+     * disables with a non-empty tray, but the picker panel can stay open
+     * across an attachment add and the share-import path can drop a file in
+     * while a pick is armed — the ViewModel transition is the gate the UI
+     * gates only mirror; [sendMessage] validates again before consuming.
+     * Clearing is always allowed.
+     */
+    fun setPendingSchedule(pending: PendingSchedule?) {
+        // Fast path: apply inline while uncontended so UI callbacks (and the
+        // JVM tests driving them) stay synchronous. When the edit-restore
+        // coroutine holds the lock, queue behind it on the holder scope.
+        if (scheduleMutex.tryLock()) {
+            try {
+                applyPendingScheduleLocked(pending)
+            } finally {
+                scheduleMutex.unlock()
+            }
+        } else {
+            scope.launch { scheduleMutex.withLock { applyPendingScheduleLocked(pending) } }
+        }
+    }
+
+    /**
+     * The transition itself — caller must hold [scheduleMutex]. Atomic by
+     * construction: the value swap, the revision bump and the expiry-job
+     * registration happen with no interleaving point between them.
+     */
+    private fun applyPendingScheduleLocked(pending: PendingSchedule?) {
+        if (pending != null && attachments.items.value.isNotEmpty()) return
+        pendingScheduleExpiryJob?.cancel()
+        pendingScheduleExpiryJob = null
+        mutablePendingSchedule.value = pending
+        val armedRevision = pendingScheduleRevision.incrementAndGet()
+        if (!ScheduleSend.shouldAutoClearPendingSchedule(pending)) return
+        val ms = (pending as PendingSchedule.Absolute).ms
+        val remaining = ms - now()
+        if (remaining <= 0) {
+            mutablePendingSchedule.value = null
+            return
+        }
+        pendingScheduleExpiryJob = scope.launch {
+            delay(remaining)
+            // Revision guard: only the timer armed by the CURRENT pick may
+            // clear it. A timer that lost a race (or an obsolete restore)
+            // sees a newer revision and no-ops instead of clobbering.
+            scheduleMutex.withLock {
+                if (pendingScheduleRevision.get() != armedRevision) return@withLock
+                mutablePendingSchedule.value = null
+                pendingScheduleRevision.incrementAndGet()
+            }
+        }
     }
 
     /**
@@ -670,28 +1272,74 @@ class ChatViewModel(
      * Ready attachments are consumed into `SendMessageRequest.attachments`;
      * an unsettled chip (uploading/failed) blocks the send with a notice.
      * Text may be empty when attachments exist (wire: text OR attachments).
+     *
+     * B-M16b: a pending schedule resolves here, at the send instant (web
+     * `resolvePendingSchedule(pending, Date.now())`) — presets are relative to
+     * the Send tap. A pending pick also downgrades a steer long-press to
+     * queue: the wire forbids `scheduledAt` + steer and the web forces the
+     * send intent to 'default' while a schedule is pending. The pick is
+     * cleared with the draft once the send consumes it.
      */
     fun sendMessage(steer: Boolean = false) {
-        if (sendInFlight.value) return
+        if (sendInFlight.value || importingShare.value) return
         if (attachments.hasUnsettled()) {
             _events.tryEmit(ChatEvent.Notice(ChatNotice.AttachmentsUploading))
             return
         }
-        val text = composerText.value.trim()
+        val text = composerDraft.value.text.trim()
+        val scheduledAt = ScheduleSend.resolvePendingSchedule(mutablePendingSchedule.value, now())
+        // Mutual exclusion, checked BEFORE the draft clears or the tray
+        // consumes: a scheduled send cannot carry attachments on the wire,
+        // and the pre-consume order keeps both recoverable — the chips stay
+        // in the tray and the draft keeps its text so the operator can drop
+        // one side and re-tap Send. (Reaching performSend with the combo
+        // would throw on its invariant before a recoverable row exists.)
+        if (scheduledAt != null && attachments.items.value.isNotEmpty()) {
+            _events.tryEmit(ChatEvent.Notice(ChatNotice.ScheduleAttachmentConflict))
+            return
+        }
         val attachmentMetadata = attachments.consume()
         if (text.isEmpty() && attachmentMetadata == null) return
-        composerText.value = ""
+        val deliveryMode = if (steer && scheduledAt == null) "steer" else "queue"
+        replaceComposerTextRaw("")
+        // 分歧 (same intent as the web, Android-native restore): the web
+        // clears the pick in SessionChat only after the send is accepted and
+        // restores it on failure; the Android failed row already carries wire
+        // `scheduledAt` and `retryFailedMessage` re-fires with it — the retry
+        // IS the restore — so clearing at dispatch loses nothing.
+        setPendingSchedule(null)
         draftJob?.cancel()
+        sendInFlight.value = true
         scope.launch {
-            drafts?.let { runCatching { it.clear(sessionId) } }
-            performSend(
-                text = text,
-                localId = localIdGenerator(),
-                createdAt = now(),
-                deliveryMode = if (steer) "steer" else "queue",
-                attachments = attachmentMetadata,
-                isRetry = false,
-            )
+            try {
+                drafts?.let { runCatching { it.clear(sessionId) } }
+                // A scheduled /clear|/new goes out as a queued message like any
+                // other scheduled text (web gates the shortcut the same way).
+                if (attachmentMetadata == null && scheduledAt == null &&
+                    (text == "/clear" || text == "/new") &&
+                    sessionStore.sessionDetail(sessionId).first()?.metadata?.capabilities?.concurrentClients == true) {
+                    sendInFlight.value = true
+                    try {
+                        val result = api.clearConversation(sessionId)
+                        _events.tryEmit(ChatEvent.SessionSuperseded(result.sessionId))
+                    } catch (cancellation: CancellationException) {
+                        throw cancellation
+                    } catch (error: Exception) {
+                        replaceComposerTextRaw(text)
+                        _events.tryEmit(ChatEvent.Notice(ChatNotice.ReopenFailed(error.message)))
+                    } finally { sendInFlight.value = false }
+                    return@launch
+                }
+                performSend(
+                    text = text,
+                    localId = localIdGenerator(),
+                    createdAt = now(),
+                    deliveryMode = deliveryMode,
+                    attachments = attachmentMetadata,
+                    scheduledAt = scheduledAt,
+                    isRetry = false,
+                )
+            } finally { sendInFlight.value = false }
         }
     }
 
@@ -882,6 +1530,56 @@ class ChatViewModel(
         }
     }
 
+    /** Explicit hub-owned `metadata.translateInput` wins; absent ⇒ the hub default (web parity). */
+    private fun effectiveTranslateInput(explicit: Boolean?, hubDefault: Boolean): Boolean = explicit ?: hubDefault
+
+    /** Best-effort feature discovery; a failure (or an older hub) leaves the toggle hidden. */
+    private suspend fun loadFeatures() {
+        try {
+            val available = api.getFeatures().inputTranslationAvailable
+            mutableInputTranslationAvailable.value = available
+            // Sessions without an explicit choice follow the hub default.
+            if (available) translateInputByDefault.value = api.getHubSettings().translateInputByDefault
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            // Hidden unless the session already has translation on.
+        }
+    }
+
+    /**
+     * Flips hub-owned `metadata.translateInput` (`PATCH /sessions/:id`). On
+     * success the cached detail is updated locally, then refetched (web
+     * invalidates the session query); the session-updated SSE carries the
+     * same truth. Failures (e.g. 400 without a provider) surface as
+     * [ChatNotice.TranslateInputFailed].
+     */
+    fun toggleTranslateInput() {
+        if (!translateTogglePending.compareAndSet(false, true)) return
+        val enabled = !effectiveTranslateInput(currentDetail()?.metadata?.translateInput, translateInputByDefault.value)
+        scope.launch {
+            try {
+                api.setSessionTranslateInput(sessionId, enabled)
+                sessionStore.updateDetailLocal(sessionId) { detail ->
+                    detail.metadata?.let { detail.copy(metadata = it.copy(translateInput = enabled)) } ?: detail
+                }
+                try {
+                    sessionStore.loadSessionDetail(sessionId)
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (_: Exception) {
+                    // The local update stands until SSE/next load brings server truth.
+                }
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                _events.tryEmit(ChatEvent.Notice(ChatNotice.TranslateInputFailed(error.message)))
+            } finally {
+                translateTogglePending.set(false)
+            }
+        }
+    }
+
     /** `DELETE /sessions/:id` — [ChatEvent.SessionDeleted] on success; 409 while active. */
     fun deleteSession() {
         if (!sessionOpPending.compareAndSet(expect = false, update = true)) return
@@ -999,20 +1697,52 @@ class ChatViewModel(
         }
     }
 
-    /** Edit = cancel + prefill composer (kept when the operator typed meanwhile). */
+    /**
+     * Edit = cancel + prefill composer (kept when the operator typed
+     * meanwhile). B-M16b: a future `scheduledAt` re-arms the pending schedule
+     * as an absolute pick so a re-send keeps (or adjusts) the fire time;
+     * past/null clears it so the re-send goes out immediately (web
+     * `computeEditPendingSchedule`). The restore is guarded by the schedule
+     * revision, like the web's `pendingScheduleRevisionAtEdit` check in
+     * `onEdit`: every schedule interaction bumps the revision, so a pick —
+     * or a pick and an explicit clear of it — re-made while the cancel
+     * round-trip is in flight wins over the restore even when the slot's
+     * value lands back where it started (value equality cannot see that).
+     * The restore is also skipped (with a notice) when the attachment tray
+     * is non-empty — a schedule cannot carry attachments on the wire and
+     * the clock button is disabled while the tray is non-empty, so
+     * re-arming would arm a state the operator can neither see nor clear,
+     * and the send would crash on the scheduledAt+attachments invariant.
+     */
     fun editQueuedMessage(messageId: String) {
+        // Snapshot on the calling thread: a single atomic read — any
+        // schedule interaction after the tap (pick, clear, expiry) bumps the
+        // revision and must win over the restore below.
+        val revisionAtEdit = pendingScheduleRevision.get()
         scope.launch {
             val store = awaitWindowStore()
             val row = store.state.value.messages.firstOrNull { it.id == messageId } ?: return@launch
             val preview = queuedPreview(row)
             val editText = preview.text.ifEmpty { preview.attachmentNames.joinToString(", ") }
-            val composerAtEdit = composerText.value
+            val restoredSchedule = ScheduleSend.computeEditPendingSchedule(row.wire.scheduledAt, now())
+            val composerAtEdit = composerDraft.value.text
             when (cancelQueuedInternal(messageId)) {
                 "cancelled" -> {
-                    if (composerText.value == composerAtEdit) {
+                    if (composerDraft.value.text == composerAtEdit) {
                         setComposerText(editText)
                     } else {
                         _events.tryEmit(ChatEvent.Notice(ChatNotice.QueuedEditKeptDraft))
+                    }
+                    // Check + restore as one critical section, serialized
+                    // against picker picks and expiry timers by the same
+                    // mutex the transitions hold.
+                    scheduleMutex.withLock {
+                        if (pendingScheduleRevision.get() != revisionAtEdit) return@withLock
+                        if (restoredSchedule != null && attachments.items.value.isNotEmpty()) {
+                            _events.tryEmit(ChatEvent.Notice(ChatNotice.QueuedEditScheduleDropped))
+                        } else {
+                            applyPendingScheduleLocked(restoredSchedule)
+                        }
                     }
                 }
                 "invoked" -> _events.tryEmit(ChatEvent.Notice(ChatNotice.QueuedAlreadyDelivered))
@@ -1193,10 +1923,91 @@ class ChatViewModel(
         }
     }
 
+    // ---------------------------------------------------- Codex plan actions --
+
+    private fun buildCodexPlanActions(
+        detail: Session?, operations: CodexPlanOperations, busy: Boolean,
+    ): CodexPlanActions = CodexPlanActions(
+        proposalId = detail?.agentState?.codexPlanProposalId?.takeIf {
+            detail.active && detail.metadata?.flavor == "codex"
+                && detail.metadata?.capabilities?.concurrentClients == true
+                && it !in operations.implementedPlanIds
+                && it !in operations.continuedPlanIds
+        },
+        pendingPlanId = operations.pendingPlanId,
+        disabled = busy || detail?.thinking == true,
+        errors = operations.errors,
+    )
+
+    // Re-read live inputs for callbacks; a combined StateFlow can lag a UI tap.
+    private fun currentCodexPlanActions() = buildCodexPlanActions(
+        sessionStore.currentDetail(sessionId), codexPlanOperations.value,
+        sendInFlight.value || configOpPending.value,
+    )
+
+    fun implementCodexPlan(planId: String) {
+        val previous = codexPlanOperations.value
+        if (!currentCodexPlanActions().forPlan(planId).canAct) return
+        if (!codexPlanOperations.compareAndSet(previous, previous.copy(
+                pendingPlanId = planId, errors = previous.errors - planId,
+            ))) return
+        scope.launch {
+            try {
+                try {
+                    api.implementCodexPlan(sessionId, planId)
+                    // Acceptance wins over a failed or temporarily stale refresh.
+                    codexPlanOperations.update { it.copy(implementedPlanIds = it.implementedPlanIds + planId) }
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (error: Exception) {
+                    val serverMessage = (error as? ApiError)?.body?.let {
+                        runCatching { HapiJson.parseToJsonElement(it).objOrNull?.get("error").stringOrNull }.getOrNull()
+                    }
+                    codexPlanOperations.update {
+                        it.copy(errors = it.errors + (planId to CodexPlanFailure(serverMessage ?: error.message)))
+                    }
+                }
+                // Another client may have consumed/withdrawn the proposal, even
+                // after a failure. Refresh without resubmitting an uncertain POST.
+                try {
+                    sessionStore.loadSessionDetail(sessionId)
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (_: Exception) {
+                    // Keep the last state; SSE/reconnection will refresh later.
+                }
+            } finally {
+                codexPlanOperations.update { it.copy(pendingPlanId = null) }
+            }
+        }
+    }
+
+    fun continueCodexPlan(planId: String) {
+        if (!currentCodexPlanActions().forPlan(planId).canAct) return
+        codexPlanOperations.update {
+            it.copy(continuedPlanIds = it.continuedPlanIds + planId, errors = it.errors - planId)
+        }
+        composerFocusRequest.update { it + 1 }
+    }
+
     // ---------------------------------------------------------------- config --
 
-    /** `POST /permission-mode` with an optimistic detail flip; server truth on error. */
+    /**
+     * Web's terminal-control flag (SessionChat.tsx:996):
+     * `controlledByUser && !concurrentClients` — shared-clients sessions
+     * report the flag but keep remote config switching.
+     */
+    private fun terminalControlled(detail: Session?): Boolean =
+        detail?.agentState?.controlledByUser == true && detail?.metadata?.capabilities?.concurrentClients != true
+
+    /**
+     * `POST /permission-mode` with an optimistic detail flip; server truth on
+     * error. Inactive sessions stay switchable (web parity — the send path
+     * auto-resumes); only copilot sessions under local terminal control lose
+     * the switcher (web withholds the callback, SessionChat.tsx:2159-2163).
+     */
     fun setPermissionMode(mode: PermissionMode) {
+        if (currentFlavor() == "copilot" && terminalControlled(currentDetail())) return
         runConfigChange(
             optimistic = { it.copy(permissionMode = mode.wireId) },
             call = { api.setPermissionMode(sessionId, mode.wireId) },
@@ -1320,7 +2131,7 @@ class ChatViewModel(
         return SessionConfigUi(
             flavor = flavor,
             active = detail?.active ?: summary?.active ?: false,
-            controlledByUser = detail?.agentState?.controlledByUser == true,
+            controlledByUser = terminalControlled(detail),
             permissionMode = detail?.permissionMode,
             permissionModes = PermissionModes.forFlavor(flavor),
             model = model,
@@ -1367,10 +2178,16 @@ class ChatViewModel(
         .distinctUntilChanged()
 
     private suspend fun restoreDraft() {
-        val store = drafts ?: return
-        val draft = runCatching { store.load(sessionId) }.getOrNull() ?: return
-        if (composerText.value.isEmpty()) {
-            composerText.value = draft
+        if (draftReady.isCompleted) return
+        try {
+            val draft = drafts?.load(sessionId)
+            if (composerDraft.value.text.isEmpty() && draft != null) replaceComposerTextRaw(draft)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // Ordinary chat remains usable when local draft storage fails.
+        } finally {
+            draftReady.complete(Unit)
         }
     }
 
@@ -1383,6 +2200,7 @@ class ChatViewModel(
             machines = values[3] as List<Machine>,
             detailLoadFailed = values[4] as Boolean,
             permissionOverrides = values[5] as Map<String, PermissionRowOverride>,
+            translateInputByDefault = values[6] as Boolean,
         )
     }
 
@@ -1440,10 +2258,22 @@ class ChatViewModel(
         val agentState = inputs.detail?.agentState
         val reduced = reduceChatBlocks(normalized, agentState)
         val visibleBlocks = buildVisibleChatBlocks(
-            reduced.blocks,
+            filterEmptyReasoning(reduced.blocks),
             ToolGroupingOptions(hasMoreMessages = window.hasMore, previousGroups = previousGroups),
         )
         previousGroups = visibleBlocks.filterIsInstance<ToolGroupBlock>()
+        inspection.update(visibleBlocks, window.epoch)
+        val sources = visibleBlocks.mapNotNull { block ->
+            when (block) {
+                is AgentTextBlock -> block.text
+                is AgentReasoningBlock -> block.text
+                is ToolCallBlock -> planProposalMarkdown(block.tool)
+                else -> null
+            }
+        }.toSet()
+        // buildUiState runs on pipelineDispatcher, before these rows reach UI.
+        markdownCache.prepare(sources - previousMarkdownSources)
+        previousMarkdownSources = sources
 
         prunePermissionOverrides(agentState, inputs.permissionOverrides)
 
@@ -1451,12 +2281,24 @@ class ChatViewModel(
         // syncGeneration 0 = no tail sync has even begun (the moment between
         // open and syncTail) — still "loading", never a flash of empty state.
         val syncSettled = !window.isSyncingTail && window.syncGeneration > 0
+        val flavor = inputs.detail?.metadata?.flavor ?: inputs.summary?.metadata?.flavor
+        // Composer-strip context readout rides the session-level usage
+        // projection; the window falls back to a flavor/model estimate when
+        // the usage signal omits one.
+        val contextUsage = ContextUsage.indicator(
+            usage = reduced.latestUsage,
+            sessionModel = inputs.detail?.model,
+            flavor = flavor,
+        )
         return ChatUiState(
             sessionId = sessionId,
             header = buildHeader(inputs),
-            flavor = inputs.detail?.metadata?.flavor ?: inputs.summary?.metadata?.flavor,
+            flavor = flavor,
             basePath = inputs.detail?.metadata?.path ?: inputs.summary?.metadata?.path,
-            blocks = visibleBlocks,
+            blocks = transcriptProjection.project(visibleBlocks),
+            messageAggregates = aggregateResponseGroups(visibleBlocks),
+            processSteps = visibleBlocks.filterIsInstance<ToolCallBlock>().filter(::opensToolProcess)
+                .associate { it.id to it.children.size },
             permissionOverrides = inputs.permissionOverrides,
             hasMore = window.hasMore,
             isLoadingOlder = window.isLoadingMore,
@@ -1466,8 +2308,23 @@ class ChatViewModel(
                 (window.warning != null || inputs.detailLoadFailed),
             warning = window.warning,
             tailRevision = window.tailRevision,
+            historyVersion = window.historyVersion,
+            messagesVersion = window.messagesVersion,
+            requiresLatestReset = window.requiresLatestReset,
+            readThroughRevision = window.readThroughRevision,
+            renderedReadState = SessionReadState.merge(inputs.detail?.readState, inputs.summary?.readState),
+            contextUsage = contextUsage,
         )
     }
+
+    // Web's assistant-ui drops blank reasoning parts; hide them before native
+    // presentation too, including in nested agent processes.
+    private fun filterEmptyReasoning(blocks: List<ChatBlock>): List<ChatBlock> =
+        blocks.filterNot { it is AgentReasoningBlock && it.text.isBlank() }.onEach { block ->
+            if (block is ToolCallBlock && block.children.isNotEmpty()) {
+                block.children = filterEmptyReasoning(block.children)
+            }
+        }
 
     /** A settled request (gone from `agentState.requests`) drops its override. */
     private fun prunePermissionOverrides(
@@ -1514,6 +2371,7 @@ class ChatViewModel(
             name = detail?.metadata?.name ?: summary?.metadata?.name,
             active = detail?.active ?: summary?.active ?: false,
             thinking = detail?.thinking ?: summary?.thinking ?: false,
+            translateInput = effectiveTranslateInput(detail?.metadata?.translateInput, inputs.translateInputByDefault),
         )
     }
 
@@ -1548,4 +2406,3 @@ class ChatViewModel(
                 } == true
     }
 }
-

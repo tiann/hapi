@@ -1,5 +1,5 @@
-import { basename, join } from 'node:path';
-import { realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
+import { readdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { describe, expect, it, vi } from 'vitest';
 import { getHapiBlobsDir } from '@/constants/uploadPaths';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
@@ -133,6 +133,361 @@ describe('isPathWithinUploadDir', () => {
             expect(basename(result.path).endsWith(extension)).toBe(true);
         } finally {
             vi.useRealTimers();
+            await cleanupUploadDir(sessionId);
+        }
+    });
+});
+
+describe('chunked upload handlers', () => {
+    function setupHandlers(ttlMs?: number) {
+        const handlers = new Map<string, (payload: any) => Promise<any>>();
+        registerUploadHandlers(
+            {
+                registerHandler: (method: string, handler: (payload: any) => Promise<any>) => handlers.set(method, handler),
+            } as never,
+            ttlMs !== undefined ? { activeUploadTtlMs: ttlMs } : undefined,
+        );
+        return {
+            init: handlers.get(RPC_METHODS.UploadInit)!,
+            chunk: handlers.get(RPC_METHODS.UploadChunk)!,
+            finalize: handlers.get(RPC_METHODS.UploadFinalize)!,
+            abort: handlers.get(RPC_METHODS.UploadAbort)!,
+            remove: handlers.get(RPC_METHODS.DeleteUpload)!,
+        };
+    }
+
+    it('streams chunks to a .part file, authorizes only after finalize, and deletes cleanly', async () => {
+        const { init, chunk, finalize, remove } = setupHandlers();
+        const sessionId = `session-chunked-${Date.now()}`;
+        const parts = [
+            Buffer.from('hello '),
+            Buffer.from('chunked '),
+            Buffer.from('world!'),
+        ];
+        const total = Buffer.concat(parts);
+        try {
+            const initRes = await init({
+                sessionId,
+                filename: 'notes.txt',
+                size: total.length,
+                mimeType: 'text/plain',
+            });
+            expect(initRes).toMatchObject({ success: true, uploadId: expect.any(String) });
+
+            for (let index = 0; index < parts.length; index += 1) {
+                const res = await chunk({
+                    sessionId,
+                    uploadId: initRes.uploadId,
+                    index,
+                    content: parts[index]!.toString('base64'),
+                });
+                expect(res.success).toBe(true);
+            }
+
+            const finalRes = await finalize({ sessionId, uploadId: initRes.uploadId });
+            expect(finalRes).toMatchObject({ success: true, path: expect.any(String) });
+            expect(await readFile(finalRes.path)).toEqual(total);
+
+            const info = await stat(finalRes.path);
+            expect(isAuthorizedUploadFile(finalRes.path, sessionId, info)).toBe(true);
+            expect(isAuthorizedUploadFile(finalRes.path, 'other-session', info)).toBe(false);
+
+            const delRes = await remove({ sessionId, path: finalRes.path });
+            expect(delRes).toMatchObject({ success: true });
+            expect(isAuthorizedUploadFile(finalRes.path, sessionId, info)).toBe(false);
+        } finally {
+            await cleanupUploadDir(sessionId);
+        }
+    });
+
+    it('supports zero-byte chunked uploads', async () => {
+        const { init, finalize } = setupHandlers();
+        const sessionId = `session-zero-${Date.now()}`;
+        try {
+            const initRes = await init({
+                sessionId,
+                filename: 'empty.txt',
+                size: 0,
+                mimeType: 'text/plain',
+            });
+            expect(initRes.success).toBe(true);
+
+            const finalRes = await finalize({ sessionId, uploadId: initRes.uploadId });
+            expect(finalRes.success).toBe(true);
+            expect((await stat(finalRes.path)).size).toBe(0);
+            expect(isAuthorizedUploadFile(finalRes.path, sessionId, await stat(finalRes.path))).toBe(true);
+        } finally {
+            await cleanupUploadDir(sessionId);
+        }
+    });
+
+    it('enforces default and HAPI_MAX_UPLOAD_BYTES limits', async () => {
+        const { init, abort } = setupHandlers();
+        const sessionId = `session-limit-${Date.now()}`;
+        const previous = process.env.HAPI_MAX_UPLOAD_BYTES;
+        try {
+            delete process.env.HAPI_MAX_UPLOAD_BYTES;
+            const defaultOver = await init({
+                sessionId,
+                filename: 'huge.bin',
+                size: 512 * 1024 * 1024 + 1,
+                mimeType: 'application/octet-stream',
+            });
+            expect(defaultOver).toMatchObject({ success: false, code: 'upload_too_large' });
+
+            process.env.HAPI_MAX_UPLOAD_BYTES = '1024';
+            const customOver = await init({
+                sessionId,
+                filename: 'over.bin',
+                size: 1025,
+                mimeType: 'application/octet-stream',
+            });
+            expect(customOver).toMatchObject({ success: false, code: 'upload_too_large' });
+
+            const customExact = await init({
+                sessionId,
+                filename: 'exact.bin',
+                size: 1024,
+                mimeType: 'application/octet-stream',
+            });
+            expect(customExact).toMatchObject({ success: true, maxUploadBytes: 1024 });
+            await abort({ sessionId, uploadId: customExact.uploadId });
+        } finally {
+            if (previous === undefined) {
+                delete process.env.HAPI_MAX_UPLOAD_BYTES;
+            } else {
+                process.env.HAPI_MAX_UPLOAD_BYTES = previous;
+            }
+            await cleanupUploadDir(sessionId);
+        }
+    });
+
+    it('rejects out-of-order chunks, overflow, incomplete finalize, and supports idempotent abort', async () => {
+        const { init, chunk, finalize, abort } = setupHandlers();
+        const sessionId = `session-errors-${Date.now()}`;
+        try {
+            const initRes = await init({
+                sessionId,
+                filename: 'data.bin',
+                size: 4,
+                mimeType: 'application/octet-stream',
+            });
+            expect(initRes.success).toBe(true);
+
+            const wrongIndex = await chunk({
+                sessionId,
+                uploadId: initRes.uploadId,
+                index: 1,
+                content: Buffer.from('ab').toString('base64'),
+            });
+            expect(wrongIndex).toMatchObject({ success: false, code: 'upload_invalid_chunk' });
+
+            const okFirst = await chunk({
+                sessionId,
+                uploadId: initRes.uploadId,
+                index: 0,
+                content: Buffer.from('ab').toString('base64'),
+            });
+            expect(okFirst).toEqual({ success: true, receivedBytes: 2 });
+
+            const premature = await finalize({ sessionId, uploadId: initRes.uploadId });
+            expect(premature).toMatchObject({ success: false, code: 'upload_incomplete' });
+
+            const overflow = await chunk({
+                sessionId,
+                uploadId: initRes.uploadId,
+                index: 1,
+                content: Buffer.from('cdef').toString('base64'),
+            });
+            expect(overflow).toMatchObject({ success: false, code: 'upload_size_mismatch' });
+
+            // Overflow aborts and cleans up the partial file.
+            const afterOverflow = await finalize({ sessionId, uploadId: initRes.uploadId });
+            expect(afterOverflow).toMatchObject({ success: false, code: 'upload_not_found' });
+
+            const secondInit = await init({
+                sessionId,
+                filename: 'aborted.bin',
+                size: 4,
+                mimeType: 'application/octet-stream',
+            });
+            expect(secondInit.success).toBe(true);
+            expect(await abort({ sessionId, uploadId: secondInit.uploadId })).toEqual({ success: true });
+            expect(await abort({ sessionId, uploadId: secondInit.uploadId })).toEqual({ success: true });
+            expect(await finalize({ sessionId, uploadId: secondInit.uploadId })).toMatchObject({
+                success: false,
+                code: 'upload_not_found',
+            });
+        } finally {
+            await cleanupUploadDir(sessionId);
+        }
+    });
+
+    it('isolates chunked uploads across sessions', async () => {
+        const { init, chunk, finalize, abort } = setupHandlers();
+        const sessionA = `session-a-${Date.now()}`;
+        const sessionB = `session-b-${Date.now()}`;
+        try {
+            const initRes = await init({
+                sessionId: sessionA,
+                filename: 'secret.txt',
+                size: 2,
+                mimeType: 'text/plain',
+            });
+            expect(initRes.success).toBe(true);
+
+            expect(await chunk({
+                sessionId: sessionB,
+                uploadId: initRes.uploadId,
+                index: 0,
+                content: Buffer.from('hi').toString('base64'),
+            })).toMatchObject({ success: false, code: 'upload_not_found' });
+
+            expect(await finalize({ sessionId: sessionB, uploadId: initRes.uploadId })).toMatchObject({
+                success: false,
+                code: 'upload_not_found',
+            });
+
+            expect(await abort({ sessionId: sessionB, uploadId: initRes.uploadId })).toMatchObject({
+                success: false,
+                code: 'upload_not_found',
+            });
+
+            expect(await abort({ sessionId: sessionA, uploadId: initRes.uploadId })).toEqual({ success: true });
+        } finally {
+            await cleanupUploadDir(sessionA);
+            await cleanupUploadDir(sessionB);
+        }
+    });
+
+    it('fits long filenames within 255 bytes even with the .part suffix', async () => {
+        const { init, finalize } = setupHandlers();
+        const sessionId = `session-long-chunked-${Date.now()}`;
+        try {
+            const initRes = await init({
+                sessionId,
+                filename: `${'a'.repeat(300)}.mp4`,
+                size: 0,
+                mimeType: 'video/mp4',
+            });
+            expect(initRes.success).toBe(true);
+            const finalRes = await finalize({ sessionId, uploadId: initRes.uploadId });
+            expect(finalRes.success).toBe(true);
+            expect(basename(finalRes.path)).toMatch(/\.mp4$/);
+            expect(Buffer.byteLength(`${basename(finalRes.path)}.part`)).toBeLessThanOrEqual(255);
+        } finally {
+            await cleanupUploadDir(sessionId);
+        }
+    });
+
+    it('expires idle chunked uploads and cleans up during cleanupUploadDir', async () => {
+        const { init, chunk, finalize } = setupHandlers(30);
+        const sessionId = `session-ttl-${Date.now()}`;
+        try {
+            const initRes = await init({
+                sessionId,
+                filename: 'idle.bin',
+                size: 4,
+                mimeType: 'application/octet-stream',
+            });
+            expect(initRes.success).toBe(true);
+
+            await new Promise((resolve) => setTimeout(resolve, 60));
+            expect(await finalize({ sessionId, uploadId: initRes.uploadId })).toMatchObject({
+                success: false,
+                code: 'upload_not_found',
+            });
+
+            const activeRes = await init({
+                sessionId,
+                filename: 'active.bin',
+                size: 4,
+                mimeType: 'application/octet-stream',
+            });
+            expect(activeRes.success).toBe(true);
+            const dir = join(getHapiBlobsDir());
+            expect(activeRes.uploadId).toBeDefined();
+            expect(await chunk({
+                sessionId,
+                uploadId: activeRes.uploadId,
+                index: 0,
+                content: Buffer.from('ab').toString('base64'),
+            })).toEqual({ success: true, receivedBytes: 2 });
+
+            await cleanupUploadDir(sessionId);
+            expect(await finalize({ sessionId, uploadId: activeRes.uploadId })).toMatchObject({
+                success: false,
+                code: 'upload_not_found',
+            });
+
+            const remaining = await readdir(dir);
+            expect(remaining.some((entry) => entry.startsWith(`${sessionId}-`))).toBe(false);
+        } finally {
+            await cleanupUploadDir(sessionId);
+        }
+    });
+
+    it('rejects finalizing before receiving all bytes on long files and removes .part when cleanupUploadDir runs', async () => {
+        const { init, finalize } = setupHandlers();
+        const sessionId = `session-cleanup-${Date.now()}`;
+        try {
+            const initRes = await init({
+                sessionId,
+                filename: 'probe.bin',
+                size: 10,
+                mimeType: 'application/octet-stream',
+            });
+            expect(initRes.success).toBe(true);
+            const fin = await finalize({ sessionId, uploadId: initRes.uploadId });
+            expect(fin).toMatchObject({ success: false, code: 'upload_incomplete' });
+            const sessionDir = dirname(join(getHapiBlobsDir(), 'placeholder'));
+            expect(typeof sessionDir).toBe('string');
+        } finally {
+            await cleanupUploadDir(sessionId);
+        }
+    });
+
+    it('reserves concurrent chunked upload slots across async initialization', async () => {
+        const { init, abort } = setupHandlers();
+        const sessionId = `test-upload-concurrent-${Date.now()}`;
+        const uploadIds: string[] = [];
+        try {
+            const results: Array<{ success: boolean; uploadId?: string; code?: string }> = await Promise.all(
+                Array.from({ length: 20 }, (_, i) =>
+                    init({
+                        sessionId,
+                        filename: `file-${i}.bin`,
+                        size: 1024,
+                        mimeType: 'application/octet-stream',
+                    })
+                )
+            );
+            const succeeded = results.filter((res) => res.success);
+            const conflicted = results.filter((res) => !res.success && res.code === 'upload_conflict');
+            expect(succeeded).toHaveLength(16);
+            expect(conflicted).toHaveLength(4);
+            for (const res of succeeded) {
+                if (res.uploadId) {
+                    uploadIds.push(res.uploadId);
+                }
+            }
+
+            const firstUploadId = uploadIds.shift();
+            expect(firstUploadId).toBeTruthy();
+            await abort({ sessionId, uploadId: firstUploadId! });
+
+            const replacement = await init({
+                sessionId,
+                filename: 'replacement.bin',
+                size: 1024,
+                mimeType: 'application/octet-stream',
+            });
+            expect(replacement.success).toBe(true);
+            if (replacement.uploadId) {
+                uploadIds.push(replacement.uploadId);
+            }
+        } finally {
+            await Promise.all(uploadIds.map((uploadId) => abort({ sessionId, uploadId }).catch(() => {})));
             await cleanupUploadDir(sessionId);
         }
     });

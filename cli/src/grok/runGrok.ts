@@ -25,6 +25,8 @@ export async function runGrok(opts: {
     effort?: string
     resumeSessionId?: string
     existingSessionId?: string
+    /** Fresh machine-spawn stub (`--hapi-session-id`); adopt via bootstrapSession. */
+    reservedSessionId?: string
     workingDirectory?: string
 } = {}): Promise<void> {
     const workingDirectory = opts.workingDirectory ?? getInvokedCwd()
@@ -48,7 +50,8 @@ export async function runGrok(opts: {
             workingDirectory,
             agentState: initialState,
             model: opts.model,
-            effort: opts.effort
+            effort: opts.effort,
+            reservedSessionId: opts.reservedSessionId
         })
     const { api, session, sessionInfo } = bootstrap
     setControlledByUser(session, startingMode)
@@ -59,13 +62,18 @@ export async function runGrok(opts: {
     const queue = new MessageQueue2<GrokMode>((mode) => hashObject(mode))
     const sessionRef: { current: GrokSession | null } = { current: null }
 
+    let shuttingDown = false
     const lifecycle = createRunnerLifecycle({
         session,
         logTag: 'grok',
-        stopKeepAlive: () => sessionRef.current?.stopKeepAlive()
+        stopKeepAlive: () => sessionRef.current?.stopKeepAlive(),
+        onBeforeClose: () => {
+            shuttingDown = true
+            return sessionRef.current?.kill().catch((error) => logger.debug('[grok] Launcher kill failed', error))
+        }
     })
     lifecycle.registerProcessHandlers()
-    registerKillSessionHandler(session.rpcHandlerManager, lifecycle)
+    registerKillSessionHandler(session.rpcHandlerManager, lifecycle, session)
     registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle)
 
     const syncSessionMode = () => {
@@ -151,7 +159,7 @@ export async function runGrok(opts: {
             lifecycle.setExitCode(1)
             lifecycle.setArchiveReason(`Local launch failed: ${localFailure.message.slice(0, 200)}`)
             lifecycle.setSessionEndReason('error')
-        } else if (!crashed) {
+        } else if (!crashed && !shuttingDown) {
             lifecycle.setSessionEndReason('completed')
         }
         await lifecycle.cleanupAndExit()

@@ -18,6 +18,7 @@ fun summary(
     id: String,
     active: Boolean = false,
     updatedAt: Long = 0,
+    lastUserMessageAt: Long? = null,
     activeAt: Long = 0,
     pinned: Boolean? = null,
     globalPinned: Boolean? = null,
@@ -34,6 +35,7 @@ fun summary(
     thinking = false,
     activeAt = activeAt,
     updatedAt = updatedAt,
+    lastUserMessageAt = lastUserMessageAt,
     pinned = pinned,
     globalPinned = globalPinned,
     metadata = metadata,
@@ -125,4 +127,4 @@ fun MockWebServer.enqueueJson(body: String, code: Int = 200) {
 }
 
 fun apiFor(server: MockWebServer): HapiApi =
-    HapiApi(server.url("/").toString(), OkHttpClient())
+    HapiApi(server.url("/"), OkHttpClient())

@@ -7,6 +7,7 @@ import {
     normalizeTitleSuggestion,
     OpenAICompatibleTitleProvider,
     readTitleProviderConfig,
+    readTitleProviderRequestLimits,
     readTitleSuggestionLimits,
     TitleSuggestionError,
     TitleSuggestionService
@@ -98,6 +99,55 @@ describe('OpenAI-compatible title provider', () => {
         expect(normalizeTitleSuggestion('   ')).toBeNull()
         expect(normalizeTitleSuggestion('x'.repeat(100))).toHaveLength(80)
     })
+
+    it('honors env-tunable max_tokens and timeout', async () => {
+        expect(readTitleProviderRequestLimits({})).toEqual({ maxTokens: 64, timeoutMs: 10_000 })
+        expect(readTitleProviderRequestLimits({
+            HAPI_TITLE_PROVIDER_MAX_TOKENS: '4096',
+            HAPI_TITLE_PROVIDER_TIMEOUT_MS: '90000'
+        })).toEqual({ maxTokens: 4096, timeoutMs: 90_000 })
+        // Invalid values fall back to the defaults instead of breaking startup.
+        expect(readTitleProviderRequestLimits({ HAPI_TITLE_PROVIDER_MAX_TOKENS: '-5' })).toEqual({ maxTokens: 64, timeoutMs: 10_000 })
+
+        let request: Request | undefined
+        const provider = new OpenAICompatibleTitleProvider(
+            {
+                baseUrl: 'https://example.test/v1',
+                apiKey: 'secret',
+                model: 'small-model',
+                maxTokens: 4096
+            },
+            async (input, init) => {
+                request = new Request(String(input), init)
+                return new Response(JSON.stringify({
+                    choices: [{ message: { content: 'Title' } }]
+                }), { status: 200 })
+            }
+        )
+
+        await provider.suggest('Recent conversation')
+        expect(await request?.json()).toMatchObject({ max_tokens: 4096 })
+    })
+
+    it('aborts the request when the configured timeout elapses', async () => {
+        const provider = new OpenAICompatibleTitleProvider(
+            {
+                baseUrl: 'https://example.test/v1',
+                apiKey: 'secret',
+                model: 'small-model',
+                timeoutMs: 20
+            },
+            async (input, init) => {
+                return new Promise((resolve, reject) => {
+                    const signal = init?.signal
+                    if (!signal) throw new Error('expected an AbortSignal')
+                    signal.addEventListener('abort', () => reject(signal.reason))
+                })
+            }
+        )
+
+        await expect(provider.suggest('Recent conversation')).rejects.toMatchObject({ name: 'AbortError' })
+    })
 })
 
 describe('TitleSuggestionService', () => {
@@ -164,7 +214,7 @@ describe('TitleSuggestionService', () => {
 
     it('reports unavailable configuration and enforces the per-session request limit', async () => {
         const { store, sessionId } = makeStore()
-        const unavailable = createTitleSuggestionService(store)
+        const unavailable = createTitleSuggestionService(store, {})
         await expect(unavailable.suggestTitle(sessionId)).rejects.toMatchObject({
             code: 'unavailable',
             status: 503
@@ -185,5 +235,57 @@ describe('TitleSuggestionService', () => {
             code: 'rate-limited',
             status: 429
         })
+    })
+
+    it('isolates createTitleSuggestionService configuration from ambient process.env when env is passed', async () => {
+        const envKeys = [
+            'HAPI_TITLE_PROVIDER_BASE_URL',
+            'HAPI_TITLE_PROVIDER_API_KEY',
+            'HAPI_TITLE_PROVIDER_MODEL',
+            'HAPI_TITLE_SUGGESTION_RATE_LIMIT',
+            'HAPI_TITLE_SUGGESTION_RATE_WINDOW_MS',
+            'HAPI_TITLE_PROVIDER_MAX_TOKENS',
+            'HAPI_TITLE_PROVIDER_TIMEOUT_MS'
+        ] as const
+        const previous = new Map<string, string | undefined>()
+        for (const key of envKeys) {
+            previous.set(key, process.env[key])
+        }
+        process.env.HAPI_TITLE_PROVIDER_BASE_URL = 'https://ambient.example/v1'
+        process.env.HAPI_TITLE_PROVIDER_API_KEY = 'ambient-secret'
+        process.env.HAPI_TITLE_PROVIDER_MODEL = 'ambient-model'
+        process.env.HAPI_TITLE_SUGGESTION_RATE_LIMIT = '1'
+        process.env.HAPI_TITLE_PROVIDER_MAX_TOKENS = '2048'
+        process.env.HAPI_TITLE_PROVIDER_TIMEOUT_MS = '15000'
+
+        try {
+            const { store, sessionId } = makeStore()
+            const isolated = createTitleSuggestionService(store, {})
+            expect(isolated.isConfigured()).toBe(false)
+            await expect(isolated.suggestTitle(sessionId)).rejects.toMatchObject({
+                code: 'unavailable',
+                status: 503
+            })
+
+            const explicit = createTitleSuggestionService(store, {
+                HAPI_TITLE_PROVIDER_BASE_URL: 'https://explicit.example/v1',
+                HAPI_TITLE_PROVIDER_API_KEY: 'explicit-secret',
+                HAPI_TITLE_PROVIDER_MODEL: 'explicit-model'
+            })
+            expect(explicit.isConfigured()).toBe(true)
+            await expect(explicit.suggestTitle(sessionId)).rejects.toMatchObject({
+                code: 'empty',
+                status: 422
+            })
+        } finally {
+            for (const key of envKeys) {
+                const value = previous.get(key)
+                if (value === undefined) {
+                    delete process.env[key]
+                } else {
+                    process.env[key] = value
+                }
+            }
+        }
     })
 })

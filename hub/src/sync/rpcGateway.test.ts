@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'bun:test'
-import type { Server } from 'socket.io'
-import type { RpcRegistry } from '../socket/rpcRegistry'
-import { RpcGateway, RpcTargetMissingError } from './rpcGateway'
+import type { Server, Socket } from 'socket.io'
+import { getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS } from '@hapi/protocol/rpcMethods'
+import { RpcRegistry } from '../socket/rpcRegistry'
+import { PermissionRequestNotFoundError, RpcGateway, RpcTargetMissingError } from './rpcGateway'
 
 function createGateway() {
     const timeouts: number[] = []
@@ -12,8 +13,12 @@ function createGateway() {
             return {
                 async emitWithAck(_event: string, payload: { method: string; params: string }) {
                     calls.push(payload)
+                    if (payload.method.endsWith(':stop-session')) return JSON.stringify({ status: 'already_gone' })
                     if (payload.method.endsWith(':cursor-chat-store-status')) {
                         return JSON.stringify({ onDisk: false, store: null })
+                    }
+                    if (payload.method.endsWith(':preview-fork-boundary')) {
+                        return JSON.stringify({ nativeTurnId: 'turn-2', cutBeforeLocalId: 'u2' })
                     }
                     return JSON.stringify({
                         success: true,
@@ -51,6 +56,25 @@ function createGateway() {
 }
 
 describe('RpcGateway RPC timeouts', () => {
+    it('allows Codex startup and preflight to finish before the outer RPC expires', async () => {
+        const { gateway, timeouts } = createGateway()
+        await gateway.spawnSession('machine-1', 'C:\\workspace', 'codex')
+        await gateway.spawnSession('machine-1', 'C:\\workspace', 'claude')
+        expect(timeouts).toEqual([60_000, 30_000])
+    })
+
+    it('uses the archive stop budget without putting timeout options on the wire', async () => {
+        const { gateway, timeouts, calls } = createGateway()
+        expect(await gateway.stopRunnerSession('machine-1', 'session-1', { timeoutMs: 75_000 })).toBe('already_gone')
+        expect(timeouts).toEqual([75_000])
+        expect(JSON.parse(calls[0].params)).toEqual({ sessionId: 'session-1' })
+    })
+
+    it('retains the normal stop timeout for unrelated callers', async () => {
+        const { gateway, timeouts } = createGateway()
+        await gateway.stopRunnerSession('machine-1', 'session-1')
+        expect(timeouts).toEqual([30_000])
+    })
     it('uses the default RPC timeout for regular machine RPCs', async () => {
         const { gateway, timeouts } = createGateway()
 
@@ -112,12 +136,93 @@ describe('RpcGateway RPC timeouts', () => {
             })
         }])
     })
+
+    it('uses machine-scoped RPCs for workspace file operations', async () => {
+        const { gateway, calls } = createGateway()
+
+        await gateway.readWorkspaceFile('machine-1', { cwd: '/workspace/project', path: 'src/index.ts' })
+        await gateway.listWorkspaceDirectory('machine-1', { cwd: '/workspace/project', path: 'src' })
+        await gateway.statWorkspaceFiles('machine-1', { cwd: '/workspace/project', paths: ['src/index.ts'] })
+        await gateway.getWorkspaceGitStatus('machine-1', { cwd: '/workspace/project' })
+        await gateway.getWorkspaceGitDiffNumstat('machine-1', { cwd: '/workspace/project', staged: true })
+        await gateway.getWorkspaceGitDiffFile('machine-1', {
+            cwd: '/workspace/project',
+            filePath: 'src/index.ts',
+            staged: false
+        })
+        await gateway.runWorkspaceRipgrep('machine-1', {
+            args: ['--files'],
+            cwd: '/workspace/project',
+            fileSearch: { query: '*.ts', limit: 20 }
+        })
+
+        expect(calls.map((call) => call.method)).toEqual([
+            'machine-1:workspace-read-file',
+            'machine-1:workspace-list-directory',
+            'machine-1:workspace-stat-files',
+            'machine-1:workspace-git-status',
+            'machine-1:workspace-git-diff-numstat',
+            'machine-1:workspace-git-diff-file',
+            'machine-1:workspace-ripgrep'
+        ])
+        expect(JSON.parse(calls[0].params)).toEqual({
+            cwd: '/workspace/project',
+            path: 'src/index.ts'
+        })
+        expect(JSON.parse(calls[5].params)).toEqual({
+            cwd: '/workspace/project',
+            filePath: 'src/index.ts',
+            staged: false
+        })
+    })
 })
 
 // tiann/hapi#916: rpcCall throws a typed `RpcTargetMissingError` when the
 // target CLI is unreachable, so syncEngine.archiveSession can narrow on it
 // and treat the kill as a benign no-op.
 describe('RpcGateway no-target diagnostics (tiann/hapi#916)', () => {
+    it('targets an older process alias while the generic session method belongs to a newer wrapper', async () => {
+        const registry = new RpcRegistry()
+        const calls: string[] = []
+        const fixture = (id: string, pid: number) => ({ id, timeout: () => ({ emitWithAck: async (_event: string, request: { params: string }) => {
+            calls.push(id)
+            const params = JSON.parse(request.params)
+            return JSON.stringify({ success: true, pid, machineId: params.expectedMachineId,
+                processStartMarker: params.expectedProcessStartMarker, preparationLease: params.preparationLease })
+        } }) })
+        const old = fixture('old', 42)
+        const newer = fixture('new', 43)
+        registry.register(old as unknown as Socket, `session-1:${RPC_METHODS.KillSession}`)
+        registry.register(newer as unknown as Socket, `session-1:${RPC_METHODS.KillSession}`)
+        registry.register(old as unknown as Socket, `session-1:${getSessionStopPreparationMethod('machine-1', 42)}`)
+        registry.register(newer as unknown as Socket, `session-1:${getSessionStopPreparationMethod('machine-1', 43)}`)
+        const sockets = new Map([['old', old], ['new', newer]])
+        const gateway = new RpcGateway({ of: () => ({ sockets }) } as unknown as Server, registry)
+        const options = { prepareOnly: true, expectedMachineId: 'machine-1', expectedPid: 42, expectedProcessStartMarker: 'old-generation' }
+        expect((await gateway.killSession('session-1', options)).pid).toBe(42)
+        registry.unregisterAll(newer as unknown as Socket)
+        sockets.delete('new')
+        expect((await gateway.killSession('session-1', options)).pid).toBe(42)
+        expect(calls).toEqual(['old', 'old'])
+    })
+
+    it('does not fall back to the newer generic wrapper when an older process alias is unavailable', async () => {
+        const registry = new RpcRegistry()
+        const newer = { id: 'new' } as Socket
+        registry.register(newer, `session-1:${RPC_METHODS.KillSession}`)
+        const gateway = new RpcGateway({ of: () => { throw new Error('must not call generic socket') } } as unknown as Server, registry)
+        await expect(gateway.killSession('session-1', { prepareOnly: true, expectedMachineId: 'machine-1',
+            expectedPid: 42, expectedProcessStartMarker: 'old-generation' })).rejects.toBeInstanceOf(RpcTargetMissingError)
+    })
+
+    it('rejects a KillSession error envelope instead of allowing runner force termination', async () => {
+        const io = { of: () => ({ sockets: { get: () => ({ timeout: () => ({
+            emitWithAck: async () => JSON.stringify({ error: 'publication drain failed' })
+        }) }) } }) } as unknown as Server
+        const registry = { getSocketIdForMethod: () => 'socket-1' } as unknown as RpcRegistry
+        await expect(new RpcGateway(io, registry).killSession('session-1')).rejects.toThrow('publication drain failed')
+    })
+
     it('throws RpcTargetMissingError(handler-not-registered) when no socket is registered for the method', async () => {
         const io = {
             of() {
@@ -156,5 +261,89 @@ describe('RpcGateway no-target diagnostics (tiann/hapi#916)', () => {
         const error = await gateway.killSession('session-1').catch((e: unknown) => e)
         expect(error).toBeInstanceOf(RpcTargetMissingError)
         expect((error as RpcTargetMissingError).code).toBe('socket-disconnected')
+    })
+})
+
+// tiann/hapi#1735: a stale/canceled permission request answer must surface as
+// a real error, not resolve as if it had been accepted.
+describe('RpcGateway permission RPC error surfacing (tiann/hapi#1735)', () => {
+    function createGatewayWithResponse(errorMessage: string) {
+        const socket = {
+            timeout() {
+                return {
+                    async emitWithAck() {
+                        return JSON.stringify({ error: errorMessage })
+                    }
+                }
+            }
+        }
+        const io = {
+            of() {
+                return { sockets: { get() { return socket } } }
+            }
+        } as unknown as Server
+        const rpcRegistry = {
+            getSocketIdForMethod() { return 'socket-1' }
+        } as unknown as RpcRegistry
+        return new RpcGateway(io, rpcRegistry)
+    }
+
+    it('throws PermissionRequestNotFoundError when the CLI reports no pending request for approve', async () => {
+        const gateway = createGatewayWithResponse(PERMISSION_REQUEST_NOT_FOUND_MESSAGE)
+        const error = await gateway.approvePermission('session-1', 'request-1').catch((e: unknown) => e)
+        expect(error).toBeInstanceOf(PermissionRequestNotFoundError)
+    })
+
+    it('throws PermissionRequestNotFoundError when the CLI reports no pending request for deny', async () => {
+        const gateway = createGatewayWithResponse(PERMISSION_REQUEST_NOT_FOUND_MESSAGE)
+        const error = await gateway.denyPermission('session-1', 'request-1').catch((e: unknown) => e)
+        expect(error).toBeInstanceOf(PermissionRequestNotFoundError)
+    })
+
+    it('does not relabel an unrelated RPC error as PermissionRequestNotFoundError', async () => {
+        const gateway = createGatewayWithResponse('Some other failure unrelated to a missing request')
+        // Only the specific shared message is treated as "not found"; anything
+        // else on this RPC method currently resolves rather than being
+        // mislabeled — a narrower, orthogonal gap than what this PR fixes.
+        await expect(gateway.approvePermission('session-1', 'request-1')).resolves.toBeUndefined()
+    })
+
+    it('resolves normally when the CLI accepts the answer', async () => {
+        const { gateway } = createGateway()
+        await expect(gateway.approvePermission('session-1', 'request-1')).resolves.toBeUndefined()
+    })
+})
+
+describe('RpcGateway preview boundary error surfacing', () => {
+    it('surfaces a resolved CLI error envelope as a rejected preview', async () => {
+        // RpcHandlerManager serializes a thrown handler error as a RESOLVED
+        // {error} envelope; the preview must not mistake it for a cut.
+        const socket = {
+            timeout() {
+                return {
+                    async emitWithAck() {
+                        return JSON.stringify({ error: 'Native history is ambiguous' })
+                    }
+                }
+            }
+        }
+        const io = {
+            of() {
+                return { sockets: { get() { return socket } } }
+            }
+        } as unknown as Server
+        const rpcRegistry = {
+            getSocketIdForMethod() { return 'socket-1' }
+        } as unknown as RpcRegistry
+        const gateway = new RpcGateway(io, rpcRegistry)
+
+        await expect(gateway.previewForkBoundary('session-1', { mode: 'current' }))
+            .rejects.toThrow('Native history is ambiguous')
+    })
+
+    it('answers the boundary when the CLI reports success', async () => {
+        const { gateway } = createGateway()
+        await expect(gateway.previewForkBoundary('session-1', { mode: 'current' }))
+            .resolves.toEqual({ nativeTurnId: 'turn-2', cutBeforeLocalId: 'u2' })
     })
 })

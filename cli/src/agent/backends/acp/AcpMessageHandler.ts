@@ -4,7 +4,8 @@ import type { AgentMessage, PlanItem } from '@/agent/types';
 import { registerGeneratedImageFromAcpBlock } from '@/modules/common/generatedImages';
 import type { InlineMediaSource } from '@/modules/common/inlineMediaSource';
 import { asString, isObject } from '@hapi/protocol';
-import { deriveToolNameWithSource, isPlaceholderToolName } from '@/agent/utils';
+import { extractNotifySummary } from '@hapi/protocol/messages';
+import { canonicalizeDiffToolInput, deriveToolNameWithSource, isPlaceholderToolName } from '@/agent/utils';
 import { parseRateLimitText } from '@/agent/rateLimitParser';
 import { isInternalEventJson } from '@/agent/internalEventFilter';
 import { ACP_SESSION_UPDATE_TYPES } from './constants';
@@ -42,6 +43,13 @@ function resolveToolInputFallbacks(
 type DerivedToolName = ReturnType<typeof deriveToolNameWithSource>;
 
 const REASONING_SNAPSHOT_INTERVAL_MS = 250;
+
+// ACP gives no "message finished" signal for a turn's last text segment. HAPI
+// buffers assistant text and only emits it at explicit boundaries (tool_call /
+// plan / image / rate-limit) or at turn-boundary drains; when neither arrives
+// the segment would sit in the buffer until the next user prompt. This idle
+// timer closes that gap without touching the turn lifecycle.
+const TEXT_IDLE_FLUSH_INTERVAL_MS = 1000;
 
 /**
  * Extracts _meta.kind from the first diff block in a content array.
@@ -364,6 +372,43 @@ function normalizeAcpToolContent(content: unknown): string | object | null {
     return diffBlock ?? parts.join('');
 }
 
+/**
+ * True when rawOutput is a plain object whose only key is `metadata`, i.e. it
+ * carries execution details but no output body. Agents such as OpenCode v2
+ * send the actual output in the ACP content array next to such a rawOutput.
+ */
+function isMetadataOnlyRawOutput(rawOutput: unknown): rawOutput is { metadata: unknown } {
+    if (!isObject(rawOutput)) return false;
+    const keys = Object.keys(rawOutput);
+    return keys.length === 1 && keys[0] === 'metadata';
+}
+
+/**
+ * Chooses the value reported as a tool result.
+ *
+ * rawOutput is preferred (Claude/Codex path). When absent, the ACP content
+ * array sent by agents such as Gemini and OpenCode is normalized. If content
+ * is not an array (normalizeAcpToolContent returns null), the original
+ * content value is used to avoid silent data loss.
+ *
+ * When rawOutput carries only `metadata` and content normalizes, the
+ * normalized content becomes the output and the metadata is kept next to it.
+ */
+function resolveToolResultOutput(rawOutput: unknown, content: unknown): unknown {
+    if (rawOutput !== undefined) {
+        if (isMetadataOnlyRawOutput(rawOutput)) {
+            const normalized = normalizeAcpToolContent(content);
+            if (normalized !== null) {
+                const body = typeof normalized === 'string' ? { output: normalized } : normalized;
+                return { ...body, metadata: rawOutput.metadata };
+            }
+        }
+        return rawOutput;
+    }
+    const normalized = normalizeAcpToolContent(content);
+    return normalized !== null ? normalized : content;
+}
+
 function normalizePlanEntries(entries: unknown): PlanItem[] {
     if (!Array.isArray(entries)) return [];
 
@@ -396,10 +441,75 @@ function getSuffixPrefixOverlap(base: string, next: string): number {
     return 0;
 }
 
+// Control envelopes this codebase must never surface as visible assistant text
+// (see isInternalEventJson / parseRateLimitText). They arrive in pieces - delta
+// mode sends one fragment per chunk and cumulative dedupe can also hold a
+// partial one - so an early idle flush cannot tell a partial envelope from a
+// partial answer. A partial object stays deferred only while its first key (or
+// its `type` value) can still turn out to be an envelope, so property order is
+// not assumed and brace-leading text that is ruled out immediately (e.g.
+// `{"name":...`) still flushes at idle.
+const CONTROL_ENVELOPE_KEYS = ['data', 'rate_limit_info', 'type'];
+const CONTROL_ENVELOPE_TYPES = ['output', 'rate_limit_event'];
+
+function isCompleteJsonObject(text: string): boolean {
+    try {
+        JSON.parse(text);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * True when `text` may be a control envelope that has not been fully received
+ * yet. A complete object is never a candidate: a fully received envelope is
+ * filtered by isInternalEventJson / the rate-limit parser instead, and a
+ * genuine JSON answer must be able to flush at idle. For a partial object the
+ * answer is decided from the first key as far as it has arrived: once the key
+ * (or a `type` value) can no longer become an envelope shape, the text is
+ * ordinary content and may be emitted. Whitespace is ignored so leading
+ * indentation or embedded newlines do not hide the shape. The boundary flush
+ * is where a split envelope is reassembled and filtered.
+ */
+function mayBeUnfinishedControlEnvelope(text: string): boolean {
+    if (isCompleteJsonObject(text)) return false;
+    const compact = text.trimStart().replace(/\s+/g, '');
+    if (!compact.startsWith('{')) return false;
+    const keyMatch = /^\{"([A-Za-z_][A-Za-z0-9_-]*)/.exec(compact);
+    if (!keyMatch) return true;
+    const key = keyMatch[1];
+    if (compact[keyMatch[0].length] !== '"') {
+        return CONTROL_ENVELOPE_KEYS.some((candidate) => candidate.startsWith(key));
+    }
+    if (!CONTROL_ENVELOPE_KEYS.includes(key)) return false;
+    if (key !== 'type') return true;
+    const afterKey = compact.slice(keyMatch[0].length + 1);
+    const valueMatch = /^:"([A-Za-z_]*)/.exec(afterKey);
+    if (!valueMatch) return true;
+    const value = valueMatch[1];
+    if (afterKey[valueMatch[0].length] !== '"') {
+        return CONTROL_ENVELOPE_TYPES.some((candidate) => candidate.startsWith(value));
+    }
+    return CONTROL_ENVELOPE_TYPES.includes(value);
+}
+
 export class AcpMessageHandler {
     private readonly toolCalls = new Map<string, { name: string; input: unknown }>();
+    // The agent's own tool name and args by call id (agy sends `name`/`args`
+    // on every tool_call and tool_call_update).
+    private readonly nativeTools = new Map<string, { nativeName: string; nativeArgs: unknown }>();
     private acceptingUpdates = true;
     private bufferedText = '';
+    // Stable stream id for a text segment that has already been emitted by an
+    // idle flush. Mirrors the reasoning snapshot scheme (see flushReasoning):
+    // the web reducer replaces a text block in place when a repeated stream id
+    // arrives, so later snapshots settle the segment without duplicating or
+    // reordering what is already rendered. Null until the first idle emission
+    // of the current segment; a boundary that never saw one keeps the upstream
+    // message shape (no id).
+    private textStreamId: string | null = null;
+    private textIdleTimer: ReturnType<typeof setTimeout> | null = null;
     // Array buffer avoids the O(N²) string concatenation that per-token
     // ACP streams (OpenCode/Zen emits one chunk per generated token) would
     // otherwise incur — a 10k-token reasoning trace allocates 10k full-buffer
@@ -415,7 +525,7 @@ export class AcpMessageHandler {
 
     constructor(
         onMessage: (message: AgentMessage) => void,
-        private readonly options: { textChunkMode?: AcpTextChunkMode; flavor?: string } = {}
+        private readonly options: { textChunkMode?: AcpTextChunkMode; flavor?: string; textIdleFlushMs?: number } = {}
     ) {
         this.onMessage = (message) => {
             if (this.acceptingUpdates) onMessage(message);
@@ -427,34 +537,76 @@ export class AcpMessageHandler {
     deactivate(): void {
         this.acceptingUpdates = false;
         this.bufferedText = '';
+        this.textStreamId = null;
+        this.clearTextIdleFlushTimer();
         this.bufferedReasoning = [];
         this.resetReasoningState();
     }
 
     /**
-     * Emits any buffered assistant text as a single message and clears the
-     * buffer. Callers must treat this as a text-segment boundary: it is
-     * invoked internally before tool_call / plan events and externally at
-     * turn boundaries by AcpSdkBackend.
+     * Emits buffered assistant text. A true segment boundary clears the buffer
+     * and is invoked internally before tool_call / plan events and externally
+     * at turn boundaries by AcpSdkBackend; `mode: 'idle'` is the idle timer's
+     * opportunistic flush (see refreshTextIdleFlushTimer).
      *
      * The internal-event check in `handleUpdate` only sees one chunk at a
-     * time, so it cannot recognise an envelope that arrived in pieces — in
+     * time, so it cannot recognise an envelope that arrived in pieces - in
      * `delta` mode (OpenCode) every chunk is a fragment and none of them
-     * parses as JSON on its own. This flush boundary is the first place the
-     * reassembled text exists, so it is the only place a split envelope can
-     * be caught. Re-checking here is what makes the filter complete rather
-     * than merely likely to fire.
+     * parses as JSON on its own. This flush (or the boundary) is the first
+     * place the reassembled text exists, so it is the only place a split
+     * envelope can be caught. Re-checking here is what makes the filter
+     * complete rather than merely likely to fire.
+     *
+     * Idle emissions stream full-text snapshots under a stable id, matching
+     * flushReasoning: the reducer replaces a text block in place for a
+     * repeated stream id, so a pause inside an open Markdown fence does not
+     * split the rendered answer, and a dedupe rewrite settles on the full text
+     * instead of emitting a reordered prefix. The boundary then emits one
+     * final message with the same id, or the plain upstream shape when no idle
+     * emission happened.
+     *
+     * Idle flushes defer, keeping the buffer open, while a reasoning block is
+     * still open (the boundary drain exists to keep Reasoning above the
+     * answer - see drainBuffers) or while the buffer may still be a control
+     * envelope (see mayBeUnfinishedControlEnvelope).
      */
-    flushText(): void {
-        if (!this.bufferedText) {
+    flushText(mode: 'boundary' | 'idle' = 'boundary'): void {
+        const text = this.bufferedText;
+        if (!text) {
+            if (mode === 'boundary') {
+                this.textStreamId = null;
+                this.clearTextIdleFlushTimer();
+            }
             return;
         }
-        const text = this.bufferedText;
+        if (mode === 'idle') {
+            if (this.bufferedReasoning.length > 0) return;
+            if (mayBeUnfinishedControlEnvelope(text)) return;
+            // A complete envelope can only reach this point unchecked by the
+            // guard; never let one become visible text.
+            if (isInternalEventJson(text)) return;
+            if (!this.textStreamId) {
+                this.textStreamId = randomUUID();
+            }
+            this.onMessage({
+                type: 'text',
+                text,
+                id: this.textStreamId,
+                streamSnapshot: true,
+                live: true
+            });
+            return;
+        }
+        const id = this.textStreamId;
         this.bufferedText = '';
+        this.textStreamId = null;
+        this.clearTextIdleFlushTimer();
         if (isInternalEventJson(text)) {
             return;
         }
-        this.onMessage({ type: 'text', text });
+        this.onMessage(id
+            ? { type: 'text', text, id, streamSnapshot: true }
+            : { type: 'text', text });
     }
 
     /**
@@ -502,7 +654,67 @@ export class AcpMessageHandler {
         this.flushText();
     }
 
+    /**
+     * Drop buffered speech/reasoning without emitting. Used when a post-done
+     * harness resume was suppressed as live snapshots (#2267): idle flush keeps
+     * the text in the buffer, and the next prompt()'s pre-swap drain would
+     * otherwise forward it once the silence gate reopens.
+     */
+    discardBuffers(): void {
+        this.bufferedText = '';
+        this.textStreamId = null;
+        this.clearTextIdleFlushTimer();
+        this.resetReasoningState();
+    }
+
+    /**
+     * #2267 / #2268 — if the open text buffer already ends with a done footer,
+     * flush it now (before the post-prompt quiet window) so finished-shell
+     * harness prose cannot coalesce onto the same segment.
+     *
+     * End-anchored only: destructive truncation of buried harness/steer text
+     * belongs in the Cursor launcher, which knows soft-steer ownership.
+     */
+    sealDoneNotifySummaryIfPresent(): boolean {
+        if (!this.bufferedText) return false;
+        if (extractNotifySummary(this.bufferedText)?.status !== 'done') return false;
+        this.drainBuffers();
+        return true;
+    }
+
+    private clearTextIdleFlushTimer(): void {
+        if (this.textIdleTimer !== null) {
+            clearTimeout(this.textIdleTimer);
+            this.textIdleTimer = null;
+        }
+    }
+
+    /**
+     * (Re)arms the idle text flush. Called on every incoming update and after
+     * each appended text chunk so the timer only fires once the stream has been
+     * silent for a full interval. A non-positive `textIdleFlushMs` disables the
+     * timer entirely.
+     */
+    private refreshTextIdleFlushTimer(): void {
+        this.clearTextIdleFlushTimer();
+        const idleFlushMs = this.options.textIdleFlushMs ?? TEXT_IDLE_FLUSH_INTERVAL_MS;
+        if (idleFlushMs <= 0 || !this.bufferedText) {
+            return;
+        }
+        const timer = setTimeout(() => {
+            this.textIdleTimer = null;
+            this.flushText('idle');
+        }, idleFlushMs);
+        timer.unref?.();
+        this.textIdleTimer = timer;
+    }
+
     private appendTextChunk(text: string): void {
+        this.appendTextChunkContent(text);
+        this.refreshTextIdleFlushTimer();
+    }
+
+    private appendTextChunkContent(text: string): void {
         if (this.textChunkMode === 'delta') {
             if (text) {
                 this.bufferedText += text;
@@ -598,6 +810,10 @@ export class AcpMessageHandler {
         if (!isObject(update)) return;
         const updateType = asString(update.sessionUpdate);
         if (!updateType) return;
+
+        // Any activity postpones the idle text flush so a segment is not split
+        // while the agent is still working.
+        this.refreshTextIdleFlushTimer();
 
         if (updateType === ACP_SESSION_UPDATE_TYPES.agentThoughtChunk) {
             // Thought chunks do not participate in intra-turn ordering and
@@ -730,6 +946,17 @@ export class AcpMessageHandler {
         return source;
     }
 
+    private nativeToolFields(toolCallId: string, update: Record<string, unknown>): { nativeName?: string; nativeArgs?: unknown } {
+        const nativeName = asString(update.name);
+        if (nativeName) {
+            this.nativeTools.set(toolCallId, {
+                nativeName,
+                nativeArgs: update.args !== undefined ? update.args : update.rawInput
+            });
+        }
+        return this.nativeTools.get(toolCallId) ?? {};
+    }
+
     private handleToolCall(update: Record<string, unknown>): void {
         const toolCallId = asString(update.toolCallId);
         if (!toolCallId) return;
@@ -743,7 +970,7 @@ export class AcpMessageHandler {
             rawInput: update.rawInput,
             metaKind: null
         });
-        const name = derivedName.name;
+        let name = derivedName.name;
         // Priority: usable rawInput > kind+title fallback > content JSON fallback.
         // Empty `{}` is treated as missing (OpenCode tool-start / permission clobber).
         // Kimi ACP streams tool arguments as JSON text in the content array
@@ -757,8 +984,19 @@ export class AcpMessageHandler {
                 update.content
             );
         // Content JSON can be `{}` (same as unusable rawInput); never lock that in.
-        const input = isUsableRawInput(candidate) ? candidate : null;
+        let input = isUsableRawInput(candidate) ? candidate : null;
         const status = normalizeStatus(update.status);
+
+        // Agents that keep native argument shapes (OpenCode: {filePath,
+        // oldString, newString} / {filePath, content}) must be canonicalized to
+        // the Claude-shaped Edit/Write inputs the web diff views render — the
+        // same contract as hoistDiffContentIntoInput for Gemini's diff blocks.
+        // Gate on the kind so an arbitrary non-edit tool isn't misclassified.
+        const canonical = input == null ? null : canonicalizeDiffToolInput(input, asString(update.kind) ?? derivedName.name);
+        if (canonical) {
+            name = canonical.name;
+            input = canonical.input;
+        }
 
         this.toolCalls.set(toolCallId, { name, input });
 
@@ -769,7 +1007,8 @@ export class AcpMessageHandler {
             input,
             status,
             ...(asString(update.title) ? { title: asString(update.title)! } : {}),
-            ...(asString(update.kind) ? { kind: asString(update.kind)! } : {})
+            ...(asString(update.kind) ? { kind: asString(update.kind)! } : {}),
+            ...this.nativeToolFields(toolCallId, update)
         });
     }
 
@@ -781,13 +1020,22 @@ export class AcpMessageHandler {
         const existing = this.toolCalls.get(toolCallId);
         const presentation = {
             ...(asString(update.title) ? { title: asString(update.title)! } : {}),
-            ...(asString(update.kind) ? { kind: asString(update.kind)! } : {})
+            ...(asString(update.kind) ? { kind: asString(update.kind)! } : {}),
+            ...this.nativeToolFields(toolCallId, update)
         };
 
         if (isUsableRawInput(update.rawInput)) {
             const derivedName = deriveToolNameFromUpdate(update);
-            const name = this.selectToolNameForUpdate(existing?.name ?? null, derivedName);
-            const input = update.rawInput;
+            let name = this.selectToolNameForUpdate(existing?.name ?? null, derivedName);
+            let input: unknown = update.rawInput;
+            // Native-shape args (OpenCode) arrive here as the first usable
+            // input; canonicalize before storing so the web diff views match.
+            // Gate on the kind so an arbitrary non-edit tool isn't misclassified.
+            const canonical = canonicalizeDiffToolInput(input, asString(update.kind) ?? derivedName.name);
+            if (canonical) {
+                name = canonical.name;
+                input = canonical.input;
+            }
             this.toolCalls.set(toolCallId, { name, input });
             this.onMessage({
                 type: 'tool_call',
@@ -814,9 +1062,16 @@ export class AcpMessageHandler {
                     update.content
                 );
                 if (isUsableRawInput(fallback)) {
-                    input = fallback;
-                    const derivedName = deriveToolNameFromUpdate(update);
-                    name = this.selectToolNameForUpdate(existing.name ?? null, derivedName);
+                    let nextInput: unknown = fallback;
+                    const canonical = canonicalizeDiffToolInput(fallback, existing.name);
+                    if (canonical) {
+                        name = canonical.name;
+                        nextInput = canonical.input;
+                    } else {
+                        const derivedName = deriveToolNameFromUpdate(update);
+                        name = this.selectToolNameForUpdate(existing.name ?? null, derivedName);
+                    }
+                    input = nextInput;
                     this.toolCalls.set(toolCallId, { name, input });
                     rederived = true;
                 }
@@ -861,17 +1116,7 @@ export class AcpMessageHandler {
                 }
             }
 
-            // Prefer rawOutput (Claude/Codex path). When absent, normalize the
-            // ACP content array sent by agents such as Gemini and OpenCode.
-            // If content is not an array (normalizeAcpToolContent returns null),
-            // fall back to the original content value to avoid silent data loss.
-            let output: unknown;
-            if (update.rawOutput !== undefined) {
-                output = update.rawOutput;
-            } else {
-                const normalized = normalizeAcpToolContent(update.content);
-                output = normalized !== null ? normalized : update.content;
-            }
+            const output = resolveToolResultOutput(update.rawOutput, update.content);
             this.onMessage({
                 type: 'tool_result',
                 id: toolCallId,

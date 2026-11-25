@@ -6,10 +6,10 @@ Telegram bot + HTTP API + realtime updates for hapi hub.
 
 - Telegram bot for notifications and the Mini App entrypoint.
 - HTTP API for sessions, messages, permissions, machines, and files.
-- Server-Sent Events stream for live updates in the web app.
+- Server-Sent Events stream for live updates in web and native clients.
 - Socket.IO channel for CLI connections.
-- Serves the web app from `web/dist` or embedded assets in the single binary.
-- Persists state in SQLite.
+- Serves the web app from `web/dist` or embedded assets in the single binary; network-relay mode uses the separately hosted official web app.
+- Persists state in SQLite via `bun:sqlite`.
 
 ## Configuration
 
@@ -17,12 +17,12 @@ See `src/configuration.ts` for all options.
 
 ### Required
 
-- `CLI_API_TOKEN` - Base shared secret used by CLI and web login. Clients append `:<namespace>` for isolation. Auto-generated on first run if not set.
+- `CLI_API_TOKEN` - Base shared secret used by CLI, web login and native pairing. Clients append `:<namespace>` for isolation. Auto-generated on first run if not set.
 
 ### Optional (Telegram)
 
 - `TELEGRAM_BOT_TOKEN` - Token from @BotFather.
-- `HAPI_PUBLIC_URL` - Public HTTPS URL for Telegram Mini App access. Also used to derive default CORS origins for the web app.
+- `HAPI_PUBLIC_URL` - Canonical public HTTPS origin for shared Passkeys and Telegram Mini App access. Also used to derive default CORS origins for the web app.
 
 ### Optional (Voice)
 
@@ -32,11 +32,42 @@ Dictation and voice-assistant provider keys can also be added from **Settings â†
 - `ELEVENLABS_AGENT_ID` - Custom ElevenLabs agent ID (auto-created if not set).
 - `GEMINI_API_KEY` / `GOOGLE_API_KEY` - Gemini Live voice assistant.
 - `DASHSCOPE_API_KEY` / `QWEN_API_KEY` - Qwen Realtime voice assistant.
+- `VOICE_BACKEND` - Default assistant backend (`elevenlabs`, `gemini-live`, or `qwen-realtime`).
 - `OPENAI_API_KEY` - OpenAI dictation (`gpt-transcribe` / `gpt-live-transcribe`).
 - `DEEPGRAM_API_KEY` - Deepgram dictation (`nova-3`, standard and realtime).
 - `GROQ_API_KEY` - Groq dictation (`whisper-large-v3`).
 - `TRANSCRIPTION_BASE_URL` and `TRANSCRIPTION_MODEL` - OpenAI-compatible/local transcription endpoint and model.
 - `TRANSCRIPTION_API_KEY` - Optional bearer token for the OpenAI-compatible endpoint.
+
+### Optional (automatic session titles)
+
+When the configured OpenAI-compatible title provider is available, the Hub
+performs one best-effort automatic title suggestion after the first completed
+turn when the session has no manual name or existing summary. Automatic
+failures are silent and never block the agent conversation. The manual
+**Generate** action remains available.
+
+Configure `HAPI_TITLE_PROVIDER_BASE_URL`, `HAPI_TITLE_PROVIDER_API_KEY`, and
+`HAPI_TITLE_PROVIDER_MODEL` on the Hub. The attempt is persisted across restarts;
+manual or Agent titles arriving during generation are preserved. No automatic
+request is made without a configured provider.
+
+### Optional (translate input to English)
+
+The per-session `metadata.translateInput` toggle is owned by the hub. The CLI
+cannot set or clear it, and it is changed through `PATCH /api/sessions/:id`
+with `{ "translateInput": boolean }`. When a session has no explicit value, the
+hub-wide `translateInputByDefault` setting (`PUT /api/hub-settings`, owner
+only) decides. While translation is on, `MessageService.sendMessage`
+translates user-authored prompts (web/native and Telegram, but not peer pings
+or system rows) before storing them. It stores the English in `content.text`
+and the original in `meta.translatedFrom`. Sends for that session are queued
+in order, so a slow translation cannot reorder prompts. If translation fails,
+the original text is sent with `meta.translationFailed: true`. `GET /api/features` reports
+`inputTranslation.available`. The provider comes from
+`HAPI_TRANSLATION_PROVIDER_*`; if those are unset, the hub uses the title
+provider. See the
+[configuration guide](../docs/guide/configuration.md#translating-input-to-english).
 
 ### Optional
 
@@ -50,6 +81,15 @@ Dictation and voice-assistant provider keys can also be added from **Settings â†
 - `HAPI_RELAY_AUTH` - Explicit relay auth key. By default the hub obtains and persists an individually revocable key from the relay. A persisted key rejected with HTTP 403 is discarded and reissued once; an explicitly configured environment key must be updated manually.
 - `HAPI_RELAY_FORCE_TCP` - Force TCP relay mode (true/1).
 - `VAPID_SUBJECT` - Contact email/URL for Web Push.
+- `HAPI_ANDROID_PUSH` - `auto` (default: direct FCM when credentials are configured, otherwise relay), `relay`, `fcm`, or `off`.
+- `FCM_SERVICE_ACCOUNT_PATH` - Service-account JSON for private Firebase builds; the app must use the same project. Invalid configured credentials disable Android push instead of switching projects.
+- `HAPI_IOS_PUSH` - `relay` (default), `apns`, or `off`.
+- `HAPI_PUSH_RELAY_URL` - Shared Android/iOS push relay (default: `https://push.hapi.run`; persisted as `iosPushRelayUrl`). Independent of the `--relay` network tunnel.
+- `HAPI_SESSION_IDLE_TIMEOUT_MS` - Keep-alive-idle window in ms (default: 43200000 / 12 h; `0` disables). See "Session liveness" below.
+
+Official native apps register their encryption keys automatically; no push
+provider setup is needed on a fresh hub. See the [native companion push
+contract](../docs/api/native-companion-contract.md).
 
 ## Running
 
@@ -65,7 +105,7 @@ hapi hub
 
 `hapi server` remains supported as an alias.
 
-If you only need web + CLI, you can omit TELEGRAM_BOT_TOKEN.
+For web/native clients + CLI, you can omit TELEGRAM_BOT_TOKEN.
 To enable Telegram, set TELEGRAM_BOT_TOKEN and HAPI_PUBLIC_URL, start the hub, open `/app`
 in the bot chat, and bind the Mini App with `CLI_API_TOKEN:<namespace>` when prompted.
 
@@ -78,35 +118,56 @@ bun run dev:hub
 
 ## HTTP API
 
-See `src/web/routes/` for all endpoints.
+The following is an overview. See the [client contract](../docs/api/client-contract/index.md)
+for request/response shapes and error semantics, and `src/web/routes/` for all endpoints.
 
-### Authentication (`src/web/routes/auth.ts`)
+### Authentication (`src/web/routes/auth.ts`, `src/web/routes/bind.ts`)
 
-- `POST /api/auth` - Get JWT token (Telegram initData or `CLI_API_TOKEN[:namespace]`).
+- `POST /api/auth` - Get JWT token (Telegram initData, `CLI_API_TOKEN[:namespace]`, or a `passkeySession`).
+- `POST /api/passkey/login/verify` - Unauthenticated native WebAuthn sign-in with an app-issued, short-lived, one-time challenge; returns a JWT plus a 30-day `passkeySession`.
+- `POST /api/passkey/register/options`, `POST /api/passkey/register/verify`, `GET /api/passkeys`, `DELETE /api/passkeys/:id` - Manage passkeys for the caller's namespace (JWT required). Web and App passkeys share RP ID `auth.hapi.run` and are scoped to this Hub/namespace and the current `CLI_API_TOKEN`; rotating the token revokes them. Browser ceremonies use `/api/passkey/browser/{login,register}/start`, `/complete`, and `/exchange`. Set `HAPI_PUBLIC_URL` to the canonical HTTPS Hub origin. See the [client contract](../docs/api/client-contract/auth.md#passkeys-web).
 - `POST /api/bind` - Bind a Telegram account using initData + `CLI_API_TOKEN:<namespace>`.
 
 ### Sessions (`src/web/routes/sessions.ts`)
 
-- `GET /api/sessions` - List all sessions.
+- `GET /api/sessions` - List all sessions. The default order is global-pinned, project-pinned, then `lastUserMessageAt ?? createdAt` descending (creation time and ID break ties); `?order=updatedAt` requests pure recency. Each summary includes `hasConversationContent`, derived from stored conversation messages (not titles or lifecycle events); full session SSE updates carry changes to this flag. See the [client contract](../docs/api/client-contract/rest.md) for the wire-level ordering rules.
+- `GET /api/sessions/scratchlist-status` - List session IDs with scratchlist entries in the caller namespace.
 - `GET /api/sessions/:id` - Get session details.
 - `POST /api/sessions/:id/abort` - Abort session.
-- `POST /api/sessions/:id/switch` - Switch session to remote mode.
+- `POST /api/sessions/:id/switch` - Hand off session control to the web.
 - `POST /api/sessions/:id/resume` - Resume inactive session.
+- `POST /api/sessions/:id/reopen` - Reopen a session; follow the returned session ID.
+- `POST /api/sessions/:id/clear` - Start a fresh conversation when supported.
 - `POST /api/sessions/:id/upload` - Upload file (base64, max 50MB).
+- `POST /api/sessions/:id/uploads` - Initialize chunked streaming upload (configurable max via `HAPI_MAX_UPLOAD_BYTES`, default 512 MiB, clamped to 10 GiB).
+- `POST /api/sessions/:id/uploads/:uploadId/chunk?index=<n>` - Stream binary chunk (`application/octet-stream`, 1 B â€“ 8 MB).
+- `POST /api/sessions/:id/uploads/:uploadId/finalize` - Finalize chunked upload and authorize file identity.
+- `POST /api/sessions/:id/uploads/:uploadId/abort` - Abort chunked upload and delete partial file.
 - `POST /api/sessions/:id/upload/delete` - Delete uploaded file.
 - `POST /api/sessions/:id/archive` - Archive active session.
+  Runner-owned sessions wait for verified cleanup, including retries after an
+  early inactive/archived update. Concurrent requests join the same operation.
+  Cleanup confirmation has a 90-second budget; failure returns a structured
+  `archive-cleanup-unconfirmed` (409), `archive-cleanup-unavailable` (503), or
+  `archive-cleanup-timeout` (503) error. A timeout does not cancel Runner cleanup
+  or prove the process is still alive; retry to verify the final result.
 - `PATCH /api/sessions/:id` - Rename session.
 - `DELETE /api/sessions/:id` - Delete inactive session.
 - `GET /api/sessions/:id/slash-commands` - List slash commands.
 - `GET /api/sessions/:id/skills` - List skills.
 - `POST /api/sessions/:id/permission-mode` - Set permission mode.
 - `POST /api/sessions/:id/model` - Set model preference.
-- `POST /api/sessions/:id/effort` - Set Claude effort preference.
+- `POST /api/sessions/:id/effort` - Set effort for Claude, Grok, or Pi; other config controls are flavor/capability-gated (see the client contract).
+- `GET/POST /api/sessions/:id/scratchlist` - Read/create Hub-persisted scratchlist entries; update/delete and attachment routes share this prefix.
 
 ### Messages (`src/web/routes/messages.ts`)
 
 - `GET /api/sessions/:id/messages` - Get messages (paginated).
 - `POST /api/sessions/:id/messages` - Send message.
+- `POST /api/sessions/:id/messages/queued-state` - Reconcile queued, indeterminate, and invoked local IDs.
+- `DELETE /api/sessions/:id/messages/:messageId` - Cancel a queued message.
+- `POST /api/sessions/:id/messages/:messageId/steer` - Steer a queued message when the session supports it.
+- `POST /api/sessions/:id/messages/:messageId/retry` - Explicitly retry indeterminate delivery when safe; never auto-replay.
 
 ### Permissions (`src/web/routes/permissions.ts`)
 
@@ -116,12 +177,24 @@ See `src/web/routes/` for all endpoints.
 ### Machines (`src/web/routes/machines.ts`)
 
 - `GET /api/machines` - List online machines.
+- `PATCH /api/machines/:id` - Set/clear the machine display name.
+- `GET /api/machines/:id/agent-availability` - List installed/configured Agents.
 - `POST /api/machines/:id/spawn` - Spawn new session on machine.
+- `POST /api/machines/:id/list-directory` - Browse runner-scoped directories.
 - `POST /api/machines/:id/paths/exists` - Check if path exists.
+- `POST /api/machines/:id/restart-runner` - Request runner restart (requires an available restart path).
 
 ### Usage (`src/web/routes/usage.ts`)
 
 - `GET /api/usage/summary` - Get cache-aware token usage for the owner namespace (`range=7d|30d|all`).
+
+### Activity (`src/web/routes/activity.ts`)
+
+- `GET /api/activity` - When agents in the caller's namespace were working (`since`/`until` epoch ms, default last 24 h, max 31 days): each session's turns from the `session_turns` table, plus the permission prompts and questions it waited on. Used by `hapi usage`.
+
+### Storage (`src/web/routes/storage.ts`)
+
+- `GET /api/storage/sqlite` - SQLite database/WAL/SHM sizes for the owner namespace.
 
 ### Git/Files (`src/web/routes/git.ts`)
 
@@ -131,6 +204,11 @@ See `src/web/routes/` for all endpoints.
 - `GET /api/sessions/:id/file` - Read file content.
 - `GET /api/sessions/:id/files` - File search with ripgrep.
 
+For inactive sessions, including archived sessions, these read-only file and Git operations fall back to
+the matching online Runner when it advertises `workspace-file-access`. The
+Runner reads the current workspace under its configured roots; HAPI does not
+copy or snapshot files during archive.
+
 ### Events (`src/web/routes/events.ts`)
 
 - `GET /api/events` - SSE stream for live updates.
@@ -139,6 +217,9 @@ See `src/web/routes/` for all endpoints.
 ### Voice (`src/web/routes/voice.ts`)
 
 - `POST /api/voice/token` - Get ElevenLabs conversation token.
+- `GET /api/voice/backend` - Discover configured assistant backends.
+- `GET /api/voice/voices` - List voices for the selected backend.
+- `GET/PUT /api/voice/transcription/credentials` - Read masked provider settings or update credentials (owner-only).
 - `GET /api/voice/transcription/providers` - List configured providers and supported modes.
 - `POST /api/voice/transcription` - Transcribe a bounded recording.
 - `POST /api/voice/transcription/realtime-token` - Mint a short-lived OpenAI, ElevenLabs, or Deepgram credential.
@@ -149,6 +230,9 @@ See `src/web/routes/` for all endpoints.
 - `POST /api/push/subscribe` - Subscribe to push notifications.
 - `DELETE /api/push/subscribe` - Unsubscribe.
 
+Native Android/iOS registration uses `POST`/`DELETE /api/devices/register`
+(`src/web/routes/devices.ts`); see the [native push contract](../docs/api/native-companion-contract.md).
+
 ### CLI (`src/web/routes/cli.ts`)
 
 - `POST /cli/sessions` - Create/load session.
@@ -158,9 +242,10 @@ See `src/web/routes/` for all endpoints.
 
 ## Socket.IO
 
-See `src/socket/handlers/cli.ts` for event handlers.
+See `src/socket/handlers/cli/index.ts` and `src/socket/handlers/terminal.ts` for event handlers.
 
-Namespace: `/cli`
+Namespaces: `/cli` (raw CLI access token) and `/terminal` (client JWT).
+Ordinary web/native session updates use SSE, not the CLI Socket.IO namespace.
 
 ### Client events (CLI to hub)
 
@@ -174,14 +259,16 @@ Namespace: `/cli`
 - `rpc-register` - Register RPC handler.
 - `rpc-unregister` - Unregister RPC handler.
 
-### Terminal events (web to hub)
+### Terminal events (web to hub, `/terminal`)
 
 - `terminal:create` - Open terminal for session.
 - `terminal:write` - Send input.
 - `terminal:resize` - Resize dimensions.
 - `terminal:close` - Close terminal.
+- `agent-terminal:subscribe` / `agent-terminal:unsubscribe` - Attach/detach the wrapped agent's terminal stream.
+- `agent-terminal:input` / `agent-terminal:resize` - Interact with that terminal when supported.
 
-### Hub events (hub to clients)
+### Hub events (hub to CLI clients, `/cli`)
 
 - `update` - Broadcast session/message updates.
 - `rpc-request` - Incoming RPC call.
@@ -217,6 +304,20 @@ See `src/sync/syncEngine.ts` for the main session/message manager:
 - Git operations and file search.
 - Activity tracking and timeouts.
 
+### Session liveness
+
+Two separate signals, deliberately (tiann/hapi#1820):
+
+- **`active` / `activeAt`** - transport. The CLI socket is connected; `session-alive` refreshes it every ~2 s. `sessionCache.expireInactive` drops `active` after 30 s of silence.
+- **`metadata.lifecycleState`** - agent health. `running` -> `idle` -> `running`, plus `archived`.
+
+Keep-alives prove a socket, not an agent. A session can therefore heartbeat for days with no messages, no thinking and no background tasks - `active: true` forever, which `expireInactive` can never catch. `sessionCache.reconcileKeepaliveIdle` (same 5 s tick) closes that gap: after `HAPI_SESSION_IDLE_TIMEOUT_MS` with no agent progress it moves `lifecycleState` `running` -> `idle`.
+
+- `active` is left alone on purpose. The CLI really is reachable, and flipping it would let `resumeSession` spawn a second agent against a live process, and unlock dedup-merge / delete on it.
+- Progress means a message in either direction, a queued prompt, or a background task - never a keep-alive. Sessions that are thinking, running background tasks or holding a pending permission request are never marked.
+- `idle` reverts to `running` on the next progress, within one tick.
+- `metadata.idleReconcileExempt: true` opts a session out entirely.
+
 ## Storage
 
 See `src/store/index.ts` for SQLite persistence:
@@ -226,6 +327,7 @@ See `src/store/index.ts` for SQLite persistence:
 - Machines with runner state.
 - Todo extraction from messages.
 - Users table for Telegram bindings (includes namespace).
+- Scratchlist entries/attachments, usage, work graph, and push registrations.
 
 Message content is stored via `src/store/contentCodec.ts`: oversized strings
 inside agent messages (giant tool output) are head+tail truncated at ingest,

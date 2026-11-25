@@ -3,7 +3,7 @@ import HapiClient
 import UIKit
 
 /// Per-chat scratchlist-attachment image loading (A-M4b), the
-/// `GeneratedImageLoader` pattern: `GET /scratchlist/attachments/:id` bytes
+/// `GeneratedMediaLoader` pattern: `GET /scratchlist/attachments/:id` bytes
 /// through the authed `APIClient` (URLCache underneath serves immutable
 /// repeats — attachment content never changes for an id), plus a small
 /// in-memory decode cache so list scrolling does not re-decode, with

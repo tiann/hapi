@@ -8,16 +8,52 @@ export function resolveCursorLegacyModelBase(baseId: string): string {
     return CURSOR_LEGACY_MODEL_BASE_ALIASES[trimmed] ?? trimmed;
 }
 
+/** CLI `agent --list-models` id for Cursor Auto (`auto - Auto`). */
+export const CURSOR_AUTO_MODEL_ID = 'auto';
+
 /** ACP parameterized wire ids use bracket params; CLI `agent --list-models` slugs do not. */
 export function isCursorAcpWireModelId(modelId: string): boolean {
     const trimmed = modelId.trim();
     return trimmed === 'default[]' || trimmed.includes('[');
 }
 
+/** True for CLI Auto and the legacy default aliases that must not stay as a Default option. */
+export function isCursorAutoModelId(modelId: string | null | undefined): boolean {
+    const normalized = modelId?.trim().toLowerCase();
+    return normalized === 'auto' || normalized === 'default' || normalized === 'default[]';
+}
+
+/** Spawn `--model` value: pin Auto as `auto`. Empty/unset omits `--model`. */
+export function cursorSpawnModelId(model: string | null | undefined): string | null {
+    const trimmed = model?.trim();
+    if (!trimmed) {
+        return null;
+    }
+    return isCursorAutoModelId(trimmed) ? CURSOR_AUTO_MODEL_ID : trimmed;
+}
+
 export function cursorModelBaseId(modelId: string): string {
     const trimmed = modelId.trim();
     const bracket = trimmed.indexOf('[');
     return bracket === -1 ? trimmed : trimmed.slice(0, bracket);
+}
+
+function stripCursorFamilyPrefix(base: string): string {
+    return base.startsWith('cursor-') ? base.slice('cursor-'.length) : base;
+}
+
+/**
+ * Compare an ACP wire base with a CLI sku base. Cursor's CLI keeps a legacy `cursor-`
+ * family prefix for some models (`cursor-grok-4.6-high` vs ACP base `grok-4.6`), so a
+ * plain equality check silently drops those variant rows.
+ */
+export function cursorModelBaseMatches(a: string, b: string): boolean {
+    const left = a.trim();
+    const right = b.trim();
+    if (left === right) {
+        return true;
+    }
+    return stripCursorFamilyPrefix(left) === stripCursorFamilyPrefix(right);
 }
 
 /** Longest-first suffixes from Cursor CLI sku ids (e.g. `gpt-5.5-high-fast` → `gpt-5.5`). */
@@ -114,6 +150,14 @@ export function parseCursorWireParams(modelId: string): Record<string, string> {
         params[segment.slice(0, eq).trim()] = segment.slice(eq + 1).trim();
     }
     return params;
+}
+
+/**
+ * Parameter hints carried by a CLI `agent --list-models` sku
+ * (effort/reasoning/thinking/fast suffixes).
+ */
+export function parseCursorSkuParamHints(slug: string): Record<string, string> {
+    return inferSkuParamHints(slug);
 }
 
 function inferSkuParamHints(slug: string): Record<string, string> {

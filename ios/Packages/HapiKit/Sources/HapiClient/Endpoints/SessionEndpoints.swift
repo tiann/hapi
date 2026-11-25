@@ -2,8 +2,8 @@ import Foundation
 import HapiProtocol
 
 /// `order` query of `GET /api/sessions`. The default (absent) order is the
-/// hub's ranked one (globalPinned → pinned → active → pending requests →
-/// recency); `updatedAt` switches to pure recency.
+/// hub's ranked one (globalPinned → pinned → user-input recency);
+/// `updatedAt` explicitly requests pure activity recency.
 public enum SessionsListOrder: String, Sendable {
     case updatedAt
 }
@@ -11,6 +11,10 @@ public enum SessionsListOrder: String, Sendable {
 /// Session list, detail, and lifecycle endpoints
 /// (`docs/api/client-contract/rest.md`).
 extension APIClient {
+    public func updateSessionReadState(id: String, state: SessionReadStateRequest) async throws -> SessionReadStateResponse {
+        try await request(.put, "/api/sessions/\(encodePathComponent(id))/read-state", body: state)
+    }
+
     /// `GET /api/sessions`.
     public func listSessions(
         limit: Int? = nil,
@@ -63,6 +67,26 @@ extension APIClient {
         )
     }
 
+    /// Create a new shared root; only the caller follows the returned ID.
+    public func clearConversation(id: String) async throws -> ResumeSessionResponse {
+        try await request(.post, "/api/sessions/\(encodePathComponent(id))/clear", body: EmptyRequestBody())
+    }
+
+    /// Shared Codex client action, NOT a tool approval. The CLI
+    /// validates the proposal, switches to Default and queues implementation.
+    /// Never emulate this with separate config/message requests or auto-retry
+    /// an unconfirmed result.
+    public func implementCodexPlan(sessionId: String, planId: String) async throws {
+        struct ImplementPlanRequest: Encodable {
+            let planId: String
+        }
+        try await requestVoid(
+            .post,
+            "/api/sessions/\(encodePathComponent(sessionId))/codex/plan/implement",
+            body: ImplementPlanRequest(planId: planId)
+        )
+    }
+
     /// `POST /api/sessions/:id/abort` (active sessions only).
     public func abortSession(id: String) async throws {
         try await requestVoid(
@@ -105,6 +129,20 @@ extension APIClient {
             .patch,
             "/api/sessions/\(encodePathComponent(id))",
             body: RenameSessionRequest(name: name)
+        )
+    }
+
+    /// `PATCH /api/sessions/:id {translateInput}` — the hub-owned
+    /// per-session input-translation toggle (400 when enabling on a hub
+    /// without a translation provider).
+    public func setSessionTranslateInput(id: String, enabled: Bool) async throws {
+        struct TranslateInputRequest: Encodable {
+            let translateInput: Bool
+        }
+        try await requestVoid(
+            .patch,
+            "/api/sessions/\(encodePathComponent(id))",
+            body: TranslateInputRequest(translateInput: enabled)
         )
     }
 

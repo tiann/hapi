@@ -5,6 +5,7 @@ import app.hapi.protocol.wire.boolOrNull
 import app.hapi.protocol.wire.objOrNull
 import app.hapi.protocol.wire.stringOrNull
 import kotlinx.serialization.json.JsonElement
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 /**
  * Question/option models + input parsers for the two interactive request
@@ -101,6 +102,27 @@ fun parseAskUserQuestions(input: JsonElement?, cursorDialect: Boolean): List<Ask
     return questions
 }
 
+/** Codex wire value; UI translations must never replace it in answers. */
+const val REQUEST_USER_INPUT_OTHER = "None of the above"
+
+/**
+ * Id of the CLI-synthesized URL-confirmation question (Codex elicitation
+ * `mode: 'url'`, `appServerPermissionAdapter.ts`): a single option whose
+ * `description` carries the URL, so selecting it double-functions as the
+ * "open this page" consent. Wire value, never localized.
+ */
+const val REQUEST_USER_INPUT_URL_CONFIRMATION_ID = "__mcp_url_confirmation"
+
+/**
+ * `parseRequestUserInputInput` result: the question list plus the sign-in
+ * [url] (web `ParsedRequestUserInput`).
+ */
+data class RequestUserInputParsed(
+    val questions: List<RequestUserInputQuestion>,
+    /** `http`/`https` only; null when absent or invalid — never opened otherwise. */
+    val url: String?,
+)
+
 data class RequestUserInputQuestion(
     val id: String,
     val question: String,
@@ -109,9 +131,70 @@ data class RequestUserInputQuestion(
     val options: List<AskOption>,
     val placeholder: String?,
     val prefill: String?,
-)
+    val inputType: String? = null,
+    val isOther: Boolean = false,
+) {
+    val answerOptions: List<AskOption>
+        get() = if (isOther && options.isNotEmpty()) {
+            options + AskOption(id = null, label = REQUEST_USER_INPUT_OTHER, description = null)
+        } else options
 
-/** `parseRequestUserInputInput` (the URL-confirmation flow is web-only). */
+    fun isOtherOption(index: Int): Boolean = isOther && options.isNotEmpty() && index == options.size
+}
+
+fun selectRequestUserInputOption(question: RequestUserInputQuestion, selected: Set<String>, index: Int): Set<String> {
+    val option = question.answerOptions.getOrNull(index) ?: return selected
+    if (question.isOtherOption(index) || !question.multiple) return setOf(option.label)
+    val current = if (question.isOther) selected - REQUEST_USER_INPUT_OTHER else selected
+    return if (option.label in current) current - option.label else current + option.label
+}
+
+/**
+ * Web `parseRequestUserInputInput`: questions plus the validated sign-in url.
+ * The url survives only when it parses AND is `http`/`https` — anything else
+ * must never be opened by the approval UI.
+ *
+ * Divergence note: web re-normalizes via `new URL(raw).toString()`; the CLI
+ * synthesizes the confirmation option's `description` from that same
+ * normalized value, so comparing the raw wire string here is equivalent for
+ * every CLI-produced request.
+ */
+fun parseRequestUserInput(input: JsonElement?): RequestUserInputParsed {
+    val url = input.objOrNull?.get("url").stringOrNull?.let(::normalizeRequestUserInputUrl)
+    return RequestUserInputParsed(
+        questions = parseRequestUserInputQuestions(input),
+        url = url,
+    )
+}
+
+/** `parseRequestUserInputInput` url branch: http/https or null. */
+fun normalizeRequestUserInputUrl(raw: String): String? {
+    // Browser-valid query characters (for example '|') need not be URI-safe.
+    // Keep the wire spelling so the confirmation description matches exactly.
+    if (raw.toHttpUrlOrNull() == null) return null
+    return raw
+}
+
+/**
+ * `isRequestUserInputUrlConfirmed`: true iff the `__mcp_url_confirmation`
+ * question exists and one of its SELECTED options has `description === url`.
+ * Answers for other questions are irrelevant.
+ */
+fun isRequestUserInputUrlConfirmed(
+    parsed: RequestUserInputParsed,
+    selectedByQuestion: Map<String, List<String>>,
+): Boolean {
+    val url = parsed.url ?: return false
+    return parsed.questions.any { question ->
+        question.id == REQUEST_USER_INPUT_URL_CONFIRMATION_ID &&
+            question.options.any { option ->
+                option.label in (selectedByQuestion[question.id] ?: emptyList()) &&
+                    option.description == url
+            }
+    }
+}
+
+/** `parseRequestUserInputInput` question branch (list-only). */
 fun parseRequestUserInputQuestions(input: JsonElement?): List<RequestUserInputQuestion> {
     val root = input.objOrNull ?: return emptyList()
     val rawQuestions = root["questions"].arrayOrNull ?: return emptyList()
@@ -142,6 +225,8 @@ fun parseRequestUserInputQuestions(input: JsonElement?): List<RequestUserInputQu
             options = options,
             placeholder = obj["placeholder"].stringOrNull,
             prefill = obj["prefill"].stringOrNull,
+            inputType = obj["inputType"].stringOrNull?.takeIf { it == "editor" },
+            isOther = obj["isOther"].boolOrNull == true,
         )
     }
     return questions
@@ -149,17 +234,30 @@ fun parseRequestUserInputQuestions(input: JsonElement?): List<RequestUserInputQu
 
 /**
  * `formatRequestUserInputAnswers` value building for ONE field: selected
- * option labels plus a trailing `user_note: <text>` entry when a note was
- * typed. The nested `{answers: [...]}` wrapper is applied by the ViewModel.
+ * option labels plus a trailing `user_note: <text>` entry. Editor inputs keep
+ * the note verbatim and always push the entry (even empty — the editor's
+ * output is a formatted artifact in its own right); everything else is
+ * trimmed and only pushed when non-empty. The nested `{answers: [...]}`
+ * wrapper is applied by the ViewModel.
  */
-fun requestUserInputAnswerValues(selected: List<String>, note: String): List<String> {
+fun requestUserInputAnswerValues(
+    question: RequestUserInputQuestion,
+    selected: List<String>,
+    note: String,
+): List<String> {
     val values = selected.toMutableList()
-    val trimmed = note.trim()
-    if (trimmed.isNotEmpty()) values += "user_note: $trimmed"
+    val isEditor = question.inputType == "editor"
+    val effectiveNote = if (isEditor) note else note.trim()
+    if (isEditor || effectiveNote.isNotEmpty()) values += "user_note: $effectiveNote"
     return values
 }
 
-/** `isRequestUserInputQuestionAnswered`. */
+/**
+ * `isRequestUserInputQuestionAnswered`: required option questions need a
+ * selection; required plain-text questions need a non-blank note UNLESS the
+ * answer is produced by an external editor (`inputType: 'editor'`), which is
+ * always considered answered.
+ */
 fun isRequestUserInputAnswered(
     question: RequestUserInputQuestion,
     selected: List<String>,
@@ -167,5 +265,6 @@ fun isRequestUserInputAnswered(
 ): Boolean {
     if (!question.required) return true
     if (question.options.isNotEmpty()) return selected.isNotEmpty()
+    if (question.inputType == "editor") return true
     return note.trim().isNotEmpty()
 }

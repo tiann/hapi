@@ -1,0 +1,81 @@
+{
+    "description": "The list ordering clock changes only with user input; ordinary activity does not advance it and stale SSE replay cannot rewind it.",
+    "expectedPatchResults": [
+        "applied",
+        "unchanged",
+        "applied",
+        "applied"
+    ],
+    "expectedSession": {
+        "active": true,
+        "activeAt": 1755000000000,
+        "activeTurnStartedAt": null,
+        "agentState": null,
+        "agentStateVersion": 5,
+        "createdAt": 1754996400000,
+        "effort": null,
+        "id": "sess-sse-fixture",
+        "lastUserMessageAt": 1755000060000,
+        "metadata": {
+            "flavor": "claude",
+            "host": "devbox",
+            "name": "project",
+            "path": "/home/dev/project"
+        },
+        "metadataVersion": 3,
+        "model": "claude-sonnet-4-6",
+        "modelReasoningEffort": null,
+        "namespace": "default",
+        "permissionMode": "default",
+        "seq": 12,
+        "serviceTier": null,
+        "thinking": false,
+        "thinkingAt": 0,
+        "updatedAt": 1755000090000
+    },
+    "fixtureVersion": 1,
+    "initialSession": {
+        "active": true,
+        "activeAt": 1755000000000,
+        "activeTurnStartedAt": null,
+        "agentState": null,
+        "agentStateVersion": 5,
+        "createdAt": 1754996400000,
+        "effort": null,
+        "id": "sess-sse-fixture",
+        "lastUserMessageAt": 1755000000000,
+        "metadata": {
+            "flavor": "claude",
+            "host": "devbox",
+            "name": "project",
+            "path": "/home/dev/project"
+        },
+        "metadataVersion": 3,
+        "model": "claude-sonnet-4-6",
+        "modelReasoningEffort": null,
+        "namespace": "default",
+        "permissionMode": "default",
+        "seq": 12,
+        "serviceTier": null,
+        "thinking": false,
+        "thinkingAt": 0,
+        "updatedAt": 1755000000000
+    },
+    "name": "last-user-message-time-monotonic",
+    "patches": [
+        {
+            "thinking": true,
+            "updatedAt": 1755000030000
+        },
+        {
+            "lastUserMessageAt": 1754999990000
+        },
+        {
+            "lastUserMessageAt": 1755000060000
+        },
+        {
+            "thinking": false,
+            "updatedAt": 1755000090000
+        }
+    ]
+}

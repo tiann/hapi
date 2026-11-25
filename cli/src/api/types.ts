@@ -14,6 +14,8 @@ import {
     GetSessionResponseSchema,
     LocalHandoffResponseSchema,
     LocalResumeTargetResponseSchema,
+    LocalResumeTargetByAgentResponseSchema,
+    LocalResumePrepareResponseSchema,
     ResumableSessionsResponseSchema,
     type ClearOpencodeSessionResponse,
     type ClearOpencodeSessionCallbackRequest,
@@ -31,9 +33,7 @@ export type Usage = z.infer<typeof UsageSchema>
 export type {
     AgentState,
     AttachmentMetadata,
-    ClaudePermissionMode,
     CodexCollaborationMode,
-    CodexPermissionMode,
     Machine,
     MachineMetadata,
     Metadata,
@@ -57,6 +57,8 @@ export {
     GetSessionResponseSchema,
     LocalHandoffResponseSchema,
     LocalResumeTargetResponseSchema,
+    LocalResumeTargetByAgentResponseSchema,
+    LocalResumePrepareResponseSchema,
     ResumableSessionsResponseSchema
 }
 
@@ -71,6 +73,8 @@ export type {
 
 export const MessageMetaSchema = z.object({
     sentFrom: z.string().optional(),
+    // Shared Codex queue mirrors are replayable input, not transcript echoes.
+    isNativeQueuedMessage: z.boolean().optional(),
     // Claude jsonl echoes the remote (web/telegram) prompt as a second user row.
     // Hub notify ingest skips these so they do not consume a work_ad cause slot.
     isTranscriptEcho: z.boolean().optional(),

@@ -50,6 +50,18 @@ class SessionStoreTest {
     }
 
     @Test
+    fun `stale refresh cannot undo newer user input`() = runStoreTest { store, server ->
+        val snapshot = sessionsResponseJson(summary("a", lastUserMessageAt = 100), summary("b", lastUserMessageAt = 200))
+        server.enqueueJson(snapshot)
+        store.refresh()
+        store.applySessionEvent(globalScope, sessionUpdatedEvent("a", """{"lastUserMessageAt":300}"""))
+        server.enqueueJson(snapshot)
+        store.refresh()
+        assertEquals(listOf("a", "b"), store.sessions.value.map { it.id })
+        assertEquals(300L, store.sessions.value.first().lastUserMessageAt)
+    }
+
+    @Test
     fun `refresh failure throws and keeps previous state`() = runStoreTest { store, server ->
         server.enqueueJson(sessionsResponseJson(summary("s1")))
         store.refresh()
@@ -141,11 +153,11 @@ class SessionStoreTest {
     }
 
     @Test
-    fun `newer versioned patch applies to both caches and re-sorts`() = runStoreTest { store, server ->
+    fun `newer versioned patch applies without reordering`() = runStoreTest { store, server ->
         server.enqueueJson(
             sessionsResponseJson(
-                summary("s1", active = true, updatedAt = 100, agentStateVersion = 5),
-                summary("s2", active = true, updatedAt = 200),
+                summary("s1", active = true, updatedAt = 100, lastUserMessageAt = 100, agentStateVersion = 5),
+                summary("s2", active = true, updatedAt = 200, lastUserMessageAt = 200),
             )
         )
         store.refresh()
@@ -162,9 +174,9 @@ class SessionStoreTest {
         val detail = store.currentDetail("s1")
         assertEquals(6, detail?.agentStateVersion)
         assertEquals("Bash", detail?.agentState?.requests?.get("r1")?.tool)
-        // Pending requests push the active session ahead of the newer one.
-        assertEquals(listOf("s1", "s2"), store.sessions.value.map { it.id })
-        assertEquals(1, store.sessions.value.first().pendingRequestsCount)
+        // Permissions update badges, not the user-input ordering clock.
+        assertEquals(listOf("s2", "s1"), store.sessions.value.map { it.id })
+        assertEquals(1, store.sessions.value.last().pendingRequestsCount)
     }
 
     @Test
@@ -174,6 +186,34 @@ class SessionStoreTest {
         val before = store.sessions.value
         store.applySessionEvent(globalScope, sessionUpdatedEvent("s1", """{"active":true,"activeAt":11000}"""))
         assertSame(before, store.sessions.value)
+    }
+
+    @Test
+    fun `attached job patches update the row without a refetch and survive full sessions`() = runStoreTest { store, server ->
+        server.enqueueJson(sessionsResponseJson(summary("s1", updatedAt = 100)))
+        store.refresh()
+        store.applySessionEvent(
+            globalScope,
+            sessionUpdatedEvent(
+                "s1",
+                """{"attachedJob":{"version":3,"value":{"key":"import","label":"Import","status":"running",""" +
+                    """"heartbeatAt":10,"startedAt":5,"updatedAt":10}}}""",
+            ),
+        )
+        assertEquals("Import", store.sessions.value.single().attachedJob?.label)
+        assertEquals(3L, store.sessions.value.single().attachedJobUpdatedAt)
+
+        // A full-session event cannot carry the job; the row keeps it.
+        store.applySessionEvent(globalScope, sessionUpdatedEvent("s1", fullSessionJson(session("s1", updatedAt = 200))))
+        assertEquals("Import", store.sessions.value.single().attachedJob?.label)
+        assertEquals(200, store.sessions.value.single().updatedAt)
+
+        store.applySessionEvent(globalScope, sessionUpdatedEvent("s1", """{"attachedJob":{"version":4,"value":null}}"""))
+        assertNull(store.sessions.value.single().attachedJob)
+        // A rejected patch would schedule a batched list refetch.
+        testScheduler.advanceTimeBy(10_000)
+        testScheduler.runCurrent()
+        assertEquals(1, server.requestCount, "Job patches are applied, not refetched")
     }
 
     @Test

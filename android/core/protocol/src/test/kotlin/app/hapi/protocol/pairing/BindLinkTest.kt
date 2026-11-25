@@ -8,9 +8,9 @@ class BindLinkTest {
 
     @Test
     fun `parses a plain valid link`() {
-        val link = BindLink.parse("hapicompanion://bind?hub=http://192.168.1.20:3006&code=abc123")
+        val link = BindLink.parse("hapicompanion://bind?hub=https://hub.example.com:8443&code=abc123")
 
-        assertEquals(BindLink(hubUrl = "http://192.168.1.20:3006", accessToken = "abc123"), link)
+        assertEquals(BindLink(hubUrl = "https://hub.example.com:8443", accessToken = "abc123"), link)
     }
 
     @Test
@@ -82,7 +82,8 @@ class BindLinkTest {
     }
 
     @Test
-    fun `returns null when hub is not an http url`() {
+    fun `returns null when hub is not an https url`() {
+        assertNull(BindLink.parse("hapicompanion://bind?hub=http%3A%2F%2Fh.example.com&code=x"))
         assertNull(BindLink.parse("hapicompanion://bind?hub=ftp%3A%2F%2Fh.example.com&code=x"))
         assertNull(BindLink.parse("hapicompanion://bind?hub=not-a-url&code=x"))
     }

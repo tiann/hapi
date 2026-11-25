@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { ChatBlock, NormalizedMessage, ToolCallBlock } from '@/chat/types'
+import type { ChatBlock, ToolCallBlock } from '@/chat/types'
 import { buildSessionStatusData } from './sessionStatus'
 
 function toolBlock(overrides: Omit<Partial<ToolCallBlock>, 'tool'> & {
@@ -30,25 +30,9 @@ function toolBlock(overrides: Omit<Partial<ToolCallBlock>, 'tool'> & {
     }
 }
 
-function taskNotification(taskId?: string): NormalizedMessage {
-    return {
-        id: `notification-${taskId ?? 'anonymous'}`,
-        localId: null,
-        createdAt: 200,
-        role: 'agent',
-        isSidechain: true,
-        content: [{
-            type: 'sidechain',
-            uuid: 'notification',
-            parentUUID: null,
-            prompt: `<task-notification>${taskId ? `<task-id>${taskId}</task-id>` : ''}<summary>Done</summary></task-notification>`
-        }]
-    }
-}
-
 describe('buildSessionStatusData', () => {
     it('returns null when the session has no hidden status', () => {
-        expect(buildSessionStatusData({ goal: null, tasks: [], blocks: [], messages: [] })).toBeNull()
+        expect(buildSessionStatusData({ goal: null, tasks: [], blocks: [] })).toBeNull()
     })
 
     it('keeps goal and ordered task snapshots', () => {
@@ -67,7 +51,7 @@ describe('buildSessionStatusData', () => {
             { id: '2', content: 'Implement', priority: 'high' as const, status: 'in_progress' as const }
         ]
 
-        expect(buildSessionStatusData({ goal, tasks, blocks: [], messages: [] })).toMatchObject({ goal, tasks })
+        expect(buildSessionStatusData({ goal, tasks, blocks: [] })).toMatchObject({ goal, tasks })
     })
 
     it('lists only active or failed subagents', () => {
@@ -84,7 +68,7 @@ describe('buildSessionStatusData', () => {
             })
         ]
 
-        expect(buildSessionStatusData({ goal: null, tasks: [], blocks, messages: [] })?.subagents).toEqual([
+        expect(buildSessionStatusData({ goal: null, tasks: [], blocks })?.subagents).toEqual([
             expect.objectContaining({ id: 'agent-1', title: 'Inspect API', detail: 'Reading files', state: 'running', endedAt: null }),
             expect.objectContaining({ id: 'agent-2', title: 'Review changes', state: 'error', endedAt: 100 }),
             expect.objectContaining({ id: 'agent-pending', state: 'waiting', startedAt: null }),
@@ -92,7 +76,7 @@ describe('buildSessionStatusData', () => {
         ])
     })
 
-    it('tracks Claude background terminals until their task notification arrives', () => {
+    it('lists Claude background tasks with the command that started them', () => {
         const blocks: ChatBlock[] = [toolBlock({
             name: 'Agent',
             tool: { state: 'completed' },
@@ -110,46 +94,38 @@ describe('buildSessionStatusData', () => {
                 toolBlock({
                     name: 'Bash',
                     tool: {
-                        id: 'bash-2',
+                        id: 'bash-ls',
                         state: 'completed',
-                        input: { command: 'bun test --watch' },
-                        result: [{ type: 'text', text: 'Command running in background with ID: bg-2' }]
+                        input: { command: 'ls tasks' },
+                        result: 'bg-2.output\nbg-3.output'
                     }
                 }),
                 toolBlock({
-                    name: 'Read',
-                    tool: { result: 'Command running in background with ID: not-a-terminal' }
+                    name: 'Bash',
+                    tool: {
+                        id: 'bash-2',
+                        state: 'completed',
+                        input: { command: 'bun test --watch' },
+                        result: [{ type: 'text', text: 'Command was moved to the background (ID: bg-2).' }]
+                    }
                 })
             ]
         })]
 
-        expect(buildSessionStatusData({ goal: null, tasks: [], blocks, messages: [taskNotification('bg-1')] })?.terminals).toEqual([
-            { id: 'bg-2', command: 'bun test --watch', cwd: null, startedAt: 100 }
+        expect(buildSessionStatusData({
+            goal: null,
+            tasks: [],
+            blocks,
+            backgroundTasks: [
+                { id: 'bg-2', type: 'local_bash', description: 'Watch tests' },
+                { id: 'bg-3', type: 'local_bash', description: 'Start server' },
+                { id: 'm-1', type: 'monitor_mcp', description: 'Watch deploy' }
+            ]
+        })?.terminals).toEqual([
+            { id: 'bg-2', command: 'bun test --watch', cwd: null, startedAt: 100 },
+            { id: 'bg-3', command: 'Start server', cwd: null, startedAt: null },
+            { id: 'm-1', command: 'Watch deploy', cwd: null, startedAt: null }
         ])
-        expect(buildSessionStatusData({
-            goal: null,
-            tasks: [],
-            blocks,
-            messages: [],
-            backgroundTaskCount: 0
-        })).toBeNull()
-        expect(buildSessionStatusData({
-            goal: null,
-            tasks: [],
-            blocks: [],
-            messages: [],
-            backgroundTaskCount: 2
-        })).toMatchObject({ terminals: [], undiscoveredTerminalCount: 2 })
-        expect(buildSessionStatusData({
-            goal: null,
-            tasks: [],
-            blocks,
-            messages: [taskNotification()],
-            backgroundTaskCount: 1
-        })).toMatchObject({
-            terminals: [],
-            undiscoveredTerminalCount: 1,
-            possibleTerminalCommands: ['bun run dev', 'bun test --watch']
-        })
+        expect(buildSessionStatusData({ goal: null, tasks: [], blocks, backgroundTasks: [] })).toBeNull()
     })
 })

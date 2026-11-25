@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand';
 import type { CursorModelsResponse, CursorModelSummary } from '@hapi/protocol/apiTypes';
 import {
     releaseAgentCliSpawnLeaseSync,
@@ -17,6 +18,7 @@ import {
 import {
     cursorCliSkuBaseId,
     cursorModelBaseId,
+    cursorModelBaseMatches,
     isCursorAcpCatalogModelId,
     isCursorAcpWireModelId
 } from '@hapi/protocol';
@@ -30,6 +32,7 @@ export function buildCursorModelsSeedPayload(
         availableModels: CursorModelSummary[];
         currentModelId: string | null;
         cliModelSkus?: readonly CursorModelSummary[];
+        parameterized?: boolean;
     },
     shared?: CursorModelsResponse | null
 ): ListCursorModelsResponse {
@@ -41,6 +44,7 @@ export function buildCursorModelsSeedPayload(
         success: true,
         availableModels: snapshot.availableModels,
         currentModelId: snapshot.currentModelId,
+        ...(snapshot.parameterized ? { parameterized: true } : {}),
         ...(cliModelSkus.length > 0 ? { cliModelSkus } : {})
     };
 }
@@ -67,9 +71,9 @@ function filterCliSkusForWireBases(
     cliSkus: CursorModelSummary[],
     wires: CursorModelSummary[]
 ): CursorModelSummary[] {
-    const wireBases = new Set(
-        wires.map((entry) => cursorModelBaseId(entry.modelId)).filter((base) => base.length > 0)
-    );
+    const wireBases = wires
+        .map((entry) => cursorModelBaseId(entry.modelId))
+        .filter((base) => base.length > 0);
 
     return cliSkus.filter((entry) => {
         const modelId = entry.modelId.trim();
@@ -77,7 +81,8 @@ function filterCliSkusForWireBases(
         if (!modelId || modelId === 'auto' || isCursorAcpWireModelId(modelId)) {
             return false;
         }
-        return wireBases.has(cursorCliSkuBaseId(modelId));
+        const skuBase = cursorCliSkuBaseId(modelId);
+        return wireBases.some((base) => cursorModelBaseMatches(skuBase, base));
     });
 }
 
@@ -86,22 +91,24 @@ function attachCliSkusToResponse(
     cliSkus: readonly CursorModelSummary[]
 ): ListCursorModelsResponse {
     const wires = (response.availableModels ?? []).filter((entry) => isCursorAcpCatalogModelId(entry.modelId));
-    // Suffixed CLI variants (effort/speed) only apply when ACP exposes parameterized
-    // wires for that base. Bare-only catalogs cannot express those variants
-    // (apply path is model + fast at most), so attaching them creates dead picker rows.
-    const parameterizedBases = new Set(
-        wires
+    // Variant skus are only usable when the ACP apply path can express them:
+    // parameterized pickers apply model + fast + thought_level over config options,
+    // and wire catalogs already pair each variant with a base wire. Bare-only
+    // catalogs without the parameterized picker keep base rows only.
+    const applyableBases = (response.parameterized === true
+        ? wires.map((entry) => cursorModelBaseId(entry.modelId))
+        : wires
             .filter((entry) => isCursorAcpWireModelId(entry.modelId))
             .map((entry) => cursorModelBaseId(entry.modelId))
-            .filter((base) => base.length > 0)
-    );
+    ).filter((base) => base.length > 0);
     const filtered = filterCliSkusForWireBases(
         mergeCliModelSkus(response.cliModelSkus ?? [], [...cliSkus]),
         wires
     ).filter((entry) => {
         const modelId = entry.modelId.trim();
         const base = cursorCliSkuBaseId(modelId);
-        return modelId === base || parameterizedBases.has(base);
+        return modelId === base
+            || applyableBases.some((candidate) => cursorModelBaseMatches(base, candidate));
     });
     if (filtered.length === 0) {
         return response.cliModelSkus?.length
@@ -226,7 +233,7 @@ async function runCursorModelProbe(): Promise<ListCursorModelsResponse> {
     };
 
     return await new Promise((resolve, reject) => {
-        const child = spawn('agent', ['--list-models'], {
+        const child = spawn(getAgentLaunchCommand('cursor'), ['--list-models'], {
             env: process.env,
             stdio: ['ignore', 'pipe', 'pipe'],
             shell: process.platform === 'win32',

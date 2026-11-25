@@ -32,6 +32,7 @@ export interface InitializeResponse {
 }
 
 export interface ModelListParams {
+    cursor?: string;
     includeHidden?: boolean;
 }
 
@@ -127,6 +128,20 @@ export interface ThreadStartResponse {
         id: string;
     };
     model: string;
+    [key: string]: unknown;
+}
+
+export interface ConfigReadParams {
+    cwd?: string | null;
+    includeLayers?: boolean;
+}
+
+export interface ConfigReadResponse {
+    config: {
+        model_context_window?: number | null;
+        model_auto_compact_token_limit?: number | null;
+        [key: string]: unknown;
+    };
     [key: string]: unknown;
 }
 
@@ -370,5 +385,56 @@ export interface ExperimentalFeatureEnablementSetParams {
 
 export interface ExperimentalFeatureEnablementSetResponse {
     enablement: Record<string, boolean>;
+    [key: string]: unknown;
+}
+
+export interface CodexAccountInfo {
+    type?: string | null;
+    email?: string | null;
+    planType?: string | null;
+    [key: string]: unknown;
+}
+
+export interface AccountReadResponse {
+    account?: CodexAccountInfo | null;
+    requiresOpenaiAuth?: boolean;
+    [key: string]: unknown;
+}
+
+export interface CodexRateLimitWindow {
+    usedPercent?: number | null;
+    windowDurationMins?: number | null;
+    resetsAt?: number | null;
+    [key: string]: unknown;
+}
+
+export interface CodexRateLimitCredits {
+    hasCredits?: boolean | null;
+    unlimited?: boolean | null;
+    balance?: string | number | null;
+    [key: string]: unknown;
+}
+
+export interface CodexRateLimitEntry {
+    limitId?: string | null;
+    limitName?: string | null;
+    normalModelSlug?: string | null;
+    primary?: CodexRateLimitWindow | null;
+    secondary?: CodexRateLimitWindow | null;
+    credits?: CodexRateLimitCredits | null;
+    planType?: string | null;
+    spendControlReached?: boolean | null;
+    rateLimitReachedType?: string | null;
+    [key: string]: unknown;
+}
+
+export interface AccountRateLimitsReadResponse {
+    ordinaryUsageAllowed?: boolean;
+    rateLimits?: CodexRateLimitEntry | null;
+    rateLimitsByLimitId?: Record<string, CodexRateLimitEntry> | null;
+    rateLimitResetCredits?: {
+        availableCount?: number | null;
+        [key: string]: unknown;
+    } | null;
     [key: string]: unknown;
 }

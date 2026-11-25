@@ -8,6 +8,7 @@ import app.hapi.protocol.window.MessageWindowState
 import app.hapi.protocol.window.OlderLoadOutcome
 import app.hapi.protocol.window.WindowMessage
 import app.hapi.protocol.wire.HapiJson
+import app.hapi.protocol.wire.MessageContextResponse
 import app.hapi.protocol.wire.MessagesResponse
 import app.hapi.protocol.wire.OptionalField
 import app.hapi.protocol.wire.QueuedStateResponse
@@ -231,6 +232,7 @@ class PaginationFixtureTest(private val fixtureName: String) {
 
     private fun projectWindowState(state: MessageWindowState): JsonObject = buildJsonObject {
         put("messages", JsonArray(state.messages.map(::projectMessage)))
+        put("readThroughRevision", state.readThroughRevision?.let(::JsonPrimitive) ?: JsonNull)
         put("hasMore", state.hasMore)
         put("epoch", state.epoch?.let(::JsonPrimitive) ?: JsonNull)
         put("viewMode", state.viewMode.wire)
@@ -239,6 +241,7 @@ class PaginationFixtureTest(private val fixtureName: String) {
     }
 
     private fun projectMessage(message: WindowMessage): JsonObject = buildJsonObject {
+        message.wire.contentRevision?.let { put("contentRevision", it) }
         put("id", message.id)
         put("localId", message.localId?.let(::JsonPrimitive) ?: JsonNull)
         put("seq", message.seq?.let(::JsonPrimitive) ?: JsonNull)
@@ -283,6 +286,8 @@ internal class ScriptedMessagesApi : MessagesApi {
         queue.addAll(responses)
         requests.clear()
     }
+
+    override suspend fun getMessageContext(sessionId: String, messageId: String): MessageContextResponse? = null
 
     override suspend fun getMessages(sessionId: String, query: MessagesQuery): MessagesResponse {
         requests += query.toRequestJson()

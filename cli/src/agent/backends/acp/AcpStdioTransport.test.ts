@@ -19,6 +19,7 @@ const spawnState = vi.hoisted(() => ({
     exitHandlers: [] as Array<(code: number | null, signal: NodeJS.Signals | null) => void>,
     closeHandlers: [] as Array<(code: number | null, signal: NodeJS.Signals | null) => void>,
     stdoutDataHandlers: [] as Array<(chunk: string) => void>,
+    stdinErrorHandlers: [] as Array<(error: Error) => void>,
     stdinEnd: vi.fn(),
     stdinWrite: vi.fn<(chunk: string) => boolean>(() => true),
     kill: vi.fn(),
@@ -49,6 +50,7 @@ vi.mock('node:child_process', () => ({
         spawnState.exitHandlers = [];
         spawnState.closeHandlers = [];
         spawnState.stdoutDataHandlers = [];
+        spawnState.stdinErrorHandlers = [];
         const handlers = new Map<string, Array<(...args: unknown[]) => void>>();
         const proc = {
             get pid() {
@@ -73,6 +75,9 @@ vi.mock('node:child_process', () => ({
                 })
             },
             stdin: {
+                on: vi.fn((event: string, handler: (error: Error) => void) => {
+                    if (event === 'error') spawnState.stdinErrorHandlers.push(handler);
+                }),
                 end: (...args: unknown[]) => spawnState.stdinEnd(...args),
                 write: (chunk: string) => spawnState.stdinWrite(chunk)
             },
@@ -187,6 +192,16 @@ describe('AcpStdioTransport plain-text stdout', () => {
         spawnState.stdoutDataHandlers = [];
     });
 
+    test('reports itself dead once the agent process exits', async () => {
+        const transport = await AcpStdioTransport.create({ command: 'agy', args: ['acp'] });
+        expect(transport.isAlive()).toBe(true);
+
+        for (const handler of spawnState.exitHandlers) handler(null, 'SIGKILL');
+
+        expect(transport.isAlive()).toBe(false);
+        await transport.close();
+    });
+
     test('ignores Cursor worktree banner and keeps JSON-RPC session alive', async () => {
         const transport = await AcpStdioTransport.create({ command: 'agent', args: ['acp'] });
         const notifications: Array<{ method: string; params: unknown }> = [];
@@ -217,6 +232,23 @@ describe('AcpStdioTransport plain-text stdout', () => {
             params: { sessionUpdate: 'agent_message_chunk' }
         }]);
 
+        await transport.close();
+    });
+
+    test('keeps the JSON-RPC error code on a rejected request', async () => {
+        const transport = await AcpStdioTransport.create({ command: 'agy', args: ['acp'] });
+        const pending = transport.sendRequest('session/prompt');
+
+        emitStdout(`${JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            error: { code: -32603, message: 'the running prompt is waiting for a permission or question answer' }
+        })}\n`);
+
+        await expect(pending).rejects.toMatchObject({
+            message: 'the running prompt is waiting for a permission or question answer',
+            code: -32603
+        });
         await transport.close();
     });
 
@@ -251,6 +283,18 @@ describe('AcpStdioTransport plain-text stdout', () => {
         await expect(transport.sendRequest('session/new')).rejects.toThrow(
             'Failed to parse JSON-RPC from ACP agent'
         );
+    });
+});
+
+describe('AcpStdioTransport stdin errors', () => {
+    test('rejects pending requests when stdin emits EPIPE', async () => {
+        const transport = await AcpStdioTransport.create({ command: 'test-agent' });
+        const pending = transport.sendRequest('initialize', {});
+        const failure = Object.assign(new Error('broken pipe'), { code: 'EPIPE' });
+        expect(spawnState.stdinErrorHandlers).toHaveLength(1);
+        spawnState.stdinErrorHandlers[0](failure);
+        await expect(pending).rejects.toMatchObject({ code: 'EPIPE' });
+        await expect(transport.sendRequest('initialize', {})).rejects.toThrow();
     });
 });
 

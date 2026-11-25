@@ -1,0 +1,304 @@
+{
+  "source": "agy 1.5.3 `agy acp`, Gemini 3.8 Flash (Low), recorded 2026-11-09: ask_question with clientCapabilities.elicitation.form advertised; the probe accepted the second option and also sent free text",
+  "frames": [
+    {
+      "t": 0.0,
+      "direction": "client->agy",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": 104,
+        "method": "session/prompt",
+        "params": {
+          "sessionId": "agy-conv-1",
+          "prompt": [
+            {
+              "type": "text",
+              "text": "Respond in English only. Use your ask_question tool to ask me one multiple-choice question: do I prefer RED or BLUE? Then reply with my answer in one word."
+            }
+          ]
+        }
+      }
+    },
+    {
+      "t": 0.08,
+      "direction": "agy->client",
+      "message": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "agy-conv-1",
+          "update": {
+            "sessionUpdate": "user_message_chunk",
+            "content": {
+              "type": "text",
+              "text": "Respond in English only. Use your ask_question tool to ask me one multiple-choice question: do I prefer RED or BLUE? Then reply with my answer in one word."
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": 2.97,
+      "direction": "agy->client",
+      "message": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "agy-conv-1",
+          "update": {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "call_q",
+            "name": "ask_question",
+            "args": {
+              "questions": [
+                {
+                  "is_multi_select": false,
+                  "options": [
+                    "(Recommended) RED",
+                    "BLUE"
+                  ],
+                  "question": "Do you prefer RED or BLUE?"
+                }
+              ]
+            },
+            "status": "in_progress",
+            "kind": "other",
+            "title": "Run ask_question",
+            "rawInput": {
+              "questions": [
+                {
+                  "is_multi_select": false,
+                  "options": [
+                    "(Recommended) RED",
+                    "BLUE"
+                  ],
+                  "question": "Do you prefer RED or BLUE?"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": 3.12,
+      "direction": "agy->client",
+      "message": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "agy-conv-1",
+          "update": {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "call_q",
+            "name": "ask_question",
+            "args": {
+              "questions": [
+                {
+                  "is_multi_select": false,
+                  "options": [
+                    "(Recommended) RED",
+                    "BLUE"
+                  ],
+                  "question": "Do you prefer RED or BLUE?"
+                }
+              ]
+            },
+            "status": "pending",
+            "kind": "other",
+            "title": "Run ask_question",
+            "rawInput": {
+              "questions": [
+                {
+                  "is_multi_select": false,
+                  "options": [
+                    "(Recommended) RED",
+                    "BLUE"
+                  ],
+                  "question": "Do you prefer RED or BLUE?"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": 3.12,
+      "direction": "agy->client",
+      "message": {
+        "jsonrpc": "2.0",
+        "method": "elicitation/create",
+        "params": {
+          "sessionId": "agy-conv-1",
+          "toolCallId": "call_q",
+          "mode": "form",
+          "message": "The agent has a question.",
+          "requestedSchema": {
+            "type": "object",
+            "properties": {
+              "q1": {
+                "type": "string",
+                "title": "Do you prefer RED or BLUE?",
+                "oneOf": [
+                  {
+                    "const": "1",
+                    "title": "(Recommended) RED"
+                  },
+                  {
+                    "const": "2",
+                    "title": "BLUE"
+                  }
+                ]
+              },
+              "q1_other": {
+                "type": "string",
+                "title": "Other",
+                "description": "Optional free-form answer to: Do you prefer RED or BLUE?"
+              }
+            }
+          }
+        },
+        "id": "1"
+      }
+    },
+    {
+      "t": 3.12,
+      "direction": "client->agy",
+      "message": {
+        "jsonrpc": "2.0",
+        "id": "1",
+        "result": {
+          "action": "accept",
+          "content": {
+            "q1": "2",
+            "q1_other": "BLUE"
+          }
+        }
+      }
+    },
+    {
+      "t": 3.12,
+      "direction": "agy->client",
+      "message": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "agy-conv-1",
+          "update": {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "call_q",
+            "name": "ask_question",
+            "args": {
+              "questions": [
+                {
+                  "is_multi_select": false,
+                  "options": [
+                    "(Recommended) RED",
+                    "BLUE"
+                  ],
+                  "question": "Do you prefer RED or BLUE?"
+                }
+              ]
+            },
+            "status": "in_progress",
+            "kind": "other",
+            "title": "Run ask_question",
+            "rawInput": {
+              "questions": [
+                {
+                  "is_multi_select": false,
+                  "options": [
+                    "(Recommended) RED",
+                    "BLUE"
+                  ],
+                  "question": "Do you prefer RED or BLUE?"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": 3.15,
+      "direction": "agy->client",
+      "message": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "agy-conv-1",
+          "update": {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "call_q",
+            "name": "ask_question",
+            "args": {
+              "questions": [
+                {
+                  "is_multi_select": false,
+                  "options": [
+                    "(Recommended) RED",
+                    "BLUE"
+                  ],
+                  "question": "Do you prefer RED or BLUE?"
+                }
+              ]
+            },
+            "status": "completed",
+            "kind": "other",
+            "title": "Run ask_question",
+            "rawInput": {
+              "questions": [
+                {
+                  "is_multi_select": false,
+                  "options": [
+                    "(Recommended) RED",
+                    "BLUE"
+                  ],
+                  "question": "Do you prefer RED or BLUE?"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": 5.86,
+      "direction": "agy->client",
+      "message": {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+          "sessionId": "agy-conv-1",
+          "update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": {
+              "type": "text",
+              "text": "BLUE"
+            }
+          }
+        }
+      }
+    },
+    {
+      "t": 6.0,
+      "direction": "agy->client",
+      "message": {
+        "jsonrpc": "2.0",
+        "result": {
+          "stopReason": "end_turn",
+          "usage": {
+            "inputTokens": 30352,
+            "outputTokens": 47,
+            "cachedReadTokens": 0,
+            "cachedWriteTokens": 0,
+            "thoughtTokens": 0,
+            "totalTokens": 30399
+          }
+        },
+        "id": 104
+      }
+    }
+  ]
+}

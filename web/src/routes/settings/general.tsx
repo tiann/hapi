@@ -1,13 +1,28 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
+import {
+    CREATABLE_AGENT_FLAVORS,
+    getPermissionModesForFlavor,
+    getPermissionModeLabel,
+    type AgentFlavor,
+    type PermissionMode
+} from '@hapi/protocol'
+import type { UpdateHubSettingsRequest } from '@hapi/protocol/apiTypes'
+import type { ResolvedPeerSpawnDefaults } from '@hapi/protocol/peerSpawnDefaults'
 import { useTranslation, type Locale } from '@/lib/use-translation'
 import { useAppContext } from '@/lib/app-context'
 import { CompanionPairing } from '@/components/settings/CompanionPairing'
-import { SettingsChoiceGroup, SettingsPageContent, SettingsSection, SettingsSwitch } from '@/components/settings/SettingsPrimitives'
+import { PasskeySettings } from '@/components/settings/PasskeySettings'
+import { PushNotificationsControl } from '@/components/settings/PushNotificationsControl'
+import { SettingsChoiceGroup, SettingsPageContent, SettingsRow, SettingsSection, SettingsSwitch } from '@/components/settings/SettingsPrimitives'
+import { useFeatures, usePatchFeatures } from '@/hooks/queries/useFeatures'
 import { queryKeys } from '@/lib/query-keys'
 
 const locales: ReadonlyArray<{ value: Locale; label: string }> = [
     { value: 'en', label: 'English' },
     { value: 'zh-CN', label: '简体中文' },
+    { value: 'ru', label: 'Русский' },
+    { value: 'ja', label: '日本語' },
 ]
 
 function getNamespace(token: string | null): string | null {
@@ -28,6 +43,11 @@ export default function SettingsGeneralPage() {
     const { api, baseUrl, token } = useAppContext()
     const queryClient = useQueryClient()
     const isOwner = getNamespace(token) === 'default'
+    const { features, isLoading: featuresLoading } = useFeatures(api)
+    const { setGithubPrAwareness, isPending } = usePatchFeatures(api)
+    const awareness = features?.githubPrAwareness
+    const envPinned = awareness?.source === 'env'
+    const [featureError, setFeatureError] = useState<string | null>(null)
 
     const hubSettingsQuery = useQuery({
         queryKey: queryKeys.hubSettings,
@@ -41,7 +61,7 @@ export default function SettingsGeneralPage() {
     })
 
     const hubSettingsMutation = useMutation({
-        mutationFn: async (patch: { sessionSummaryContract?: boolean; sessionSummaryInChat?: boolean }) => {
+        mutationFn: async (patch: UpdateHubSettingsRequest) => {
             if (!api) throw new Error('API unavailable')
             return await api.updateHubSettings(patch)
         },
@@ -50,13 +70,75 @@ export default function SettingsGeneralPage() {
         },
     })
 
+    const peerDefaults = hubSettingsQuery.data?.peerSpawnDefaults
+    const agentOptions = CREATABLE_AGENT_FLAVORS.map((value) => ({ value, label: value }))
+    const permissionOptions = getPermissionModesForFlavor(peerDefaults?.agent).map((mode) => ({
+        value: mode,
+        label: getPermissionModeLabel(mode)
+    }))
+
+    function updatePeerSpawnDefaults(next: ResolvedPeerSpawnDefaults) {
+        if (hubSettingsMutation.isPending) return
+        hubSettingsMutation.mutate({
+            peerSpawnDefaults: {
+                agent: next.agent,
+                permissionMode: next.permissionMode,
+                models: next.models
+            }
+        })
+    }
+
+    const currentModel = peerDefaults?.models[peerDefaults.agent] ?? ''
+
     return (
         <SettingsPageContent description={t('settings.general.description')}>
             <SettingsSection title={t('settings.language.label')}>
                 <SettingsChoiceGroup hideLabel label={t('settings.language.label')} value={locale} options={locales} onChange={setLocale} />
             </SettingsSection>
+            <SettingsSection title={t('settings.notifications.title')}>
+                <PushNotificationsControl />
+            </SettingsSection>
             {isOwner ? (
-                <SettingsSection title={t('settings.general.agents.title')} description={t('settings.general.agents.description')}>
+                <SettingsSection title={t('settings.general.githubPrAwareness')}>
+                    <SettingsSwitch
+                        label={t('settings.general.githubPrAwareness')}
+                        description={featureError
+                            ?? (envPinned
+                                ? t('settings.general.githubPrAwareness.envPinned')
+                                : t('settings.general.githubPrAwareness.desc'))}
+                        checked={Boolean(awareness?.enabled)}
+                        disabled={featuresLoading || !awareness || envPinned || isPending}
+                        onChange={(checked) => {
+                            void setGithubPrAwareness(checked)
+                                .then(() => setFeatureError(null))
+                                .catch((error) => {
+                                    setFeatureError(error instanceof Error ? error.message : t('dialog.error.default'))
+                                })
+                        }}
+                    />
+                </SettingsSection>
+            ) : null}
+            {isOwner && features?.inputTranslation?.available ? (
+                <SettingsSection title={t('settings.general.inputTranslation.title')}>
+                    <SettingsSwitch
+                        label={t('settings.general.inputTranslation.default')}
+                        description={hubSettingsMutation.error instanceof Error && hubSettingsMutation.variables?.translateInputByDefault !== undefined
+                            ? hubSettingsMutation.error.message
+                            : t('settings.general.inputTranslation.default.desc')}
+                        checked={hubSettingsQuery.data?.translateInputByDefault === true}
+                        disabled={!hubSettingsQuery.data || hubSettingsMutation.isPending}
+                        onChange={(checked) => {
+                            if (hubSettingsMutation.isPending) return
+                            hubSettingsMutation.mutate({ translateInputByDefault: checked })
+                        }}
+                    />
+                </SettingsSection>
+            ) : null}
+            {isOwner ? (
+                <SettingsSection
+                    title={t('settings.general.sessionSummary.title')}
+                    description={t('settings.general.sessionSummary.description')}
+                >
                     {hubSettingsQuery.data ? (
                         <>
                             <SettingsSwitch
@@ -81,6 +163,70 @@ export default function SettingsGeneralPage() {
                     ) : null}
                 </SettingsSection>
             ) : null}
+            {isOwner ? (
+                <SettingsSection
+                    title={t('settings.general.agents.title')}
+                    description={t('settings.general.agents.description')}
+                >
+                    {peerDefaults ? (
+                        <>
+                            <SettingsChoiceGroup
+                                hideLabel
+                                label={t('settings.general.peerSpawn.agent')}
+                                description={t('settings.general.peerSpawn.agent.desc')}
+                                value={peerDefaults.agent}
+                                options={agentOptions}
+                                columns={5}
+                                onChange={(agent) => {
+                                    updatePeerSpawnDefaults({
+                                        ...peerDefaults,
+                                        agent: agent as AgentFlavor
+                                    })
+                                }}
+                            />
+                            <SettingsChoiceGroup
+                                hideLabel
+                                label={t('settings.general.peerSpawn.permissionMode')}
+                                description={t('settings.general.peerSpawn.permissionMode.desc')}
+                                value={peerDefaults.permissionMode}
+                                options={permissionOptions}
+                                columns={4}
+                                onChange={(permissionMode) => {
+                                    updatePeerSpawnDefaults({
+                                        ...peerDefaults,
+                                        permissionMode: permissionMode as PermissionMode
+                                    })
+                                }}
+                            />
+                            <SettingsRow label={t('settings.general.peerSpawn.model')} description={t('settings.general.peerSpawn.model.desc')}>
+                                <input
+                                    key={`${peerDefaults.agent}:${currentModel}`}
+                                    type="text"
+                                    defaultValue={currentModel}
+                                    onBlur={(event) => {
+                                        const model = event.target.value.trim()
+                                        if (model === currentModel) return
+                                        // Empty string is the clear sentinel for this flavor override.
+                                        updatePeerSpawnDefaults({
+                                            ...peerDefaults,
+                                            models: {
+                                                ...peerDefaults.models,
+                                                [peerDefaults.agent]: model
+                                            }
+                                        })
+                                    }}
+                                    className="w-full max-w-xs rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm text-[var(--app-fg)]"
+                                />
+                            </SettingsRow>
+                        </>
+                    ) : null}
+                </SettingsSection>
+            ) : null}
+            <SettingsSection title={t('settings.passkeys.title')}>
+                <div className="px-3 py-3">
+                    <PasskeySettings />
+                </div>
+            </SettingsSection>
             <SettingsSection title={t('settings.companion.title')}>
                 <div className="px-3 py-3">
                     <CompanionPairing baseUrl={baseUrl} />
