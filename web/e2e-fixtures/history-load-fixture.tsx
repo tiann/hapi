@@ -51,6 +51,7 @@ type Probe = {
         oldestSeq: number | null
         newestSeq: number | null
         isLoadingMore: boolean
+        isSyncingTail: boolean
     }
 }
 
@@ -111,7 +112,8 @@ window.__probe = {
             messageCount: state.messages.length,
             oldestSeq: state.oldestSeq,
             newestSeq: state.newestSeq,
-            isLoadingMore: state.isLoadingMore
+            isLoadingMore: state.isLoadingMore,
+            isSyncingTail: state.isSyncingTail
         }
     }
 }
@@ -532,6 +534,9 @@ const fakeApi = {
             const head = sourceMessages.at(-1)
             return { messages: pageMessages, page: pageFrom(pageMessages, {
                 direction: 'after', limit, epoch: fixtureEpoch, hasMore: newer.length > pageMessages.length,
+                nextBeforeAt: null, nextBeforeSeq: null,
+                nextAfterAt: pageMessages.length ? positionOf(pageMessages.at(-1)!).at : query.afterAt ?? null,
+                nextAfterSeq: pageMessages.at(-1)?.seq ?? query.afterSeq ?? null,
                 snapshotHeadSeq: head?.seq ?? null,
                 snapshotHeadAt: head ? positionOf(head).at : null
             }) }
@@ -561,7 +566,7 @@ const fakeApi = {
                 direction: 'latest',
                 limit,
                 epoch: fixtureEpoch,
-                reset: true,
+                reset: !delayedQueuedReadback,
                 hasMore: latestMessages.length > pageMessages.length
             })
         }

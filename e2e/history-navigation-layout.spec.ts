@@ -566,7 +566,12 @@ test('verifies a queued input before declaring that no prompt exists', async ({ 
     })
     await expect.poll(() => page.evaluate(() => window.__probe.queuedReadbackIds)).toEqual(['queued-before-latest'])
     await page.evaluate(() => window.__probe.releaseQueuedReadback())
-    await expect(page.locator('[data-hapi-turn-input="true"]').filter({ hasText: 'Newly confirmed input' })).toBeFocused()
+    const confirmed = page.locator('[data-hapi-turn-input="true"]').filter({ hasText: 'Newly confirmed input' })
+    await expect(confirmed).toBeFocused()
+    // Focus must survive the deferred reconnect catch-up after the jump releases its hold.
+    await expect.poll(() => page.evaluate(() => window.__probe.requests.filter(request => request.direction === 'after').length >= 2
+        && !window.__probe.windowState().isSyncingTail)).toBe(true)
+    await expect(confirmed).toBeFocused()
     await expect(page.getByText('Could not load turn input. Try again.', { exact: true })).toHaveCount(0)
     const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
     if (screenshots) await page.screenshot({ path: `${screenshots}/reply-navigation-only-queued-input.png` })
