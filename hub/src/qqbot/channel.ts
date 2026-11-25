@@ -43,12 +43,18 @@ export class QqBotChannel implements NotificationChannel {
             const requests = current?.agentState?.requests
             if (!current?.active || !requests) return null
             // A newly added request can get its own alert; this one covers the dispatch snapshot.
-            const requestId = requestIds.find(id => Object.hasOwn(requests, id))
-            const request = requestId === undefined ? undefined : requests[requestId]
-            if (!request) return null
-            return isInputRequestTool(request.tool)
-                ? `HAPI: ${getAgentName(current)} needs your input`
-                : 'HAPI Permission Request'
+            let hasInput = false
+            let hasApproval = false
+            for (const id of requestIds) {
+                if (!Object.hasOwn(requests, id)) continue
+                const request = requests[id]
+                if (!request) continue
+                if (isInputRequestTool(request.tool)) hasInput = true
+                else hasApproval = true
+                if (hasInput && hasApproval) return 'HAPI Permission and Input Requests'
+            }
+            if (hasInput) return `HAPI: ${getAgentName(current)} needs your input`
+            return hasApproval ? 'HAPI Permission Request' : null
         })
     }
 

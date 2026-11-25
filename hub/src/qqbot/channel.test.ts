@@ -197,6 +197,19 @@ describe('QQ bot DM notifications', () => {
         expect(fetch.mock.calls.map(([url]) => url)).toEqual([tokenUrl])
     })
 
+    it.each([false, true])('names both kinds in a single alert for a mixed request batch (question first: %s)', async (questionFirst) => {
+        const fetch = mockFetch()
+        const approval = { tool: 'Read', arguments: {}, createdAt: 1 }
+        const question = { tool: 'AskUserQuestion', arguments: {}, createdAt: 2 }
+        const requests = questionFirst ? { question, approval } : { approval, question }
+        const session = createSession({ agentState: { requests } })
+        const channel = new QqBotChannel(config, baseUrl, new VisibilityTracker(), () => session, fetch)
+        await channel.sendPermissionRequest(session, { permissionRequestIds: Object.keys(requests) })
+        const sends = fetch.mock.calls.filter(([url]) => url === messageUrl)
+        expect(sends).toHaveLength(1)
+        expect(getBody(sends[0]?.[1]).markdown.content).toStartWith('**HAPI Permission and Input Requests**')
+    })
+
     it.each(['imported name', 'generated summary', 'workspace path'])(
         'keeps private session metadata and input request arguments out of QQ (%s)', async (source) => {
             const fetch = mockFetch()
