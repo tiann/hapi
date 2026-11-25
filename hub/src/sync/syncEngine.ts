@@ -3437,10 +3437,37 @@ export class SyncEngine {
         truncateFromLocalId: string,
         discardedThroughSeq?: number
     ): void {
-        this.store.messages.truncateMessagesFromLocalId(sessionId, truncateFromLocalId, [], discardedThroughSeq)
+        // Use the actual source row, not the boundary timestamp: a newly
+        // arrived row with the same native timestamp can survive the seq bound.
+        const usageCleared = this.store.runInTransaction(() => {
+            const session = this.store.sessions.getSessionByNamespace(sessionId, namespace)
+            const metadata = asRecord(session?.metadata)
+            const details = asRecord(metadata?.contextDetails)
+            const usage = details?.provider === 'claude' ? asRecord(details.usage) : null
+            const sampledAt = usage?.sampledAt
+            const sourceUuid = usage?.sourceMessageUuid
+            const sourceIds = typeof sampledAt === 'number'
+                ? this.findClaudeUsageSourceRows(sessionId, sampledAt, typeof sourceUuid === 'string' ? sourceUuid : undefined)
+                : []
+            this.store.messages.truncateMessagesFromLocalId(sessionId, truncateFromLocalId, [], discardedThroughSeq)
+            // Without a UUID, a legacy sample is only identifiable when one
+            // assistant row carries that timestamp. A not-yet-mirrored sample
+            // may belong to a new turn and is never evicted by guesswork.
+            if (!session || !details || sourceIds.length === 0
+                || (typeof sourceUuid !== 'string' && sourceIds.length !== 1)
+                || sourceIds.some(id => this.store.messages.getMessageById(sessionId, id))) return false
+            const { usage: _usage, contextWindow: _window, ...inventory } = details
+            const result = this.store.sessions.updateSessionMetadata(sessionId, {
+                ...metadata, contextDetails: inventory
+            }, session.metadataVersion, namespace, { touchUpdatedAt: false })
+            if (result.result !== 'success') throw new Error('Could not invalidate the rewound Claude usage sample')
+            return true
+        })
+        if (usageCleared) this.sessionCache.refreshSession(sessionId)
         this.scrubHistoryLocators(sessionId, namespace)
         this.sessionCache.rebuildTodosFromTranscript(sessionId)
-        this.markClaudeRewindCutApplied(sessionId, namespace, truncateFromLocalId)
+        const markerPublished = this.markClaudeRewindCutApplied(sessionId, namespace, truncateFromLocalId)
+        if (usageCleared && !markerPublished) this.emitCliSessionMetadataUpdate(sessionId)
         this.eventPublisher.emit({
             type: 'messages-invalidated',
             sessionId,
@@ -3449,6 +3476,25 @@ export class SyncEngine {
             truncateFromLocalId
         })
         this.sessionCache.refreshSession(sessionId)
+    }
+
+    private findClaudeUsageSourceRows(sessionId: string, sampledAt: number, sourceUuid?: string): string[] {
+        const matches = (row: StoredMessage): boolean => {
+            const envelope = unwrapRoleWrappedRecordEnvelope(row.content)
+            const content = envelope?.role === 'agent' ? asRecord(envelope.content) : null
+            const entry = content?.type === 'output' ? asRecord(content.data) : null
+            return entry?.type === 'assistant' && entry.isSidechain !== true
+                && (sourceUuid === undefined || entry.uuid === sourceUuid)
+                && typeof entry.timestamp === 'string' && Date.parse(entry.timestamp) === sampledAt
+        }
+        const atSampleTime = this.store.messages.getMessagesAfterPosition(sessionId, 200,
+            { at: sampledAt, seq: 0 }, { at: sampledAt, seq: Number.MAX_SAFE_INTEGER })
+        const matched = atSampleTime.filter(matches)
+        if (atSampleTime.length < 200 && matched.length > 0) return matched.map(row => row.id)
+
+        // The hub can clamp a future native timestamp at intake. Fall back to
+        // the raw timestamp and UUID instead of missing a source due to skew.
+        return this.store.messages.getAllMessages(sessionId).filter(matches).map(row => row.id)
     }
 
     /**
@@ -3463,13 +3509,13 @@ export class SyncEngine {
      * is what lets the CLI tell the two apart - it only clears the intent once
      * the cut is confirmed, so the timeout/reconnect reconcile still finds it.
      */
-    private markClaudeRewindCutApplied(sessionId: string, namespace: string, truncateFromLocalId: string): void {
+    private markClaudeRewindCutApplied(sessionId: string, namespace: string, truncateFromLocalId: string): boolean {
         for (let attempt = 0; attempt < 3; attempt += 1) {
             const session = this.sessionCache.getSessionByNamespace(sessionId, namespace)
                 ?? this.sessionCache.refreshSession(sessionId)
-            if (!session?.metadata) return
+            if (!session?.metadata) return false
             const intent = asRecord(session.metadata.claudeRewind)
-            if (intent === null || intent.truncateFromLocalId !== truncateFromLocalId || intent.hubCutApplied === true) return
+            if (intent === null || intent.truncateFromLocalId !== truncateFromLocalId || intent.hubCutApplied === true) return false
             const result = this.store.sessions.updateSessionMetadata(
                 sessionId,
                 { ...session.metadata, claudeRewind: { ...intent, hubCutApplied: true } },
@@ -3483,10 +3529,11 @@ export class SyncEngine {
                 // without the push it waits for its next write or a reconnect,
                 // keeping fork/rewind blocked on an already-applied cut.
                 this.emitCliSessionMetadataUpdate(sessionId)
-                return
+                return true
             }
-            if (result.result !== 'version-mismatch') return
+            if (result.result !== 'version-mismatch') return false
         }
+        return false
     }
 
     /**

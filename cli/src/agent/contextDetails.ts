@@ -477,7 +477,8 @@ export function publishContextDetails(
                 usage: savedUsage ? {
                     ...(savedUsage.contextTokens !== undefined ? { contextTokens: savedUsage.contextTokens } : {}),
                     ...(savedUsage.cacheReadTokens !== undefined ? { cacheReadTokens: savedUsage.cacheReadTokens } : {}),
-                    ...(savedUsage.sampledAt !== undefined ? { sampledAt: savedUsage.sampledAt } : {})
+                    ...(savedUsage.sampledAt !== undefined ? { sampledAt: savedUsage.sampledAt } : {}),
+                    ...(savedUsage.sourceMessageUuid ? { sourceMessageUuid: savedUsage.sourceMessageUuid } : {})
                 } : undefined
             }
         }

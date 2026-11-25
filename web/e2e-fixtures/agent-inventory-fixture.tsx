@@ -22,9 +22,21 @@ const details: ContextDetails = isClaude
         slashCommands: params.has('customAgent') ? ['/compact', '/agent'] : ['/compact']
     } }
 
+function ClaudeRewindUsageFixture() {
+    const [rewound, setRewound] = React.useState(false)
+    return <div className="m-4">
+        <button onClick={() => setRewound(true)}>Apply committed rewind</button>
+        <StatusBar active thinking={false} agentState={null} agentFlavor="claude" model="claude-sonnet-4-6"
+            contextModel="claude-sonnet-4-6" contextSize={40_000} contextWindow={190_000} contextSampledAt={1000}
+            contextDetails={{ ...details, model: 'claude-sonnet-4-6', ...(rewound ? {} : {
+                contextWindow: 400_000, usage: { contextTokens: 120_000, sampledAt: 2000, sourceMessageUuid: 'rewound-answer' }
+            }) }} />
+    </div>
+}
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
     <I18nProvider>
-        {params.has('legacyMcp') ? <div data-testid="legacy-claude-mcp" className="m-4">
+        {params.has('claudeRewindUsage') ? <ClaudeRewindUsageFixture /> : params.has('legacyMcp') ? <div data-testid="legacy-claude-mcp" className="m-4">
             <StatusBar active thinking={false} agentState={null} agentFlavor="claude"
                 contextDetails={{ ...details, claude: {} }} legacyTools={['Read', 'mcp__hapi__list_peers']} />
         </div> : claudeSampleOrdering ? <div data-testid="claude-sample-ordering" className="m-4">

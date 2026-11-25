@@ -29,6 +29,74 @@ function seedTwoTurns(store: Store, session: { id: string }) {
 }
 
 describe('Claude rewind hub integration', () => {
+    it.each(['discarded', 'legacy', 'legacy-ambiguous', 'clamped', 'retained', 'post-dispatch', 'not-yet-mirrored'] as const)(
+        'reconciles saved Claude usage with the actual rewind cut (%s)', async (source) => {
+            const { store, engine } = createEngine()
+            const sampleTime = 3_000
+            const inv = { skills: [{ name: 'example' }], systemTools: ['Read'] }
+            const details = (uuid: string, sampledAt: number) => ({
+                version: 1 as const, provider: 'claude' as const, updatedAt: 5_000,
+                model: 'claude-sonnet-4-6', contextWindow: 200_000,
+                usage: { contextTokens: 15_000, cacheReadTokens: 500, sampledAt, sourceMessageUuid: uuid as string | undefined }, claude: inv
+            })
+            const reply = (uuid: string, at: number) => ({ role: 'agent', content: { type: 'output', data: {
+                type: 'assistant', uuid, timestamp: new Date(at).toISOString(), message: {
+                    model: 'claude-sonnet-4-6', content: [{ type: 'text', text: uuid }],
+                    usage: { input_tokens: 500, output_tokens: 10 }
+                }
+            } } })
+            try {
+                const usesLegacySample = source === 'legacy' || source === 'legacy-ambiguous'
+                const initialDetails = source === 'retained' ? details('keep', sampleTime - 1)
+                    : details(source === 'not-yet-mirrored' ? 'not-yet-mirrored' : 'drop',
+                        source === 'clamped' ? sampleTime + 500 : sampleTime)
+                if (usesLegacySample) {
+                    initialDetails.usage = { ...initialDetails.usage, sourceMessageUuid: undefined }
+                }
+                const session = engine.getOrCreateSession(`claude-rewind-usage-${source}`, {
+                    path: '/tmp/project', host: 'localhost', flavor: 'claude',
+                    capabilities: { conversationHistory: { rewindToMessage: true } }, contextDetails: initialDetails
+                }, null, 'default')
+                engine.handleSessionAlive({ sid: session.id, time: Date.now(), mode: 'remote' })
+                const keptAt = source === 'legacy-ambiguous' ? sampleTime : sampleTime - 1
+                const keep = store.messages.addMessage(session.id, reply('keep', keptAt), undefined, null, keptAt)
+                store.messages.addMessage(session.id, { role: 'user', content: 'rewind here' }, 'rewind-boundary', null, sampleTime)
+                store.messages.markMessagesInvoked(session.id, ['rewind-boundary'], sampleTime)
+                const sourceTime = source === 'clamped' ? sampleTime + 500 : sampleTime
+                const drop = store.messages.addMessage(session.id, reply('drop', sourceTime), undefined, null, sampleTime)
+                let expected = initialDetails
+                ;(engine as any).rpcGateway.rewindConversation = async () => {
+                    if (source === 'post-dispatch') {
+                        // Same native timestamp: only the sequence/UUID distinguish the new sample from the old one.
+                        store.messages.addMessage(session.id, reply('after', sampleTime), undefined, null, sampleTime)
+                        expected = details('after', sampleTime)
+                        const stored = store.sessions.getSession(session.id)!
+                        store.sessions.updateSessionMetadata(session.id, {
+                            ...(stored.metadata as object), contextDetails: expected
+                        }, stored.metadataVersion, 'default')
+                    }
+                    return { success: true, truncateFromLocalId: 'rewind-boundary' }
+                }
+
+                await expect(engine.rewindConversation(session.id, 'default', 'rewind-boundary')).resolves.toEqual({ type: 'success' })
+                const messages = store.messages.getAllMessages(session.id)
+                expect(messages.some(row => row.id === keep.id)).toBe(true)
+                expect(messages.some(row => row.id === drop.id)).toBe(false)
+                const final = engine.getSession(session.id)?.metadata?.contextDetails
+                expect(final?.claude).toEqual(inv)
+                if (source === 'discarded' || source === 'legacy' || source === 'clamped') {
+                    expect(final?.usage).toBeUndefined()
+                    expect(final?.contextWindow).toBeUndefined()
+                } else {
+                    expect(final).toEqual(expected)
+                }
+            } finally {
+                engine.stop()
+                store.close()
+            }
+        }
+    )
+
     it('truncates the hub at rewind-RPC success and keeps a prompt sent afterwards with its reply', async () => {
         const { store, engine } = createEngine()
         try {

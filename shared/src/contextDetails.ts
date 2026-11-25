@@ -6,7 +6,8 @@ export const ContextUsageSnapshotSchema = z.object({
     contextTokens: TokenCountSchema.optional(),
     cacheReadTokens: TokenCountSchema.optional(),
     // Native message time (ms), not the last inventory refresh time.
-    sampledAt: z.number().int().nonnegative().optional()
+    sampledAt: z.number().int().nonnegative().optional(),
+    sourceMessageUuid: z.string().min(1).optional()
 })
 
 export type ContextUsageSnapshot = z.infer<typeof ContextUsageSnapshotSchema>

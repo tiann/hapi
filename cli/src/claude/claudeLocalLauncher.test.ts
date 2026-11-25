@@ -262,7 +262,7 @@ describe('claudeLocalLauncher message filtering', () => {
         expect(getMetadata().contextDetails).toMatchObject({
             provider: 'claude',
             contextWindow: 262_144,
-            usage: { contextTokens: 26_697, sampledAt: Date.parse('2026-09-01T12:00:00.000Z') },
+            usage: { contextTokens: 26_697, sampledAt: Date.parse('2026-09-01T12:00:00.000Z'), sourceMessageUuid: 'assistant-context-details' },
             claude: {
                 mcpTools: [{ name: 'mcp__hapi__list_peers', serverName: 'hapi' }]
             }

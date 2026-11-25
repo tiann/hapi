@@ -61,7 +61,9 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
                     if (details) {
                         if (message.type === 'assistant' && contextUsage && message.timestamp && details.usage?.contextTokens !== undefined) {
                             const sampledAt = Date.parse(message.timestamp);
-                            if (Number.isFinite(sampledAt) && sampledAt >= 0) details.usage = { ...details.usage, sampledAt };
+                            if (Number.isFinite(sampledAt) && sampledAt >= 0) {
+                                details.usage = { ...details.usage, sampledAt, sourceMessageUuid: message.uuid };
+                            }
                         }
                         if (details.model) {
                             lastSystemModel = details.model;

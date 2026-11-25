@@ -89,6 +89,20 @@ for (const [mode, label, cache] of [
 }
 
 
+test('the meter uses retained Claude history when a committed rewind invalidates the saved sample', async ({ page }) => {
+    await page.goto('/e2e-fixtures/agent-inventory-fixture.html?provider=claude&claudeRewindUsage=1')
+    const meter = page.getByRole('button', { name: 'Context details', exact: true })
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    await expect(meter).toContainText('120k / 400k')
+    if (screenshots) await meter.screenshot({ path: `${screenshots}/claude-usage-before-rewind.png` })
+    await page.getByRole('button', { name: 'Apply committed rewind' }).click()
+    await expect(meter).toContainText('40k / 190k')
+    if (screenshots) await meter.screenshot({ path: `${screenshots}/claude-usage-after-rewind.png` })
+    await page.getByRole('button', { name: /Agent context details/ }).click()
+    await expect(page.getByRole('dialog', { name: 'Agent details' }).getByText('automatic-skill', { exact: true })).toBeVisible()
+})
+
+
 test('classifies legacy Claude MCP entries separately from system tools', async ({ page }) => {
     await page.goto('/e2e-fixtures/agent-inventory-fixture.html?provider=claude&legacyMcp=1')
     await page.getByRole('button', { name: /Agent context details/ }).click()
