@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { I18nProvider } from '@/lib/i18n-context'
 import { ToastProvider } from '@/lib/toast-context'
 import { DEFAULT_DIRECTORY_SORT } from '@/lib/directory-sort'
@@ -24,23 +25,28 @@ vi.mock('@/hooks/queries/useSessionDirectory', () => ({
 function renderTree(handlers: {
     onOpenFile?: () => void
     onRequestFileMenu?: (path: string, point: { x: number; y: number }) => void
+    api?: unknown
+    onAddToComposer?: (path: string) => void
 } = {}) {
     const onOpenFile = handlers.onOpenFile ?? vi.fn()
     const onRequestFileMenu = handlers.onRequestFileMenu ?? vi.fn()
 
     render(
+        <QueryClientProvider client={new QueryClient()}>
         <I18nProvider>
             <ToastProvider>
                 <DirectoryTree
-                    api={{} as never}
+                    api={(handlers.api ?? {}) as never}
                     sessionId="session-1"
                     rootLabel="project"
                     onOpenFile={onOpenFile}
                     onRequestFileMenu={onRequestFileMenu}
+                    onAddToComposer={handlers.onAddToComposer}
                     sort={DEFAULT_DIRECTORY_SORT}
                 />
             </ToastProvider>
         </I18nProvider>
+        </QueryClientProvider>
     )
 
     return { onOpenFile, onRequestFileMenu }
@@ -85,5 +91,70 @@ describe('DirectoryTree file context menu', () => {
         } finally {
             vi.useRealTimers()
         }
+    })
+})
+
+describe('DirectoryTree upload and delete', () => {
+    it('asks before deleting a file and calls the runner delete on confirm', async () => {
+        const deleteWorkspacePath = vi.fn(async () => ({ success: true }))
+        renderTree({ api: { deleteWorkspacePath } })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Delete README.md' }))
+        expect(deleteWorkspacePath).not.toHaveBeenCalled()
+        expect(await screen.findByText('Delete file?')).toBeTruthy()
+
+        fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+        await waitFor(() => expect(deleteWorkspacePath).toHaveBeenCalledWith('session-1', 'README.md'))
+    })
+
+    it('does not delete when the confirmation is cancelled', async () => {
+        const deleteWorkspacePath = vi.fn(async () => ({ success: true }))
+        renderTree({ api: { deleteWorkspacePath } })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Delete src' }))
+        expect(await screen.findByText('Delete folder?')).toBeTruthy()
+        fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+        await waitFor(() => expect(screen.queryByText('Delete folder?')).toBeNull())
+        expect(deleteWorkspacePath).not.toHaveBeenCalled()
+    })
+
+    it('offers upload on folders (including the root) but delete only below the root', () => {
+        renderTree()
+        expect(screen.getByRole('button', { name: 'Upload files to project' })).toBeTruthy()
+        expect(screen.getByRole('button', { name: 'Upload files to src' })).toBeTruthy()
+        expect(screen.queryByRole('button', { name: 'Delete project' })).toBeNull()
+    })
+
+    it('uploads into the clicked folder and asks before replacing an existing file', async () => {
+        const uploadWorkspaceFileChunk = vi.fn()
+            .mockResolvedValueOnce({ success: false, code: 'exists', error: 'exists' })
+            .mockResolvedValueOnce({ success: true, size: 5, path: 'src/a.txt' })
+        renderTree({ api: { uploadWorkspaceFileChunk } })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Upload files to src' }))
+        const input = screen.getByTestId('workspace-upload-input') as HTMLInputElement
+        fireEvent.change(input, { target: { files: [new File(['hello'], 'a.txt')] } })
+
+        expect(await screen.findByText('Replace existing file?')).toBeTruthy()
+        expect(uploadWorkspaceFileChunk).toHaveBeenCalledTimes(1)
+        expect(uploadWorkspaceFileChunk.mock.calls[0][1]).toMatchObject({ dir: 'src', name: 'a.txt', overwrite: false, final: true })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Replace' }))
+        await waitFor(() => expect(uploadWorkspaceFileChunk).toHaveBeenCalledTimes(2))
+        expect(uploadWorkspaceFileChunk.mock.calls[1][1]).toMatchObject({ dir: 'src', name: 'a.txt', overwrite: true })
+    })
+})
+
+describe('DirectoryTree add to composer', () => {
+    it('adds files by path and folders with a trailing slash, but not the root', () => {
+        const onAddToComposer = vi.fn()
+        renderTree({ onAddToComposer })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Add README.md to composer' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Add src to composer' }))
+
+        expect(onAddToComposer.mock.calls).toEqual([['README.md'], ['src/']])
+        expect(screen.queryByRole('button', { name: 'Add project to composer' })).toBeNull()
     })
 })

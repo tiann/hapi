@@ -50,6 +50,14 @@ export type RichComposerInputHandle = {
         suggestionText: string,
         prefixes?: string[]
     ) => { text: string; selection: ComposerSelection }
+    /**
+     * Insert literal text at a mirror-space selection (e.g. the caret the user
+     * left before clicking elsewhere) and focus the editor after it.
+     */
+    insertTextAt: (
+        text: string,
+        selection: ComposerSelection
+    ) => { text: string; selection: ComposerSelection }
 }
 
 export type SessionMentionResolveResult = {
@@ -893,6 +901,23 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
             const selection = getMirrorSelection(root)
             const result = insertPlainTextInComposerSegments(segments, selection, suggestionText, prefixes)
             recordUndo(segments, selection)
+            const serialized = commitSegments(root, result.segments, result.selection)
+            return { text: serialized, selection: result.selection }
+        },
+        insertTextAt: (text, selection) => {
+            const root = rootRef.current
+            if (!root) {
+                return { text: value, selection: { start: value.length, end: value.length } }
+            }
+            const segments = segmentsFromEditor(root)
+            const length = mirrorComposerSegments(segments).length
+            const clamped = {
+                start: Math.min(Math.max(0, selection.start), length),
+                end: Math.min(Math.max(0, selection.end), length),
+            }
+            const result = insertSegmentsInComposerSegments(segments, clamped, [{ type: 'text', text }])
+            recordUndo(segments, clamped)
+            root.focus()
             const serialized = commitSegments(root, result.segments, result.selection)
             return { text: serialized, selection: result.selection }
         },

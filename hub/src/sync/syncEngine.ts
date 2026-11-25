@@ -23,7 +23,7 @@ import type { AgentFlavor, BackgroundTask, CodexCollaborationMode, CopilotAgentM
 import { hasConversationMessageContent, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { Server } from 'socket.io'
 import { createHash, randomUUID } from 'node:crypto'
-import type { BranchConversationRequest, BranchConversationResponse } from '@hapi/protocol/apiTypes'
+import type { BranchConversationRequest, BranchConversationResponse, WorkspaceDeletePathResponse, WorkspaceWriteFileRequest, WorkspaceWriteFileResponse } from '@hapi/protocol/apiTypes'
 import { branchSessionId, buildBranchPrompt } from './branchTranscript'
 import type { Store, CancelQueuedMessageResult } from '../store'
 import type { StoredMessage } from '../store/types'
@@ -6697,6 +6697,44 @@ export class SyncEngine {
                 this.rpcGateway.readWorkspaceFile(machineId, { cwd, path, ...options })
             )
         }
+    }
+
+    /**
+     * Upload/delete in the files panel always go through the session's runner
+     * (machine socket), whether or not the agent is still attached, so the
+     * operation lands on the machine that owns the workspace.
+     */
+    private getWorkspaceWriteTarget(sessionId: string):
+        | { ok: true; machineId: string; cwd: string }
+        | { ok: false; error: string; code: 'workspace_unavailable' | 'runner_outdated' } {
+        const session = this.sessionCache.getSession(sessionId)
+        const cwd = session?.metadata?.path
+        if (!session || !cwd) {
+            return { ok: false, error: 'Session workspace is not available', code: 'workspace_unavailable' }
+        }
+        const machine = this.resolveOnlineMachineForSession(session, session.namespace, { strictMachineId: true })
+        if (!machine) {
+            return { ok: false, error: 'The runner for this session is offline', code: 'workspace_unavailable' }
+        }
+        if (!machine.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.WorkspaceFileWrite)) {
+            return { ok: false, error: 'The runner for this session does not support file management yet; update and restart it', code: 'runner_outdated' }
+        }
+        return { ok: true, machineId: machine.id, cwd }
+    }
+
+    async writeWorkspaceFile(
+        sessionId: string,
+        request: Omit<WorkspaceWriteFileRequest, 'cwd'>
+    ): Promise<WorkspaceWriteFileResponse> {
+        const target = this.getWorkspaceWriteTarget(sessionId)
+        if (!target.ok) return { success: false, error: target.error, code: target.code }
+        return await this.rpcGateway.writeWorkspaceFile(target.machineId, { ...request, cwd: target.cwd })
+    }
+
+    async deleteWorkspacePath(sessionId: string, path: string): Promise<WorkspaceDeletePathResponse> {
+        const target = this.getWorkspaceWriteTarget(sessionId)
+        if (!target.ok) return { success: false, error: target.error, code: target.code }
+        return await this.rpcGateway.deleteWorkspacePath(target.machineId, { cwd: target.cwd, path })
     }
 
     async readGeneratedImage(sessionId: string, imageId: string): Promise<RpcGeneratedImageResponse> {

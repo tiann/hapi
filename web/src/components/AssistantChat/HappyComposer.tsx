@@ -1,3 +1,4 @@
+import { padInsertion, registerComposerInserter } from '@/lib/composerInsertBridge'
 import {
     getCodexCollaborationModeOptions,
     getCopilotAgentModeOptions,
@@ -953,6 +954,38 @@ export function HappyComposer(props: {
         if (richMentionsEnabled) richInputRef.current?.focus()
         else textareaRef.current?.focus()
     }, [richMentionsEnabled])
+
+    // Files side panel → "add to composer": insert at the caret the user left
+    // in the composer (tracked in inputState even after focus moves away).
+    const inputStateRef = useRef(inputState)
+    inputStateRef.current = inputState
+    useEffect(() => {
+        if (!sessionId) return
+        return registerComposerInserter(sessionId, (rawText) => {
+            handleUserEdit()
+            const { text: mirrorText, selection } = inputStateRef.current
+            if (richMentionsEnabled && richInputRef.current) {
+                const text = padInsertion(mirrorText, selection, rawText)
+                const result = richInputRef.current.insertTextAt(text, selection)
+                setInputState({ text: result.text, selection: result.selection })
+                return
+            }
+            const current = latestComposerTextRef.current
+            const start = Math.min(selection.start, current.length)
+            const end = Math.min(Math.max(selection.end, start), current.length)
+            const text = padInsertion(current, { start, end }, rawText)
+            const next = current.slice(0, start) + text + current.slice(end)
+            const caret = start + text.length
+            api.composer().setText(next)
+            setInputState({ text: next, selection: { start: caret, end: caret } })
+            setTimeout(() => {
+                const el = textareaRef.current
+                if (!el) return
+                el.focus()
+                el.setSelectionRange(caret, caret)
+            }, 0)
+        })
+    }, [api, handleUserEdit, richMentionsEnabled, sessionId])
 
     const handleSuggestionSelect = useCallback((index: number) => {
         const suggestion = suggestions[index]

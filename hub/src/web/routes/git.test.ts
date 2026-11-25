@@ -481,3 +481,95 @@ describe('file search route', () => {
         })
     })
 })
+
+describe('workspace upload/delete routes', () => {
+    const session = { id: 'session-1', namespace: 'default', active: false } as unknown as Session
+
+    it('forwards an upload chunk as base64 with parsed flags', async () => {
+        const calls: unknown[] = []
+        const engine = {
+            resolveSessionAccess: () => ({ ok: true as const, sessionId: 'session-1', session }),
+            writeWorkspaceFile: async (_sessionId: string, request: unknown) => {
+                calls.push(request)
+                return { success: true, size: 5, path: 'src/a.txt' }
+            }
+        } as unknown as Partial<SyncEngine>
+
+        const response = await buildApp(engine).request(
+            '/api/sessions/session-1/workspace/upload?dir=src&name=a.txt&uploadId=upload-0001&offset=0&final=true&overwrite=false',
+            { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: 'hello' }
+        )
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ success: true, size: 5, path: 'src/a.txt' })
+        expect(calls).toEqual([{
+            dir: 'src',
+            name: 'a.txt',
+            uploadId: 'upload-0001',
+            offset: 0,
+            content: Buffer.from('hello').toString('base64'),
+            final: true,
+            overwrite: false,
+        }])
+    })
+
+    it('accepts an empty body for zero-byte files', async () => {
+        let content: string | undefined
+        const engine = {
+            resolveSessionAccess: () => ({ ok: true as const, sessionId: 'session-1', session }),
+            writeWorkspaceFile: async (_sessionId: string, request: { content?: string }) => {
+                content = request.content
+                return { success: true, size: 0 }
+            }
+        } as unknown as Partial<SyncEngine>
+
+        const response = await buildApp(engine).request(
+            '/api/sessions/session-1/workspace/upload?name=empty.txt&uploadId=upload-0001&offset=0&final=true',
+            { method: 'POST', headers: { 'content-length': '0' } }
+        )
+        expect(response.status).toBe(200)
+        expect(content).toBe('')
+    })
+
+    it('rejects malformed upload parameters before reaching the runner', async () => {
+        let called = false
+        const engine = {
+            resolveSessionAccess: () => ({ ok: true as const, sessionId: 'session-1', session }),
+            writeWorkspaceFile: async () => {
+                called = true
+                return { success: true }
+            }
+        } as unknown as Partial<SyncEngine>
+
+        const response = await buildApp(engine).request(
+            '/api/sessions/session-1/workspace/upload?name=a.txt&uploadId=bad&offset=0',
+            { method: 'POST', body: 'x' }
+        )
+        expect(response.status).toBe(400)
+        expect(called).toBe(false)
+    })
+
+    it('forwards deletes and surfaces runner errors as success:false', async () => {
+        const engine = {
+            resolveSessionAccess: () => ({ ok: true as const, sessionId: 'session-1', session }),
+            deleteWorkspacePath: async (_sessionId: string, path: string) => (
+                path === 'src/a.txt' ? { success: true } : { success: false, error: 'Invalid path' }
+            )
+        } as unknown as Partial<SyncEngine>
+        const app = buildApp(engine)
+
+        const ok = await app.request('/api/sessions/session-1/workspace/delete', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ path: 'src/a.txt' })
+        })
+        expect(await ok.json()).toEqual({ success: true })
+
+        const refused = await app.request('/api/sessions/session-1/workspace/delete', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ path: '..' })
+        })
+        expect(await refused.json()).toEqual({ success: false, error: 'Invalid path' })
+    })
+})

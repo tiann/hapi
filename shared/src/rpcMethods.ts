@@ -40,6 +40,8 @@ export const RPC_METHODS = {
     WorkspaceGitDiffNumstat: 'workspace-git-diff-numstat',
     WorkspaceGitDiffFile: 'workspace-git-diff-file',
     WorkspaceRipgrep: 'workspace-ripgrep',
+    WorkspaceWriteFile: 'workspace-write-file',
+    WorkspaceDeletePath: 'workspace-delete-path',
     Ripgrep: 'ripgrep',
     Difftastic: 'difftastic',
     Bash: 'bash',

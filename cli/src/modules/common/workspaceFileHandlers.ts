@@ -1,5 +1,5 @@
-import { readdir, stat } from 'node:fs/promises'
-import { isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { appendFile, lstat, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type {
     CommandResponse,
     DirectoryEntry,
@@ -7,6 +7,7 @@ import type {
     FileReadResponse,
     ListDirectoryResponse,
     StatFilesResponse,
+    WorkspaceWriteFileResponse,
 } from '@hapi/protocol/apiTypes'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import type { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager'
@@ -63,6 +64,32 @@ type WorkspaceRipgrepRequest = {
     cwd?: unknown
     args?: unknown
     fileSearch?: FileSearchOptions
+}
+
+type WorkspaceWriteFileRequest = {
+    cwd?: unknown
+    /** Target directory, relative to `cwd` ('' = workspace root). */
+    dir?: unknown
+    /** Plain file name; no path separators. */
+    name?: unknown
+    /** Client-generated id naming the temporary part file. */
+    uploadId?: unknown
+    /** Base64 chunk content; may be empty. */
+    content?: unknown
+    /** Byte offset of this chunk; 0 starts (or restarts) the upload. */
+    offset?: unknown
+    /** Move the part file onto the target after writing this chunk. */
+    final?: unknown
+    /** Replace an existing file at the target. */
+    overwrite?: unknown
+    /** Discard the part file instead of writing. */
+    abort?: unknown
+}
+
+
+type WorkspaceDeletePathRequest = {
+    cwd?: unknown
+    path?: unknown
 }
 
 type ResolvedWorkspaceCwd = { cwd: string } | { error: string }
@@ -159,9 +186,162 @@ async function listDirectory(path: string): Promise<ListDirectoryResponse> {
     return { success: true, entries: directoryEntries }
 }
 
+const UPLOAD_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/
+const MAX_WORKSPACE_UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024
+
+function isPlainFileName(name: string): boolean {
+    return name.length > 0
+        && Buffer.byteLength(name) <= 255
+        && name !== '.'
+        && name !== '..'
+        && !name.includes('/')
+        && !name.includes('\\')
+        && !name.includes('\0')
+}
+
+function uploadPartPath(dir: string, name: string, uploadId: string): string {
+    return join(dir, `.${name}.hapi-upload-${uploadId}`)
+}
+
+async function pathExists(path: string): Promise<boolean> {
+    try {
+        await lstat(path)
+        return true
+    } catch {
+        return false
+    }
+}
+
+async function handleWorkspaceWriteFile(
+    pathPolicy: WorkspaceFilePathPolicy,
+    data: WorkspaceWriteFileRequest,
+): Promise<WorkspaceWriteFileResponse> {
+    const name = typeof data.name === 'string' ? data.name : ''
+    if (!isPlainFileName(name)) {
+        return rpcError('Invalid file name')
+    }
+    const uploadId = typeof data.uploadId === 'string' ? data.uploadId : ''
+    if (!UPLOAD_ID_PATTERN.test(uploadId)) {
+        return rpcError('Invalid upload id')
+    }
+
+    const resolved = await resolveWorkspacePath(pathPolicy, data.cwd, data.dir, { allowEmptyPath: true })
+    if ('error' in resolved) {
+        return rpcError(resolved.error)
+    }
+
+    try {
+        const dirStats = await stat(resolved.path)
+        if (!dirStats.isDirectory()) {
+            return rpcError('Upload target is not a directory')
+        }
+
+        const target = join(resolved.path, name)
+        const part = uploadPartPath(resolved.path, name, uploadId)
+
+        if (data.abort === true) {
+            await rm(part, { force: true })
+            return { success: true }
+        }
+
+        const offset = typeof data.offset === 'number' && Number.isSafeInteger(data.offset) && data.offset >= 0
+            ? data.offset
+            : -1
+        if (offset < 0) {
+            return rpcError('Invalid offset')
+        }
+        const content = typeof data.content === 'string' ? Buffer.from(data.content, 'base64') : Buffer.alloc(0)
+        if (content.byteLength > MAX_WORKSPACE_UPLOAD_CHUNK_BYTES) {
+            return rpcError('Chunk too large')
+        }
+        const overwrite = data.overwrite === true
+
+        if (offset === 0) {
+            if (!overwrite && await pathExists(target)) {
+                return { success: false, code: 'exists', error: 'A file with this name already exists' }
+            }
+            // Upload ids are random per attempt, so (re)starting truncates.
+            await writeFile(part, content)
+        } else {
+            let partSize: number
+            try {
+                partSize = (await lstat(part)).size
+            } catch {
+                return rpcError('Upload was not started or has expired')
+            }
+            if (partSize !== offset) {
+                return rpcError(`Unexpected offset ${offset}; ${partSize} bytes received so far`)
+            }
+            await appendFile(part, content)
+        }
+
+        const size = offset + content.byteLength
+        if (data.final === true) {
+            if (!overwrite && await pathExists(target)) {
+                await rm(part, { force: true })
+                return { success: false, code: 'exists', error: 'A file with this name already exists' }
+            }
+            const existing = await lstat(target).catch(() => null)
+            if (existing?.isDirectory()) {
+                await rm(part, { force: true })
+                return rpcError('A folder with this name already exists')
+            }
+            await rename(part, target)
+            const relativePath = relative(resolved.cwd, target).split(sep).join('/')
+            return { success: true, size, path: relativePath }
+        }
+
+        return { success: true, size }
+    } catch (error) {
+        return rpcError(getErrorMessage(error, 'Failed to write file'))
+    }
+}
+
+async function handleWorkspaceDeletePath(
+    pathPolicy: WorkspaceFilePathPolicy,
+    data: WorkspaceDeletePathRequest,
+): Promise<{ success: boolean; error?: string }> {
+    const cwd = await resolveWorkspaceCwd(pathPolicy, data.cwd)
+    if ('error' in cwd) {
+        return rpcError(cwd.error)
+    }
+    const rawPath = typeof data.path === 'string' ? data.path : ''
+    const lexical = resolve(cwd.cwd, rawPath || '.')
+    const name = basename(lexical)
+    if (!rawPath || !isWithinRoot(cwd.cwd, lexical) || lexical === cwd.cwd || !isPlainFileName(name)) {
+        return rpcError('Invalid path')
+    }
+
+    // Resolve only the parent: the entry itself may be a symlink, and deleting
+    // must remove the link rather than whatever it points at.
+    const parent = await pathPolicy.resolveForCheck(dirname(lexical))
+    if (!pathPolicy.isWithinSpawnRoots(parent)) {
+        return rpcError(OUTSIDE_WORKSPACE_ERROR)
+    }
+    if (!isWithinRoot(cwd.cwd, parent)) {
+        return rpcError(OUTSIDE_SESSION_WORKSPACE_ERROR)
+    }
+    const target = join(parent, name)
+    if (target === cwd.cwd) {
+        return rpcError('Cannot delete the workspace root')
+    }
+
+    try {
+        const stats = await lstat(target)
+        if (stats.isDirectory()) {
+            await rm(target, { recursive: true })
+        } else {
+            await unlink(target)
+        }
+        return { success: true }
+    } catch (error) {
+        return rpcError(getErrorMessage(error, 'Failed to delete'))
+    }
+}
+
 /**
- * Register read-only workspace operations on the machine-scoped runner
- * socket. These are deliberately separate from session-scoped RPCs so an
+ * Register workspace operations on the machine-scoped runner socket: the
+ * read-only file/Git/search RPCs plus upload/delete for the files panel. These are deliberately separate from session-scoped RPCs so an
  * inactive session can still inspect its current workspace while its CLI is
  * no longer connected.
  */
@@ -350,5 +530,15 @@ export function registerWorkspaceFileHandlers(
                 return rpcError(getErrorMessage(error, 'Failed to run ripgrep'))
             }
         },
+    )
+
+    rpcHandlerManager.registerHandler<WorkspaceWriteFileRequest, WorkspaceWriteFileResponse>(
+        RPC_METHODS.WorkspaceWriteFile,
+        async (data) => await handleWorkspaceWriteFile(pathPolicy, data),
+    )
+
+    rpcHandlerManager.registerHandler<WorkspaceDeletePathRequest, { success: boolean; error?: string }>(
+        RPC_METHODS.WorkspaceDeletePath,
+        async (data) => await handleWorkspaceDeletePath(pathPolicy, data),
     )
 }

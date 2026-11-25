@@ -1,6 +1,6 @@
 import { HubClock } from '@/lib/hubClock'
 import type { AttachedJob } from '@hapi/protocol'
-import type { BranchConversationRequest, BranchConversationResponse } from '@hapi/protocol/apiTypes'
+import type { BranchConversationRequest, BranchConversationResponse, WorkspaceDeletePathResponse, WorkspaceWriteFileResponse } from '@hapi/protocol/apiTypes'
 import { isAuthRejectionStatus } from '@/lib/authConnection'
 import type {
     AttachmentMetadata,
@@ -782,6 +782,50 @@ export class ApiClient {
         const qs = params.toString()
         return await this.request<ListDirectoryResponse>(
             `/api/sessions/${encodeURIComponent(sessionId)}/directory${qs ? `?${qs}` : ''}`
+        )
+    }
+
+    /** Write one chunk of a files-panel upload into the session workspace on the runner. */
+    async uploadWorkspaceFileChunk(
+        sessionId: string,
+        params: { dir: string; name: string; uploadId: string; offset: number; final: boolean; overwrite: boolean },
+        chunk: Blob,
+        options?: { signal?: AbortSignal }
+    ): Promise<WorkspaceWriteFileResponse> {
+        const query = new URLSearchParams({
+            dir: params.dir,
+            name: params.name,
+            uploadId: params.uploadId,
+            offset: String(params.offset),
+            final: String(params.final),
+            overwrite: String(params.overwrite),
+        })
+        return await this.request<WorkspaceWriteFileResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/workspace/upload?${query.toString()}`,
+            {
+                method: 'POST',
+                headers: { 'content-type': 'application/octet-stream' },
+                body: chunk,
+                signal: options?.signal,
+            }
+        )
+    }
+
+    async abortWorkspaceUpload(
+        sessionId: string,
+        params: { dir: string; name: string; uploadId: string }
+    ): Promise<WorkspaceWriteFileResponse> {
+        return await this.request<WorkspaceWriteFileResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/workspace/upload/abort`,
+            { method: 'POST', body: JSON.stringify(params) }
+        )
+    }
+
+    /** Delete a file or folder (recursively) from the session workspace on the runner. */
+    async deleteWorkspacePath(sessionId: string, path: string): Promise<WorkspaceDeletePathResponse> {
+        return await this.request<WorkspaceDeletePathResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/workspace/delete`,
+            { method: 'POST', body: JSON.stringify({ path }) }
         )
     }
 

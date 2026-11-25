@@ -65,6 +65,10 @@ import type {
     UploadFileResponse,
     WorkspaceReadFileRequest,
     WorkspaceListDirectoryRequest,
+    WorkspaceWriteFileRequest,
+    WorkspaceWriteFileResponse,
+    WorkspaceDeletePathRequest,
+    WorkspaceDeletePathResponse,
     WorkspaceStatFilesRequest,
     WorkspaceGitStatusRequest,
     WorkspaceGitDiffNumstatRequest,
@@ -594,6 +598,19 @@ export class RpcGateway {
 
     async statWorkspaceFiles(machineId: string, request: WorkspaceStatFilesRequest): Promise<RpcStatFilesResponse> {
         return await this.machineRpc(machineId, RPC_METHODS.WorkspaceStatFiles, request) as RpcStatFilesResponse
+    }
+
+    async writeWorkspaceFile(machineId: string, request: WorkspaceWriteFileRequest): Promise<WorkspaceWriteFileResponse> {
+        return await this.machineRpc(
+            machineId,
+            RPC_METHODS.WorkspaceWriteFile,
+            request,
+            UPLOAD_CHUNK_RPC_TIMEOUT_MS
+        ) as WorkspaceWriteFileResponse
+    }
+
+    async deleteWorkspacePath(machineId: string, request: WorkspaceDeletePathRequest): Promise<WorkspaceDeletePathResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.WorkspaceDeletePath, request) as WorkspaceDeletePathResponse
     }
 
     async getWorkspaceGitStatus(machineId: string, request: WorkspaceGitStatusRequest): Promise<RpcCommandResponse> {
