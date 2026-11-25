@@ -472,6 +472,22 @@ describe('claudeLocalLauncher context window seed (#1858)', () => {
         expect((sentMessages[0].message as { usage: Record<string, unknown> }).usage.context_window).toBeUndefined()
     })
 
+    it.each([undefined, 350_000])('does not inherit a 1M window after switching to the bare preset (%s)', async (explicitWindow) => {
+        const { session, getMetadata } = createSessionStub()
+        const local = session as typeof session & { localContextModel: string | null }
+        session.getModel = () => 'sonnet[1m]'
+        await claudeLocalLauncher(session as never)
+
+        harness.scannerOnMessage!(assistant('claude-sonnet-4-6', { input_tokens: 10 }))
+        expect(getMetadata().contextDetails?.contextWindow).toBe(1_000_000)
+        local.localContextModel = 'claude-sonnet-4-6'
+        harness.scannerOnMessage!(assistant('claude-sonnet-4-6', {
+            input_tokens: 20, ...(explicitWindow ? { context_window: explicitWindow } : {})
+        }))
+        expect(getMetadata().contextDetails?.usage?.contextTokens).toBe(20)
+        expect(getMetadata().contextDetails?.contextWindow).toBe(explicitWindow)
+    })
+
     it('follows an in-session model switch (PostModelSwitch to_model) and keeps explicit windows', async () => {
         const { session, sentMessages } = createSessionStub()
         session.getModel = () => 'opus'

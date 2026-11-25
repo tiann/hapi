@@ -97,7 +97,7 @@ export class SharedCodexProjection {
         });
     }
 
-    async notification(method: string, params: unknown, modelAtReceipt?: string, receivedAt = Date.now()): Promise<void> {
+    async notification(method: string, params: unknown, modelAtReceipt?: string, receivedAt = Date.now(), liveTurnAtReceipt = false): Promise<void> {
         const p = record(params);
         const item = record(p.item);
         if (!this.parentThreadId && p.threadId === this.threadId && string(item.id)) {
@@ -116,7 +116,7 @@ export class SharedCodexProjection {
                 }
             }
         }
-        await this.project(method, params, modelAtReceipt, false, receivedAt);
+        await this.project(method, params, modelAtReceipt, false, receivedAt, liveTurnAtReceipt);
         if (p.threadId === this.threadId && !this.parentThreadId) {
             const turn = record(p.turn);
             const turnId = string(turn.id);
@@ -133,7 +133,7 @@ export class SharedCodexProjection {
         }
     }
 
-    private async project(method: string, params: unknown, modelAtReceipt?: string, fromHistory = false, receivedAt = Date.now()): Promise<void> {
+    private async project(method: string, params: unknown, modelAtReceipt?: string, fromHistory = false, receivedAt = Date.now(), liveTurnAtReceipt = false): Promise<void> {
         if (method.startsWith('codex/event/')) return;
         const p = record(params);
         const item = record(p.item);
@@ -249,7 +249,7 @@ export class SharedCodexProjection {
                     // Resume can replay a previous turn without the model that
                     // produced it. Preserve the attributed snapshot rather than
                     // relabeling it or showing an unattributed event in the Web.
-                    if (!model && saved?.provider === 'codex' && saved.model && saved.usage?.contextTokens !== undefined) return;
+                    if (!model && !liveTurnAtReceipt && saved?.provider === 'codex' && saved.model && saved.usage?.contextTokens !== undefined) return;
                     this.onTokenUsage?.(event.info, model);
                 }
                 send({ ...event, ...(model ? { model } : {}), flavor: 'codex', scope: { role: 'parent', threadId: this.threadId }, scope_role: 'parent', thread_id: this.threadId }, key);

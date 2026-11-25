@@ -971,7 +971,7 @@ describe('claudeRemoteLauncher resume anchor', () => {
         } finally { session.stopKeepAlive() }
     })
 
-    it('saves the nested assistant model when the envelope omits it', async () => {
+    it('preserves the nested fallback model through a late primary probe and model-less result', async () => {
         const client = createClientStub()
         const { session, queue } = createSession(client, undefined)
         harness.metadata = { contextDetails: {
@@ -983,6 +983,7 @@ describe('claudeRemoteLauncher resume anchor', () => {
         harness.messages = [{ type: 'assistant', message: { role: 'assistant', model: 'claude-fable-5',
             content: [{ type: 'text', text: 'Fallback answer' }], usage: { input_tokens: 100 } } }]
         harness.afterFirstCall = () => {
+            probe?.onContextUsage({ model: 'claude-opus', maxTokens: 200_000 })
             probe?.onMessage({ type: 'result', subtype: 'success',
                 total_cost_usd: 0, duration_ms: 1, num_turns: 1,
                 modelUsage: { 'claude-fable-5': { contextWindow: 1_000_000 } } })

@@ -1193,6 +1193,21 @@ describe('shared steering availability', () => {
         });
     });
 
+    it('updates saved usage when attaching to a turn already in progress', async () => {
+        const f = await fixture({ attached: true, beforeBind: root => {
+            const native = root.client as unknown as { thread: { turns: NativeTurn[] } };
+            native.thread.turns = [{ id: 'active-turn', status: 'inProgress', items: [] }];
+        }, contextDetails: {
+            version: 1, provider: 'codex', updatedAt: 10,
+            model: 'old-turn-model', contextWindow: 200_000, usage: { contextTokens: 80_000 }
+        } });
+        await f.root.activate();
+        f.native.notify('thread/tokenUsage/updated', { threadId: 'thread', turnId: 'active-turn',
+            tokenUsage: { modelContextWindow: 128_000, last: { inputTokens: 12_000 } } });
+        await f.drain();
+        expect(f.metadata().contextDetails).toMatchObject({ contextWindow: 128_000, usage: { contextTokens: 12_000 } });
+    });
+
     it('keeps the rerouted usage model and window while publishing inventory-only updates', async () => {
         const f = await fixture({ contextDetails: {
             version: 1, provider: 'codex', updatedAt: 10,

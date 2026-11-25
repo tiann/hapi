@@ -32,6 +32,7 @@ function isInterruptMarker(message: RawJSONLines): boolean {
 
 export async function claudeLocalLauncher(session: Session): Promise<'switch' | 'exit'> {
     let lastSystemModel = session.getModel();
+    let publishedLocalPreset: string | null | undefined;
     const toolResultImages = new ClaudeToolResultImages();
 
     // Create scanner
@@ -61,7 +62,10 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
                         if (details.model) {
                             lastSystemModel = details.model;
                         }
-                        publishContextDetails(session.client, details);
+                        const preset = session.localContextModel;
+                        const presetChanged = publishedLocalPreset !== undefined && publishedLocalPreset !== preset;
+                        publishedLocalPreset = preset;
+                        publishContextDetails(session.client, details, { clearContextSample: presetChanged });
                     }
                 }
             }

@@ -174,7 +174,8 @@ export class SharedCodexRoot {
             }
             const receivedAt = Date.now();
             const modelAtReceipt = record(params).threadId === this.threadId ? this.settings.model ?? undefined : undefined;
-            this.notifications = this.notifications.then(() => this.notification(method, params, modelAtReceipt, receivedAt)).catch(error => {
+            const liveTurnAtReceipt = this.currentTurn !== undefined && record(params).turnId === this.currentTurn;
+            this.notifications = this.notifications.then(() => this.notification(method, params, modelAtReceipt, receivedAt, liveTurnAtReceipt)).catch(error => {
                 logger.debug('[Codex shared] projection', error);
                 this.failAttached();
             });
@@ -567,7 +568,7 @@ export class SharedCodexRoot {
         for (const listener of this.settingsListeners) listener();
         this.publishPlan();
     }
-    private async notification(method: string, params: unknown, modelAtReceipt?: string, receivedAt = Date.now()): Promise<void> {
+    private async notification(method: string, params: unknown, modelAtReceipt?: string, receivedAt = Date.now(), liveTurnAtReceipt = false): Promise<void> {
         // Native broadcasts can arrive while bind() is loading the local
         // ledger, before a projection exists. bind's full read reconciles them.
         if (!this.threadId || !this.projection || this.closed || this.host.attached && this.stopping) return;
@@ -623,7 +624,7 @@ export class SharedCodexRoot {
             for (const id of await this.queue.reconcile()) this.dequeuedInputs.add(id);
         }
         if (this.host.attached && method === 'turn/started' && !this.stopping) await this.refresh();
-        await this.projection.notification(method, params, modelAtReceipt, receivedAt);
+        await this.projection.notification(method, params, modelAtReceipt, receivedAt, liveTurnAtReceipt);
         if (this.host.attached && method === 'turn/completed' && !this.stopping) await this.refresh();
         this.publishCompaction(); this.alive();
     }

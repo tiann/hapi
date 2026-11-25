@@ -878,10 +878,14 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         onContextUsage: (usage) => {
                             if (activeContextLaunch !== contextLaunch) return;
                             sdkToLogConverter.applyContextUsage(usage.model, usage.maxTokens);
-                            if (usage.maxTokens !== undefined && usage.maxTokens > 0) {
+                            const sameUsageSample = usageSampleLaunch === contextLaunch && usageSamplePreset === selectedContextPreset;
+                            if (usage.maxTokens !== undefined && usage.maxTokens > 0 && (usage.model || !sameUsageSample)) {
                                 effectiveContextModel = usage.model;
                                 effectiveContextWindow = usage.maxTokens;
                             }
+                            // The asynchronous probe can report the primary model after a fallback response.
+                            if (sameUsageSample && assistantSampleModel
+                                && (!usage.model || !sameClaudeModelID(assistantSampleModel, usage.model))) return;
                             const details = buildClaudeContextDetails({
                                 contextUsage: {
                                     model: usage.model,
@@ -889,7 +893,6 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 },
                                 effectiveContextWindow: usage.maxTokens
                             });
-                            const sameUsageSample = usageSampleLaunch === contextLaunch && usageSamplePreset === selectedContextPreset;
                             if (details) publishContextDetails(session.client, details, { clearUsageSample: !sameUsageSample });
                         },
                         onDroppedResult: (message) => sdkToLogConverter.consumeResultForAccounting(message),
