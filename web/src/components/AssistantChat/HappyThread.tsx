@@ -548,10 +548,14 @@ function captureNavigationFocus(viewport: HTMLElement | null, keyboard: boolean)
     return keyboard && active instanceof HTMLElement && viewport?.contains(active) ? active : null
 }
 
+function ownsNavigationFocus(source: HTMLElement | null): boolean {
+    return document.activeElement === source || document.activeElement === document.body
+}
+
 function restoreNavigationFocus(viewport: HTMLElement | null, source: HTMLElement | null): void {
     // Loading can evict the button or hide it when its target comes into
     // view. Don't steal focus if the reader moved it elsewhere meanwhile.
-    if (!viewport || !source || (document.activeElement !== source && document.activeElement !== document.body)) return
+    if (!viewport || !source || !ownsNavigationFocus(source)) return
     const buttonRect = source.getBoundingClientRect()
     const viewportRect = viewport.getBoundingClientRect()
     const available = viewport.contains(source) && buttonRect.height > 0
@@ -3030,7 +3034,7 @@ export function HappyThread(props: {
         replyToMessageId: string | undefined,
         assistantAnchorState: PromptAnchorState,
         isCancelled: () => boolean,
-        focusTarget: boolean,
+        shouldFocusTarget: () => boolean,
         heldWindow: HistoryNavigationWindow | null
     ): Promise<boolean> => {
         if (promptNavigationTimerRef.current !== null) {
@@ -3100,7 +3104,7 @@ export function HappyThread(props: {
                 if (isCancelled()) return false
                 const current = findTarget()
                 if (settled && current === target && target.isConnected) {
-                    if (focusTarget) target.focus({ preventScroll: true })
+                    if (shouldFocusTarget()) target.focus({ preventScroll: true })
                     break
                 }
                 if (attempt >= 2 || (current === target && !settled)) throw new Error('Prompt scroll did not settle')
@@ -3159,7 +3163,10 @@ export function HappyThread(props: {
                 pendingLoadPromiseRef.current,
                 () => {
                     if (isCancelled()) return false
-                    return scrollToPromptForMessage(messageId, replyToMessageId, assistantAnchorState, isCancelled, focusTarget, heldWindow)
+                    return scrollToPromptForMessage(
+                        messageId, replyToMessageId, assistantAnchorState, isCancelled,
+                        () => focusTarget && ownsNavigationFocus(sourceButton), heldWindow
+                    )
                 },
                 () => {
                     if (promptNavigationTimerRef.current !== null) {
@@ -3207,7 +3214,7 @@ export function HappyThread(props: {
             && !hasMoreMessagesRef.current && currentViewport
             && currentViewport.scrollTop <= 1
             && currentViewport.scrollHeight - currentViewport.clientHeight <= 1) {
-            if (focusTarget) focusFirstConversationMessage(currentViewport)
+            if (focusTarget && ownsNavigationFocus(sourceButton)) focusFirstConversationMessage(currentViewport)
             clearPromptNavigationFeedback()
             if (conversationStartStatusTimerRef.current !== null) {
                 window.clearTimeout(conversationStartStatusTimerRef.current)
@@ -3278,7 +3285,7 @@ export function HappyThread(props: {
             if (!verified || viewport.querySelector(MESSAGE_ANCHOR_SELECTOR) !== firstAnchor || viewport.scrollTop > 1) {
                 throw new Error('Could not reach conversation start')
             }
-            if (focusTarget) focusFirstConversationMessage(viewport)
+            if (focusTarget && ownsNavigationFocus(sourceButton)) focusFirstConversationMessage(viewport)
             reachedStart = true
             lastScrollTopRef.current = viewport.scrollTop
             setConversationStartStatus('success')

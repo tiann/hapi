@@ -562,6 +562,24 @@ for (const action of ['Jump to conversation start', 'Jump to turn input']) {
 }
 
 
+for (const action of ['Jump to conversation start', 'Jump to turn input']) {
+    test(`${action} does not take focus back from the composer`, async ({ page }) => {
+        await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&rekeyReply=1')
+        const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Last part of the reply' })
+        await reply.getByRole('button', { name: action }).press('Enter')
+        await expect(page.getByText(/Loading (earlier messages|turn input)/)).toBeVisible()
+        const composer = page.getByRole('textbox', { name: 'Fixture composer' })
+        await composer.focus()
+        await page.evaluate(() => window.__probe.releaseBefore())
+        await expect(page.getByText('Prompt from the older page', { exact: true })).toBeInViewport()
+        await expect(page.getByText(/Loading (earlier messages|turn input)/)).toHaveCount(0)
+        await expect(page.getByText(/Could not load (earlier messages|turn input)/)).toHaveCount(0)
+        await expect(composer).toBeFocused()
+        const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+        if (screenshots && action === 'Jump to turn input') await page.screenshot({ path: `${screenshots}/reply-navigation-keep-composer-focus.png` })
+    })
+}
+
 test('a failed start jump focuses the viewport when pagination evicts the button', async ({ page }) => {
     await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&jumpStartGap=1&failBeforeSeq=201')
     const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Latest fixture reply' })
