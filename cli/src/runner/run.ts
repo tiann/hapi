@@ -1610,6 +1610,9 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           pidToRequestedSessionId.delete(pid);
           pidToConfirmedSessionId.delete(pid);
           if (persistedResumeProcesses.delete(pid)) persistResumeProcesses();
+          // Exit is proven here. An adopted child has no exit event and would
+          // otherwise keep answering spawns for its id until the next heartbeat.
+          releaseRecoveredSpawnDedupe(pid, existingSessionIdByChildPid, spawnSession);
           logger.debug(`[RUNNER RUN] Removed terminated session ${sessionId} from tracking`);
           return await finishWithOrphanSweep('stopped');
         }
