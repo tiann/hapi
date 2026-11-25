@@ -14,6 +14,8 @@ internal object SkillSuggestions {
     data class Token(val start: Int, val end: Int, val word: String, val query: String)
     data class Edit(val text: String, val caret: Int)
 
+    private val provisionalPunctuation = charArrayOf('.', ':', '+')
+
     private fun isNameChar(text: String, index: Int): Boolean {
         val char = text.getOrNull(index) ?: return false
         val codePoint = if (char.isLowSurrogate() && index > 0 && text[index - 1].isHighSurrogate()) {
@@ -37,6 +39,9 @@ internal object SkillSuggestions {
     private fun isCandidateAt(text: String, index: Int, caret: Int): Boolean = when (text.getOrNull(index)) {
         ':' -> isNameChar(text, index - 1) &&
             (index == caret - 1 || index == text.lastIndex || isNameChar(text, index + 1))
+        // Runs such as c++ are possible names, but a plus directly before the
+        // next reference remains a separator even if it matches the catalogue.
+        '+' -> text.getOrNull(index + 1) != '$'
         // Just-typed punctuation is provisional even before a space or at the end.
         '.' -> if (index == caret - 1) isNameChar(text, index - 1) else isNameAt(text, index)
         else -> isNameAt(text, index)
@@ -55,16 +60,16 @@ internal object SkillSuggestions {
     /** Exact catalogue tokens outrank partial suffixes that only match the selected skill. */
     fun replacementEnd(token: Token, skill: SkillSummary, knownNames: Set<String>, maxNameLength: Int): Int {
         val word = token.word
-        val caret = token.query.length + 1 // Include '$'.
-        val beforeCaret = caret - 1
-        // Just-typed punctuation is provisional even after a partial skill name.
-        val start = if (word[beforeCaret] in ".:") beforeCaret else caret
-        val boundary = word.indexOfAny(charArrayOf('.', ':'), startIndex = start)
+        var start = token.query.length + 1 // Include '$'.
+        // Treat a just-typed punctuation run as part of the name only when
+        // the catalogue confirms it (including partial matches).
+        while (start > 1 && word[start - 1] in provisionalPunctuation) start--
+        val boundary = word.indexOfAny(provisionalPunctuation, startIndex = start)
         if (boundary == -1) return token.end
         val name = skillNameKey(skill.name)
         var partialEnd: Int? = null
         for (end in minOf(word.length, maxNameLength + 1) downTo boundary + 1) {
-            if (end < word.length && word[end] !in ".:") continue
+            if (end < word.length && word[end] !in provisionalPunctuation) continue
             val candidate = skillNameKey(word.substring(1, end))
             if (candidate in knownNames) return token.start + end
             if (partialEnd == null && candidate in name) partialEnd = end

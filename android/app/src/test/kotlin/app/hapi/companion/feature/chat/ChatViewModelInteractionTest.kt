@@ -2141,6 +2141,51 @@ class ChatViewModelInteractionTest {
     }
 
     @Test
+    fun `a skill with plus signs stays open while typing and replaces its existing name`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        val cpp = SkillSummary("c++")
+        harness.api.skillsResult = SkillsResponse(success = true, skills = listOf(cpp))
+        vm.start()
+
+        for (query in listOf("c", "c+", "c++")) {
+            val typed = "Run \$$query"
+            vm.onComposerChange("$typed please", typed.length, typed.length)
+            testScheduler.runCurrent()
+            assertEquals(listOf(cpp), vm.skillSuggestions.value.map { it.skill })
+            assertEquals(1, harness.api.skillsCalls.size)
+        }
+
+        val text = "Run \$c++ please"
+        for (query in listOf("c", "c+", "c++")) {
+            val caret = "Run \$$query".length
+            vm.onComposerChange(text, caret, caret)
+            testScheduler.runCurrent()
+            vm.selectSkillSuggestion(vm.skillSuggestions.value.single())
+            testScheduler.runCurrent()
+            assertEquals(text, vm.composer.value.text)
+            assertEquals("Run \$c++ ".length, vm.composer.value.caretPosition)
+        }
+    }
+
+    @Test
+    fun `plus between references is preserved even if a skill name could include it`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        val review = SkillSummary("review")
+        harness.api.skillsResult = SkillsResponse(success = true, skills = listOf(review, SkillSummary("review+")))
+        val text = "Run \$review+\$lint"
+        val caret = "Run \$review".length
+        vm.start()
+        vm.onComposerChange(text, caret, caret)
+        testScheduler.runCurrent()
+        vm.selectSkillSuggestion(vm.skillSuggestions.value.single { it.skill == review })
+        testScheduler.runCurrent()
+        assertEquals(text, vm.composer.value.text)
+        assertEquals(caret + 1, vm.composer.value.caretPosition)
+    }
+
+    @Test
     fun `qualified Claude skills match past the colon and replace the existing qualified word`() = runTest {
         val harness = InteractionHarness(this)
         val vm = harness.viewModel
