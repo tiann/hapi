@@ -3058,6 +3058,52 @@ describe('gap recovery', () => {
         expect(getMessageWindowState(id).messages).toEqual([current])
     })
 
+    it('verifies a held prompt jump only after reading back retained queued inputs outside the latest page', async () => {
+        const id = sessionId('jump-waits-for-queued-readback')
+        const earlier = makeUserMessage({ id: 'earlier', seq: 1, invokedAt: 100 })
+        const queued = makeUserMessage({ id: 'queued', seq: 2, localId: 'queued-local', createdAt: 200, invokedAt: null, status: 'queued' })
+        const reply = makeAgentMessage({ id: 'reply', seq: 203, at: 300 })
+        const readback = deferred<Awaited<ReturnType<ApiClient['getQueuedState']>>>()
+        const api = createApi(vi.fn(async () => latestResponse([reply], { epoch: 1 }))
+            .mockResolvedValueOnce(latestResponse([earlier, queued, reply], { epoch: 1 })))
+        api.getQueuedState = vi.fn(() => readback.promise)
+        await syncTailMessages(api, id)
+        const held = holdHistoryNavigationWindow(id)!
+        const reconnect = recoverWindowAfterGapResume(api, id)
+        const verified = vi.fn()
+        const verifying = held.verify().then(verified)
+        await vi.waitFor(() => expect(api.getQueuedState).toHaveBeenCalledWith(id, ['queued-local']))
+        expect(verified).not.toHaveBeenCalled()
+        readback.resolve({ queuedLocalIds: [], invokedLocalMessages: [{ localId: 'queued-local', invokedAt: 250 }] })
+        await reconnect
+        await verifying
+        expect(verified).toHaveBeenCalledWith(true)
+        expect(getMessageWindowState(id).messages.find(row => row.id === queued.id)?.invokedAt).toBe(250)
+    })
+
+    it('does not wait for or apply a queued readback from before a newer SSE gap', async () => {
+        const id = sessionId('jump-supersedes-queued-readback')
+        const queued = makeUserMessage({ id: 'queued', seq: 1, localId: 'local', createdAt: 100, invokedAt: null })
+        const reply = makeAgentMessage({ id: 'reply', seq: 204, at: 300 })
+        const stale = deferred<Awaited<ReturnType<ApiClient['getQueuedState']>>>()
+        const api = createApi(vi.fn(async () => latestResponse([reply], { epoch: 1 }))
+            .mockResolvedValueOnce(latestResponse([queued, reply], { epoch: 1 })))
+        const read = vi.fn(async () => ({ queuedLocalIds: ['local'], invokedLocalMessages: [] as Awaited<ReturnType<ApiClient['getQueuedState']>>['invokedLocalMessages'] }))
+            .mockImplementationOnce(() => stale.promise)
+        api.getQueuedState = read
+        await syncTailMessages(api, id)
+        const held = holdHistoryNavigationWindow(id)!
+        await recoverWindowAfterGapResume(api, id)
+        const verifying = held.verify()
+        await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1))
+        await recoverWindowAfterGapResume(api, id)
+        expect(await verifying).toBe(true)
+        expect(read).toHaveBeenCalledTimes(2)
+        stale.resolve({ queuedLocalIds: [], invokedLocalMessages: [{ localId: 'local', invokedAt: 110 }] })
+        await new Promise<void>(resolve => setTimeout(resolve, 0))
+        expect(getMessageWindowState(id).messages.find(row => row.id === queued.id)?.invokedAt).toBeNull()
+    })
+
     it('does not confirm a jump when a reconnect probe started during settlement fails', async () => {
         const id = sessionId('jump-settles-during-failed-gap-probe')
         const cached = makeAgentMessage({ id: 'before-rewind', seq: 1, at: 100 })

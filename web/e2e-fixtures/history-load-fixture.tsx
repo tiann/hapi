@@ -42,6 +42,8 @@ type Probe = {
     confirmSteer: () => Promise<void>
     confirmConsumed: () => Promise<void>
     releaseLatest: () => void
+    releaseQueuedReadback: () => void
+    queuedReadbackIds: string[]
     holdBefore: () => void
     releaseBefore: () => void
     windowState: () => {
@@ -61,6 +63,7 @@ declare global {
 let releaseLatestResponse = () => {}
 let latestResponseGate: Promise<void> | null = null
 let beforeResponseGate: Promise<void> | null = null
+let releaseQueuedReadback = () => {}
 let releaseBeforeResponse = () => {}
 
 let currentActiveSessionId = SESSION_ID
@@ -91,6 +94,8 @@ window.__probe = {
         await recoverWindowAfterGapResume(fakeApi, currentActiveSessionId)
     },
     releaseLatest: () => releaseLatestResponse(),
+    releaseQueuedReadback: () => releaseQueuedReadback(),
+    queuedReadbackIds: [],
     holdBefore: () => {
         beforeResponseGate = new Promise<void>((resolve) => {
             releaseBeforeResponse = resolve
@@ -280,6 +285,8 @@ const promptJumpGap = jumpStartGap && fixtureParams.has('promptJumpGap')
 const loadedPromptPreload = fixtureParams.has('loadedPromptPreload')
 const lateSteerJump = fixtureParams.has('lateSteerJump')
 const lateConsumeJump = fixtureParams.has('lateConsumeJump')
+const delayedQueuedReadback = fixtureParams.has('delayedQueuedReadback')
+const queuedReadbackGate = delayedQueuedReadback ? new Promise<void>(resolve => { releaseQueuedReadback = resolve }) : null
 let fixtureConsumed = false
 const batchedReply = fixtureParams.has('batchedReply')
 let fixtureEpoch = 1
@@ -321,6 +328,11 @@ const allMessages: DecryptedMessage[] = conciseLongTurn ? Array.from({ length: T
     { ...createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'First accepted batch member' } }), localId: 'batch-first' },
     { ...createFixtureMessage(2, { role: 'user', content: { type: 'text', text: 'Last accepted batch member' } }), localId: 'batch-last' },
     createFixtureMessage(3, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Reply to the accepted batch' } } }),
+] : delayedQueuedReadback ? [
+    createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'Earlier valid input' } }),
+    { ...createFixtureMessage(2, { role: 'user', content: { type: 'text', text: 'Newly confirmed input' } }), localId: 'queued-before-latest', invokedAt: null, status: 'queued' },
+    ...Array.from({ length: 201 }, (_, index) => createFixtureMessage(index + 3, { role: 'agent', content: { type: 'output', data: { isMeta: true } } })),
+    createFixtureMessage(204, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Reply after delayed acknowledgement' } } }),
 ] : lateConsumeJump ? [
     createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'Earlier valid input' } }),
     { ...createFixtureMessage(2, { role: 'user', content: { type: 'text', text: 'Newly confirmed input' } }), invokedAt: null },
@@ -417,6 +429,15 @@ function pageFrom(messages: DecryptedMessage[], overrides: Partial<MessagesRespo
 const fakeApi = {
     getHubSettings: async () => ({ sessionSummaryInChat: false }),
     getMachines: async () => ({ machines: [] }),
+    getQueuedState: async (_sessionId: string, localIds: string[]) => {
+        window.__probe.queuedReadbackIds.push(...localIds)
+        await queuedReadbackGate
+        const invoked = delayedQueuedReadback && localIds.includes('queued-before-latest')
+        return {
+            queuedLocalIds: localIds.filter(id => !invoked || id !== 'queued-before-latest'),
+            invokedLocalMessages: invoked ? [{ localId: 'queued-before-latest', invokedAt: BASE_AT + 2 }] : []
+        }
+    },
     searchSessionContentMatches: async () => ({
         matches: [{ messageId: 'm-3', role: 'assistant', seq: 3, createdAt: BASE_AT + 3,
             snippet: 'Last part of the reply', truncated: false }],
@@ -602,7 +623,7 @@ function FixtureThreadSession(props: { activeSessionId: string }) {
 
     return (
         <AssistantRuntimeProvider runtime={runtime}>
-            {(loadedPromptPreload || lateSteerJump || lateConsumeJump || batchedReply) && <style>{'[data-hapi-message-role="assistant"] { min-height: 1800px; }'}</style>}
+            {(loadedPromptPreload || lateSteerJump || lateConsumeJump || delayedQueuedReadback || batchedReply) && <style>{'[data-hapi-message-role="assistant"] { min-height: 1800px; }'}</style>}
             {navigationShell ? (
                 <header data-testid="navigation-header" className="flex h-[76px] shrink-0 items-center p-3">
                     <button type="button" onClick={() => setOutlineOpen(true)}>Open history</button>

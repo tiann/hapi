@@ -521,6 +521,35 @@ test('rechecks the reply association when reconnect confirms another input', asy
     if (screenshots) await page.screenshot({ path: `${screenshots}/reply-navigation-confirmed-input.png` })
 })
 
+test('waits for retained queued input readback outside the reconnect latest page', async ({ page }) => {
+    await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&delayedQueuedReadback=1')
+    const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Reply after delayed acknowledgement' })
+    await expect.poll(async () => (await geometry(page)).chatScrollTop).toBeGreaterThan(500)
+    await page.evaluate(() => window.__probe.loadMore())
+    const earlier = page.locator('[data-hapi-turn-input="true"]').filter({ hasText: 'Earlier valid input' })
+    const confirmed = page.locator('[data-hapi-turn-input="true"]').filter({ hasText: 'Newly confirmed input' })
+    await expect(earlier).toBeAttached()
+    await expect(confirmed).toHaveCount(0)
+    await page.evaluate(() => {
+        const original = HTMLElement.prototype.scrollIntoView
+        HTMLElement.prototype.scrollIntoView = function (options) {
+            if (this.matches('[data-hapi-turn-input="true"]') && this.textContent?.includes('Earlier valid input')) {
+                void window.__probe.gap()
+            }
+            original.call(this, options)
+        }
+    })
+    await reply.getByRole('button', { name: 'Jump to turn input' }).press('Enter')
+    await expect.poll(() => page.evaluate(() => window.__probe.queuedReadbackIds)).toEqual(['queued-before-latest'])
+    await expect(page.getByText('Loading turn input…', { exact: true })).toBeVisible()
+    await expect(earlier).not.toBeFocused()
+    await page.evaluate(() => window.__probe.releaseQueuedReadback())
+    await expect(confirmed).toBeFocused()
+    await expect(confirmed).toBeInViewport()
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/reply-navigation-queued-readback.png` })
+})
+
 test('does not preload older history while a jump to a loaded prompt is settling', async ({ page }) => {
     await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&loadedPromptPreload=1')
     const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Reply to loaded prompt' })

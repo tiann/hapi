@@ -1,6 +1,7 @@
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import { getReasoningStreamId, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { ApiClient } from '@/api/client'
+import { applyInvokedQueuedState, hasPendingQueuedStateReadback, readQueuedState } from './queued-state-readback'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
 import { reduceChatBlocks } from '@/chat/reducer'
 import { buildVisibleChatBlocks, isEligibleForToolGrouping } from '@/chat/toolGroups'
@@ -141,11 +142,18 @@ const listeners = new Map<string, Set<() => void>>()
 const tailSyncControllers = new Map<string, TailSyncController>()
 const messageWindowTargetLocks = new Set<string>()
 type HeldHistoryProbe = { wait: Promise<void>; supersede: () => void }
+type HeldQueuedVerification = {
+    api: ApiClient
+    checked: WeakSet<DecryptedMessage>
+    superseded: Promise<void>
+    supersede: () => void
+}
 type HeldHistoryNavigation = {
     epoch: number
     owner: symbol
     probe?: HeldHistoryProbe
     epochCheckPending?: boolean
+    queuedVerification?: HeldQueuedVerification
     recovery?: { api: ApiClient; after: MessagePosition | null }
     catchUpNeeded?: boolean
 }
@@ -1475,8 +1483,17 @@ export function activateMessageWindow(sessionId: string): void {
     }
 }
 
+function replaceHeldQueuedVerification(window: HeldHistoryNavigation, api: ApiClient): void {
+    let supersede!: () => void
+    const superseded = new Promise<void>(resolve => { supersede = resolve })
+    const previous = window.queuedVerification
+    window.queuedVerification = { api, checked: new WeakSet(), superseded, supersede }
+    previous?.supersede()
+}
+
 function releaseHeldHistory(sessionId: string, window: HeldHistoryNavigation): void {
     heldHistoryWindows.delete(sessionId)
+    window.queuedVerification?.supersede()
     if ((!window.probe && !window.catchUpNeeded) || !window.recovery?.after) return
     const previous = deferredGapCursors.get(sessionId)
     if (!previous || previous.epoch !== window.epoch || comparePosition(window.recovery.after, previous.after) < 0) {
@@ -1514,13 +1531,37 @@ export function holdHistoryNavigationWindow(sessionId: string, api?: ApiClient):
         const epochApi = api ?? controller?.api
         if (epochApi) void reconcileHeldHistoryNavigation(epochApi, sessionId)
     }
+    // The background queue readback can still be pending even if tail sync
+    // finished before the click. Don't freeze the jump at the older input.
+    if (!window.queuedVerification && api && hasPendingQueuedStateReadback(sessionId)) {
+        replaceHeldQueuedVerification(window, api)
+    }
     const ownsHold = () => window.owner === owner && heldHistoryWindows.get(sessionId) === window
     const isCurrent = () => ownsHold() && getState(sessionId).epoch === epoch
     return {
         isCurrent,
         verify: async () => {
-            await waitForHeldHistoryProbe(window)
-            return isCurrent() && !window.epochCheckPending
+            while (isCurrent()) {
+                await waitForHeldHistoryProbe(window)
+                if (!isCurrent() || window.epochCheckPending) return false
+                const verification = window.queuedVerification
+                if (!verification) return true
+                const isCurrentReadback = () => isCurrent() && window.queuedVerification === verification
+                try {
+                    await Promise.race([
+                        verifyHeldQueuedInputs(sessionId, verification, isCurrentReadback),
+                        verification.superseded
+                    ])
+                } catch {
+                    if (isCurrentReadback()) {
+                        window.catchUpNeeded = true
+                        return false
+                    }
+                }
+                if (isCurrentReadback()) return !window.epochCheckPending
+                // A newer gap superseded this readback while we were waiting.
+            }
+            return false
         },
         verifyStart: async () => {
             const oldestSeq = getState(sessionId).oldestSeq
@@ -1554,6 +1595,7 @@ function reconcileHeldHistoryNavigation(api: ApiClient, sessionId: string, requi
     } else if (previousProbe) {
         return previousProbe.wait
     }
+    if (held.epochCheckPending) replaceHeldQueuedVerification(held, api)
     const initial = getState(sessionId)
     // Bind the reconnect to the cursor before any live SSE can advance it.
     const recovery = held.recovery ??= { api, after: getNewestCursor(initial) }
@@ -2334,6 +2376,31 @@ function isQueuedReconcileCandidate(message: DecryptedMessage): boolean {
     if (!message.localId || !isQueuedForInvocation(message)) return false
     if (!optimisticMessage(message)) return true
     return message.status === 'queued' || message.status === 'sent'
+}
+
+async function verifyHeldQueuedInputs(
+    sessionId: string,
+    verification: HeldQueuedVerification,
+    isCurrent: () => boolean
+): Promise<void> {
+    while (isCurrent()) {
+        const pending = new Map(getState(sessionId).messages
+            .filter(message => typeof message.seq === 'number' && isQueuedReconcileCandidate(message)
+                && !verification.checked.has(message))
+            .map(message => [message.localId!, message]))
+        if (pending.size === 0) return
+        // The latest page does not cover every retained input. Verify only
+        // delivery for prompt navigation; queue removal and other pending
+        // transitions still belong to the ordinary reconnect handler.
+        const { invokedLocalMessages } = await readQueuedState(verification.api, sessionId, [...pending.keys()])
+        if (!isCurrent()) return
+        const current = new Map(getState(sessionId).messages.map(row => [row.localId, row]))
+        applyInvokedQueuedState(
+            invokedLocalMessages.filter(input => pending.has(input.localId) && pending.get(input.localId) === current.get(input.localId)),
+            (ids, invokedAt, steered) => markMessagesConsumed(sessionId, ids, invokedAt, steered)
+        )
+        for (const row of pending.values()) verification.checked.add(row)
+    }
 }
 
 export function getQueuedReconcileCandidateLocalIds(sessionId: string): string[] {

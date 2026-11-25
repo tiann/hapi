@@ -168,6 +168,19 @@ describe('reconcileQueuedStateAfterConnect', () => {
         expect(mockReconcileQueuedLocalIds).not.toHaveBeenCalled()
     })
 
+    it('ignores queue readback from before the message window was rewound', async () => {
+        mockGetCandidates.mockReturnValueOnce(['local-1'])
+        const store = vi.mocked(getMessageWindowState)
+        store.mockReturnValue({ epoch: 1, messages: [] } as unknown as ReturnType<typeof getMessageWindowState>)
+        const api = createMockApi(async () => {
+            store.mockReturnValue({ epoch: 2, messages: [] } as unknown as ReturnType<typeof getMessageWindowState>)
+            return { queuedLocalIds: [], invokedLocalMessages: [{ localId: 'local-1', invokedAt: 100 }] }
+        })
+        await reconcileQueuedStateAfterConnect(api, 'rewound')
+        expect(mockMarkMessagesConsumed).not.toHaveBeenCalled()
+        expect(mockReconcileQueuedLocalIds).not.toHaveBeenCalled()
+    })
+
     it('propagates endpoint failures without reconciling', async () => {
         const endpointError = new Error('queued state unavailable')
         mockGetCandidates.mockReturnValueOnce(['local-1'])
