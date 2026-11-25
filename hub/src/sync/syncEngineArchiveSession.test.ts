@@ -1054,7 +1054,7 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
             current.metadataVersion,
             NAMESPACE,
         )
-        expect(update.result).toBe('success')
+        if (update.result !== 'success') throw new Error('metadata update failed')
         engine.handleRealtimeEvent({
             type: 'session-updated',
             sessionId,
