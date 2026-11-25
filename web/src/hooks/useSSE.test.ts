@@ -94,10 +94,10 @@ describe('useSSE connection liveness (mobile suspend/resume)', () => {
         expect(FakeEventSource.instances).toHaveLength(1)
         act(() => { FakeEventSource.instances[0]?.simulateOpen() })
 
-        // Silence for 70s: more than one 30s heartbeat missed, but below the
-        // 90s watchdog threshold. A resume from background must not trust
-        // this connection.
-        act(() => { vi.advanceTimersByTime(70_000) })
+        // Silence for 50s: above the 45s visibility-resume threshold, below
+        // the 60s watchdog threshold (HEARTBEAT_STALE_MS). A resume from
+        // background must not trust this connection.
+        act(() => { vi.advanceTimersByTime(50_000) })
         act(() => { document.dispatchEvent(new Event('visibilitychange')) })
 
         expect(onDisconnect).toHaveBeenCalledWith('visibility-recovery')
