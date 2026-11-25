@@ -282,7 +282,9 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
     }
 
     if (config.qqBot) {
-        notificationChannels.push(new QqBotChannel(config.qqBot, config.publicUrl, visibilityTracker))
+        notificationChannels.push(new QqBotChannel(
+            config.qqBot, config.publicUrl, visibilityTracker, id => syncEngine?.getSession(id)
+        ))
     }
 
     notificationHub = new NotificationHub(syncEngine, notificationChannels)

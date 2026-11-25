@@ -15,6 +15,7 @@ export class QqBotChannel implements NotificationChannel {
         private readonly options: QqBotOptions,
         publicUrl: string,
         private readonly visibilityTracker: VisibilityTracker,
+        private readonly getSession: (id: string) => Session | null | undefined,
         fetcher?: QqBotFetch
     ) {
         this.client = new QqBotClient(options, fetcher)
@@ -32,20 +33,29 @@ export class QqBotChannel implements NotificationChannel {
         const title = isInputRequestTool(pending.request.tool)
             ? `HAPI: ${getAgentName(session)} needs your input`
             : 'HAPI Permission Request'
-        await this.send(session, title)
+        await this.send(session, title, () => {
+            const current = this.getSession(session.id)
+            const requests = current?.agentState?.requests
+            return Boolean(current?.active && requests && this.isInScope(current)
+                && Object.hasOwn(requests, pending.requestId))
+        })
     }
 
     async sendSessionCompletion(session: Session, reason: SessionEndReason): Promise<void> {
         if (reason === 'completed') await this.send(session, 'HAPI Session completed')
     }
 
-    private async send(session: Session, title: string): Promise<void> {
-        if (session.namespace !== this.options.namespace
-            || (this.options.backgroundOnly && this.visibilityTracker.hasVisibleConnection(session.namespace))) return
+    private isInScope(session: Session): boolean {
+        return session.namespace === this.options.namespace
+            && (!this.options.backgroundOnly || !this.visibilityTracker.hasVisibleConnection(session.namespace))
+    }
+
+    private async send(session: Session, title: string, shouldSend?: () => boolean): Promise<void> {
+        if (!this.isInScope(session)) return
 
         const id = encodeURIComponent(session.id).replace(/[()]/g, char => char === '(' ? '%28' : '%29')
         // Imported names and generated summaries can contain conversation text.
         const content = `**${title}**\n\nSession: ${session.id.slice(0, 8)}\n\n[Open HAPI session](${this.origin}/sessions/${id})`
-        await this.client.sendMarkdown(content)
+        await this.client.sendMarkdown(content, shouldSend)
     }
 }

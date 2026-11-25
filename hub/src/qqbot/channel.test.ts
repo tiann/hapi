@@ -42,7 +42,7 @@ function getBody(init?: RequestInit) {
 describe('QQ bot DM notifications', () => {
     it('sends all three events as proactive Markdown, sharing one token and never including URL credentials', async () => {
         const fetch = mockFetch()
-        const channel = new QqBotChannel(config, baseUrl, new VisibilityTracker(), fetch)
+        const channel = new QqBotChannel(config, baseUrl, new VisibilityTracker(), () => createSession({ agentState: pendingPermission }), fetch)
         const session = createSession({ agentState: pendingPermission })
         await Promise.all([
             channel.sendReady(session),
@@ -80,7 +80,7 @@ describe('QQ bot DM notifications', () => {
         const visibility = new VisibilityTracker()
         visibility.registerConnection('work-open', 'work', 'visible')
         visibility.registerConnection('other-open', 'other', 'visible')
-        const channel = new QqBotChannel({ ...config, backgroundOnly: true }, baseUrl, visibility, fetch)
+        const channel = new QqBotChannel({ ...config, backgroundOnly: true }, baseUrl, visibility, () => createSession({ agentState: pendingPermission }), fetch)
         await channel.sendReady(createSession())
         await channel.sendPermissionRequest(createSession({ agentState: pendingPermission }))
         await channel.sendSessionCompletion(createSession(), 'completed')
@@ -94,7 +94,7 @@ describe('QQ bot DM notifications', () => {
 
     it('never sends outside its namespace, for inactive ready/permission or for a failed session end', async () => {
         const fetch = mockFetch()
-        const channel = new QqBotChannel(config, baseUrl, new VisibilityTracker(), fetch)
+        const channel = new QqBotChannel(config, baseUrl, new VisibilityTracker(), () => createSession({ agentState: pendingPermission }), fetch)
         const other = createSession({ namespace: 'other', agentState: pendingPermission })
         await channel.sendReady(other)
         await channel.sendPermissionRequest(other)
@@ -107,9 +107,32 @@ describe('QQ bot DM notifications', () => {
 
     it('does not authenticate or send when there is nothing left to answer', async () => {
         const fetch = mockFetch()
-        const channel = new QqBotChannel(config, baseUrl, new VisibilityTracker(), fetch)
+        const channel = new QqBotChannel(config, baseUrl, new VisibilityTracker(), () => createSession({ agentState: pendingPermission }), fetch)
         await channel.sendPermissionRequest(createSession({ agentState: { requests: {} } }))
         expect(fetch).not.toHaveBeenCalled()
+    })
+
+    it.each([false, true])('does not submit a permission alert cleared during token acquisition (retry: %s)', async (retry) => {
+        const authStarted = Promise.withResolvers<void>()
+        const releaseAuth = Promise.withResolvers<Response>()
+        let authentications = 0
+        let current = createSession({ agentState: pendingPermission })
+        const fetch = mockFetch((url) => {
+            if (url === messageUrl) return new Response(null, { status: 401 })
+            if (++authentications === 1 && retry) return tokenResponse()
+            authStarted.resolve()
+            return releaseAuth.promise
+        })
+        const channel = new QqBotChannel(config, baseUrl, new VisibilityTracker(), () => current, fetch)
+        const delivery = channel.sendPermissionRequest(current)
+        try {
+            await Promise.race([authStarted.promise, delivery.then(() => { throw new Error('Authentication was not reached') })])
+            current = createSession({ agentState: { requests: {} } })
+        } finally {
+            releaseAuth.resolve(tokenResponse())
+        }
+        await delivery
+        expect(fetch.mock.calls.filter(([url]) => url === messageUrl)).toHaveLength(retry ? 1 : 0)
     })
 
     it.each(['imported name', 'generated summary', 'workspace path'])(
@@ -117,10 +140,9 @@ describe('QQ bot DM notifications', () => {
             const fetch = mockFetch()
             const visibility = new VisibilityTracker()
             visibility.registerConnection('open', 'work', 'visible')
-            const channel = new QqBotChannel(config, baseUrl, visibility, fetch)
             const secret = 'private-fixture-text'
             const id = '7b134bd8-3e07-4fc8-a5ed-938a04d68780'
-            await channel.sendPermissionRequest(createSession({
+            const session = createSession({
                 id,
                 metadata: {
                     host: 'test', path: `/workspace/${secret}`,
@@ -128,7 +150,9 @@ describe('QQ bot DM notifications', () => {
                     ...(source === 'generated summary' ? { summary: { text: secret, updatedAt: 1 } } : {})
                 },
                 agentState: { requests: { pending: { tool: 'AskUserQuestion', arguments: { questions: [{ question: 'private question' }] }, createdAt: 1 } } }
-            }))
+            })
+            const channel = new QqBotChannel(config, baseUrl, visibility, () => session, fetch)
+            await channel.sendPermissionRequest(session)
             const content = getBody(fetch.mock.calls[1]?.[1]).markdown.content
             expect(content).toBe(`**HAPI: Agent needs your input**\n\nSession: 7b134bd8\n\n[Open HAPI session](https://hapi.example.test:38443/sessions/${id})`)
             expect(content).not.toContain(secret)
@@ -143,7 +167,7 @@ it('delivers real SyncEngine notification events through NotificationHub to the 
     const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
     const fetch = mockFetch()
     const scoped = resolveQqBotSettings({ enabled: true, ...config, namespace: 'team west' }, {}, baseUrl)!
-    const channel = new QqBotChannel(scoped, baseUrl, new VisibilityTracker(), fetch)
+    const channel = new QqBotChannel(scoped, baseUrl, new VisibilityTracker(), id => engine.getSession(id), fetch)
     const hub = new NotificationHub(engine, [channel], { readyCooldownMs: 60_000, permissionDebounceMs: 1 })
     const deliveries = () => fetch.mock.calls.filter(([url]) => url === messageUrl)
     const waitForMessageCount = async (count: number) => {
@@ -193,7 +217,7 @@ it('suppresses a permission request cleared during the NotificationHub debounce'
     const io = { of: () => ({ to: () => ({ emit() {} }) }) }
     const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
     const fetch = mockFetch()
-    const channel = new QqBotChannel(config, baseUrl, new VisibilityTracker(), fetch)
+    const channel = new QqBotChannel(config, baseUrl, new VisibilityTracker(), id => engine.getSession(id), fetch)
     const dispatched = mock(async () => {})
     // This second channel confirms the debounce actually reached dispatch.
     const hub = new NotificationHub(engine, [channel, { sendReady: async () => {}, sendPermissionRequest: dispatched }], {

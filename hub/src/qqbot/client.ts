@@ -24,14 +24,19 @@ export class QqBotClient {
         private readonly now: () => number = Date.now
     ) {}
 
-    async sendMarkdown(content: string): Promise<void> {
+    async sendMarkdown(content: string, shouldSend: () => boolean = () => true): Promise<void> {
+        if (!shouldSend()) return
         let token = await this.getToken()
+        // The session can change while authentication is in flight.
+        if (!shouldSend()) return
         let response = await this.postMessage(content, token)
         // Retry only an explicit authentication rejection, never an uncertain delivery.
         if (response.status === 401) {
             void response.body?.cancel().catch(() => {})
             this.invalidate(token)
+            if (!shouldSend()) return
             token = await this.getToken()
+            if (!shouldSend()) return
             response = await this.postMessage(content, token)
             if (response.status === 401) this.invalidate(token)
         }
