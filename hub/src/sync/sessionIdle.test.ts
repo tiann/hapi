@@ -10,6 +10,7 @@ import type { EventPublisher } from './eventPublisher'
 import { SessionCache } from './sessionCache'
 import {
     DEFAULT_SESSION_IDLE_TIMEOUT_MS,
+    hasDurableLiveWork,
     resolveSessionIdleTimeoutMs,
     shouldClearKeepaliveIdle,
     shouldMarkKeepaliveIdle,
@@ -44,6 +45,34 @@ function session(overrides: Partial<Session> = {}): Session {
         ...overrides
     } as Session
 }
+
+describe('hasDurableLiveWork', () => {
+    it('treats a prior-generation unresolvedTurn latch as still live (#2021 Approach)', () => {
+        expect(hasDurableLiveWork(session({
+            metadata: {
+                path: '/tmp/p',
+                host: 'h',
+                hostStartMarker: 'worker-B',
+                unresolvedTurn: { since: NOW - 1000, hostStartMarker: 'worker-A' },
+            },
+        }))).toBe(true)
+    })
+
+    it('treats prior-generation backgroundWork as still live (#2021 Approach)', () => {
+        expect(hasDurableLiveWork(session({
+            backgroundTaskCount: 0,
+            metadata: {
+                path: '/tmp/p',
+                host: 'h',
+                hostStartMarker: 'worker-B',
+                backgroundWork: {
+                    tasks: [{ id: 'bg-1', type: 'local_bash', description: 'sleep' }],
+                    hostStartMarker: 'worker-A',
+                },
+            },
+        }))).toBe(true)
+    })
+})
 
 describe('resolveSessionIdleTimeoutMs', () => {
     it('defaults when unset or unparseable', () => {

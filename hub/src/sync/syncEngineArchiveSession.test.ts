@@ -1022,6 +1022,71 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(cache().getSession(sessionId)?.metadata?.lifecycleState).not.toBe('archived')
     })
 
+    it('refuses already_gone clear when durable work belongs to a prior generation (#2021 Approach)', async () => {
+        // Replacement wrapper can look already_gone while a prior detached
+        // group still owns backgroundWork. Session-id probe must not retire
+        // prior-gen latches (#2021 Approach).
+        const sessionId = insertActiveSession('sess-prior-gen-bg', 'machine-x', 7001, {
+            flavor: 'agy',
+        })
+        const before = cache().getSession(sessionId)!
+        expect(store.sessions.updateSessionMetadata(
+            sessionId,
+            { ...before.metadata!, hostStartMarker: 'worker-A', hostPid: 7001 },
+            before.metadataVersion,
+            NAMESPACE,
+        ).result).toBe('success')
+        cache().refreshSession(sessionId)
+        cache().setBackgroundTasks(sessionId, [
+            { id: 'bg-prior', type: 'local_bash', description: 'sleep 3600' },
+        ])
+        expect(cache().getSession(sessionId)!.metadata?.backgroundWork?.hostStartMarker).toBe('worker-A')
+
+        const current = cache().getSession(sessionId)!
+        const replaced = {
+            ...current.metadata!,
+            hostPid: 7002,
+            hostStartMarker: 'worker-B',
+        }
+        const update = store.sessions.updateSessionMetadata(
+            sessionId,
+            replaced,
+            current.metadataVersion,
+            NAMESPACE,
+        )
+        expect(update.result).toBe('success')
+        engine.handleRealtimeEvent({
+            type: 'session-updated',
+            sessionId,
+            data: { metadata: { version: update.version, value: replaced } },
+        })
+        const afterReplace = cache().getSession(sessionId)!
+        expect(afterReplace.metadata?.hostStartMarker).toBe('worker-B')
+        expect(afterReplace.metadata?.backgroundWork?.hostStartMarker).toBe('worker-A')
+        expect(afterReplace.metadata?.backgroundWork?.tasks).toHaveLength(1)
+
+        afterReplace.activeAt = Date.now() - 60_000
+        expect(cache().expireInactive(Date.now())).toContain(sessionId)
+
+        setKillSessionMissingTarget()
+        let stopCalled = false
+        const gateway = engine as unknown as {
+            rpcGateway: { stopRunnerSession: unknown; probeRunnerSessionExit: unknown }
+        }
+        gateway.rpcGateway.stopRunnerSession = async () => {
+            stopCalled = true
+            return 'already_gone'
+        }
+        gateway.rpcGateway.probeRunnerSessionExit = async () => 'already_gone'
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(stopCalled).toBe(false)
+        expect(cache().getSession(sessionId)?.metadata?.backgroundWork?.tasks).toHaveLength(1)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).not.toBe('archived')
+    })
+
     it('archives background-only work when Runner reports already_gone after expiry (#2021 Approach)', async () => {
         // Antigravity settles the tool row when backgrounding, then only
         // re-emits background_tasks_changed on membership change. Expiry keeps

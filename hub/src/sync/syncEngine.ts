@@ -1030,50 +1030,17 @@ export class SyncEngine {
     private reconcileSteerDeliveryOwner(before: Session['metadata'], after: Session | undefined): void {
         const current = after?.metadata
         if (!before || !current || current.flavor !== before.flavor || !after?.id) return
-        // Only replacement of the owning worker ends its confirmation lease /
-        // retires sticky tool work from the previous generation (#2021).
+        // Only replacement of the owning worker ends its confirmation lease.
         if (before.machineId === current.machineId && before.hostPid === current.hostPid
             && before.hostStartMarker === current.hostStartMarker) {
             return
         }
-        // Open tool rows (child + foreground) belonged to the previous worker.
-        // Retire for every flavor — Cursor ACP misses handleSessionEnd when
-        // heartbeat expiry flips inactive before the exit notice arrives.
-        this.store.messages.retireOpenChildToolWork(after.id)
+        // Do NOT retire sticky tool work or clear durable background /
+        // unresolvedTurn on generation replace. The previous wrapper may have
+        // left a detached agent group (or Codex app-server) still running;
+        // Archive must probe session-scoped exit before clearing (#2021 Approach).
+        // Refresh derivedToolWork from the transcript so the guard stays honest.
         this.sessionCache.noteDerivedWork(after.id, this.store.messages.getLiveToolWork(after.id))
-        // Previous worker's background snapshot must not block Archive under a
-        // replacement that never re-emits membership (#2021 Major). Keep only a
-        // snapshot attributable to the replacement (both markers present + equal).
-        const durable = after.metadata?.backgroundWork
-        const ownerMarker = after.metadata?.hostStartMarker
-        const keepForOwner = Boolean(
-            durable
-            && Array.isArray(durable.tasks)
-            && durable.tasks.length > 0
-            && typeof durable.hostStartMarker === 'string'
-            && durable.hostStartMarker.length > 0
-            && typeof ownerMarker === 'string'
-            && ownerMarker.length > 0
-            && durable.hostStartMarker === ownerMarker
-        )
-        this.sessionCache.setBackgroundTasks(
-            after.id,
-            keepForOwner ? durable!.tasks : [],
-        )
-        // Previous worker's in-flight turn latch must not block Archive under a
-        // replacement generation (#2021 Approach).
-        const turnLatch = after.metadata?.unresolvedTurn
-        const keepTurnForOwner = Boolean(
-            turnLatch
-            && typeof turnLatch.hostStartMarker === 'string'
-            && turnLatch.hostStartMarker.length > 0
-            && typeof ownerMarker === 'string'
-            && ownerMarker.length > 0
-            && turnLatch.hostStartMarker === ownerMarker
-        )
-        if (!keepTurnForOwner) {
-            this.sessionCache.setUnresolvedTurn(after.id, false)
-        }
         // Steer admission ownership is OpenCode/Claude only; Cursor/Codex keep
         // their separate delivery owner (see steerDeliveryLifecycle tests).
         if (before.flavor === 'opencode' || before.flavor === 'claude') {
@@ -1096,8 +1063,7 @@ export class SyncEngine {
         // Do NOT retire open child work on wrapper session-end alone. ACP
         // agents run in a detached process group / Job; wrapper exit is not
         // containment proof. Sticky tools stay until Archive probe returns
-        // already_gone (Runner verified agent root exit) or a replacement
-        // host generation clears them via reconcileSteerDeliveryOwner (#2021).
+        // already_gone (Runner verified agent root exit) (#2021).
         if (before?.metadata?.opencodeClearOperation?.state === 'reserved' && payload.reason !== 'cleared') {
             const operation = before.metadata.opencodeClearOperation
             if (this.transitionClearOperation(payload.sid, before.namespace, operation, 'abort-needed')) {
@@ -4020,9 +3986,32 @@ export class SyncEngine {
                             }
                         }
                         if (status === 'already_gone') {
-                            this.store.messages.retireOpenChildToolWork(sessionId)
-                            this.sessionCache.setBackgroundTasks(sessionId, [])
-                            this.sessionCache.setUnresolvedTurn(sessionId, false)
+                            // Session-id already_gone proves the *current*
+                            // wrapper generation is gone — not a prior detached
+                            // group that still owns sticky tools / latches
+                            // after resume (#2021 Approach).
+                            const ownerMarker = typeof meta?.hostStartMarker === 'string'
+                                ? meta.hostStartMarker
+                                : undefined
+                            const bgMarker = meta?.backgroundWork
+                                && typeof meta.backgroundWork.hostStartMarker === 'string'
+                                ? meta.backgroundWork.hostStartMarker
+                                : undefined
+                            const turnMarker = meta?.unresolvedTurn
+                                && typeof meta.unresolvedTurn.hostStartMarker === 'string'
+                                ? meta.unresolvedTurn.hostStartMarker
+                                : undefined
+                            const bgIsCurrent = !bgMarker
+                                || !ownerMarker
+                                || bgMarker === ownerMarker
+                            const turnIsCurrent = !turnMarker
+                                || !ownerMarker
+                                || turnMarker === ownerMarker
+                            if (bgIsCurrent && turnIsCurrent) {
+                                this.store.messages.retireOpenChildToolWork(sessionId)
+                                this.sessionCache.setBackgroundTasks(sessionId, [])
+                                this.sessionCache.setUnresolvedTurn(sessionId, false)
+                            }
                             this.sessionCache.noteDerivedWork(
                                 sessionId,
                                 this.store.messages.getLiveToolWork(sessionId),

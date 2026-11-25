@@ -33,6 +33,9 @@ import {
     getSystemBootId,
     isWindows,
     killProcessByChildProcess,
+    retainedIdentityStillAlive,
+    verifyAgentOwnedProcessGroupExited,
+    type RetainedProcessIdentity,
 } from '@/utils/process'
 import {
     clearAgentRootForCurrentHost,
@@ -495,14 +498,16 @@ export function query(config: {
 
     // Publish Claude SDK child generation so Runner probe cannot treat wrapper
     // exit alone as worker exit (#2021 Approach).
+    let claudeRootIdentity: RetainedProcessIdentity | null = null
     if (typeof child.pid === 'number' && child.pid > 0) {
-        publishAgentRootFromIdentity({
+        claudeRootIdentity = {
             pid: child.pid,
             startMarker: getProcessStartMarker(child.pid),
             bootId: getSystemBootId(),
             tgid: getProcessThreadGroupId(child.pid),
             pgid: getProcessGroupId(child.pid),
-        }, {
+        }
+        publishAgentRootFromIdentity(claudeRootIdentity, {
             // POSIX detached ⇒ agent-owned group. Windows lacks Job Object on
             // this path — fail closed until clearAgentRoot after verified exit.
             containmentEstablished: !isWindows(),
@@ -543,7 +548,20 @@ export function query(config: {
             child.stdin.destroy()
             child.stdout.destroy()
             child.stderr.destroy()
-            clearAgentRootForCurrentHost()
+            // Retain agent-root until the process group is verified empty so a
+            // reparented tool cannot outlive clearAgentRoot (#2021 Approach).
+            if (claudeRootIdentity && !isWindows()) {
+                if (await verifyAgentOwnedProcessGroupExited(claudeRootIdentity, true)) {
+                    clearAgentRootForCurrentHost()
+                }
+            } else if (claudeRootIdentity && isWindows()) {
+                // No Job Object on this path — only clear when the root PID is gone.
+                if (!retainedIdentityStillAlive(claudeRootIdentity)) {
+                    clearAgentRootForCurrentHost()
+                }
+            } else {
+                clearAgentRootForCurrentHost()
+            }
         })()
         return cleanupPromise
     }
@@ -611,10 +629,10 @@ export function query(config: {
         }
     })
 
-    // Cleanup on exit (catch rejection to avoid unhandled promise warning)
+    // Cleanup on exit (catch rejection to avoid unhandled promise warning).
+    // Do not clearAgentRoot here — cleanup verifies group emptiness first.
     processExitPromise.catch(() => {}).finally(() => {
         void cleanup()
-        clearAgentRootForCurrentHost()
         process.removeListener('exit', handleProcessExit)
         config.options?.abort?.removeEventListener('abort', handleAbort)
         if (process.env.CLAUDE_SDK_MCP_SERVERS) {

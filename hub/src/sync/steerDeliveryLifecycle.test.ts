@@ -113,7 +113,47 @@ it.each(['codex', 'cursor'] as const)('preserves the separate %s runtime deliver
     } finally { engine.stop(); store.close() }
 })
 
-it('retires Cursor foreground tool work when a replacement worker identifies itself (#2021)', async () => {
+it('keeps prior-generation backgroundWork and unresolvedTurn across host replace (#2021 Approach)', () => {
+    const { store, engine, session } = createEngine(new Store(':memory:'), 'cursor')
+    try {
+        const cache = (engine as unknown as {
+            sessionCache: {
+                setBackgroundTasks(id: string, tasks: Array<{ id: string; type: string; description: string }>): void
+                setUnresolvedTurn(id: string, unresolved: boolean): void
+            }
+        }).sessionCache
+        cache.setBackgroundTasks(session.id, [{ id: 'bg-1', type: 'local_bash', description: 'sleep' }])
+        cache.setUnresolvedTurn(session.id, true)
+        const before = engine.getSession(session.id)!
+        expect(before.metadata?.backgroundWork?.tasks).toHaveLength(1)
+        expect(before.metadata?.unresolvedTurn).toBeTruthy()
+        expect(before.metadata?.hostStartMarker).toBe('worker-A')
+        expect(before.metadata?.backgroundWork?.hostStartMarker).toBe('worker-A')
+
+        const metadata = {
+            ...before.metadata!,
+            hostPid: 101,
+            hostStartMarker: 'worker-B',
+            cursorSessionProtocol: 'acp' as const,
+        }
+        const update = store.sessions.updateSessionMetadata(session.id, metadata, before.metadataVersion, 'default')
+        if (update.result !== 'success') throw new Error('metadata update failed')
+        engine.handleRealtimeEvent({
+            type: 'session-updated',
+            sessionId: session.id,
+            data: { metadata: { version: update.version, value: metadata } },
+        })
+
+        const after = engine.getSession(session.id)!
+        expect(after.metadata?.hostStartMarker).toBe('worker-B')
+        expect(after.metadata?.backgroundWork?.tasks).toHaveLength(1)
+        expect(after.metadata?.backgroundWork?.hostStartMarker).toBe('worker-A')
+        expect(after.metadata?.unresolvedTurn).toBeTruthy()
+        expect(store.messages.lookupQueuedMessage(session.id, 'pending').status).toBe('dispatching')
+    } finally { engine.stop(); store.close() }
+})
+
+it('keeps Cursor foreground tool work when a replacement worker identifies itself (#2021 Approach)', async () => {
     const { AGENT_MESSAGE_PAYLOAD_TYPE } = await import('@hapi/protocol')
     const { store, engine, session } = createEngine(new Store(':memory:'), 'cursor')
     try {
@@ -147,7 +187,9 @@ it('retires Cursor foreground tool work when a replacement worker identifies its
             data: { metadata: { version: update.version, value: metadata } },
         })
 
-        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        // Prior-gen sticky tools stay until Archive probe already_gone —
+        // generation replace alone is not containment proof.
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
         // Delivery ownership for Cursor stays separate from OpenCode/Claude.
         expect(store.messages.lookupQueuedMessage(session.id, 'pending').status).toBe('dispatching')
     } finally { engine.stop(); store.close() }

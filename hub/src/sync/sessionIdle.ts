@@ -45,21 +45,17 @@ export function hasDurableLiveWork(session: Session): boolean {
     // that miss the CLI's turn-scoped thinking flag).
     if (session.derivedToolWork === true) return true
     if ((session.backgroundTaskCount ?? 0) > 0) return true
-    // In-flight turn latch survives expiry clearing ephemeral thinking
-    // (#2021 Approach). Bound to the worker generation when known.
+    // Durable background snapshot — including a prior worker generation whose
+    // detached tools may still run after resume (#2021 Approach).
+    const background = session.metadata?.backgroundWork
+    if (background && Array.isArray(background.tasks) && background.tasks.length > 0) {
+        return true
+    }
+    // In-flight turn latch survives expiry clearing ephemeral thinking.
+    // Prior-generation latches still block Archive until probe already_gone
+    // clears them (#2021 Approach).
     const unresolved = session.metadata?.unresolvedTurn
     if (unresolved && typeof unresolved === 'object') {
-        const ownerMarker = session.metadata?.hostStartMarker
-        const latchMarker = unresolved.hostStartMarker
-        if (
-            typeof latchMarker === 'string'
-            && latchMarker.length > 0
-            && typeof ownerMarker === 'string'
-            && ownerMarker.length > 0
-            && latchMarker !== ownerMarker
-        ) {
-            return false
-        }
         return true
     }
     return false
