@@ -16,7 +16,7 @@ import { isBunCompiled } from '@/projectPath';
 import { describeChildFatalContext } from './childFatalDiagnostics';
 import { writeRunnerState, RunnerLocallyPersistedState, readRunnerState, acquireRunnerLock, releaseRunnerLock } from '@/persistence';
 import { getCliArgs } from '@/utils/cliArgs';
-import { getProcessStartMarker, getSystemBootId, getProcessThreadGroupId, normalizeBootId, isProcessAlive, isWindows, killProcess, killProcessByChildProcess, killProcessTreeByPid } from '@/utils/process';
+import { collectProcessTree, getProcessStartMarker, getSystemBootId, getProcessThreadGroupId, normalizeBootId, isProcessAlive, isWindows, killProcess, killProcessByChildProcess, killProcessTreeByPid, type ProcessTree } from '@/utils/process';
 import { findStopSessionOrphanTargets, listWindowsProcessesWithCommandLine, reapRunnerSpawnedOrphans } from '@/runner/orphanReap';
 import { decideUntrackedRunnerWebhook } from '@/runner/lateRunnerWebhook';
 import { cleanupFailedStartupAfterExit, sessionStartupTimeout, waitForRecoverableStartup } from './sessionStartup';
@@ -52,6 +52,9 @@ import { scheduleCursorModelsPrewarm } from '@/modules/common/cursorModelsPrewar
 import { isLinkedGitWorktree } from '@/utils/isLinkedGitWorktree';
 import { agentUnavailableMessage, getAgentAvailability } from '@/agent/agentAvailability';
 import { copyCodexConfigFile, resolveCodexHome } from '@/codex/utils/codexHome';
+
+// A wrapper can reconnect and withdraw hub approval; never signal long after it was granted.
+const RECOVERY_SIGNAL_DEADLINE_MS = 2_000;
 
 /**
  * Deduplicates a preallocated HAPI-row spawn only while its child is alive.
@@ -1263,6 +1266,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       }
       logger.debug(`[RUNNER RUN] Attempting to stop session ${sessionId}`);
       const signalDeadlines = new Map<number, number>();
+      let recoveryApprovedAt: number | undefined;
       const prepareSessionStop = async (id: string, pid: number, expectedMarker?: string): Promise<boolean> => {
         if (opts?.recovery) {
           // A recovery stop signals only the named process, and only if the
@@ -1270,7 +1274,9 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           if (pid !== opts.recovery.pid) return false;
           if (!isProcessAlive(pid)) return true;
           try {
-            return await (await ApiClient.create()).confirmRecoveryStop(id, machineId, pid, opts.recovery.requestId);
+            const approved = await (await ApiClient.create()).confirmRecoveryStop(id, machineId, pid, opts.recovery.requestId);
+            if (approved) recoveryApprovedAt = monotonicTimeMs();
+            return approved;
           } catch (error) {
             logger.debug(`[RUNNER RUN] Session ${id} recovery stop unconfirmed: ${error instanceof Error ? error.message : 'Unknown error'}`);
             return false;
@@ -1585,6 +1591,9 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
               }
             }
             try {
+              // Capture the tree before asking the hub: the synchronous pgrep
+              // scan must not run between approval and the first signal.
+              const recoveryTree: ProcessTree | undefined = opts?.recovery ? collectProcessTree(pid) : undefined;
               const verifiedMarker = persistedResumeProcesses.get(pid)?.processStartMarker;
               if (!await prepareSessionStop(sessionId, pid, verifiedMarker)) return 'still_alive';
               // Preparation can outlive the target generation (same recheck as
@@ -1594,12 +1603,17 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
               const expectedMarker = verifiedMarker ?? trackedMarker;
               if (expectedMarker && getProcessStartMarker(pid) !== expectedMarker) return 'unknown';
               if (opts?.recovery && pidToTrackedSession.get(pid) !== session) return 'unknown';
+              if (opts?.recovery && (recoveryApprovedAt === undefined
+                || monotonicTimeMs() - recoveryApprovedAt > RECOVERY_SIGNAL_DEADLINE_MS)) {
+                logger.debug(`[RUNNER RUN] Recovery approval for ${sessionId} expired before signalling ${pid}`);
+                return 'still_alive';
+              }
               const reportStop: Parameters<typeof killProcessTreeByPid>[2] = report => {
                 logger.debug('[RUNNER RUN] Windows tree stop confirmation', { sessionId, pid, ...report });
               };
               const treeStopped = session.childProcess
-                ? await killProcessByChildProcess(session.childProcess, false, reportStop, signalDeadlines.get(pid))
-                : await killProcessTreeByPid(pid, false, reportStop, signalDeadlines.get(pid));
+                ? await killProcessByChildProcess(session.childProcess, false, reportStop, signalDeadlines.get(pid), undefined, recoveryTree)
+                : await killProcessTreeByPid(pid, false, reportStop, signalDeadlines.get(pid), undefined, recoveryTree);
               if (!treeStopped) {
                 logger.debug(`[RUNNER RUN] Process tree for session ${sessionId} is still alive after stop request`);
                 return 'still_alive';

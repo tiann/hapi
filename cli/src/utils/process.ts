@@ -393,13 +393,16 @@ export async function killProcess(pid: number, force: boolean = false, deadlineM
   }
 }
 
+/** A POSIX tree snapshot passed back into the kill so recovery never rescans after hub approval. */
+export type ProcessTree = number[] | 'scan_failed';
+
 /**
  * Recursively collects all descendant PIDs of a process (depth-first).
  * Returns PIDs in child-first order (leaves first, root last), or
  * `'scan_failed'` when pgrep could not be run (so callers fail closed
  * instead of verifying root-only — #1911 Opus / Overseer).
  */
-function collectProcessTree(pid: number): number[] | 'scan_failed' {
+export function collectProcessTree(pid: number): ProcessTree {
   const pids: number[] = [];
 
   const result = spawn.sync('pgrep', ['-P', pid.toString()], {
@@ -435,9 +438,10 @@ function collectProcessTree(pid: number): number[] | 'scan_failed' {
  * then waits asynchronously for processes to die.
  */
 async function killProcessTree(pid: number, force: boolean, deadlineMs?: number,
-  signal: NodeJS.Signals = 'SIGTERM'): Promise<boolean> {
-  // Collect all PIDs first (sync) - returns in child-first order
-  const pids = collectProcessTree(pid);
+  signal: NodeJS.Signals = 'SIGTERM', collected?: ProcessTree): Promise<boolean> {
+  // Collect all PIDs first (sync) - returns in child-first order. Recovery
+  // passes a tree captured before the hub approval so no scan follows it.
+  const pids = collected ?? collectProcessTree(pid);
   if (pids === 'scan_failed') {
     // Signal the known root anyway (partial kill > zero kill), but never claim
     // stopped without a full-tree verify (#1911 Opus Major / debian-slim no pgrep).
@@ -482,7 +486,8 @@ export async function killProcessTreeByPid(
   // 4th arg: stop deadline (signal-lease budget) when numeric, else the Windows
   // report fallback used when the 3rd arg is a signal (#1911).
   deadlineOrFallbackReport?: number | ((report: WindowsStopReport) => void),
-  fallbackReport?: (report: WindowsStopReport) => void
+  fallbackReport?: (report: WindowsStopReport) => void,
+  collectedTree?: ProcessTree
 ): Promise<boolean> {
   const deadlineMs = typeof deadlineOrFallbackReport === 'number' ? deadlineOrFallbackReport : undefined;
   const onReport = typeof signalOrReport === 'function' ? signalOrReport
@@ -494,7 +499,7 @@ export async function killProcessTreeByPid(
   if (isWindows()) {
     return stopWindowsProcessTree(n, force, onReport, deadlineMs);
   }
-  return killProcessTree(n, force, deadlineMs, signal);
+  return killProcessTree(n, force, deadlineMs, signal, collectedTree);
 }
 
 /**
@@ -542,7 +547,8 @@ export async function killProcessByChildProcess(
   force: boolean = false,
   signalOrReport: NodeJS.Signals | ((report: WindowsStopReport) => void) = 'SIGTERM',
   deadlineOrFallbackReport?: number | ((report: WindowsStopReport) => void),
-  fallbackReport?: (report: WindowsStopReport) => void
+  fallbackReport?: (report: WindowsStopReport) => void,
+  collectedTree?: ProcessTree
 ): Promise<boolean> {
   const pid = child.pid;
   if (!pid) {
@@ -552,5 +558,5 @@ export async function killProcessByChildProcess(
   // Both platforms: tree-kill + full-tree verify (win32 must not trust
   // root-only). The soft signal rides along on POSIX so job Ctrl-C stays
   // exit 130 (#1424).
-  return killProcessTreeByPid(pid, force, signalOrReport, deadlineOrFallbackReport, fallbackReport);
+  return killProcessTreeByPid(pid, force, signalOrReport, deadlineOrFallbackReport, fallbackReport, collectedTree);
 }

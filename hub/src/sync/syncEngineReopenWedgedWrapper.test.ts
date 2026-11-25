@@ -34,11 +34,12 @@ describe('SyncEngine reopen of an unreachable runner wrapper', () => {
     let spawnCalls: number
     let stopCalls: number
     let confirmations: boolean[]
-    let lastRequest: { sessionId: string; pid: number; requestId: string } | undefined
+    let lastRequest: { sessionId: string; pid: number; requestId: string; directory?: string } | undefined
     let wrapperPrepareCalls: number
     let duringStop: (() => void) | undefined
     let bootConnects: boolean
     let oldRunner: boolean
+    let refusedDirectory: string | undefined
 
     const cache = () => (engine as unknown as { sessionCache: SessionCache }).sessionCache
     const gateway = () => (engine as unknown as { rpcGateway: Record<string, unknown> }).rpcGateway
@@ -102,6 +103,9 @@ describe('SyncEngine reopen of an unreachable runner wrapper', () => {
             const child = children.get(id)
             if (!child) return { status: 'unknown' }
             if (child.pid !== params.pid) return { status: 'still_alive' }
+            // The runner declines the recovery when the resume directory is
+            // outside its workspace roots: no confirmation, wrapper untouched.
+            if (refusedDirectory && params.directory === refusedDirectory) return { status: 'still_alive' }
             duringStop?.()
             const confirmed = engine.confirmRecoveryStop(id, MACHINE, child.pid, params.requestId as string)
             confirmations.push(confirmed)
@@ -144,6 +148,7 @@ describe('SyncEngine reopen of an unreachable runner wrapper', () => {
         duringStop = undefined
         bootConnects = true
         oldRunner = false
+        refusedDirectory = undefined
         createEngine(10 * 60_000)
     })
 
@@ -164,6 +169,18 @@ describe('SyncEngine reopen of an unreachable runner wrapper', () => {
         expect(spawnCalls).toBe(1)
         expect(children.get(id)?.pid).not.toBe(4242)
         expect(cache().getSession(id)?.active).toBe(true)
+    })
+
+    it('leaves the wrapper alive and unconfirmed when the resume directory is outside the runner roots', async () => {
+        refusedDirectory = '/outside-roots'
+        const id = insertInactiveSession('outside-roots', { path: '/outside-roots' })
+        children.set(id, { pid: 4242, connects: false })
+
+        await engine.reopenSession(id, NAMESPACE)
+
+        expect(lastRequest?.directory).toBe('/outside-roots')
+        expect(confirmations).toEqual([])
+        expect(children.get(id)?.pid).toBe(4242)
     })
 
     it('does not stop an unreachable wrapper when resume preflight rejects a cursor session without its native chat id', async () => {

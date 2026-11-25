@@ -15,6 +15,8 @@ const mocks = vi.hoisted(() => ({
     confirm: vi.fn(),
     marker: vi.fn(() => 'generation'),
     spawnHappyCLI: vi.fn(),
+    collectTree: vi.fn(() => [4242]),
+    now: vi.fn(() => 1000),
 }))
 
 vi.mock('./controlServer', () => ({ startRunnerControlServer: mocks.controlServer }))
@@ -31,6 +33,10 @@ vi.mock('@/persistence', async importOriginal => ({
 }))
 vi.mock('@/ui/auth', () => ({ authAndSetupMachineIfNeeded: async () => ({ machineId: 'machine' }) }))
 vi.mock('@/ui/logger', () => ({ logger: { debug: vi.fn(), debugLargeJson: vi.fn(), warn: vi.fn() } }))
+vi.mock('@/utils/time', async importOriginal => ({
+    ...await importOriginal<typeof import('@/utils/time')>(),
+    monotonicTimeMs: () => mocks.now(),
+}))
 vi.mock('@/ui/doctor', () => ({ getEnvironmentInfo: () => ({}) }))
 vi.mock('@/codex/shared/registry', () => ({
     readRuntimes: async () => [],
@@ -47,6 +53,7 @@ vi.mock('@/utils/process', async importOriginal => ({
     isWindows: () => false,
     isProcessAlive: () => true,
     getProcessStartMarker: () => mocks.marker(),
+    collectProcessTree: mocks.collectTree,
     killProcess: mocks.kill,
     killProcessTreeByPid: mocks.kill,
     killProcessByChildProcess: mocks.kill,
@@ -71,6 +78,8 @@ describe('runner stop of an adopted child', () => {
 
     beforeEach(async () => {
         vi.clearAllMocks()
+        mocks.collectTree.mockReset().mockReturnValue([4242])
+        mocks.now.mockReset().mockReturnValue(1000)
         mocks.kill.mockResolvedValue(true)
         mocks.reapOrphans.mockResolvedValue(null)
         mocks.prepare.mockResolvedValue(undefined)
@@ -218,6 +227,28 @@ describe('runner stop of an adopted child', () => {
         })
 
         await expect(stop({ recovery: { requestId: 'r-race', pid: 4242 } }, 'race')).resolves.toBe('unknown')
+        expect(mocks.kill).not.toHaveBeenCalled()
+    })
+
+    it('collects the recovery tree before the hub is asked and signals with that tree', async () => {
+        const order: string[] = []
+        mocks.collectTree.mockImplementation(() => { order.push('scan'); return [4242] })
+        mocks.confirm.mockImplementation(async () => { order.push('confirm'); return true })
+
+        await expect(stop({ recovery: { requestId: 'r-order', pid: 4242 } })).resolves.toBe('stopped')
+
+        expect(order).toEqual(['scan', 'confirm'])
+        expect(mocks.kill).toHaveBeenCalledWith(4242, false, expect.any(Function), undefined, undefined, [4242])
+    })
+
+    it('refuses a recovery signal after the approval signal deadline elapses', async () => {
+        mocks.now
+            .mockReturnValueOnce(1000)
+            .mockReturnValue(1000 + 5_000)
+        mocks.confirm.mockResolvedValue(true)
+
+        await expect(stop({ recovery: { requestId: 'r-stale', pid: 4242 } })).resolves.toBe('still_alive')
+
         expect(mocks.kill).not.toHaveBeenCalled()
     })
 })

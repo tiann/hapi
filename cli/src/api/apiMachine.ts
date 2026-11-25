@@ -714,9 +714,15 @@ export class ApiMachineClient {
         })
 
         this.rpcHandlerManager.registerHandler(RPC_METHODS.StopUnreachableSession, async (params: any) => {
-            const { sessionId, pid, requestId } = params || {}
+            const { sessionId, pid, requestId, directory } = params || {}
             if (typeof sessionId !== 'string' || !Number.isInteger(pid) || pid <= 0 || typeof requestId !== 'string') {
                 throw new Error('Session ID, pid and request ID are required')
+            }
+            // Decline before confirmation or signal when the resume directory is refused.
+            if (typeof directory !== 'string' || !directory) return { status: 'still_alive' }
+            const resolvedDirectory = await this.pathPolicy.resolveForCheck(directory)
+            if (!this.pathPolicy.isWithinSpawnRoots(resolvedDirectory)) {
+                return { status: 'still_alive' }
             }
             return { status: await stopSession(sessionId, { recovery: { requestId, pid } }) }
         })

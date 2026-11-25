@@ -5651,7 +5651,7 @@ export class SyncEngine {
             // Stop an unreachable runner wrapper only after every resume
             // preflight passed, immediately before the spawn it would block.
             if (opts?.recoverUnreachableWrapper) {
-                await this.stopUnreachableRunnerWrapper(opts.recoverUnreachableWrapper)
+                await this.stopUnreachableRunnerWrapper(opts.recoverUnreachableWrapper, directory)
             }
             const spawnResult = await this.rpcGateway.spawnSession(
                 targetMachine.id,
@@ -6101,7 +6101,7 @@ export class SyncEngine {
      * Stop it first once it has been unreachable past the quiet period; a
      * child from a recent spawn request may still be booting and is kept.
      */
-    private async stopUnreachableRunnerWrapper(session: Session): Promise<void> {
+    private async stopUnreachableRunnerWrapper(session: Session, directory: string): Promise<void> {
         const metadata = session.metadata
         const machineId = metadata?.machineId
         if (session.active || !metadata || !machineId) return
@@ -6117,7 +6117,7 @@ export class SyncEngine {
         this.recoveryStops.set(requestId, { sessionId: session.id, machineId, pid })
         const log = { sessionId: session.id, machineId, pid }
         try {
-            const status = await this.rpcGateway.stopUnreachableSession(machineId, session.id, pid, requestId)
+            const status = await this.rpcGateway.stopUnreachableSession(machineId, session.id, pid, requestId, directory)
             console.warn(`[reopen] Stop of an unreachable runner wrapper before resume: ${status}`, log)
         } catch (error) {
             // A runner without this RPC keeps today's path; resume below

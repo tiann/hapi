@@ -78,6 +78,8 @@ const MODEL_LIST_RPC_TIMEOUT_MS = 120_000
 // Codex can spend 30s awaiting startup after preflight and process creation.
 const CODEX_SPAWN_RPC_TIMEOUT_MS = 60_000
 const UPLOAD_CHUNK_RPC_TIMEOUT_MS = 60_000
+// Launch stamps older than the reopen recovery quiet window no longer gate a stop.
+const RECOVERY_LAUNCH_TTL_MS = 60_000
 
 export class RunnerStopRpcError extends Error {
     constructor(readonly timedOut: boolean, cause: unknown) {
@@ -179,8 +181,16 @@ export class RpcGateway {
     private readonly launchedAt = new Map<string, number>()
     private readonly spawnsInFlight = new Map<string, number>()
 
+    private pruneLaunchedAt(now: number): void {
+        for (const [sessionId, at] of this.launchedAt) {
+            if (now - at >= RECOVERY_LAUNCH_TTL_MS) this.launchedAt.delete(sessionId)
+        }
+    }
+
     lastLaunchAt(sessionId: string): number | undefined {
-        return this.spawnsInFlight.has(sessionId) ? Date.now() : this.launchedAt.get(sessionId)
+        const now = Date.now()
+        this.pruneLaunchedAt(now)
+        return this.spawnsInFlight.has(sessionId) ? now : this.launchedAt.get(sessionId)
     }
 
     /** True while any CLI socket for this session is connected or still serves its KillSession RPC. */
@@ -308,9 +318,10 @@ export class RpcGateway {
         machineId: string,
         sessionId: string,
         pid: number,
-        requestId: string
+        requestId: string,
+        directory: string
     ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> {
-        const result = await this.machineRpc(machineId, RPC_METHODS.StopUnreachableSession, { sessionId, pid, requestId })
+        const result = await this.machineRpc(machineId, RPC_METHODS.StopUnreachableSession, { sessionId, pid, requestId, directory })
         const status = result && typeof result === 'object' ? (result as { status?: unknown }).status : undefined
         if (status === 'stopped' || status === 'already_gone' || status === 'still_alive' || status === 'unknown') return status
         throw new Error('Unexpected stop-unreachable-session response')
@@ -470,7 +481,11 @@ export class RpcGateway {
                 if (remaining > 0) this.spawnsInFlight.set(requestedSessionId, remaining)
                 else this.spawnsInFlight.delete(requestedSessionId)
             }
-            if (launched && launchedSessionId) this.launchedAt.set(launchedSessionId, Date.now())
+            if (launched && launchedSessionId) {
+                const now = Date.now()
+                this.pruneLaunchedAt(now)
+                this.launchedAt.set(launchedSessionId, now)
+            }
         }
     }
 
