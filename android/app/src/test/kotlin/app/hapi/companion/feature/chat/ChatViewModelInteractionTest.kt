@@ -2085,6 +2085,25 @@ class ChatViewModelInteractionTest {
     }
 
     @Test
+    fun `completing a different skill replaces an existing exact qualified skill but not prose`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        val replacement = SkillSummary("plugin:lint")
+        harness.api.skillsResult = SkillsResponse(success = true, skills = listOf(SkillSummary("plugin:review"), replacement))
+        vm.start()
+
+        for (suffix in listOf(" please", ".then continue")) {
+            val draft = "Run \$plugin:review$suffix"
+            val caret = "Run \$plugin".length
+            vm.onComposerChange(draft, caret, caret)
+            testScheduler.runCurrent()
+            vm.selectSkillSuggestion(vm.skillSuggestions.value.single { it.skill == replacement })
+            testScheduler.runCurrent()
+            assertEquals("Run \$plugin:lint$suffix", vm.composer.value.text)
+        }
+    }
+
+    @Test
     fun `typing a dot or qualifier before existing text keeps the same skill picker open`() = runTest {
         val harness = InteractionHarness(this)
         val vm = harness.viewModel

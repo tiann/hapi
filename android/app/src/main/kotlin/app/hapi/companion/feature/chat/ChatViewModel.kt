@@ -16,6 +16,7 @@ import app.hapi.companion.feature.chat.composer.RecentSkills
 import app.hapi.companion.feature.chat.composer.ScheduleSend
 import app.hapi.companion.feature.chat.composer.SkillSuggestion
 import app.hapi.companion.feature.chat.composer.SkillSuggestions
+import app.hapi.companion.feature.chat.composer.skillNameKey
 import app.hapi.companion.feature.chat.composer.SlashCommands
 import app.hapi.companion.feature.chat.composer.appendTranscript
 import app.hapi.companion.ui.markdown.MarkdownRenderCache
@@ -721,11 +722,14 @@ class ChatViewModel(
                     emptyList()
                 }
                 if (skills.isNotEmpty()) {
+                    val knownNames = skills.map { skillNameKey(it.name) }.toSet()
+                    val maxNameLength = knownNames.maxOf { it.length }
                     emitAll(combine(composerDraft, recentSkills?.names ?: flowOf(emptyList())) { draft, recent ->
                         val token = draft.skillToken
                         if (token == null || draft.skillOpening != opening) emptyList()
                         else SkillSuggestions.filter(skills, token.query, recent).map {
-                            SkillSuggestion(it, token, opening, replacementEnd = SkillSuggestions.replacementEnd(token, it))
+                            val end = SkillSuggestions.replacementEnd(token, it, knownNames, maxNameLength)
+                            SkillSuggestion(it, token, opening, replacementEnd = end)
                         }
                     })
                 }

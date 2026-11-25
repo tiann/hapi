@@ -52,18 +52,20 @@ internal object SkillSuggestions {
         return Token(wordStart, wordEnd, text.substring(wordStart, wordEnd), text.substring(wordStart + 1, start))
     }
 
-    /** Punctuation after the caret belongs to the replacement only if this row matches it. */
-    fun replacementEnd(token: Token, skill: SkillSummary): Int {
+    /** Exact catalogue tokens outrank partial suffixes that only match the selected skill. */
+    fun replacementEnd(token: Token, skill: SkillSummary, knownNames: Set<String>, maxNameLength: Int): Int {
         val word = token.word
         val boundary = word.indexOfAny(charArrayOf('.', ':'), startIndex = token.query.length + 1)
         if (boundary == -1) return token.end
         val name = skillNameKey(skill.name)
-        // Try the longest matching fragment first, without scanning a long prose suffix per row.
-        for (end in minOf(word.length, name.length + 1) downTo boundary + 1) {
+        var partialEnd: Int? = null
+        for (end in minOf(word.length, maxNameLength + 1) downTo boundary + 1) {
             if (end < word.length && word[end] !in ".:") continue
-            if (skillNameKey(word.substring(1, end)) in name) return token.start + end
+            val candidate = skillNameKey(word.substring(1, end))
+            if (candidate in knownNames) return token.start + end
+            if (partialEnd == null && candidate in name) partialEnd = end
         }
-        return token.start + boundary
+        return token.start + (partialEnd ?: boundary)
     }
 
     fun filter(skills: List<SkillSummary>, query: String, recent: List<String>): List<SkillSummary> {
