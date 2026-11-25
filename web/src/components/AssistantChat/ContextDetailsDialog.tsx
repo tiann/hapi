@@ -119,7 +119,7 @@ function CodexDetails(props: { details: ContextDetails }) {
                                     <span className="min-w-0 break-words text-sm text-[var(--app-fg)]">{server.name}</span>
                                     {server.status ? <span className="shrink-0 text-xs text-[var(--app-hint)]">{server.status}</span> : null}
                                 </div>
-                                {server.toolNames?.length ? (
+                                {server.status !== 'disabled' && server.toolNames?.length ? (
                                     <div className="mt-1 grid gap-x-6 gap-y-0.5 pl-3 text-xs text-[var(--app-hint)] sm:grid-cols-2">
                                         {server.toolNames.map((toolName) => <div key={toolName} className="break-words">{toolName}</div>)}
                                     </div>

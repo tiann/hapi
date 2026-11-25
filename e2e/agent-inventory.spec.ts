@@ -9,6 +9,8 @@ for (const provider of ['codex', 'claude']) {
         if (provider === 'codex') {
             await expect(details.getByText('runtime-only', { exact: true })).toBeVisible()
             await expect(details.getByText('disabled', { exact: true })).toBeVisible()
+            await expect(details.getByText('old-search', { exact: true })).toHaveCount(0)
+            await expect(details.getByText('fresh-search', { exact: true })).toBeVisible()
             await expect(details.getByText(/^\/(clear|new|agent)$/)).toHaveCount(0)
         } else {
             await expect(details.getByText('automatic-skill', { exact: true })).toBeVisible()

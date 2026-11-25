@@ -188,6 +188,19 @@ export class SharedCodexRoot {
                 // Do not replay an older unclassified sample over this live one.
                 this.pendingAttachUsage.delete(turnId);
             }
+            if (this.host.attached && isRoot && method === 'turn/completed' && this.pendingAttachUsage) {
+                const completedTurn = string(record(paramsRecord.turn).id);
+                if (completedTurn) {
+                    const usage = this.pendingAttachUsage.get(completedTurn);
+                    this.pendingAttachUsage.delete(completedTurn);
+                    // A live completion also identifies a turn that was already
+                    // running before we subscribed. Project its usage before
+                    // the completion and any subsequent turn notifications.
+                    if (usage && !this.currentTurn) {
+                        this.enqueueNotification('thread/tokenUsage/updated', usage.params, undefined, usage.receivedAt, true);
+                    }
+                }
+            }
             const modelAtReceipt = isRoot ? this.settings.model ?? undefined : undefined;
             this.enqueueNotification(method, params, modelAtReceipt, receivedAt, liveTurnAtReceipt);
         });

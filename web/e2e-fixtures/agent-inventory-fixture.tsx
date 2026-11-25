@@ -17,7 +17,8 @@ const details: ContextDetails = isClaude
         slashCommands: params.has('restoredCommand') ? ['/compact', '/review'] : ['/compact']
     } }
     : { version: 1, updatedAt: 1, provider: 'codex', codex: {
-        mcpServers: params.has('knownNamesOnly') ? [{ name: 'docs' }] : [{ name: 'runtime-only', status: 'disabled', toolNames: [] }],
+        mcpServers: params.has('knownNamesOnly') ? [{ name: 'docs' }] : [{ name: 'runtime-only', status: 'disabled', toolNames: ['old-search'] },
+            { name: 'ready-server', status: 'connected', toolNames: ['fresh-search'] }],
         slashCommands: params.has('customAgent') ? ['/compact', '/agent'] : ['/compact']
     } }
 
