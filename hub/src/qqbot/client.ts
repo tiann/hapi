@@ -24,12 +24,14 @@ export class QqBotClient {
         private readonly now: () => number = Date.now
     ) {}
 
-    async sendMarkdown(prepareContent: () => string | null): Promise<void> {
+    async sendMarkdown(prepareContent: () => string | null, onPostStarted?: () => void): Promise<void> {
         if (prepareContent() === null) return
         let token = await this.getToken()
         // Delivery conditions and contents may change while authentication is in flight.
         let content = prepareContent()
         if (content === null) return
+        // A failed or timed-out POST may already have delivered; count the attempt, not the response.
+        onPostStarted?.()
         let response = await this.postMessage(content, token)
         // Retry only an explicit authentication rejection, never an uncertain delivery.
         if (response.status === 401) {

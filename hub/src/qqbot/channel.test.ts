@@ -334,6 +334,96 @@ it.each([false, true])('suppresses stale QQ ready after an earlier channel delay
     }
 })
 
+it.each([
+    'earlier channel', 'token', 'superseded and settled', 'multiple supersessions',
+    'message POST', 'settled POST', 'uncertain POST'
+] as const)('only replaces an unsent QQ ready alert within cooldown (%s)', async (blockedAt) => {
+    const store = new Store(':memory:')
+    const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+    const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const initialFinished = Promise.withResolvers<void>()
+    const atPost = blockedAt === 'message POST' || blockedAt === 'settled POST' || blockedAt === 'uncertain POST'
+    const atToken = blockedAt === 'token' || blockedAt === 'superseded and settled' || blockedAt === 'multiple supersessions'
+    const hold = async () => {
+        entered.resolve()
+        await release.promise
+    }
+    const fetch = mockFetch(async (url) => {
+        if (url === tokenUrl) {
+            if (atToken) await hold()
+            return tokenResponse()
+        }
+        if (atPost) await hold()
+        if (blockedAt === 'uncertain POST') throw new Error('fixture connection dropped')
+        return Response.json({ id: 'message-id' })
+    })
+    const qq = new QqBotChannel(config, baseUrl, new VisibilityTracker(), id => engine.getSession(id), fetch)
+    const qqDeliveries: Promise<void>[] = []
+    const sendQq = qq.sendReady.bind(qq)
+    qq.sendReady = (session, ctx) => {
+        const result = sendQq(session, ctx)
+        qqDeliveries.push(result.catch(() => {}))
+        return result
+    }
+    const earlier = mock(async () => { if (blockedAt === 'earlier channel') await hold() })
+    const later = mock(async () => { initialFinished.resolve() })
+    const hub = new NotificationHub(engine, [
+        { sendReady: earlier, sendPermissionRequest: async () => {} },
+        qq,
+        { sendReady: later, sendPermissionRequest: async () => {} }
+    ], { readyCooldownMs: 30_000 })
+    try {
+        const session = engine.getOrCreateSession('ready-replacement', { path: '/workspace/test', host: 'test' }, {}, config.namespace)
+        const time = Date.now()
+        engine.handleSessionAlive({ sid: session.id, time, mode: 'remote', thinking: false })
+        let seq = 0
+        const ready = () => engine.handleRealtimeEvent({ type: 'message-received', sessionId: session.id, message: {
+            id: `ready-${++seq}`, seq, localId: null, createdAt: time,
+            content: { role: 'agent', content: { type: 'event', data: { type: 'ready' } } }
+        } })
+        const thinking = (value: boolean) => engine.handleRealtimeEvent({
+            type: 'session-updated', sessionId: session.id, data: { thinking: value }
+        })
+        const posts = () => fetch.mock.calls.filter(([url]) => url === messageUrl)
+
+        ready()
+        await entered.promise
+        ready() // Duplicate event in the first turn does not create a second dispatch.
+        expect(qqDeliveries).toHaveLength(blockedAt === 'earlier channel' ? 0 : 1)
+        expect(posts()).toHaveLength(atPost ? 1 : 0)
+        thinking(true)
+        thinking(false)
+        if (blockedAt === 'superseded and settled' || blockedAt === 'settled POST' || blockedAt === 'uncertain POST') {
+            release.resolve()
+            await initialFinished.promise
+        }
+        ready()
+        ready() // Duplicate of the replacement must also stay suppressed.
+        if (blockedAt === 'multiple supersessions') {
+            thinking(true)
+            thinking(false)
+            ready()
+            ready()
+        }
+        release.resolve()
+        await initialFinished.promise
+        await Promise.all(qqDeliveries)
+
+        expect(earlier).toHaveBeenCalledTimes(1)
+        expect(later).toHaveBeenCalledTimes(1)
+        expect(qqDeliveries).toHaveLength(atPost ? 1 : blockedAt === 'multiple supersessions' ? 3 : 2)
+        expect(posts()).toHaveLength(1)
+        expect(getBody(posts()[0]?.[1]).markdown.content).toStartWith('**HAPI Ready for input**')
+    } finally {
+        release.resolve()
+        hub.stop()
+        engine.stop()
+        store.close()
+    }
+})
+
 it.each([false, true])('ignores cleared requests but retains other requests from the debounce batch (second request: %s)', async (anotherRequest) => {
     const store = new Store(':memory:')
     const io = { of: () => ({ to: () => ({ emit() {} }) }) }

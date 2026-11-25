@@ -16,6 +16,8 @@ export type NotificationSendContext = {
         thinking: boolean
         activeTurnStartedAt?: number | null
         isSuperseded: () => boolean
+        /** Opted-in channels must call this immediately before the first message POST. */
+        onPostStarted?: () => void
     }>
     /** Newly detected requests in this permission debounce window, captured before dispatch. */
     permissionRequestIds?: readonly string[]

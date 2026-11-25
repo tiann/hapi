@@ -9,6 +9,7 @@ import type { VisibilityTracker } from '../visibility/visibilityTracker'
 import { QqBotClient, type QqBotFetch } from './client'
 
 export class QqBotChannel implements NotificationChannel {
+    readonly replaceUnsentReady = true
     private readonly client: QqBotClient
     private readonly origin: string
 
@@ -31,7 +32,7 @@ export class QqBotChannel implements NotificationChannel {
             if (!current?.active || ctx?.readyState?.isSuperseded()) return null
             if (current.thinking && (!wasThinking || current.activeTurnStartedAt !== turnStartedAt)) return null
             return 'HAPI Ready for input'
-        })
+        }, ctx?.readyState?.onPostStarted)
     }
 
     async sendPermissionRequest(session: Session, ctx?: NotificationSendContext): Promise<void> {
@@ -67,7 +68,7 @@ export class QqBotChannel implements NotificationChannel {
             && (!this.options.backgroundOnly || !this.visibilityTracker.hasVisibleConnection(session.namespace))
     }
 
-    private async send(session: Session, getTitle: () => string | null): Promise<void> {
+    private async send(session: Session, getTitle: () => string | null, onPostStarted?: () => void): Promise<void> {
         const id = encodeURIComponent(session.id).replace(/[()]/g, char => char === '(' ? '%28' : '%29')
         // Imported names and generated summaries can contain conversation text.
         const label = session.id.slice(0, 8)
@@ -76,6 +77,6 @@ export class QqBotChannel implements NotificationChannel {
             const title = getTitle()
             if (title === null) return null
             return `**${title}**\n\nSession: ${label}\n\n[Open HAPI session](${this.origin}/sessions/${id})`
-        })
+        }, onPostStarted)
     }
 }

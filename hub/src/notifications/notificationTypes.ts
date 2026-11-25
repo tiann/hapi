@@ -33,6 +33,8 @@ export type ModelErrorSendOutcome = 'delivered' | 'unavailable' | 'failed'
 
 export type NotificationChannel = {
     sendReady: (session: Session, ctx?: NotificationSendContext) => Promise<void>
+    /** Opt in to replacing a superseded ready alert before its first message POST. */
+    replaceUnsentReady?: true
     sendPermissionRequest: (session: Session, ctx?: NotificationSendContext) => Promise<void>
     sendSessionCompletion?: (session: Session, reason: SessionEndReason) => Promise<void>
     /**
