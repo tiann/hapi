@@ -148,7 +148,7 @@ function reconcileSuccessfulSend(sessionId: string, attemptId: string): void {
     const pending = getPendingComposerSend(sessionId, attemptId)
     if (!pending) return
     const settlement = composerSendSettlements.get(sessionId)?.get(attemptId)
-    if (settlement?.status !== 'success') return
+    if (settlement?.status !== 'success' || settlement.source !== 'send') return
     const sentText = settlement.originalText ?? pending.originalText ?? settlement.text
     const sentAttachmentIds = settlement.attachmentIds ?? pending.attachmentIds
     const currentText = getDraft(sessionId)

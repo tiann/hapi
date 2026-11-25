@@ -17,7 +17,7 @@ import {
     saveDraftAttachments,
 } from '@/lib/composer-attachment-drafts'
 import { clearDraft, getDraft, saveDraft } from '@/lib/composer-drafts'
-import { recordPendingComposerSend, consumePendingComposerSend, publishComposerSendSettlement, consumeComposerSendSettlement,  getComposerDraftRevision, resetComposerSendStateForTests } from '@/lib/composer-send-state'
+import { recordPendingComposerSend, consumePendingComposerSend, publishComposerSendSettlement, consumeComposerSendSettlement, getComposerDraftRevision, getPendingComposerSend, resetComposerSendStateForTests } from '@/lib/composer-send-state'
 import { appendFileReferenceToComposerDraft } from '@/lib/file-composer'
 import { appendTerminalExcerptToComposerDraft } from '@/lib/terminal-composer'
 
@@ -1064,6 +1064,39 @@ describe('HappyComposer send-error atomic restore', () => {
             })
             await waitFor(() => expect(runtime.snapshot.composer.attachments).toEqual([]))
             expect(input()).toHaveValue('draft')
+        } finally {
+            runtime.pendingHydration = null
+            await act(async () => {
+                for (const id of ['first', 'second']) {
+                    consumePendingComposerSend(sessionId, id)
+                    consumeComposerSendSettlement(sessionId, id)
+                }
+                finishHydration()
+            })
+        }
+    })
+
+    it('clears a later successful draft while an earlier success still waits for attachment hydration', async () => {
+        const controls = renderComposer('Second submitted text', null)
+        const sessionId = 'session-a'
+        let finishHydration!: () => void
+        runtime.pendingHydration = new Promise<void>(resolve => { finishHydration = resolve })
+        try {
+            act(() => controls.current!.remount())
+            act(() => {
+                for (const [attemptId, text] of [['first', 'First submitted text'], ['second', 'Second submitted text']]) {
+                    recordPendingComposerSend({ sessionId, attemptId, text, attachmentIds: [attemptId],
+                        draftRevision: 0, programmaticEditRevision: 0 })
+                    publishComposerSendSettlement({ sessionId, attemptId, text, status: 'success', source: 'send' })
+                }
+                runtime.restoredAttachmentIds?.(['second'])
+                runtime.setSnapshot!(current => ({
+                    ...current, composer: { ...current.composer, attachments: [{ id: 'second', status: { type: 'complete' } }] },
+                }))
+            })
+            await waitFor(() => expect(runtime.snapshot.composer.attachments).toEqual([]))
+            await waitFor(() => expect(input()).toHaveValue(''))
+            expect(getPendingComposerSend(sessionId, 'first')).not.toBeNull()
         } finally {
             runtime.pendingHydration = null
             await act(async () => {

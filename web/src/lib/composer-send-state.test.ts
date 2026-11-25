@@ -155,6 +155,15 @@ describe('composer send state', () => {
         )
     })
 
+    it('does not clear a durable draft when a retry reuses a retained acceptance', () => {
+        recordPendingComposerSend({
+            sessionId: 'session-A', attemptId: 'attempt-A', text: 'text-session-A',
+            attachmentIds: ['retained-file'], draftRevision: 0, programmaticEditRevision: 0,
+        })
+        publishComposerSendSettlement({ ...settlement('session-A', 'attempt-A'), source: 'retry' })
+        expect(mockClearDraftsAfterSend).not.toHaveBeenCalled()
+    })
+
     it('reconciles when settlement arrives before acceptance', () => {
         publishComposerSendSettlement(settlement('session-A', 'attempt-A'))
 

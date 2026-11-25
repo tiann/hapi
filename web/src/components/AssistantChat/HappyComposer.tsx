@@ -47,7 +47,7 @@ import { markSkillUsed } from '@/lib/recent-skills'
 import { useComposerDraft } from '@/hooks/useComposerDraft'
 import type { AttachmentDraftInput } from '@/lib/composer-attachment-drafts'
 import { clearDraftsAfterSend } from '@/lib/clearDraftsAfterSend'
-import { consumePendingComposerSend, getPendingComposerSend, getComposerSendSettlements, subscribeComposerSendState, getComposerDraftRevision, recordSuccessfulComposerClear, getComposerProgrammaticEditRevision, recordComposerProgrammaticEdit, recordComposerTextChange, recordComposerDraftChange } from '@/lib/composer-send-state'
+import { consumePendingComposerSend, getPendingComposerSend, getComposerSendSettlement, getComposerSendSettlements, subscribeComposerSendState, getComposerDraftRevision, recordSuccessfulComposerClear, getComposerProgrammaticEditRevision, recordComposerProgrammaticEdit, recordComposerTextChange, recordComposerDraftChange } from '@/lib/composer-send-state'
 import { persistInactiveComposerAttachments, setComposerDraftSnapshot, updateComposerDraftTextSnapshot, attachmentDraftRevision, resetInactiveComposerAttachmentVisibility } from '@/lib/composer-draft-transfer'
 import { useComposerEnterBehavior } from '@/hooks/useComposerEnterBehavior'
 import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
@@ -976,7 +976,7 @@ export function HappyComposer(props: {
     // before the POST settled. Once that exact send succeeds, clear only an
     // untouched matching draft; a new user edit must win over settlement.
     useEffect(() => {
-        const settlement = props.sendSettlement
+        const settlement = props.sendSettlement ?? getComposerSendSettlement(sessionId ?? null)
         if (
             !settlement
             || settlement.status !== 'success'
@@ -1019,22 +1019,35 @@ export function HappyComposer(props: {
 
         const acceptedSend = acceptedSendEditGenerationRef.current
         const acceptedThisAttempt = acceptedSend?.attemptId === settlement.attemptId
-        const sendEditGeneration = acceptedThisAttempt ? acceptedSend.generation : pendingSendEditGenerationRef.current
-        const attachmentGeneration = acceptedThisAttempt ? acceptedSend.attachmentGeneration : pendingSendAttachmentGenerationRef.current
-        const scheduleGeneration = acceptedThisAttempt ? acceptedSend.scheduleGeneration : pendingSendScheduleGenerationRef.current
-        const preserveText = (
-            acceptance?.draftRevision !== undefined
-            && getComposerDraftRevision(sessionId) > acceptance.draftRevision
-        ) || userEditGenerationRef.current > (sendEditGeneration ?? 0)
-            || userAttachmentGenerationRef.current > (attachmentGeneration ?? 0)
-            || userScheduleGenerationRef.current > (scheduleGeneration ?? 0)
-            || Math.max(props.programmaticEditRevision ?? 0, getComposerProgrammaticEditRevision(sessionId))
-                > (acceptance?.programmaticEditRevision ?? 0)
-            || (composerText !== '' && composerText !== submittedText)
-
-        if (!preserveText && composerText && composerText === submittedText) {
-            recordSuccessfulComposerClear(sessionId, composerText)
-            api.composer().setText('')
+        const shouldPreserveText = (attempt: typeof acceptance, text: string): boolean => {
+            const matchedSend = attempt.attemptId === acceptedSend?.attemptId ? acceptedSend : null
+            return (
+                attempt.draftRevision !== undefined && getComposerDraftRevision(sessionId) > attempt.draftRevision
+            ) || userEditGenerationRef.current > (matchedSend?.generation ?? pendingSendEditGenerationRef.current ?? 0)
+                || userAttachmentGenerationRef.current > (matchedSend?.attachmentGeneration ?? pendingSendAttachmentGenerationRef.current ?? 0)
+                || userScheduleGenerationRef.current > (matchedSend?.scheduleGeneration ?? pendingSendScheduleGenerationRef.current ?? 0)
+                || Math.max(props.programmaticEditRevision ?? 0, getComposerProgrammaticEditRevision(sessionId))
+                    > (attempt.programmaticEditRevision ?? 0)
+                || (composerText !== '' && composerText !== text)
+        }
+        const preserveText = shouldPreserveText(acceptance, submittedText)
+        if (composerText) {
+            // Inspect every accepted success for visible text while the oldest
+            // settlement remains retained to clean its still-hydrating files.
+            const matchesLaterSend = () => {
+                for (const pending of activeSettlements?.values() ?? []) {
+                    if (pending.attemptId === settlement.attemptId || pending.status !== 'success' || pending.source !== 'send') continue
+                    const attempt = getPendingComposerSend(sessionId, pending.attemptId)
+                    if (!attempt) continue
+                    const text = pending.originalText ?? attempt.originalText ?? pending.text
+                    if (text === composerText && !shouldPreserveText(attempt, text)) return true
+                }
+                return false
+            }
+            if (!preserveText || matchesLaterSend()) {
+                recordSuccessfulComposerClear(sessionId, composerText)
+                api.composer().setText('')
+            }
         }
         const submittedAttachmentIds = settlement.attachmentIds
             ?? acceptance?.attachmentIds
@@ -1074,7 +1087,7 @@ export function HappyComposer(props: {
             )
         }
         consumeSettlement()
-    }, [api, attachments, composerText, draftHydration.complete, draftHydration.sessionId, props.onConsumeSendSettlement, releaseSentChips, props.programmaticEditRevision, props.sendAcceptance, props.sendSettlement, sessionId])
+    }, [activeSettlements, api, attachments, composerText, draftHydration.complete, draftHydration.sessionId, props.onConsumeSendSettlement, releaseSentChips, props.programmaticEditRevision, props.sendAcceptance, props.sendSettlement, sessionId])
 
     // Failed sends use the separate sendError recovery path, so their terminal
     // settlement can be consumed immediately and must not remain in the
