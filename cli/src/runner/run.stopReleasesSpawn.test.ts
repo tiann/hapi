@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -12,6 +13,8 @@ const mocks = vi.hoisted(() => ({
     kill: vi.fn(),
     prepare: vi.fn(),
     confirm: vi.fn(),
+    marker: vi.fn(() => 'generation'),
+    spawnHappyCLI: vi.fn(),
 }))
 
 vi.mock('./controlServer', () => ({ startRunnerControlServer: mocks.controlServer }))
@@ -43,11 +46,12 @@ vi.mock('@/utils/process', async importOriginal => ({
     ...await importOriginal<typeof import('@/utils/process')>(),
     isWindows: () => false,
     isProcessAlive: () => true,
-    getProcessStartMarker: () => 'generation',
+    getProcessStartMarker: () => mocks.marker(),
     killProcess: mocks.kill,
     killProcessTreeByPid: mocks.kill,
     killProcessByChildProcess: mocks.kill,
 }))
+vi.mock('@/utils/spawnHappyCLI', () => ({ spawnHappyCLI: mocks.spawnHappyCLI }))
 
 import { configuration } from '@/configuration'
 import { startRunner } from './run'
@@ -62,8 +66,8 @@ describe('runner stop of an adopted child', () => {
     let handlers: Handlers
     let home: string
     const respawn = { directory: '/tmp', existingSessionId: 'adopted', validateDirectory: async () => false }
-    const stop = (opts?: StopSessionOptions) =>
-        (handlers.stopSession as (id: string, opts?: StopSessionOptions) => ReturnType<Handlers['stopSession']>)('adopted', opts)
+    const stop = (opts?: StopSessionOptions, id = 'adopted') =>
+        (handlers.stopSession as (id: string, opts?: StopSessionOptions) => ReturnType<Handlers['stopSession']>)(id, opts)
 
     beforeEach(async () => {
         vi.clearAllMocks()
@@ -71,6 +75,8 @@ describe('runner stop of an adopted child', () => {
         mocks.reapOrphans.mockResolvedValue(null)
         mocks.prepare.mockResolvedValue(undefined)
         mocks.confirm.mockResolvedValue(true)
+        mocks.marker.mockReturnValue('generation')
+        mocks.spawnHappyCLI.mockImplementation(() => { throw new Error('no child queued for spawn') })
         home = mkdtempSync(join(tmpdir(), 'hapi-stop-release-'))
         const originalStateFile = configuration.runnerStateFile
         const captured = new Error('control handlers captured before runner networking')
@@ -154,5 +160,49 @@ describe('runner stop of an adopted child', () => {
         expect(mocks.kill).toHaveBeenCalledTimes(1)
         // No argv sweep: nothing beyond the named process is signalled.
         expect(mocks.reapOrphans).not.toHaveBeenCalled()
+    })
+
+    it('declines a recovery stop with no tracked child instead of sweeping argv for a same-id MCP bridge', async () => {
+        // No tracked or persisted process for this HAPI id: the general argv
+        // sweep would match an MCP bridge stamped with the same session id and
+        // signal it without the hub confirming the requested pid.
+        await expect(stop({ recovery: { requestId: 'r-miss', pid: 7777 } }, 'untracked')).resolves.toBe('still_alive')
+        expect(mocks.reapOrphans).not.toHaveBeenCalled()
+        expect(mocks.kill).not.toHaveBeenCalled()
+        expect(mocks.confirm).not.toHaveBeenCalled()
+    })
+
+    it('declines a recovery stop when the tracked child exits during confirmation and its pid is reused', async () => {
+        const child = new EventEmitter() as EventEmitter & { pid: number }
+        child.pid = 4242
+        mocks.spawnHappyCLI.mockReturnValue(child)
+        const spawnPromise = handlers.spawnSession({
+            directory: '/tmp',
+            existingSessionId: 'race',
+            validateDirectory: async () => true,
+        })
+        let settled = false
+        void spawnPromise.then(() => { settled = true }, () => { settled = true })
+        const deadline = Date.now() + 2_000
+        while (!settled && Date.now() < deadline) {
+            handlers.onHappySessionWebhook('race', {
+                path: '/tmp', host: 'localhost', flavor: 'claude', startedBy: 'runner',
+                hostPid: 4242, hostStartMarker: 'generation',
+            } as Metadata)
+            await new Promise(resolve => setTimeout(resolve, 10))
+        }
+        await expect(spawnPromise).resolves.toEqual({ type: 'success', sessionId: 'race' })
+        mocks.kill.mockClear()
+
+        mocks.confirm.mockImplementation(async () => {
+            // The exit drops the persisted marker; the OS hands the same pid
+            // to an unrelated process before confirmation returns.
+            child.emit('exit', 0, null)
+            mocks.marker.mockReturnValue('recycled-generation')
+            return true
+        })
+
+        await expect(stop({ recovery: { requestId: 'r-race', pid: 4242 } }, 'race')).resolves.toBe('unknown')
+        expect(mocks.kill).not.toHaveBeenCalled()
     })
 })

@@ -1580,12 +1580,15 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
               }
             }
             try {
-              if (!await prepareSessionStop(sessionId, pid, persistedResumeProcesses.get(pid)?.processStartMarker)) return 'still_alive';
+              const verifiedMarker = persistedResumeProcesses.get(pid)?.processStartMarker;
+              if (!await prepareSessionStop(sessionId, pid, verifiedMarker)) return 'still_alive';
               // Preparation can outlive the target generation (same recheck as
               // the raw-PID path): never signal a dead or recycled PID.
               if (!isProcessAlive(pid)) return await finishWithOrphanSweep('already_gone');
               const trackedMarker = persistedResumeProcesses.get(pid)?.processStartMarker;
-              if (trackedMarker && getProcessStartMarker(pid) !== trackedMarker) return 'unknown';
+              const expectedMarker = verifiedMarker ?? trackedMarker;
+              if (expectedMarker && getProcessStartMarker(pid) !== expectedMarker) return 'unknown';
+              if (opts?.recovery && pidToTrackedSession.get(pid) !== session) return 'unknown';
               const reportStop: Parameters<typeof killProcessTreeByPid>[2] = report => {
                 logger.debug('[RUNNER RUN] Windows tree stop confirmation', { sessionId, pid, ...report });
               };
@@ -1723,6 +1726,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       // excluding PIDs that still host active shared sibling roots (registry
       // and/or in-memory tracked wrappers).
       {
+        // A recovery stop signals only the requested pid, never an argv match.
+        if (opts?.recovery) return 'still_alive';
         const liveRuntimes = await readLiveRuntimesForStop();
         if (liveRuntimes === null) return 'still_alive';
         const protectedTrackedPids = trackedSharedWrapperPidsWithSiblings(
