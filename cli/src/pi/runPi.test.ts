@@ -984,7 +984,7 @@ describe('Pi native steering delivery mode', () => {
         }));
         const steer = harness.sent.find((item) => (item as { type?: string }).type === 'steer') as { id: string };
         harness.onEvent!({ type: 'response', id: steer.id, command: 'steer', success: true });
-        await vi.waitFor(() => expect(harness.session.emitMessagesConsumed).toHaveBeenCalledWith(['native-steer-id'], undefined));
+        await vi.waitFor(() => expect(harness.session.emitMessagesConsumed).toHaveBeenCalledWith(['native-steer-id'], { steered: true }));
 
         // The main turn ending releases only the explicit queue mode. The steer
         // response itself never changes Pi's main streaming/thinking state.
@@ -1207,7 +1207,7 @@ describe('Pi steer-queued-message RPC', () => {
         expect(steer?.message).toBe('steer me');
         harness.onEvent!({ type: 'response', id: steer!.id, command: 'steer', success: true });
         await vi.advanceTimersByTimeAsync(0);
-        expect(harness.session.emitMessagesConsumed).toHaveBeenCalledWith(['steer-local'], undefined);
+        expect(harness.session.emitMessagesConsumed).toHaveBeenCalledWith(['steer-local'], { steered: true });
 
         harness.onError?.(new Error('stop test transport'));
         await running;
@@ -1261,7 +1261,7 @@ describe('Pi steer-queued-message RPC', () => {
         expect(steer?.message).toBe('attach me');
         harness.onEvent!({ type: 'response', id: steer!.id, command: 'steer', success: true });
         await vi.advanceTimersByTimeAsync(0);
-        expect(harness.session.emitMessagesConsumed).toHaveBeenCalledWith(['attach-local'], undefined);
+        expect(harness.session.emitMessagesConsumed).toHaveBeenCalledWith(['attach-local'], { steered: true });
 
         harness.onError?.(new Error('stop test transport'));
         await running;
