@@ -2582,6 +2582,55 @@ class ChatViewModelInteractionTest {
     }
 
     @Test
+    fun `selecting a skill that ends in a dot or colon replaces the existing punctuation`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        val plain = SkillSummary("review")
+        val skills = listOf(SkillSummary("review."), SkillSummary("review:"))
+        harness.api.skillsResult = SkillsResponse(success = true, skills = skills + plain)
+        vm.start()
+
+        val caret = "Run \$review".length
+        for (skill in skills) {
+            for (suffix in listOf(" please", "")) {
+                val draft = "Run \$${skill.name}$suffix"
+                vm.onComposerChange(draft, caret, caret)
+                testScheduler.runCurrent()
+                vm.selectSkillSuggestion(vm.skillSuggestions.value.single { it.skill == skill })
+                testScheduler.runCurrent()
+                assertEquals(if (suffix.isEmpty()) "$draft " else draft, vm.composer.value.text, draft)
+                assertEquals(caret + 2, vm.composer.value.caretPosition)
+
+                vm.onComposerChange(draft, caret, caret)
+                testScheduler.runCurrent()
+                vm.selectSkillSuggestion(vm.skillSuggestions.value.single { it.skill == plain })
+                testScheduler.runCurrent()
+                assertEquals(draft, vm.composer.value.text, "Preserve punctuation when selecting the shorter name")
+            }
+        }
+        assertTrue(harness.api.sendCalls.value.isEmpty())
+    }
+
+    @Test
+    fun `a sentence ending after the caret is not a partial skill suffix`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        val skills = listOf(SkillSummary("review.lint"), SkillSummary("review:lint"))
+        harness.api.skillsResult = SkillsResponse(success = true, skills = skills)
+        vm.start()
+
+        val caret = "Run \$review".length
+        for (skill in skills) {
+            val punctuation = skill.name["review".length]
+            vm.onComposerChange("Run \$review$punctuation Then continue", caret, caret)
+            testScheduler.runCurrent()
+            vm.selectSkillSuggestion(vm.skillSuggestions.value.single { it.skill == skill })
+            testScheduler.runCurrent()
+            assertEquals("Run \$${skill.name}$punctuation Then continue", vm.composer.value.text)
+        }
+    }
+
+    @Test
     fun `selecting before a period dismisses the menu even with a dotted completion`() = runTest {
         val harness = InteractionHarness(this)
         val vm = harness.viewModel

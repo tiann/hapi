@@ -75,9 +75,9 @@ import app.hapi.companion.feature.sessions.InMemorySessionListOrderStore
 import app.hapi.companion.feature.sessions.SessionListOrderStore
 import app.hapi.companion.feature.sessions.SessionListViewModel
 import app.hapi.companion.feature.share.ShareScreen
-import app.hapi.companion.feature.share.ShareSessionGateway
 import app.hapi.companion.feature.share.ShareTarget
 import app.hapi.companion.feature.share.ShareTargetController
+import app.hapi.companion.feature.share.StoreShareSessionGateway
 import app.hapi.companion.feature.settings.PasskeysGateway
 import app.hapi.companion.feature.settings.PasskeysScreen
 import app.hapi.companion.feature.settings.PasskeysViewModel
@@ -813,17 +813,7 @@ private class ShareViewModelHolder : ViewModel() {
         val nextScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         scope = nextScope
         graph = hub
-        val gateway = object : ShareSessionGateway {
-            override suspend fun isActive(sessionId: String) = hub.sessionStore.loadSessionDetail(sessionId).active
-            override suspend fun reopen(sessionId: String): String {
-                val response = hub.sessionStore.reopenSession(sessionId)
-                if (response.sessionId != sessionId) {
-                    hub.messageWindows.seed(sessionId, response.sessionId)
-                    hub.chatDrafts.move(sessionId, response.sessionId)
-                }
-                return response.sessionId
-            }
-        }
+        val gateway = StoreShareSessionGateway(hub.sessionStore, hub.messageWindows, hub.chatDrafts)
         return ShareModels(
             SessionListViewModel(
                 hub.sessionStore, hub.machineStore, hub.lastSeenStore, nextScope, hub.hubUrl,

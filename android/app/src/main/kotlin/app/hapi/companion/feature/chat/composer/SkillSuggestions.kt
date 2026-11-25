@@ -42,18 +42,15 @@ internal object SkillSuggestions {
         isNameChar(text, index)
     }
 
-    private fun isCandidateAt(text: String, index: Int, caret: Int): Boolean {
-        val char = text.getOrNull(index) ?: return false
-        return when (char) {
-            // The catalogue decides whether these marks belong to the name.
-            '.', ':' -> {
-                val previous = text.getOrNull(index - 1)
-                (previous == '+' || previous == '#' || isNameChar(text, index - 1)) &&
-                    (index == caret - 1 || isNameChar(text, index + 1) || (char == ':' && index == text.lastIndex))
-            }
-            '+', '#' -> true
-            else -> isNameChar(text, index)
-        }
+    private fun canFollowName(text: String, index: Int): Boolean {
+        val previous = text.getOrNull(index - 1)
+        return previous == '+' || previous == '#' || isNameChar(text, index - 1)
+    }
+
+    private fun isCandidateAt(text: String, index: Int, caret: Int): Boolean = when (text.getOrNull(index)) {
+        '.', ':' -> canFollowName(text, index) && (index == caret - 1 || isNameChar(text, index + 1))
+        '+', '#' -> true
+        else -> isNameChar(text, index)
     }
 
     fun token(text: String, start: Int, end: Int): Token? {
@@ -63,6 +60,9 @@ internal object SkillSuggestions {
         if (text.getOrNull(wordStart) != '$' || isNameAt(text, wordStart - 1)) return null
         var wordEnd = start
         while (isCandidateAt(text, wordEnd, start)) wordEnd++
+        // Include one trailing mark in the forward span without scanning past it.
+        val trailing = text.getOrNull(wordEnd)
+        if ((trailing == '.' || trailing == ':') && canFollowName(text, wordEnd)) wordEnd++
         val word = text.substring(wordStart, wordEnd)
         return Token(
             wordStart, wordEnd, word, text.substring(wordStart + 1, start),
@@ -96,6 +96,14 @@ internal object SkillSuggestions {
         for (end in minOf(word.length, maxNameLength + 1) downTo boundary + 1) {
             if (end < word.length && word[end] !in provisionalPunctuation) continue
             val candidate = skillNameKey(word.substring(1, end))
+            if (end == word.length && end > token.query.length + 1 && word[end - 1] in ".:") {
+                // Beyond the caret, a trailing sentence mark needs an exact
+                // match. If both spans match, keep it unless the full name is selected.
+                if (candidate in knownNames &&
+                    (candidate == name || skillNameKey(word.substring(1, end - 1)) !in knownNames)
+                ) return token.start + end
+                continue
+            }
             if (candidate in knownNames) return token.start + end
             if (partialEnd == null && candidate in name) partialEnd = end
         }
