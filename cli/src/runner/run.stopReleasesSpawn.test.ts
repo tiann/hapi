@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
     reapOrphans: vi.fn<typeof import('./orphanReap')['reapRunnerSpawnedOrphans']>(),
     kill: vi.fn(),
     prepare: vi.fn(),
+    confirm: vi.fn(),
 }))
 
 vi.mock('./controlServer', () => ({ startRunnerControlServer: mocks.controlServer }))
@@ -19,7 +20,7 @@ vi.mock('./controlClient', () => ({
     stopRunner: async () => {},
 }))
 vi.mock('@/api/api', () => ({
-    ApiClient: { create: async () => ({ prepareOpenCodeSessionStop: mocks.prepare }) },
+    ApiClient: { create: async () => ({ prepareOpenCodeSessionStop: mocks.prepare, confirmRecoveryStop: mocks.confirm }) },
 }))
 vi.mock('@/persistence', async importOriginal => ({
     ...await importOriginal<typeof import('@/persistence')>(),
@@ -69,6 +70,7 @@ describe('runner stop of an adopted child', () => {
         mocks.kill.mockResolvedValue(true)
         mocks.reapOrphans.mockResolvedValue(null)
         mocks.prepare.mockResolvedValue(undefined)
+        mocks.confirm.mockResolvedValue(true)
         home = mkdtempSync(join(tmpdir(), 'hapi-stop-release-'))
         const originalStateFile = configuration.runnerStateFile
         const captured = new Error('control handlers captured before runner networking')
@@ -112,7 +114,7 @@ describe('runner stop of an adopted child', () => {
         expect(after.type).toBe('error')
     })
 
-    it('keeps the dedupe until the orphan sweep finished', async () => {
+    it('holds a same-id spawn until the stop finished its orphan sweep', async () => {
         let finishSweep!: () => void
         let sweepStarted!: () => void
         const started = new Promise<void>(resolve => { sweepStarted = resolve })
@@ -123,23 +125,34 @@ describe('runner stop of an adopted child', () => {
         const stopping = stop()
         await started
 
-        // A same-id spawn during the sweep must not start a child the sweep could match.
-        await expect(handlers.spawnSession(respawn)).resolves.toEqual({ type: 'success', sessionId: 'adopted', reusedChild: true })
+        // A child started now would match the sweep's argv scan.
+        let settled = false
+        const spawning = handlers.spawnSession(respawn).finally(() => { settled = true })
+        await new Promise(resolve => setTimeout(resolve, 20))
+        expect(settled).toBe(false)
 
         finishSweep()
         await expect(stopping).resolves.toBe('stopped')
-        expect((await handlers.spawnSession(respawn)).type).toBe('error')
+        expect((await spawning).type).toBe('error')
     })
 
-    it('asks the hub before signalling any flavor only when the stop must confirm reachability', async () => {
-        mocks.prepare.mockRejectedValueOnce(new Error('Session wrapper reconnected; recovery stop cancelled'))
-        await expect(stop({ confirmUnreachable: true })).resolves.toBe('still_alive')
-        expect(mocks.prepare).toHaveBeenCalledWith('adopted', 'machine', 4242, 'generation')
+    it('signals a recovery target only after the hub confirms that exact request and process', async () => {
+        mocks.confirm.mockResolvedValueOnce(false)
+        await expect(stop({ recovery: { requestId: 'r1', pid: 4242 } })).resolves.toBe('still_alive')
+        expect(mocks.confirm).toHaveBeenCalledWith('adopted', 'machine', 4242, 'r1')
         expect(mocks.kill).not.toHaveBeenCalled()
 
-        mocks.prepare.mockClear()
-        await expect(stop()).resolves.toBe('stopped')
+        // Another process for the id is never signalled, and the hub is not asked.
+        mocks.confirm.mockClear()
+        await expect(stop({ recovery: { requestId: 'r2', pid: 9999 } })).resolves.toBe('still_alive')
+        expect(mocks.confirm).not.toHaveBeenCalled()
+        expect(mocks.kill).not.toHaveBeenCalled()
+
+        await expect(stop({ recovery: { requestId: 'r3', pid: 4242 } })).resolves.toBe('stopped')
+        expect(mocks.confirm).toHaveBeenCalledWith('adopted', 'machine', 4242, 'r3')
         expect(mocks.prepare).not.toHaveBeenCalled()
-        expect(mocks.kill).toHaveBeenCalled()
+        expect(mocks.kill).toHaveBeenCalledTimes(1)
+        // No argv sweep: nothing beyond the named process is signalled.
+        expect(mocks.reapOrphans).not.toHaveBeenCalled()
     })
 })

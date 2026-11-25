@@ -7,8 +7,7 @@ import { SyncEngine } from './syncEngine'
 import { RpcTargetMissingError } from './rpcGateway'
 import type { SessionCache } from './sessionCache'
 
-type Child = { pid: number; marker: string; connects: boolean }
-type PrepareProbe = { pid: number; marker: string }
+type Child = { pid: number; connects: boolean }
 
 /**
  * A runner-spawned wrapper can stay alive after its hub socket closed (event
@@ -17,12 +16,12 @@ type PrepareProbe = { pid: number; marker: string }
  *
  * The real RpcGateway runs (registry lookups, session RPC, spawn and stop
  * response parsing); only the runner behind the machine RPC and the wrapper
- * sockets are simulated.
+ * sockets are simulated. The fake runner follows the recovery contract: it
+ * signals only the named pid and asks the hub once right before.
  */
 describe('SyncEngine reopen of an unreachable runner wrapper', () => {
     const NAMESPACE = 'default'
     const MACHINE = 'machine-x'
-    const LEASE = { id: 'lease', expiresAt: 123456 }
     let store: Store
     let registry: RpcRegistry
     let engine: SyncEngine
@@ -34,13 +33,12 @@ describe('SyncEngine reopen of an unreachable runner wrapper', () => {
     let nextPid: number
     let spawnCalls: number
     let stopCalls: number
-    let stopParams: Record<string, unknown>[]
-    let prepareOutcomes: string[]
+    let confirmations: boolean[]
+    let lastRequest: { sessionId: string; pid: number; requestId: string } | undefined
     let wrapperPrepareCalls: number
-    // Extra prepare-stop calls the fake runner makes before its own target.
-    let extraPrepares: PrepareProbe[]
     let duringStop: (() => void) | undefined
     let bootConnects: boolean
+    let oldRunner: boolean
 
     const cache = () => (engine as unknown as { sessionCache: SessionCache }).sessionCache
     const gateway = () => (engine as unknown as { rpcGateway: Record<string, unknown> }).rpcGateway
@@ -73,13 +71,8 @@ describe('SyncEngine reopen of an unreachable runner wrapper', () => {
         const socket = {
             id: `live-${sessionId}`,
             timeout: () => ({
-                emitWithAck: async (_event: string, payload: { method: string; params: string }) => {
-                    const params = JSON.parse(payload.params) as Record<string, unknown>
-                    if (payload.method.endsWith(getSessionStopPreparationMethod(MACHINE, pid))) {
-                        wrapperPrepareCalls++
-                        return { success: true, pid, processStartMarker: params.expectedProcessStartMarker,
-                            machineId: MACHINE, preparationLease: params.preparationLease }
-                    }
+                emitWithAck: async () => {
+                    wrapperPrepareCalls++
                     return { success: true, pid }
                 },
             }),
@@ -91,39 +84,28 @@ describe('SyncEngine reopen of an unreachable runner wrapper', () => {
         cache().markSessionActive(sessionId)
     }
 
-    async function prepare(sessionId: string, probe: PrepareProbe): Promise<string> {
-        try {
-            return await engine.prepareOpenCodeSessionStop(sessionId, probe.pid, probe.marker, LEASE, MACHINE)
-        } catch (error) {
-            return error instanceof Error ? error.name : 'error'
-        }
-    }
-
     async function runnerRpc(_machineId: string, method: string, params: Record<string, unknown>): Promise<unknown> {
         if (method === RPC_METHODS.SpawnHappySession) {
             spawnCalls++
             const id = (params.reservedSessionId ?? params.existingSessionId) as string
             if (children.has(id)) return { type: 'success', sessionId: id, reusedChild: true }
-            const child = { pid: nextPid++, marker: `gen-${nextPid}`, connects: bootConnects }
+            const child = { pid: nextPid++, connects: bootConnects }
             children.set(id, child)
             if (child.connects) cache().markSessionActive(id)
             return { type: 'success', sessionId: id }
         }
-        if (method === RPC_METHODS.StopSession) {
+        if (method === RPC_METHODS.StopUnreachableSession) {
+            if (oldRunner) throw new RpcTargetMissingError(`${MACHINE}:${method}`, 'handler-not-registered')
             stopCalls++
-            stopParams.push(params)
+            lastRequest = params as typeof lastRequest
             const id = params.sessionId as string
             const child = children.get(id)
             if (!child) return { status: 'unknown' }
+            if (child.pid !== params.pid) return { status: 'still_alive' }
             duringStop?.()
-            for (const probe of extraPrepares) prepareOutcomes.push(await prepare(id, probe))
-            // The runner asks the hub before signalling an OpenCode wrapper,
-            // and any wrapper when the hub asked it to confirm.
-            if (cache().getSession(id)?.metadata?.flavor === 'opencode' || params.confirmUnreachable === true) {
-                const outcome = await prepare(id, child)
-                prepareOutcomes.push(outcome)
-                if (outcome !== 'ready' && outcome !== 'not_required') return { status: 'still_alive' }
-            }
+            const confirmed = engine.confirmRecoveryStop(id, MACHINE, child.pid, params.requestId as string)
+            confirmations.push(confirmed)
+            if (!confirmed) return { status: 'still_alive' }
             children.delete(id)
             return { status: 'stopped' }
         }
@@ -156,12 +138,12 @@ describe('SyncEngine reopen of an unreachable runner wrapper', () => {
         nextPid = 5000
         spawnCalls = 0
         stopCalls = 0
-        stopParams = []
-        prepareOutcomes = []
+        confirmations = []
+        lastRequest = undefined
         wrapperPrepareCalls = 0
-        extraPrepares = []
         duringStop = undefined
         bootConnects = true
+        oldRunner = false
         createEngine(10 * 60_000)
     })
 
@@ -169,25 +151,40 @@ describe('SyncEngine reopen of an unreachable runner wrapper', () => {
         engine.stop()
     })
 
-    it('stops a wedged wrapper without the drain and respawns it with native resume', async () => {
+    it('stops a wedged wrapper through the recovery RPC and respawns it with native resume', async () => {
         const id = insertInactiveSession('wedged')
-        children.set(id, { pid: 4242, marker: 'gen-wedged', connects: false })
+        children.set(id, { pid: 4242, connects: false })
 
         const result = await engine.reopenSession(id, NAMESPACE)
 
         expect(result).toEqual({ type: 'success', sessionId: id, resumed: true })
         expect(stopCalls).toBe(1)
-        expect(stopParams[0]?.confirmUnreachable).toBe(true)
-        expect(prepareOutcomes).toEqual(['not_required'])
+        expect(lastRequest).toMatchObject({ sessionId: id, pid: 4242 })
+        expect(confirmations).toEqual([true])
         expect(spawnCalls).toBe(1)
         expect(children.get(id)?.pid).not.toBe(4242)
         expect(cache().getSession(id)?.active).toBe(true)
     })
 
+    it('keeps today\'s path with a runner that predates the recovery RPC', async () => {
+        oldRunner = true
+        const id = insertInactiveSession('old-runner')
+        children.set(id, { pid: 4242, connects: false })
+        const warn = spyOn(console, 'warn').mockImplementation(() => {})
+        try {
+            expect((await engine.reopenSession(id, NAMESPACE)).type).toBe('error')
+            expect(warn.mock.calls.some(([message]) => String(message).endsWith('failed'))).toBe(true)
+        } finally {
+            warn.mockRestore()
+        }
+        expect(children.get(id)?.pid).toBe(4242)
+        expect(spawnCalls).toBe(1)
+    })
+
     it('does not stop a wrapper that a recent reopen spawned and that is still booting', async () => {
         const id = insertInactiveSession('late-boot')
         bootConnects = false
-        children.set(id, { pid: 4242, marker: 'gen-wedged', connects: false })
+        children.set(id, { pid: 4242, connects: false })
         // The first reopen replaces the wedged child with one that is slow to connect.
         const first = await engine.reopenSession(id, NAMESPACE)
         expect(first.type).toBe('error')
@@ -204,7 +201,7 @@ describe('SyncEngine reopen of an unreachable runner wrapper', () => {
 
     it('does not let deduplicated spawns extend the quiet period', async () => {
         const id = insertInactiveSession('retries', {}, 30_000)
-        children.set(id, { pid: 4242, marker: 'gen-wedged', connects: false })
+        children.set(id, { pid: 4242, connects: false })
 
         // Inside the quiet period each retry rejoins the wedged child.
         for (let attempt = 0; attempt < 3; attempt++) {
@@ -218,6 +215,22 @@ describe('SyncEngine reopen of an unreachable runner wrapper', () => {
         expect(await engine.reopenSession(id, NAMESPACE)).toEqual({ type: 'success', sessionId: id, resumed: true })
         expect(stopCalls).toBe(1)
         expect(children.get(id)?.pid).not.toBe(4242)
+    })
+
+    it('does not let a cached startup error extend the quiet period', async () => {
+        const id = insertInactiveSession('cached-error', {}, 61_000)
+        children.set(id, { pid: 4242, connects: false })
+        const runner = runnerRpc
+        gateway().machineRpc = async (machineId: string, method: string, params: Record<string, unknown>) =>
+            method === RPC_METHODS.SpawnHappySession
+                ? { type: 'error', errorMessage: 'Session webhook timeout', reusedChild: true }
+                : runner(machineId, method, params)
+        await (gateway().spawnSession as (...args: unknown[]) => Promise<unknown>)(MACHINE, '/tmp/proj', 'opencode',
+            undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, id)
+        gateway().machineRpc = runner
+
+        expect((await engine.reopenSession(id, NAMESPACE)).type).toBe('success')
+        expect(stopCalls).toBe(1)
     })
 
     it('does not stop a wrapper that another hub spawn path just started', async () => {
@@ -237,7 +250,7 @@ describe('SyncEngine reopen of an unreachable runner wrapper', () => {
         engine.stop()
         createEngine(5_000)
         const id = insertInactiveSession('hub-restart')
-        children.set(id, { pid: 4242, marker: 'gen-booting', connects: false })
+        children.set(id, { pid: 4242, connects: false })
 
         expect((await engine.reopenSession(id, NAMESPACE)).type).toBe('error')
         expect(stopCalls).toBe(0)
@@ -246,12 +259,12 @@ describe('SyncEngine reopen of an unreachable runner wrapper', () => {
 
     it('keeps today\'s path for a wrapper that went quiet recently or is still connected', async () => {
         const quiet = insertInactiveSession('recently-quiet', {}, 20_000)
-        children.set(quiet, { pid: 4242, marker: 'gen-a', connects: false })
+        children.set(quiet, { pid: 4242, connects: false })
         const reachable = insertInactiveSession('connected')
-        children.set(reachable, { pid: 4243, marker: 'gen-b', connects: false })
+        children.set(reachable, { pid: 4243, connects: false })
         connect(reachable)
         const inRoom = insertInactiveSession('in-room')
-        children.set(inRoom, { pid: 4244, marker: 'gen-c', connects: false })
+        children.set(inRoom, { pid: 4244, connects: false })
         rooms.set(`session:${inRoom}`, new Set(['socket-room']))
 
         expect((await engine.reopenSession(quiet, NAMESPACE)).type).toBe('error')
@@ -260,72 +273,42 @@ describe('SyncEngine reopen of an unreachable runner wrapper', () => {
         expect(stopCalls).toBe(0)
     })
 
-    it('keeps an OpenCode wrapper that reconnects with its prepare handler during the stop', async () => {
-        const id = insertInactiveSession('reconnects')
-        children.set(id, { pid: 4242, marker: 'gen-wedged', connects: false })
-        duringStop = () => reconnectWrapper(id, 4242)
+    for (const flavor of ['opencode', 'claude'] as const) {
+        it(`keeps a ${flavor} wrapper that reconnects with its prepare handler during the stop`, async () => {
+            const id = insertInactiveSession(`${flavor}-reconnects`, { flavor, claudeSessionId: 'native-claude' })
+            children.set(id, { pid: 4242, connects: false })
+            duringStop = () => reconnectWrapper(id, 4242)
 
-        const result = await engine.reopenSession(id, NAMESPACE)
+            const result = await engine.reopenSession(id, NAMESPACE)
 
-        expect(stopCalls).toBe(1)
-        expect(prepareOutcomes).toEqual(['Error'])
-        expect(wrapperPrepareCalls).toBe(0)
-        expect(children.get(id)?.pid).toBe(4242)
-        expect(result).toEqual({ type: 'success', sessionId: id, resumed: true })
-    })
+            expect(confirmations).toEqual([false])
+            expect(wrapperPrepareCalls).toBe(0)
+            expect(children.get(id)?.pid).toBe(4242)
+            expect(result).toEqual({ type: 'success', sessionId: id, resumed: true })
+        })
+    }
 
-    it('keeps a reconnected wrapper of another flavor and stops it while unreachable', async () => {
-        const reconnects = insertInactiveSession('claude-reconnects', { flavor: 'claude', claudeSessionId: 'native-a' })
-        children.set(reconnects, { pid: 4242, marker: 'gen-a', connects: false })
-        duringStop = () => reconnectWrapper(reconnects, 4242)
-        expect((await engine.reopenSession(reconnects, NAMESPACE)).type).toBe('success')
-        expect(prepareOutcomes).toEqual(['Error'])
-        expect(children.get(reconnects)?.pid).toBe(4242)
-
-        duringStop = undefined
-        prepareOutcomes = []
-        const wedged = insertInactiveSession('claude-wedged', { flavor: 'claude', claudeSessionId: 'native-b', hostPid: 4343 })
-        children.set(wedged, { pid: 4343, marker: 'gen-b', connects: false })
-        expect((await engine.reopenSession(wedged, NAMESPACE)).type).toBe('success')
-        expect(prepareOutcomes).toEqual(['not_required'])
-        expect(children.get(wedged)?.pid).not.toBe(4343)
-    })
-
-    it('refuses to skip the drain for any other prepare-stop during the window', async () => {
-        const id = insertInactiveSession('scoped-window')
-        children.set(id, { pid: 4242, marker: 'gen-wedged', connects: false })
-        extraPrepares = [{ pid: 7777, marker: 'gen-other' }]
-
-        const result = await engine.reopenSession(id, NAMESPACE)
-
-        expect(prepareOutcomes).toEqual(['RpcTargetMissingError', 'not_required'])
-        expect(result.type).toBe('success')
-    })
-
-    it('refuses to skip the drain once the stop deadline has passed', async () => {
-        const id = insertInactiveSession('expired-window')
-        children.set(id, { pid: 4242, marker: 'gen-wedged', connects: false })
+    it('confirms only the live request for its own process, never a late or foreign one', async () => {
+        const id = insertInactiveSession('scoped', { flavor: 'claude', claudeSessionId: 'native-claude' })
+        children.set(id, { pid: 4242, connects: false })
+        let probes: boolean[] = []
         duringStop = () => {
-            const stops = (engine as unknown as { unreachableWrapperStops: Map<string, { deadline: number }> }).unreachableWrapperStops
-            stops.get(id)!.deadline = Date.now() - 1
+            const request = lastRequest!
+            probes = [
+                engine.confirmRecoveryStop(id, MACHINE, 7777, request.requestId),
+                engine.confirmRecoveryStop(id, 'machine-other', 4242, request.requestId),
+                engine.confirmRecoveryStop(id, MACHINE, 4242, 'another-request'),
+            ]
         }
-
         await engine.reopenSession(id, NAMESPACE)
+        expect(probes).toEqual([false, false, false])
+        expect(confirmations).toEqual([true])
 
-        expect(prepareOutcomes).toEqual(['RpcTargetMissingError'])
-        expect(children.get(id)?.pid).toBe(4242)
-    })
-
-    it('scopes the drain skip to the reopen that requested the stop', async () => {
-        const id = insertInactiveSession('scoped')
-        children.set(id, { pid: 4242, marker: 'gen-wedged', connects: false })
-        await engine.reopenSession(id, NAMESPACE)
-        expect(prepareOutcomes).toEqual(['not_required'])
-
-        await expect(engine.prepareOpenCodeSessionStop(id, 4242, 'gen-wedged', LEASE, MACHINE))
-            .rejects.toBeInstanceOf(RpcTargetMissingError)
-        await expect(engine.prepareOpenCodeSessionStop(id, 4242, 'gen-wedged', LEASE, 'machine-other'))
-            .rejects.toThrow('Session machine does not match runner')
+        // After reopen returned, the same request no longer confirms anything.
+        expect(engine.confirmRecoveryStop(id, MACHINE, 4242, lastRequest!.requestId)).toBe(false)
+        // Ordinary stops keep their own coordination.
+        await expect(engine.prepareOpenCodeSessionStop(id, 4242, 'gen', { id: 'lease', expiresAt: 1 }, MACHINE))
+            .resolves.toBe('not_required')
     })
 
     it('logs a stop that did not stop anything and still resumes', async () => {
@@ -347,7 +330,7 @@ describe('SyncEngine reopen of an unreachable runner wrapper', () => {
         const codex = insertInactiveSession('codex', { flavor: 'codex', codexSessionId: 'thread-1' })
         const archived = insertInactiveSession('archived', { lifecycleState: 'archived', archivedBy: 'hub', archiveReason: 'test' })
         for (const id of [terminal, neverBooted, codex, archived]) {
-            children.set(id, { pid: 4242, marker: 'gen', connects: false })
+            children.set(id, { pid: 4242, connects: false })
             await engine.reopenSession(id, NAMESPACE)
         }
         expect(stopCalls).toBe(0)
@@ -363,11 +346,11 @@ describe('SyncEngine reopen of an unreachable runner wrapper', () => {
             current.metadataVersion, NAMESPACE)
         cache().refreshSession(id)
         cache().getSession(id)!.activeAt = Date.now() - 5 * 60_000
-        children.set(id, { pid: 4242, marker: 'gen-wedged', connects: false })
+        children.set(id, { pid: 4242, connects: false })
 
         await engine.reopenSession(id, NAMESPACE)
 
-        expect(prepareOutcomes).toEqual(['Error'])
+        expect(confirmations).toEqual([false])
         expect(children.get(id)?.pid).toBe(4242)
     })
 })

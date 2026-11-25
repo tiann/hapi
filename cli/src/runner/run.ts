@@ -63,6 +63,8 @@ export type SpawnDeduplicator = ((options: SpawnSessionOptions) => Promise<Spawn
   markChildAlive: (existingSessionId: string) => void
   markChildStopping: (existingSessionId: string) => void
   onChildExited: (existingSessionId: string) => void
+  /** Spawns for this id wait until `operation` settles (a stop still verifying or sweeping). */
+  holdWhile: (existingSessionId: string, operation: Promise<unknown>) => void
 }
 
 export function createSpawnDeduplicator(
@@ -70,17 +72,21 @@ export function createSpawnDeduplicator(
 ): SpawnDeduplicator {
   const completedOrInFlight = new Map<string, Promise<SpawnSessionResult>>();
   const childState = new Map<string, 'alive' | 'stopping'>();
+  const holds = new Map<string, Promise<unknown>>();
 
   const dedupe = async (options: SpawnSessionOptions): Promise<SpawnSessionResult> => {
     const key = options.existingSessionId ?? options.reservedSessionId;
     if (!key) {
       return await spawnOnce(options);
     }
+    for (let hold = holds.get(key); hold; hold = holds.get(key)) {
+      await hold.catch(() => {});
+    }
     const existing = completedOrInFlight.get(key);
     if (existing) {
       const result = await existing;
       // Tell the hub no process started for this request.
-      return result.type === 'success' ? { ...result, reusedChild: true } : result;
+      return result.type === 'requestToApproveDirectoryCreation' ? result : { ...result, reusedChild: true };
     }
 
     const task = spawnOnce(options);
@@ -114,6 +120,12 @@ export function createSpawnDeduplicator(
   dedupe.onChildExited = (existingSessionId: string) => {
     childState.delete(existingSessionId);
     completedOrInFlight.delete(existingSessionId);
+  };
+  dedupe.holdWhile = (existingSessionId: string, operation: Promise<unknown>) => {
+    const hold = Promise.all([holds.get(existingSessionId), operation.catch(() => {})]).finally(() => {
+      if (holds.get(existingSessionId) === hold) holds.delete(existingSessionId);
+    });
+    holds.set(existingSessionId, hold);
   };
   return dedupe;
 }
@@ -1247,10 +1259,22 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       logger.debug(`[RUNNER RUN] Attempting to stop session ${sessionId}`);
       const signalDeadlines = new Map<number, number>();
       const prepareSessionStop = async (id: string, pid: number, expectedMarker?: string): Promise<boolean> => {
+        if (opts?.recovery) {
+          // A recovery stop signals only the named process, and only if the
+          // hub still cannot reach it right now. It cannot drain anyway.
+          if (pid !== opts.recovery.pid) return false;
+          if (!isProcessAlive(pid)) return true;
+          try {
+            return await (await ApiClient.create()).confirmRecoveryStop(id, machineId, pid, opts.recovery.requestId);
+          } catch (error) {
+            logger.debug(`[RUNNER RUN] Session ${id} recovery stop unconfirmed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            return false;
+          }
+        }
         if (!isProcessAlive(pid)) return true;
         const flavor = pidToTrackedSession.get(pid)?.happySessionMetadataFromLocalWebhook?.flavor
           ?? persistedResumeProcesses.get(pid)?.flavor;
-        if (flavor && flavor !== 'opencode' && opts?.confirmUnreachable !== true) return true;
+        if (flavor && flavor !== 'opencode') return true;
         const marker = expectedMarker ?? getProcessStartMarker(pid);
         if (!marker) return false;
         try {
@@ -1345,6 +1369,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       const finishWithOrphanSweep = async (
         base: 'stopped' | 'already_gone' | 'unknown'
       ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
+        // A recovery stop signals only the one process the hub named.
+        if (opts?.recovery) return base;
         const liveRuntimes = await readLiveRuntimesForStop();
         if (liveRuntimes === null) return 'still_alive';
         const protectedTrackedPids = trackedSharedWrapperPidsWithSiblings(
@@ -1373,6 +1399,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
       const { findRuntime } = await import('@/codex/shared/registry');
       const sharedRuntime = await findRuntime(sessionId);
+      // A shared runtime stops its root without a per-process confirmation.
+      if (sharedRuntime && opts?.recovery) return 'still_alive';
       if (sharedRuntime) {
         try {
           const { runtimeControl } = await import('@/codex/shared/frontend');
@@ -1760,8 +1788,13 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
       const intentional = markIntentionalStop(sessionId);
       const terminated = new Set<number>();
+      const attempt = attemptStopSession(sessionId, opts, terminated);
+      // The child's exit can release its spawn dedupe while this stop still
+      // verifies the tree or sweeps argv orphans; a new child for the id
+      // started then would be swept. Spawns for the id wait for the stop.
+      spawnSession.holdWhile(sessionId, attempt);
       try {
-        return await attemptStopSession(sessionId, opts, terminated);
+        return await attempt;
       } finally {
         for (const pid of intentional.marked) {
           if (!(intentional.withExitListener.has(pid) && terminated.has(pid))) intentionallyStoppedPids.delete(pid);

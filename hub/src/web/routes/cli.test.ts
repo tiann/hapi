@@ -81,6 +81,25 @@ describe('cli shutdown preparation', () => {
         f.offline()
         expect((await f.request('machine-1')).status).toBe(503)
     })
+
+    it('answers a recovery stop confirmation from the engine for the namespace session only', async () => {
+        const asked: unknown[] = []
+        const app = createApp({
+            resolveSessionAccess: (_id: string, namespace: string) => namespace === 'default'
+                ? { ok: true, sessionId: 'session-1', session: { metadata: { machineId: 'machine-1' } } }
+                : { ok: false, reason: 'access-denied' },
+            confirmRecoveryStop: (...args: unknown[]) => { asked.push(args); return true }
+        } as never)
+        const request = (body: unknown, token = 'test-token') => app.request('/cli/sessions/session-1/recovery-stop', {
+            method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+            body: JSON.stringify(body)
+        })
+        expect((await request({ machineId: 'machine-1', pid: 0, requestId: 'r' })).status).toBe(400)
+        expect((await request({ machineId: 'machine-1', pid: 123, requestId: 'r' }, 'test-token:other')).status).toBe(403)
+        const response = await request({ machineId: 'machine-1', pid: 123, requestId: 'r' })
+        expect(await response.json()).toEqual({ confirmed: true })
+        expect(asked).toEqual([['session-1', 'machine-1', 123, 'r']])
+    })
 })
 
 describe('cli resume routes', () => {

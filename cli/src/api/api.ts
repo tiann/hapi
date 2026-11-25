@@ -67,6 +67,15 @@ export class ApiClient {
         }
     }
 
+    /** True only while the hub's recovery request for this wrapper process is live and the wrapper is still unreachable. */
+    async confirmRecoveryStop(sessionId: string, machineId: string, pid: number, requestId: string): Promise<boolean> {
+        const response = await axios.post<{ confirmed?: unknown }>(
+            `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(sessionId)}/recovery-stop`,
+            { machineId, pid, requestId }, { headers: this.authHeaders(), timeout: 15_000 }
+        )
+        return response.data.confirmed === true
+    }
+
     async getOrCreateSession(opts: {
         id?: string
         /** Bind a hub-preallocated stub (requires id). */

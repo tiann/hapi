@@ -52,4 +52,6 @@ export type SpawnSessionResult =
          * until StopSession confirms gone (#1911 B3).
          */
         childStarted?: boolean
+        /** The outcome of an earlier spawn for this HAPI id; no new process. */
+        reusedChild?: true
     }

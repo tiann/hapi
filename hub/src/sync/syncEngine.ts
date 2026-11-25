@@ -16,7 +16,7 @@ import type { AbortChunkedUploadResponse, CursorChatStoreStatus, CursorMigrateOu
 import { FORK_PREVIEW_TAIL_ROWS, type ForkBoundary, type ForkBoundaryErrorCode, type ForkPreviewRequest, type ForkPreviewResponse, type ForkPreviewRow } from '@hapi/protocol/forkBoundary'
 import type { UsageQueryAgent, UsageQueryAgentSettings, UsageQueryResult, UsageQuerySettingsResponse, UsageQueryTemplate } from '@hapi/protocol/usageQuery'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
-import { DEFAULT_RPC_TIMEOUT_MS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
+import type { SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
 import type { ListLocalSessionsRpcResponse, LocalSessionFlavor } from '@hapi/protocol/localTranscript'
 import type { CopilotReasoningEffortResponse, ImplementCodexPlanResult, KimiReasoningEffortResponse } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor, BackgroundTask, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, ExternalRef, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
@@ -236,10 +236,9 @@ export class SyncEngine {
     // can still be honored for the exact killed generation while its archive
     // is in flight.
     private readonly archiveDrainedGenerations = new Map<string, { machineId: string; pid: number; processStartMarker: string }>()
-    // Reopen asked the runner to stop this exact unreachable wrapper process;
-    // only its prepare-stop, before the deadline, decides between keeping a
-    // reconnected wrapper and stopping it without the drain.
-    private readonly unreachableWrapperStops = new Map<string, { pid: number; deadline: number }>()
+    // Recovery stops in flight, by request id: the one wrapper process a
+    // reopen asked a runner to stop because the hub could not reach it.
+    private readonly recoveryStops = new Map<string, { sessionId: string; machineId: string; pid: number }>()
     // A wrapper spawned before this hub process started may still be booting;
     // this hub has no record of when it was requested.
     private readonly startedAt = Date.now()
@@ -3790,17 +3789,6 @@ export class SyncEngine {
         if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
         const metadata = this.sessionCache.getSession(sessionId)?.metadata
         if (metadata?.machineId !== machineId) throw new Error('Session machine does not match runner')
-        // Reopen asked the runner to stop this wrapper process because the hub
-        // could not reach it. The runner asks right before it signals: keep a
-        // wrapper that reconnected meanwhile, stop one that is still
-        // unreachable without the drain it cannot answer.
-        const recovery = this.unreachableWrapperStops.get(sessionId)
-        if (recovery?.pid === pid && Date.now() < recovery.deadline) {
-            if (this.rpcGateway.isSessionConnected(sessionId)) {
-                throw new Error('Session wrapper reconnected; recovery stop cancelled')
-            }
-            return 'not_required'
-        }
         if (metadata?.flavor !== 'opencode') return 'not_required'
         // Only request the session RPC here. Calling archiveSession would
         // recurse into the runner's StopSession handler that is awaiting us.
@@ -6119,23 +6107,32 @@ export class SyncEngine {
         if (Date.now() - quietSince < UNREACHABLE_WRAPPER_QUIET_MS) return
         if (this.rpcGateway.isSessionConnected(session.id)) return
 
-        // Same budget as the stop RPC: a prepare-stop arriving later belongs
-        // to a stop this reopen no longer waits for.
-        this.unreachableWrapperStops.set(session.id, { pid, deadline: Date.now() + DEFAULT_RPC_TIMEOUT_MS })
+        const requestId = randomUUID()
+        this.recoveryStops.set(requestId, { sessionId: session.id, machineId, pid })
         const log = { sessionId: session.id, machineId, pid }
         try {
-            const status = await this.rpcGateway.stopRunnerSession(machineId, session.id, {
-                timeoutMs: DEFAULT_RPC_TIMEOUT_MS, confirmUnreachable: true,
-            })
+            const status = await this.rpcGateway.stopUnreachableSession(machineId, session.id, pid, requestId)
             console.warn(`[reopen] Stop of an unreachable runner wrapper before resume: ${status}`, log)
         } catch (error) {
-            // Resume below reports the machine or spawn failure.
+            // A runner without this RPC keeps today's path; resume below
+            // reports any machine or spawn failure.
             console.warn('[reopen] Stop of an unreachable runner wrapper before resume failed', {
                 ...log, error: error instanceof Error ? error.message : String(error)
             })
         } finally {
-            this.unreachableWrapperStops.delete(session.id)
+            this.recoveryStops.delete(requestId)
         }
+    }
+
+    /**
+     * The runner asks once, right before it signals the wrapper of a recovery
+     * stop. Allow it only for that live request and process, and only while
+     * the hub still cannot reach any wrapper of the session.
+     */
+    confirmRecoveryStop(sessionId: string, machineId: string, pid: number, requestId: string): boolean {
+        const request = this.recoveryStops.get(requestId)
+        return request?.sessionId === sessionId && request.machineId === machineId && request.pid === pid
+            && !this.openCodeRewindPending(sessionId) && !this.rpcGateway.isSessionConnected(sessionId)
     }
 
     async handoffSessionToLocal(sessionId: string, namespace: string): Promise<LocalHandoffResult> {

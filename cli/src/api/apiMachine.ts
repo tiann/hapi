@@ -695,22 +695,30 @@ export class ApiMachineClient {
                         errorMessage: result.errorMessage,
                         code: result.code,
                         agent: result.agent,
+                        ...(result.reusedChild ? { reusedChild: true } : {}),
                     }
             }
         })
 
         this.rpcHandlerManager.registerHandler(RPC_METHODS.StopSession, async (params: any) => {
-            const { sessionId, processStartMarker, confirmUnreachable } = params || {}
+            const { sessionId, processStartMarker } = params || {}
             if (!sessionId) {
                 throw new Error('Session ID is required')
             }
 
-            const opts: StopSessionOptions = {
-                ...(typeof processStartMarker === 'string' ? { processStartMarker } : {}),
-                ...(confirmUnreachable === true ? { confirmUnreachable: true } : {}),
-            }
-            const status = await stopSession(sessionId, Object.keys(opts).length > 0 ? opts : undefined)
+            const status = await stopSession(
+                sessionId,
+                typeof processStartMarker === 'string' ? { processStartMarker } : undefined
+            )
             return { status }
+        })
+
+        this.rpcHandlerManager.registerHandler(RPC_METHODS.StopUnreachableSession, async (params: any) => {
+            const { sessionId, pid, requestId } = params || {}
+            if (typeof sessionId !== 'string' || !Number.isInteger(pid) || pid <= 0 || typeof requestId !== 'string') {
+                throw new Error('Session ID, pid and request ID are required')
+            }
+            return { status: await stopSession(sessionId, { recovery: { requestId, pid } }) }
         })
 
         this.rpcHandlerManager.registerHandler(RPC_METHODS.StopRunner, () => {

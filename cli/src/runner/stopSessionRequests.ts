@@ -1,10 +1,10 @@
 export type StopSessionOptions = {
     processStartMarker?: string
     /**
-     * The hub stops a wrapper it could not reach. Ask the hub right before
-     * signalling, for every flavor, so a wrapper that reconnected is kept.
+     * The hub asks to stop exactly this wrapper process because it cannot
+     * reach it. Nothing else is signalled, and the hub confirms right before.
      */
-    confirmUnreachable?: boolean
+    recovery?: { requestId: string; pid: number }
 }
 
 /** A late RPC retry joins the original stop instead of racing its tree signals. */
@@ -12,8 +12,8 @@ export function coalesceStopRequests<T>(stop: (id: string, opts?: StopSessionOpt
     const pending = new Map<string, Promise<T>>()
     return async (id: string, opts?: StopSessionOptions): Promise<T> => {
         // Raw PID calls from different generations must never share evidence,
-        // and an explicit stop must never inherit a recovery stop's refusal.
-        const key = JSON.stringify([id, opts?.processStartMarker ?? null, opts?.confirmUnreachable === true])
+        // and an explicit stop must never join a recovery stop.
+        const key = JSON.stringify([id, opts?.processStartMarker ?? null, opts?.recovery?.requestId ?? null])
         const existing = pending.get(key)
         if (existing) return existing
         const operation = stop(id, opts)

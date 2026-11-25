@@ -279,7 +279,7 @@ export class RpcGateway {
     async stopRunnerSession(
         machineId: string,
         sessionId: string,
-        opts?: { processStartMarker?: string; timeoutMs?: number; confirmUnreachable?: boolean }
+        opts?: { processStartMarker?: string; timeoutMs?: number }
     ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> {
         const timeoutMs = opts?.timeoutMs ?? DEFAULT_RPC_TIMEOUT_MS
         const started = performance.now()
@@ -288,9 +288,6 @@ export class RpcGateway {
             result = await this.machineRpc(machineId, RPC_METHODS.StopSession, {
                 sessionId,
                 ...(opts?.processStartMarker ? { processStartMarker: opts.processStartMarker } : {}),
-                // Runners that predate this field ignore it and only ask the
-                // hub before signalling an OpenCode wrapper.
-                ...(opts?.confirmUnreachable ? { confirmUnreachable: true } : {}),
             }, timeoutMs)
         } catch (error) {
             if (error instanceof RpcTargetMissingError) throw error
@@ -301,6 +298,22 @@ export class RpcGateway {
         const status = result && typeof result === 'object' ? (result as { status?: unknown }).status : undefined
         if (status === 'stopped' || status === 'already_gone' || status === 'still_alive' || status === 'unknown') return status
         throw new Error('Unexpected stop-session response')
+    }
+
+    /**
+     * Ask the runner to stop the wrapper process `pid` that the hub cannot
+     * reach. Throws RpcTargetMissingError when the runner predates this RPC.
+     */
+    async stopUnreachableSession(
+        machineId: string,
+        sessionId: string,
+        pid: number,
+        requestId: string
+    ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.StopUnreachableSession, { sessionId, pid, requestId })
+        const status = result && typeof result === 'object' ? (result as { status?: unknown }).status : undefined
+        if (status === 'stopped' || status === 'already_gone' || status === 'still_alive' || status === 'unknown') return status
+        throw new Error('Unexpected stop-unreachable-session response')
     }
 
     async handoffSessionToLocal(sessionId: string): Promise<void> {
@@ -413,7 +426,7 @@ export class RpcGateway {
                         : undefined
                     const unavailableAgent = typeof obj.agent === 'string' ? obj.agent as AgentFlavor : undefined
                     const childStarted = obj.childStarted === false ? false : undefined
-                    launched = childStarted !== false
+                    launched = childStarted !== false && obj.reusedChild !== true
                     return {
                         type: 'error',
                         message: obj.errorMessage,
