@@ -235,7 +235,8 @@ class HubGraph(
         override val names: Flow<List<String>> = skillHistory.flatMapLatest { it?.names ?: flowOf(emptyList()) }
 
         override suspend fun record(name: String) {
-            skillHistory.value?.record(name)
+            // A successful skills request can precede the storage binding.
+            skillHistory.filterNotNull().first().record(name)
         }
     }
 

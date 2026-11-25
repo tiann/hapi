@@ -33,15 +33,19 @@ import java.util.Base64
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotSame
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
@@ -203,7 +207,13 @@ class AppGraphPairingTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val hubUrl = "https://legacy-skills.example.test"
         val legacy = HubCredentials(hubUrl, accessToken = "owner")
-        val creds = InMemoryCredentialStore().apply { set(legacy) }
+        val allowNamespaceBinding = CompletableDeferred<Unit>()
+        val backing = InMemoryCredentialStore().apply { set(legacy) }
+        val creds = object : CredentialStore by backing {
+            override fun observeNamespace(hubUrl: String) = backing.observeNamespace(hubUrl).onEach {
+                if (it != null) allowNamespaceBinding.await()
+            }
+        }
         val app = AppGraph(context, creds)
         try {
             withTimeout(10_000) {
@@ -218,10 +228,12 @@ class AppGraphPairingTest {
                 // The push worker's independent authenticator updates the shared store.
                 assertTrue(creds.replace(legacy, legacy.withJwt(jwt("owner"), System.currentTimeMillis())))
                 assertTrue(live.session.authenticator.ensureFreshToken() != null)
-                HubGraph(hubUrl, creds, { _, _ -> }, context).use { known ->
-                    known.recentSkills.record("owner-only")
-                    assertEquals(listOf("owner-only"), history.names.first { it.isNotEmpty() })
-                }
+                // A successful skills request can be followed by a selection before storage binds.
+                val recording = launch(start = CoroutineStart.UNDISPATCHED) { history.record("owner-only") }
+                assertFalse(recording.isCompleted, "Do not drop a selection while namespace storage is binding")
+                allowNamespaceBinding.complete(Unit)
+                recording.join()
+                assertEquals(listOf("owner-only"), history.names.first { it.isNotEmpty() })
 
                 assertSame(live, app.activeHubGraph.value)
                 assertSame(window, live.messageWindows.open("owner-session"))
