@@ -30,7 +30,8 @@ Priority is **environment variable > `settings.json` > default**.
 - **Hub settings** with a `settings.json` key in the tables below are saved to
   `settings.json` the first time the hub sees them in the environment, if the
   key is not already present. Later environment changes still win at runtime,
-  but the saved value stays in the file.
+  but the saved value stays in the file. QQ bot environment overrides are an
+  exception: they are applied in memory and are not saved.
 - **CLI settings** (`apiUrl`, `extraHeaders`) are never saved from the
   environment. `cliApiToken` is saved by `hapi auth login` or the first-run
   prompt.
@@ -95,6 +96,12 @@ See [Notifications](./notifications.md) for setup.
 | `SERVERCHAN_SENDKEY` | `serverChanSendKey` | – | ServerChan (Server酱) SendKey. |
 | `SERVERCHAN_NOTIFICATION` | `serverChanNotification` | `true` | Enable ServerChan notifications. In the environment, any value other than `true` disables. |
 | `SERVERCHAN_BACKGROUND_ONLY` | `serverChanBackgroundOnly` | `false` | Only send when no visible HAPI client is connected in the namespace. |
+| `QQBOT_NOTIFICATION` | `qqBot.enabled` | `false` | Opt in to proactive QQ bot direct messages. |
+| `QQBOT_APP_ID` | `qqBot.appId` | – | QQ bot App ID, as a string. |
+| `QQBOT_APP_SECRET` | `qqBot.appSecret` | – | QQ bot App Secret. Prefer the environment over the settings file. |
+| `QQBOT_USER_OPENID` | `qqBot.userOpenId` | – | Recipient's user OpenID for this bot, not their QQ number. |
+| `QQBOT_NAMESPACE` | `qqBot.namespace` | `default` | Only notify for sessions in this namespace. |
+| `QQBOT_BACKGROUND_ONLY` | `qqBot.backgroundOnly` | `false` | Only notify when no visible HAPI client is connected in the configured namespace. |
 | `VAPID_SUBJECT` | – | `mailto:admin@hapi.run` | Web Push contact. VAPID keys are generated into `vapidKeys`. |
 | `HAPI_ANDROID_PUSH` | `androidPushMode` | `auto` | `auto` (direct FCM when `fcmServiceAccountPath` is set, otherwise the push relay), `relay`, `fcm`, or `off`. Unknown values disable Android push. |
 | `FCM_SERVICE_ACCOUNT_PATH` | `fcmServiceAccountPath` | – | Firebase service-account JSON for private builds of the Android app. |

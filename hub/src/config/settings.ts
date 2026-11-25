@@ -3,6 +3,7 @@ import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promi
 import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { withSettingsFileLock } from '@hapi/protocol/settingsFileLock'
+import type { QqBotFileSettings } from './qqBotSettings'
 
 export interface Settings {
     machineId?: string
@@ -19,6 +20,7 @@ export interface Settings {
     serverChanSendKey?: string
     serverChanNotification?: boolean
     serverChanBackgroundOnly?: boolean
+    qqBot?: QqBotFileSettings
     listenHost?: string
     listenPort?: number
     publicUrl?: string
