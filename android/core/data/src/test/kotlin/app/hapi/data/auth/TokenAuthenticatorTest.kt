@@ -4,6 +4,7 @@ import app.hapi.data.HubSession
 import app.hapi.data.RecordingAuthEvents
 import app.hapi.data.api.ApiError
 import app.hapi.data.fakeJwt
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -114,6 +115,74 @@ class TokenAuthenticatorTest {
         assertEquals(jwt2, stored.jwt)
         assertNotNull(stored.jwtObtainedAtMs)
         assertTrue(events.events.isEmpty(), "successful refresh must not emit terminal events")
+    }
+
+    @Test
+    fun `separate authenticators retry with the saved winner of concurrent exchanges`() = runBlocking {
+        val foreground = startSession()
+        val exchanges = CountDownLatch(2)
+        val authCalls = AtomicInteger()
+        val retryTokens = ConcurrentLinkedQueue<String>()
+        val anotherJwt = fakeJwt(expSeconds = 4_200_000_000)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.path == "/api/auth") {
+                    val token = if (authCalls.incrementAndGet() == 1) jwt2 else anotherJwt
+                    exchanges.countDown()
+                    check(exchanges.await(5, TimeUnit.SECONDS))
+                    return authOk(token)
+                }
+                val token = request.getHeader("Authorization")?.removePrefix("Bearer ")
+                if (token != jwt2 && token != anotherJwt) return unauthorized()
+                retryTokens += token
+                return sessionsOk()
+            }
+        }
+
+        HubSession(server.url("/"), store, events).use { background ->
+            awaitAll(
+                async { foreground.api.getSessions() },
+                async { background.api.getSessions() },
+            )
+        }
+        val saved = assertNotNull(store.get(hubUrl)?.jwt)
+        assertEquals(2, authCalls.get())
+        assertEquals(listOf(saved, saved), retryTokens.toList())
+        assertTrue(events.events.isEmpty())
+    }
+
+    @Test
+    fun `losing an exchange after signing out does not retry`() = assertExchangeDoesNotRetry { null }
+
+    @Test
+    fun `losing an exchange after reentering the same pairing secret does not retry`() =
+        assertExchangeDoesNotRetry { it.withJwt(jwt2, 123).copy(pairingId = "new-pairing") }
+
+    @Test
+    fun `losing an exchange does not reuse a stale jwt`() =
+        assertExchangeDoesNotRetry { it.withJwt(fakeJwt(expSeconds = 1), 123) }
+
+    @Test
+    fun `losing an exchange does not reuse the rejected jwt even if its timestamp changed`() =
+        assertExchangeDoesNotRetry { it.withJwt(jwt1, 123) }
+
+    @Test
+    fun `losing an exchange does not reuse a jwt from another namespace`() =
+        assertExchangeDoesNotRetry { it.withJwt(fakeJwt(ns = "guest"), 123) }
+
+    private fun assertExchangeDoesNotRetry(concurrentUpdate: (HubCredentials) -> HubCredentials?) {
+        val hub = startSession()
+        val changed = concurrentUpdate(assertNotNull(store.get(hubUrl)))
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = if (request.path == "/api/auth") {
+                if (changed == null) store.delete(hubUrl) else store.set(changed)
+                authOk(jwt2)
+            } else unauthorized()
+        }
+        assertEquals(401, assertFailsWith<ApiError> { runBlocking { hub.api.getSessions() } }.status)
+        assertEquals(2, server.requestCount, "do not retry with a non-winning token")
+        assertEquals(changed, store.get(hubUrl))
+        assertTrue(events.events.isEmpty())
     }
 
     @Test

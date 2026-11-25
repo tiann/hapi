@@ -21,6 +21,7 @@ import app.hapi.protocol.window.buildOptimisticMessage
 import app.hapi.protocol.wire.AttachmentMetadata
 import app.hapi.protocol.wire.MessagesResponse
 import app.hapi.protocol.wire.SyncEvent
+import app.hapi.protocol.wire.isUserMessage
 import java.io.IOException
 
 import kotlinx.serialization.json.JsonObject
@@ -833,6 +834,24 @@ class MessageWindowStore(
             }
             snapshotPending = false
         }
+    }
+
+    internal suspend fun recoverLegacyFailedSends(legacy: WindowSnapshots) = persistenceMutex.withLock {
+        val destination = snapshots ?: return@withLock
+        if (destination.hasRecoveredFailedSends(sessionId)) return@withLock
+        val failed = legacy.readLegacy(sessionId)?.messages.orEmpty().filter {
+            it.status == MessageStatus.Failed && it.isOptimistic && !it.localId.isNullOrEmpty() &&
+                it.seq == null && it.wire.isUserMessage
+        }
+        if (failed.isEmpty()) return@withLock
+        update { previous ->
+            val seen = previous.messages.mapNotNullTo(HashSet()) { it.localId }
+            failed.filter { seen.add(it.id) }.fold(previous, MessageWindowLogic::mergeRefreshedRow)
+        }
+        persistSnapshot(destination)
+        // Keep the receipt outside the snapshot LRU. Do not resurrect an
+        // already retried or discarded row on a subsequent cold open.
+        destination.markFailedSendsRecovered(sessionId)
     }
 
     private suspend fun persist() = persistenceMutex.withLock {

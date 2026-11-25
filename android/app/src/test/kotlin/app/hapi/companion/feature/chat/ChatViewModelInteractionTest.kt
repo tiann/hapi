@@ -28,8 +28,11 @@ import app.hapi.data.store.ScratchlistUploadResult
 import app.hapi.data.store.SessionDetailStore
 import app.hapi.data.store.SessionScratchlist
 import app.hapi.data.store.StoreSyncTargets
+import app.hapi.data.store.WindowSnapshots
 import app.hapi.protocol.catalog.PermissionMode
 import app.hapi.protocol.window.MessageStatus
+import app.hapi.protocol.window.PersistedMessageWindow
+import app.hapi.protocol.window.buildOptimisticMessage
 import app.hapi.protocol.wire.AgentState
 import app.hapi.protocol.wire.AgentStateRequest
 import app.hapi.protocol.wire.ApprovePermissionRequest
@@ -75,6 +78,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.Flow
@@ -88,11 +92,14 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
+import org.junit.Rule
+import org.junit.rules.TemporaryFolder
 
 private const val IX_SESSION = "sess-1"
 
@@ -480,6 +487,8 @@ private class InteractionHarness(
     detail: Session = detail(),
     val scratchlist: FakeScratchlist? = null,
     recentSkills: RecentSkills? = null,
+    snapshots: WindowSnapshots? = null,
+    legacySnapshots: WindowSnapshots? = null,
 ) {
     val api = RecordingChatApi()
     val scope = testScope.backgroundScope
@@ -488,7 +497,13 @@ private class InteractionHarness(
         setDetail(detail)
     }
     val drafts = FakeDrafts()
-    val messageWindows = MessageWindowStores(api = api, scope = scope)
+    val messageWindows = MessageWindowStores(
+        api = api,
+        scope = scope,
+        snapshots = snapshots,
+        legacySnapshots = legacySnapshots,
+        snapshotNamespace = if (snapshots != null) "default" else null,
+    )
     val engine = SseEngine(
         baseUrl = "http://hub.test",
         transport = okTransport(),
@@ -522,6 +537,97 @@ private class InteractionHarness(
 // ------------------------------------------------------------------ tests --
 
 class ChatViewModelInteractionTest {
+
+    @get:Rule
+    val temp = TemporaryFolder()
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun `upgrade restores only authenticated failed sends and does not resend or resurrect them`() = runTest {
+        val legacyDir = temp.newFolder()
+        val legacy = WindowSnapshots(legacyDir, io = Dispatchers.Unconfined)
+        val current = WindowSnapshots(temp.newFolder(), io = Dispatchers.Unconfined)
+        val failed = buildOptimisticMessage("failed", "unsent text", 10, status = MessageStatus.Failed)
+        val duplicate = buildOptimisticMessage("already-sent", "sent text", 20, status = MessageStatus.Sent)
+        val stored = duplicate.copy(wire = duplicate.wire.copy(id = "server-id", seq = 1))
+        val queued = buildOptimisticMessage("queued", "not a failed send", 30, status = MessageStatus.Queued)
+        legacy.save(IX_SESSION, PersistedMessageWindow(
+            messages = listOf(failed, duplicate.copy(status = MessageStatus.Failed), queued, stored),
+            epoch = 99,
+        ))
+        current.save(IX_SESSION, PersistedMessageWindow(messages = listOf(stored), epoch = 1))
+        val original = legacyDir.listFiles()!!.single()
+        val originalJson = original.readText()
+        assertTrue(original.setLastModified(123_000))
+
+        val harness = InteractionHarness(this, snapshots = current, legacySnapshots = legacy)
+        harness.sessionStore.detailToLoad = null // cached detail is not proof of ownership
+        harness.viewModel.start()
+        runCurrent()
+        val window = harness.window()
+        assertTrue(window.state.value.messages.none { it.id == "failed" })
+
+        harness.sessionStore.detailToLoad = detail().copy(namespace = "another-namespace")
+        harness.viewModel.retry()
+        runCurrent()
+        assertTrue(window.state.value.messages.none { it.id == "failed" })
+
+        harness.sessionStore.detailToLoad = detail(id = "redirected")
+        harness.viewModel.retry()
+        runCurrent()
+        assertTrue(window.state.value.messages.none { it.id == "failed" })
+
+        // Keep the destination duplicate represented even if the fake tail reset it.
+        window.ingestSseMessages(listOf(stored))
+        harness.sessionStore.detailToLoad = detail()
+        harness.viewModel.retry()
+        runCurrent()
+        val messages = window.state.value.messages
+        assertEquals(failed, messages.single { it.status == MessageStatus.Failed })
+        assertTrue(messages.none { it.id == "queued" })
+        assertTrue(harness.api.sendCalls.value.isEmpty())
+        val persisted = assertNotNull(current.load(IX_SESSION))
+        assertTrue(persisted.messages.contains(failed))
+        assertTrue(persisted.epoch != 99L)
+        assertEquals(originalJson, original.readText())
+        assertEquals(123_000L, original.lastModified())
+
+        harness.viewModel.retryFailedMessage("failed")
+        runCurrent()
+        val (sessionId, retry) = harness.api.sendCalls.value.single()
+        assertEquals(IX_SESSION, sessionId)
+        assertEquals("unsent text", retry.text)
+        assertEquals("failed", retry.localId)
+
+        // Once no longer retained by the destination window, the recovered row
+        // must not become retryable again when the process restarts.
+        window.removeMessage("failed")
+        val reopened = InteractionHarness(this, snapshots = current, legacySnapshots = legacy)
+        reopened.viewModel.start()
+        runCurrent()
+        assertTrue(reopened.window().state.value.messages.none { it.id == "failed" })
+        assertTrue(reopened.api.sendCalls.value.isEmpty())
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun `verified upgrade recovery waits for delayed namespace binding`() = runTest {
+        val legacy = WindowSnapshots(temp.newFolder(), io = Dispatchers.Unconfined)
+        val current = WindowSnapshots(temp.newFolder(), io = Dispatchers.Unconfined)
+        val failed = buildOptimisticMessage("failed", "unsent text", 10, status = MessageStatus.Failed)
+        legacy.save(IX_SESSION, PersistedMessageWindow(messages = listOf(failed)))
+        val harness = InteractionHarness(this, legacySnapshots = legacy)
+        harness.viewModel.start()
+        runCurrent()
+        assertTrue("loadDetail:$IX_SESSION" in harness.sessionStore.calls.value)
+        assertTrue(harness.window().state.value.messages.isEmpty())
+
+        harness.messageWindows.enableSnapshots(current, "default")
+        runCurrent()
+        assertEquals(listOf(failed), harness.window().state.value.messages)
+        assertEquals(listOf(failed), current.load(IX_SESSION)?.messages)
+        assertTrue(harness.api.sendCalls.value.isEmpty())
+    }
 
     private fun planDetail(): Session = detail(
         flavor = "codex", agentState = AgentState(codexPlanProposalId = "plan-1"),

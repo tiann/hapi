@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -83,7 +84,7 @@ interface SessionDetailStore : SessionListStore {
     /** Synchronous read of the cached detail (send/permission body building). */
     fun currentDetail(sessionId: String): Session?
 
-    /** `GET /api/sessions/:id` into the detail cache (chat open / resync). */
+    /** Returns the detail from `GET /api/sessions/:id` and updates the cache (chat open / resync). */
     suspend fun loadSessionDetail(sessionId: String): Session
 
     /** Drops a detail nobody observes anymore (chat closed). */
@@ -162,11 +163,10 @@ class SessionStore(
 
     override suspend fun loadSessionDetail(sessionId: String): Session {
         val session = api.getSession(sessionId).session
-        _details.update { current -> current + (sessionId to session.copy(
+        return _details.updateAndGet { current -> current + (sessionId to session.copy(
             contentRevision = listOfNotNull(current[sessionId]?.contentRevision, session.contentRevision).maxOrNull(),
             readState = SessionReadState.merge(current[sessionId]?.readState, session.readState),
-        )) }
-        return _details.value[sessionId] ?: session
+        )) }.getValue(sessionId)
     }
 
     override fun releaseDetail(sessionId: String) {

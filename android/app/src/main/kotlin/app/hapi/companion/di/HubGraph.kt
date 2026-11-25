@@ -97,8 +97,8 @@ class HubGraph(
     @Volatile internal var pairedNamespace = initialNamespace
         private set
 
-    // Legacy URL-only snapshots have no reliable owner. Never read them, and
-    // do not open disk snapshots until this graph has an identified namespace.
+    // Never hydrate URL-only legacy history. Legacy failed sends are
+    // recovered separately, only after a session-specific authenticated lookup.
     private fun snapshotDir(context: Context, namespace: String): File {
         val digest = MessageDigest.getInstance("SHA-256").digest("${session.hubUrl}\u0000$namespace".encodeToByteArray())
         return File(File(context.filesDir, "hub-snapshots"), digest.joinToString("") { "%02x".format(it) })
@@ -143,6 +143,8 @@ class HubGraph(
         scope = scope,
         snapshots = snapshotDir?.let { WindowSnapshots(File(it, "windows")) },
         historyRetentionLimit = app.hapi.protocol.window.OLDER_LOAD_WINDOW_SIZE,
+        legacySnapshots = WindowSnapshots(File(context.filesDir, "hubs/${dirNameFor(session.hubUrl)}/windows")),
+        snapshotNamespace = initialNamespace,
     )
 
     private val mutableToasts = MutableSharedFlow<SyncEvent.Toast>(extraBufferCapacity = 16)
@@ -248,7 +250,7 @@ class HubGraph(
             val dir = snapshotDir(context, namespace)
             sessionStore.enableSnapshots(dir)
             machineStore.enableSnapshots(dir)
-            messageWindows.enableSnapshots(WindowSnapshots(File(dir, "windows")))
+            messageWindows.enableSnapshots(WindowSnapshots(File(dir, "windows")), namespace)
             pairedNamespace = namespace
             skillHistory.value = DataStoreRecentSkills(context.hapiDataStore, session.hubUrl, namespace)
             configureReadState()

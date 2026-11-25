@@ -43,6 +43,8 @@ data class HubCredentials(
     val jwtObtainedAtMs: Long? = null,
     /** Identity from a successful auth response, retained when the cached JWT is cleared. */
     val namespace: String? = null,
+    /** Changes on every explicit pairing, even when the same secret is entered again. */
+    val pairingId: String? = null,
 ) {
     /** Legacy records may still have the identity only in the cached JWT. */
     val pairedNamespace: String? get() = namespace ?: jwt?.let { JwtPeek.peek(it)?.ns }

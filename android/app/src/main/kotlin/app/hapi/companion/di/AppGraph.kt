@@ -37,6 +37,7 @@ import app.hapi.protocol.wire.AuthResponse
 import app.hapi.protocol.wire.HapiJson
 import app.hapi.protocol.wire.HubHealthResponse
 import app.hapi.protocol.wire.PasskeyLoginResponse
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -319,7 +320,7 @@ class AppGraph internal constructor(
                 val previousNamespace = credentialStore.get(credentials.hubUrl)?.pairedNamespace
                 val namespaceChanged = credentials.hubUrl in hubRegistry.state.value.hubs &&
                     credentials.pairedNamespace != null && credentials.pairedNamespace != previousNamespace
-                credentialStore.set(credentials)
+                credentialStore.set(credentials.copy(pairingId = UUID.randomUUID().toString()))
                 hubRegistry.addHub(credentials.hubUrl, makeActive = true)
                 if (namespaceChanged) deviceRegistrar.onHubRepaired(credentials.hubUrl)
                 swapActiveHub(hubRegistry.activeHubUrl)

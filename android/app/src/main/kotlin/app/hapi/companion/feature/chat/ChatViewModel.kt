@@ -1053,14 +1053,16 @@ class ChatViewModel(
     }
 
     private suspend fun loadDetail() {
-        try {
+        val verified = try {
             sessionStore.loadSessionDetail(sessionId)
-            detailLoadFailed.value = false
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (_: Exception) {
             detailLoadFailed.value = true
+            return
         }
+        detailLoadFailed.value = false
+        messageWindows.recoverLegacyFailedSends(sessionId, verified)
     }
 
     // ------------------------------------------------------------- composer --
