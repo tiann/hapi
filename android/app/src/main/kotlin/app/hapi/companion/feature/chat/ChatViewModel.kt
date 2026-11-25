@@ -718,7 +718,8 @@ class ChatViewModel(
                 emit(emptyList())
                 val skills = try {
                     val response = api.getSkills(sessionId)
-                    if (response.success) response.skills.orEmpty() else emptyList()
+                    // Picker rows are keyed by exact name; case variants remain distinct.
+                    if (response.success) response.skills.orEmpty().distinctBy { it.name } else emptyList()
                 } catch (cancellation: CancellationException) {
                     throw cancellation
                 } catch (_: Exception) {

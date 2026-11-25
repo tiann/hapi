@@ -36,16 +36,16 @@ internal object SkillSuggestions {
         isNameChar(text, index)
     }
 
-    private fun isCandidateAt(text: String, index: Int, caret: Int): Boolean = when (text.getOrNull(index)) {
-        // A qualifier can follow a provisional plus run, as in c++:lint.
-        ':' -> (isNameChar(text, index - 1) || text.getOrNull(index - 1) == '+') &&
-            (index == caret - 1 || index == text.lastIndex || isNameChar(text, index + 1))
-        // Runs such as c++ are possible names, but a plus directly before the
-        // next reference remains a separator even if it matches the catalogue.
-        '+' -> text.getOrNull(index + 1) != '$'
-        // Just-typed punctuation is provisional even before a space or at the end.
-        '.' -> if (index == caret - 1) isNameChar(text, index - 1) else isNameAt(text, index)
-        else -> isNameAt(text, index)
+    private fun isCandidateAt(text: String, index: Int, caret: Int): Boolean {
+        val char = text.getOrNull(index) ?: return false
+        return when (char) {
+            // Scan punctuation after a provisional plus run; the catalogue resolves the boundary.
+            '.', ':' -> (isNameChar(text, index - 1) || text.getOrNull(index - 1) == '+') &&
+                (index == caret - 1 || isNameChar(text, index + 1) || (char == ':' && index == text.lastIndex))
+            // A plus directly before the next reference is always a separator.
+            '+' -> text.getOrNull(index + 1) != '$'
+            else -> isNameChar(text, index)
+        }
     }
 
     fun token(text: String, start: Int, end: Int): Token? {
@@ -110,6 +110,7 @@ internal object SkillSuggestions {
         val replaced = text.replaceRange(start, end, "\$$name" + if (addSpace) " " else "")
         val separatorLength = when {
             addSpace -> 1
+            next == '$' -> 0 // The next reference starts here; '$' is not a separator.
             text.startsWith("\r\n", end) -> 2
             else -> Character.charCount(text.codePointAt(end))
         }

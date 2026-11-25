@@ -2099,6 +2099,29 @@ class ChatViewModelInteractionTest {
     }
 
     @Test
+    fun `skill picker deduplicates exact names but keeps case distinct skills selectable`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        val lower = SkillSummary("review", "First match")
+        val upper = SkillSummary("Review", "Different case")
+        harness.api.skillsResult = SkillsResponse(
+            success = true,
+            skills = listOf(lower, SkillSummary("review", "Duplicate"), upper),
+        )
+        vm.start()
+
+        for (skill in listOf(lower, upper)) {
+            vm.setComposerText("Run \$rev")
+            testScheduler.runCurrent()
+            assertEquals(listOf(upper, lower), vm.skillSuggestions.value.map { it.skill })
+            vm.selectSkillSuggestion(vm.skillSuggestions.value.single { it.skill == skill })
+            testScheduler.runCurrent()
+            assertEquals("Run \$${skill.name} ", vm.composer.value.text)
+        }
+        assertTrue(harness.api.sendCalls.value.isEmpty())
+    }
+
+    @Test
     fun `inserting a skill preserves surrounding full width punctuation and prose`() = runTest {
         val harness = InteractionHarness(this)
         val vm = harness.viewModel
@@ -2135,7 +2158,7 @@ class ChatViewModelInteractionTest {
             testScheduler.runCurrent()
 
             assertEquals("Run \$review$separator\$lint", vm.composer.value.text)
-            if (separator.isNotEmpty()) assertEquals("Run \$review$separator".length, vm.composer.value.caretPosition)
+            assertEquals("Run \$review$separator".length, vm.composer.value.caretPosition, "separator: '$separator'")
         }
         assertTrue(harness.api.sendCalls.value.isEmpty())
     }
@@ -2205,6 +2228,49 @@ class ChatViewModelInteractionTest {
             testScheduler.runCurrent()
             assertEquals(expected, vm.composer.value.text, suffix)
             assertEquals("Run \$c++:lint ".length, vm.composer.value.caretPosition)
+            assertTrue(vm.skillSuggestions.value.isEmpty())
+        }
+        assertTrue(harness.api.sendCalls.value.isEmpty())
+    }
+
+    @Test
+    fun `typing a dot after plus signs keeps the same picker open`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        val dotted = SkillSummary("c++.lint")
+        harness.api.skillsResult = SkillsResponse(success = true, skills = listOf(dotted))
+        vm.start()
+
+        for (query in listOf("c", "c+", "c++", "c++.", "c++.li")) {
+            val typed = "Run \$$query"
+            vm.onComposerChange("$typed please", typed.length, typed.length)
+            testScheduler.runCurrent()
+            assertEquals(listOf(dotted), vm.skillSuggestions.value.map { it.skill }, query)
+            assertEquals(1, harness.api.skillsCalls.size)
+        }
+    }
+
+    @Test
+    fun `selecting a dotted skill replaces a suffix after plus signs but preserves sentence punctuation`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        val dotted = SkillSummary("c++.lint")
+        harness.api.skillsResult = SkillsResponse(success = true, skills = listOf(dotted))
+        vm.start()
+
+        val caret = "Run \$c".length
+        for ((suffix, expectedSuffix) in listOf(
+            "++.lint please" to " please",
+            "++.li please" to " please",
+            "++. Then continue" to ". Then continue",
+            "++.continue please" to ".continue please",
+        )) {
+            vm.onComposerChange("Run \$c$suffix", caret, caret)
+            testScheduler.runCurrent()
+            vm.selectSkillSuggestion(vm.skillSuggestions.value.single())
+            testScheduler.runCurrent()
+            assertEquals("Run \$c++.lint$expectedSuffix", vm.composer.value.text, suffix)
+            assertEquals("Run \$c++.lint ".length, vm.composer.value.caretPosition)
             assertTrue(vm.skillSuggestions.value.isEmpty())
         }
         assertTrue(harness.api.sendCalls.value.isEmpty())
