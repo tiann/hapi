@@ -1,10 +1,10 @@
 ---
-description: "Get notified when HAPI sessions need input, request permission, fail or complete, via native push, Web Push, Telegram, ServerChan, QQ Bot or voice."
+description: "Set up HAPI notifications via native push, Web Push, Telegram, ServerChan, QQ Bot, or voice. Supported events vary by channel."
 ---
 
 # Notifications
 
-Get notified when sessions need input, request permissions, fail, or complete — via native app notifications, Telegram, Server酱 (ServerChan), QQ Bot, Web Push, or voice.
+HAPI can notify you via native apps, Telegram, Server酱 (ServerChan), QQ Bot, Web Push, or voice. Supported events vary by channel; not all channels send failure alerts.
 
 Web Push needs no provider configuration: [install the PWA](./pwa.md) and allow notifications. The channels below are optional.
 
