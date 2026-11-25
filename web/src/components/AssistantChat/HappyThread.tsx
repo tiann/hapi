@@ -3053,7 +3053,6 @@ export function HappyThread(props: {
                     return false
                 }
                 if (!target) throw new Error('No preceding user message found')
-                if (focusTarget) target.focus({ preventScroll: true })
                 target.scrollIntoView({ block: 'start', behavior: 'smooth' })
                 const settled = await waitForPromptScrollSettlement(viewport, target, isCancelled)
                 if (heldWindow && !await heldWindow.verify()) {
@@ -3076,7 +3075,10 @@ export function HappyThread(props: {
                 }
                 if (isCancelled()) return false
                 const current = findTarget()
-                if (settled && current === target && target.isConnected) break
+                if (settled && current === target && target.isConnected) {
+                    if (focusTarget) target.focus({ preventScroll: true })
+                    break
+                }
                 if (attempt >= 2 || (current === target && !settled)) throw new Error('Prompt scroll did not settle')
             }
             const completionStatus = getPromptNavigationCompletionStatus(loadedOlderHistory)
@@ -3100,6 +3102,9 @@ export function HappyThread(props: {
 
     const jumpToPrompt = useCallback(async (messageId: string, replyToMessageId?: string, focusTarget = false): Promise<boolean> => {
         if (navigationInFlightRef.current) return false
+        const sourceViewport = viewportRef.current
+        const active = document.activeElement
+        const sourceButton = focusTarget && active instanceof HTMLElement && sourceViewport?.contains(active) ? active : null
         const wasTailFollowing = autoScrollEnabledRef.current && atBottomRef.current
         // A cached re-entry's late initial-scroll effect must not reclaim
         // a viewport the reader already asked to navigate explicitly.
@@ -3152,6 +3157,18 @@ export function HappyThread(props: {
                 navigationInFlightRef.current = false
                 setIsNavigationInFlight(false)
                 const viewport = viewportRef.current
+                // A failed jump may have paged out its button or hidden it
+                // once the candidate came into view. Don't strand keyboard
+                // focus, or steal it if the reader moved to another control.
+                if (!reachedPrompt && sourceButton && viewport && viewport === sourceViewport
+                    && (document.activeElement === sourceButton || document.activeElement === document.body)) {
+                    const buttonRect = sourceButton.getBoundingClientRect()
+                    const viewportRect = viewport.getBoundingClientRect()
+                    const available = viewport.contains(sourceButton) && buttonRect.height > 0
+                        && buttonRect.bottom > viewportRect.top && buttonRect.top < viewportRect.bottom
+                    const fallback = available ? sourceButton : viewport
+                    fallback.focus({ preventScroll: true })
+                }
                 const hasDisconnectedTail = getMessageWindowState(props.sessionId).requiresLatestReset
                 if (wasTailFollowing && !hasMoreNewerRef.current && !hasDisconnectedTail && viewport && (reachedPrompt
                     ? !hasMoreMessagesRef.current && viewport.scrollHeight - viewport.clientHeight <= 1

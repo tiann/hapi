@@ -280,6 +280,29 @@ test('reports a failed reconnect probe instead of confirming conversation start'
     if (screenshots) await page.screenshot({ path: `${screenshots}/reply-navigation-reconnect-verification-fails.png` })
 })
 
+test('a failed prompt verification does not focus an unverified turn input', async ({ page }) => {
+    await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&loadedPromptPreload=1')
+    await expect.poll(async () => (await geometry(page)).chatScrollTop).toBeGreaterThan(500)
+    await page.evaluate(() => {
+        const original = HTMLElement.prototype.scrollIntoView
+        HTMLElement.prototype.scrollIntoView = function (options) {
+            if (this.matches('[data-hapi-turn-input="true"]') && this.textContent?.includes('Already loaded prompt')) {
+                window.__probe.failNextLatest()
+                void window.__probe.gap()
+            }
+            original.call(this, options)
+        }
+    })
+    const prompt = page.locator('[data-hapi-turn-input="true"]').filter({ hasText: 'Already loaded prompt' })
+    const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Reply to loaded prompt' })
+    await reply.getByRole('button', { name: 'Jump to turn input' }).press('Enter')
+    await expect(page.getByText('Could not load turn input. Try again.', { exact: true })).toBeVisible()
+    await expect(prompt).not.toBeFocused()
+    await expect(page.locator('.chat-scroll-y')).toBeFocused()
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/reply-navigation-unverified-focus.png` })
+})
+
 test('finds the turn input in concise mode across pages with no rendered overlap', async ({ page }) => {
     await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&conciseLongTurn=1')
     const reply = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'Concise reply after a long turn' })
