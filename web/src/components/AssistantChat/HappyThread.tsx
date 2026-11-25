@@ -157,6 +157,13 @@ export function prependMissingUserSnapshot(
 }
 
 const MESSAGE_ANCHOR_SELECTOR = '.happy-thread-messages > [id]'
+
+function focusFirstConversationMessage(viewport: HTMLElement): void {
+    const firstMessage = viewport.querySelector<HTMLElement>(MESSAGE_ANCHOR_SELECTOR)
+    if (!firstMessage) return
+    if (!firstMessage.hasAttribute('tabindex')) firstMessage.tabIndex = -1
+    firstMessage.focus({ preventScroll: true })
+}
 const SEARCH_TARGET_HIGHLIGHT_CLASS = 'hapi-message-search-target'
 const PENDING_REQUEST_TARGET_HIGHLIGHT_CLASS = 'hapi-message-pending-target'
 const SEARCH_TARGET_MATCH_ATTRIBUTE = 'data-hapi-source-search-match'
@@ -3060,7 +3067,7 @@ export function HappyThread(props: {
         }
     }, [clearConversationStartFeedback, releaseSearchTargetHistoryLock, scrollToPromptForMessage])
 
-    const scrollToConversationStart = useCallback(async (): Promise<boolean> => {
+    const scrollToConversationStart = useCallback(async (focusTarget = false): Promise<boolean> => {
         if (navigationInFlightRef.current) return false
         const currentViewport = viewportRef.current
         releaseSearchTargetHistoryLock()
@@ -3070,6 +3077,7 @@ export function HappyThread(props: {
         if (!hasMoreMessagesRef.current && currentViewport
             && currentViewport.scrollTop <= 1
             && currentViewport.scrollHeight - currentViewport.clientHeight <= 1) {
+            if (focusTarget) focusFirstConversationMessage(currentViewport)
             clearPromptNavigationFeedback()
             if (conversationStartStatusTimerRef.current !== null) {
                 window.clearTimeout(conversationStartStatusTimerRef.current)
@@ -3130,6 +3138,7 @@ export function HappyThread(props: {
             if (viewport.scrollTop > 1) {
                 throw new Error('Could not reach conversation start')
             }
+            if (focusTarget) focusFirstConversationMessage(viewport)
             lastScrollTopRef.current = viewport.scrollTop
             setConversationStartStatus('success')
             conversationStartStatusTimerRef.current = window.setTimeout(() => setConversationStartStatus('idle'), 1400)

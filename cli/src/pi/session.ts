@@ -475,7 +475,7 @@ export class PiSession {
         this.client.sendAgentMessage(message);
     }
 
-    emitMessagesConsumed(localIds: string[], options?: { clearQueuedThinkingGrace?: boolean }): void {
+    emitMessagesConsumed(localIds: string[], options?: { clearQueuedThinkingGrace?: boolean; steered?: boolean }): void {
         this.client.emitMessagesConsumed(localIds, options);
     }
 

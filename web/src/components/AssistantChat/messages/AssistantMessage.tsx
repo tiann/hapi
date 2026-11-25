@@ -188,7 +188,7 @@ export function HappyAssistantMessage() {
                         ? () => ctx.onForkConversation!(historicalForkLocalId!)
                         : undefined}
                 onJumpToPrompt={replyToMessageId === null ? undefined : (focusTarget) => { void ctx.jumpToPrompt(messageId, replyToMessageId, focusTarget) }}
-                onJumpToConversationStart={() => { void ctx.scrollToConversationStart() }}
+                onJumpToConversationStart={(focusTarget) => { void ctx.scrollToConversationStart(focusTarget) }}
                 showPromptNavigation={replyToMessageId !== null && !promptInputVisible}
                 isLoadingConversationStart={ctx.isLoadingConversationStart}
                 isLoadingPrompt={ctx.loadingPromptMessageId === messageId}

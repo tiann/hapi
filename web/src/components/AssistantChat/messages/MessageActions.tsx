@@ -41,7 +41,7 @@ type MessageActionsProps = {
     onFork?: () => Promise<void>
     onRewind?: () => Promise<void>
     onJumpToPrompt?: (focusTarget: boolean) => void
-    onJumpToConversationStart?: () => void
+    onJumpToConversationStart?: (focusTarget: boolean) => void
     showPromptNavigation?: boolean
     isLoadingConversationStart?: boolean
     isLoadingPrompt?: boolean
@@ -160,7 +160,7 @@ onClick={() => { void onFork() }}
                         {onJumpToConversationStart ? (
                             <NavigationButton
                                 title={t('message.jumpToConversationStart')}
-                                onClick={onJumpToConversationStart}
+                                onClick={(event) => onJumpToConversationStart(event.detail === 0)}
                                 disabled={isNavigationInFlight || isLoadingConversationStart || isLoadingPrompt}
                             >
                                 {isLoadingConversationStart

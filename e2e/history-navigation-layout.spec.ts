@@ -168,6 +168,25 @@ test('keyboard prompt navigation focuses the destination input', async ({ page }
 })
 
 
+test('keyboard navigation to the start focuses the first message', async ({ page }) => {
+    await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&jumpStartShort=1&steer=1')
+    await expect(page.getByText('Mid-turn steer', { exact: true })).toBeVisible()
+    await page.evaluate(() => window.__probe.appendReply())
+    const lastLine = page.getByText('New reply line 25', { exact: true })
+    await expect(lastLine).toBeInViewport()
+    const lastRow = page.locator('[data-hapi-message-role="assistant"]').filter({ hasText: 'New reply line 25' })
+    await lastRow.hover()
+    await lastRow.getByRole('button', { name: 'Jump to conversation start' }).press('Enter')
+    const firstMessage = page.locator('.happy-thread-messages > [id]').first()
+    await expect(firstMessage).toContainText('Short chat prompt')
+    await expect(firstMessage).toBeFocused()
+    await expect(firstMessage).toBeInViewport({ ratio: 0.9 })
+    if (process.env.HAPI_REVIEW_SCREENSHOT_DIR) {
+        await page.screenshot({ path: `${process.env.HAPI_REVIEW_SCREENSHOT_DIR}/response-navigation-keyboard-start.png` })
+    }
+})
+
+
 test('selecting an outline item reveals it after the mobile composer returns', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 780 })
     await page.goto('/e2e-fixtures/history-load-fixture.html?navigationShell=1&jumpStartShort=1&outlineResize=1')

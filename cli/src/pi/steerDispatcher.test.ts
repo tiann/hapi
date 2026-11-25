@@ -80,7 +80,7 @@ describe('PiSteerDispatcher', () => {
         expect(h.client.emitMessagesConsumed).not.toHaveBeenCalled();
 
         resolveSteer(h.session, command);
-        await vi.waitFor(() => expect(h.client.emitMessagesConsumed).toHaveBeenCalledWith(['steer-1'], undefined));
+        await vi.waitFor(() => expect(h.client.emitMessagesConsumed).toHaveBeenCalledWith(['steer-1'], { steered: true }));
         expect(h.session.piIsStreaming).toBe(true);
     });
 
