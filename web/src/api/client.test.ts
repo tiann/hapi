@@ -12,6 +12,23 @@ describe('ApiClient error mapping', () => {
         globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch
     })
 
+    it.each([400, 401, 403])('propagates an aborted HTTP %s body instead of treating it as rejected credentials', async status => {
+        const controller = new AbortController()
+        const body = new ReadableStream({ start(stream) {
+            controller.signal.addEventListener('abort', () => stream.error(controller.signal.reason), { once: true })
+        } })
+        fetchMock.mockResolvedValueOnce(new Response(body, { status }))
+        const pending = new ApiClient('').authenticate({ accessToken: 'fixture' }, { signal: controller.signal })
+        controller.abort()
+        await expect(pending).rejects.toHaveProperty('name', 'AbortError')
+    })
+
+    it.each([404, 408, 429, 503])('retains HTTP %s when a transient auth response body is interrupted', async status => {
+        const body = new ReadableStream({ start(stream) { stream.error(new TypeError('connection lost')) } })
+        fetchMock.mockResolvedValueOnce(new Response(body, { status }))
+        await expect(new ApiClient('').authenticate({ accessToken: 'fixture' })).rejects.toMatchObject({ status })
+    })
+
     it('apiErrorMessage unwraps the hub error string and falls back cleanly', () => {
         const body = '{"success":false,"error":"No online machine available for Pi history import"}'
         const error = new ApiError(`HTTP 503 Service Unavailable: ${body}`, 503, 'No online machine available for Pi history import', body)
@@ -640,4 +657,13 @@ describe('ApiClient auth proxy redirect', () => {
         await expect(api.bridgeModelError('session-1', 'evt-1'))
             .resolves.toEqual({ ok: true, reason: undefined })
     })
+})
+
+it('passes an authentication cancellation signal through the auth proxy transport', async () => {
+    const controller = new AbortController()
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ token: 'fixture', user: { id: 'u1' } })))
+    try {
+        await new ApiClient('', { baseUrl: 'https://hub.test' }).authenticate({ accessToken: 'fixture' }, { signal: controller.signal })
+        expect(fetch.mock.calls[0]?.[1]?.signal).toBe(controller.signal)
+    } finally { fetch.mockRestore() }
 })

@@ -154,11 +154,21 @@ Restart the Hub after changing the provider configuration.
 
 ### Translating input to English
 
-When a translation provider is configured, the session **⋮** menu offers
-**Translate my messages to English**. The setting applies to that session
-only. While it is on, the hub translates each prompt you send from the web
-app, native apps, or Telegram before the agent sees it. Your chat shows what
-you typed, and you can tap **Translated** to see the English that was sent.
+When a translation provider is configured, the hub can translate each prompt
+you send from the web app, native apps, or Telegram before the agent sees it.
+Your chat shows what you typed, and you can tap **Translated** to see the
+English that was sent.
+
+- **For every session:** the hub owner can turn on **Settings → General →
+  Translate my messages to English by default**. Every session you have not
+  set yourself follows this setting.
+- **For one session:** tap the **EN** chip above the web composer, or use
+  **Translate my messages to English** in the session **⋮** menu. A
+  per-session choice always overrides the default, in both directions.
+
+While a translated message is being sent, its bubble shows **Translating…**.
+If the provider fails, the bubble shows **Not translated** and the agent
+receives your original text.
 
 - Every message is translated, whatever its language. The only messages
   skipped are slash commands (`/compact`, ...), messages made up only of

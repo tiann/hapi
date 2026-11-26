@@ -37,6 +37,9 @@ jobs:
             # accepted); AGP auto-installs any missing platform/build-tools.
             - uses: gradle/actions/setup-gradle@v4
             - name: Protocol tests (pure JVM, fixtures-driven)
+              env:
+                  # Robolectric fetches instrumented SDKs outside Gradle's mavenCentral() resolver.
+                  JAVA_TOOL_OPTIONS: -Drobolectric.dependency.repo.url=https://repo.maven.apache.org/maven2
               run: ./gradlew :core:protocol:test :core:data:testDebugUnitTest :app:testDebugUnitTest
             - name: Assemble debug APK and lint
               run: ./gradlew :app:assembleDebug :app:lintDebug

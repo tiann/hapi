@@ -584,10 +584,11 @@ export class TitleSuggestionService {
 
 export function createTitleSuggestionService(
     store: Store,
-    config: OpenAICompatibleTitleProviderConfig | null = readTitleProviderConfig()
+    env: TitleProviderEnvironment = process.env,
+    config: OpenAICompatibleTitleProviderConfig | null = readTitleProviderConfig(env)
 ): TitleSuggestionService {
-    const limits = readTitleSuggestionLimits()
-    const requestLimits = readTitleProviderRequestLimits()
+    const limits = readTitleSuggestionLimits(env)
+    const requestLimits = readTitleProviderRequestLimits(env)
     return new TitleSuggestionService(
         store,
         {

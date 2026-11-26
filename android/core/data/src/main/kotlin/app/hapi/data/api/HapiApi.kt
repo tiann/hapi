@@ -40,6 +40,7 @@ import app.hapi.protocol.wire.RenameMachineRequest
 import app.hapi.protocol.wire.RenameSessionRequest
 import app.hapi.protocol.wire.SetSessionTranslateInputRequest
 import app.hapi.protocol.wire.FeaturesResponse
+import app.hapi.protocol.wire.HubSettingsResponse
 import app.hapi.protocol.wire.ReopenSessionResponse
 import app.hapi.protocol.wire.ResumeSessionRequest
 import app.hapi.protocol.wire.ResumeSessionResponse
@@ -435,6 +436,10 @@ class HapiApi internal constructor(
     /** `GET /api/features`. */
     override suspend fun getFeatures(): FeaturesResponse =
         request("GET", url("api", "features").build())
+
+    /** `GET /api/hub-settings`. */
+    override suspend fun getHubSettings(): HubSettingsResponse =
+        request("GET", url("api", "hub-settings").build())
 
     /** `PATCH /api/sessions/:id/summary` (1–255 chars). */
     suspend fun updateSessionSummary(sessionId: String, text: String) {

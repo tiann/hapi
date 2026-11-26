@@ -61,6 +61,9 @@ export function HappyUserMessage() {
     const translatedFrom = useAuiState((s) => (
         s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
     )?.translatedFrom)
+    const translationFailed = useAuiState((s) => (
+        s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
+    )?.translationFailed === true)
     const [showSentText, setShowSentText] = useState(false)
     const steered = useAuiState(({ message }) => (
         message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
@@ -190,6 +193,20 @@ export function HappyUserMessage() {
                         <span aria-hidden="true">·</span>
                         <span>{t(showSentText ? 'chat.translated.showOriginal' : 'chat.translated.showSent')}</span>
                     </button>
+                ) : translationFailed ? (
+                    <span
+                        title={t('chat.translated.failedTitle')}
+                        className="mt-1 inline-flex items-center gap-1 text-[10px] leading-none text-[var(--app-hint)]"
+                    >
+                        {t('chat.translated.failed')}
+                    </span>
+                ) : status === 'sending' && ctx.inputTranslationEnabled && !text.trimStart().startsWith('/') ? (
+                    <span
+                        role="status"
+                        className="mt-1 inline-flex items-center gap-1 text-[10px] leading-none text-[var(--app-hint)]"
+                    >
+                        {t('chat.translated.pending')}
+                    </span>
                 ) : null}
                 {steered ? (
                     <span

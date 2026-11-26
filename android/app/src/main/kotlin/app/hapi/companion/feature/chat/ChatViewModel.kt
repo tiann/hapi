@@ -570,6 +570,9 @@ class ChatViewModel(
      */
     val inputTranslationAvailable: StateFlow<Boolean> = mutableInputTranslationAvailable.asStateFlow()
 
+    /** Hub-wide `translateInputByDefault`; sessions without an explicit choice follow it. */
+    private val translateInputByDefault = MutableStateFlow(false)
+
     private val _events = MutableSharedFlow<ChatEvent>(extraBufferCapacity = 16)
 
     /** One-shot effects: renavigation on supersede, snackbar notices. */
@@ -590,6 +593,7 @@ class ChatViewModel(
         val machines: List<Machine>,
         val detailLoadFailed: Boolean,
         val permissionOverrides: Map<String, PermissionRowOverride>,
+        val translateInputByDefault: Boolean,
     )
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -603,6 +607,7 @@ class ChatViewModel(
                 machineStore.machines,
                 detailLoadFailed,
                 permissionOverrides,
+                translateInputByDefault,
             ) { values: Array<Any?> -> pipelineInputs(values) }
         }
         // The web samples pipeline runs through React batching; here: emit the
@@ -1525,10 +1530,16 @@ class ChatViewModel(
         }
     }
 
+    /** Explicit hub-owned `metadata.translateInput` wins; absent ⇒ the hub default (web parity). */
+    private fun effectiveTranslateInput(explicit: Boolean?, hubDefault: Boolean): Boolean = explicit ?: hubDefault
+
     /** Best-effort feature discovery; a failure (or an older hub) leaves the toggle hidden. */
     private suspend fun loadFeatures() {
         try {
-            mutableInputTranslationAvailable.value = api.getFeatures().inputTranslationAvailable
+            val available = api.getFeatures().inputTranslationAvailable
+            mutableInputTranslationAvailable.value = available
+            // Sessions without an explicit choice follow the hub default.
+            if (available) translateInputByDefault.value = api.getHubSettings().translateInputByDefault
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (_: Exception) {
@@ -1545,7 +1556,7 @@ class ChatViewModel(
      */
     fun toggleTranslateInput() {
         if (!translateTogglePending.compareAndSet(false, true)) return
-        val enabled = currentDetail()?.metadata?.translateInput != true
+        val enabled = !effectiveTranslateInput(currentDetail()?.metadata?.translateInput, translateInputByDefault.value)
         scope.launch {
             try {
                 api.setSessionTranslateInput(sessionId, enabled)
@@ -2189,6 +2200,7 @@ class ChatViewModel(
             machines = values[3] as List<Machine>,
             detailLoadFailed = values[4] as Boolean,
             permissionOverrides = values[5] as Map<String, PermissionRowOverride>,
+            translateInputByDefault = values[6] as Boolean,
         )
     }
 
@@ -2359,7 +2371,7 @@ class ChatViewModel(
             name = detail?.metadata?.name ?: summary?.metadata?.name,
             active = detail?.active ?: summary?.active ?: false,
             thinking = detail?.thinking ?: summary?.thinking ?: false,
-            translateInput = detail?.metadata?.translateInput == true,
+            translateInput = effectiveTranslateInput(detail?.metadata?.translateInput, inputs.translateInputByDefault),
         )
     }
 
