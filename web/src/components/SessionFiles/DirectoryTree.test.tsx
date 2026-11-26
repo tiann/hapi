@@ -164,6 +164,32 @@ describe('DirectoryTree upload and delete', () => {
     })
 })
 
+describe('DirectoryTree upload and delete serialization', () => {
+    it('keeps delete unavailable while an upload batch is running', async () => {
+        let finishChunk: (value: unknown) => void = () => {}
+        const uploadWorkspaceFileChunk = vi.fn(() => new Promise((resolve) => { finishChunk = resolve }))
+        const deleteWorkspacePath = vi.fn(async () => ({ success: true }))
+        renderTree({ api: { uploadWorkspaceFileChunk, deleteWorkspacePath } })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Upload files to src' }))
+        fireEvent.change(screen.getByTestId('workspace-upload-input'), { target: { files: [new File(['hello'], 'a.txt')] } })
+        await waitFor(() => expect(uploadWorkspaceFileChunk).toHaveBeenCalledTimes(1))
+
+        // The mocked listing repeats for every folder, so the expanded `src` shows the same rows.
+        const deleteButtons = () => [
+            ...screen.getAllByRole('button', { name: 'Delete README.md' }),
+            ...screen.getAllByRole('button', { name: 'Delete src' }),
+        ] as HTMLButtonElement[]
+        expect(deleteButtons().every((button) => button.disabled)).toBe(true)
+        fireEvent.click(deleteButtons()[0]!)
+        expect(screen.queryByText('Delete file?')).toBeNull()
+
+        finishChunk({ success: true, size: 5, path: 'src/a.txt' })
+        await waitFor(() => expect(deleteButtons().every((button) => !button.disabled)).toBe(true))
+        expect(deleteWorkspacePath).not.toHaveBeenCalled()
+    })
+})
+
 describe('DirectoryTree add to composer', () => {
     it('adds files by path and folders with a trailing slash, but not the root', () => {
         const onAddToComposer = vi.fn()

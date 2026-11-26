@@ -169,6 +169,12 @@ function useWorkspaceFileActions(props: {
     const [pendingUploads, setPendingUploads] = useState<PendingUpload[]>([])
     const [confirm, setConfirm] = useState<PendingConfirm | null>(null)
     const [confirmPending, setConfirmPending] = useState(false)
+    // Upload batches and confirmations are mutually exclusive: a replace
+    // prompt raised mid-batch must never overwrite (or be closed by) a delete
+    // prompt, so deletes wait for the batch and uploads wait for the dialog.
+    const uploadingRef = useRef(false)
+    const confirmOpenRef = useRef(false)
+    confirmOpenRef.current = confirm !== null
 
     const refreshDirectory = useCallback(async (dir: string) => {
         void queryClient.invalidateQueries({ queryKey: queryKeys.gitStatus(props.sessionId) })
@@ -244,7 +250,8 @@ function useWorkspaceFileActions(props: {
 
     const handleFiles = useCallback(async (files: File[]) => {
         const target = targetRef.current
-        if (!target || files.length === 0) return
+        if (!target || files.length === 0 || uploadingRef.current) return
+        uploadingRef.current = true
         setUploadingDir(target.dir)
         props.onExpand(target.dir)
         const queued = files.map((file) => ({
@@ -281,6 +288,7 @@ function useWorkspaceFileActions(props: {
             }
         } finally {
             setPendingUploads((prev) => prev.filter((item) => !queued.some((q) => q.pending.id === item.id)))
+            uploadingRef.current = false
             setUploadingDir(null)
         }
 
@@ -295,12 +303,13 @@ function useWorkspaceFileActions(props: {
     }, [askToReplace, notify, props, refreshDirectory, removePending, t, updatePending, uploadOne])
 
     const uploadTo = useCallback((dir: string, label: string) => {
-        if (uploadingDir !== null) return
+        if (uploadingDir !== null || uploadingRef.current || confirmOpenRef.current) return
         targetRef.current = { dir, label }
         inputRef.current?.click()
     }, [uploadingDir])
 
     const requestDelete = useCallback((path: string, kind: 'file' | 'directory') => {
+        if (uploadingRef.current || confirmOpenRef.current) return
         setConfirm({
             title: t(kind === 'directory' ? 'files.directories.delete.folderTitle' : 'files.directories.delete.fileTitle'),
             description: t(
@@ -453,6 +462,7 @@ function DirectoryFileRow(props: {
     onOpen: () => void
     onDownload: () => void
     onDelete?: () => void
+    deleteDisabled?: boolean
     onAddToComposer?: () => void
     onOpenMenu?: (point: AnchoredMenuPoint) => void
 }) {
@@ -494,6 +504,7 @@ function DirectoryFileRow(props: {
                 <button
                     type="button"
                     onClick={props.onDelete}
+                    disabled={props.deleteDisabled}
                     className={ROW_DELETE_CLASS}
                     title={t('files.directories.delete')}
                     aria-label={t('files.directories.deleteNamed', { name: props.fileName })}
@@ -615,6 +626,7 @@ function DirectoryNode(props: {
                             <button
                                 type="button"
                                 onClick={() => props.actions!.requestDelete(props.path, 'directory')}
+                                disabled={props.actions.uploadingDir !== null}
                                 className={ROW_DELETE_CLASS}
                                 title={t('files.directories.delete')}
                                 aria-label={t('files.directories.deleteNamed', { name: props.label })}
@@ -677,6 +689,7 @@ function DirectoryNode(props: {
                                     onDelete={props.actions
                                         ? () => props.actions!.requestDelete(filePath, 'file')
                                         : undefined}
+                                    deleteDisabled={props.actions?.uploadingDir != null}
                                     onAddToComposer={props.onAddToComposer
                                         ? () => props.onAddToComposer!(filePath)
                                         : undefined}
