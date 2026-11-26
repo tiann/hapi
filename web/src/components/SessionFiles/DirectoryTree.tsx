@@ -215,27 +215,31 @@ function useWorkspaceFileActions(props: {
         if (!api) throw new Error('Not connected')
         const uploadId = randomId()
         let offset = 0
-        do {
-            const end = Math.min(offset + WORKSPACE_UPLOAD_CHUNK_BYTES, file.size)
-            const result = await api.uploadWorkspaceFileChunk(props.sessionId, {
-                dir,
-                name: file.name,
-                uploadId,
-                offset,
-                final: end >= file.size,
-                overwrite,
-            }, file.slice(offset, end))
-            if (!result.success) {
-                if (result.code === 'exists') return 'exists'
-                if (offset > 0) {
-                    void api.abortWorkspaceUpload(props.sessionId, { dir, name: file.name, uploadId }).catch(() => {})
+        try {
+            do {
+                const end = Math.min(offset + WORKSPACE_UPLOAD_CHUNK_BYTES, file.size)
+                const result = await api.uploadWorkspaceFileChunk(props.sessionId, {
+                    dir,
+                    name: file.name,
+                    uploadId,
+                    offset,
+                    final: end >= file.size,
+                    overwrite,
+                }, file.slice(offset, end))
+                if (!result.success) {
+                    if (result.code === 'exists') return 'exists'
+                    throw new Error(result.error ?? t('files.directories.upload.error.title'))
                 }
-                throw new Error(result.error ?? t('files.directories.upload.error.title'))
+                offset = end
+                onProgress(offset)
+            } while (offset < file.size)
+            return 'ok'
+        } catch (error) {
+            if (offset > 0) {
+                await api.abortWorkspaceUpload(props.sessionId, { dir, name: file.name, uploadId }).catch(() => {})
             }
-            offset = end
-            onProgress(offset)
-        } while (offset < file.size)
-        return 'ok'
+            throw error
+        }
     }, [props.api, props.sessionId, t])
 
     const handleFiles = useCallback(async (files: File[]) => {
@@ -307,11 +311,13 @@ function useWorkspaceFileActions(props: {
             confirmingLabel: t('files.directories.delete.confirming'),
             onConfirm: async () => {
                 if (!props.api) throw new Error('Not connected')
-                const result = await props.api.deleteWorkspacePath(props.sessionId, path)
+                const result = await props.api.deleteWorkspacePath(props.sessionId, { path, kind })
+                if (result.success || result.code === 'kind_mismatch') {
+                    void refreshDirectory(parentDirectory(path))
+                }
                 if (!result.success) {
                     throw new Error(result.error ?? t('files.directories.delete.error.default'))
                 }
-                void refreshDirectory(parentDirectory(path))
                 if (kind === 'directory') {
                     queryClient.removeQueries({ queryKey: queryKeys.sessionDirectory(props.sessionId, path) })
                 }

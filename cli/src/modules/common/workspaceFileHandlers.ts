@@ -1,4 +1,6 @@
-import { appendFile, lstat, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { constants, createReadStream } from 'node:fs'
+import { link, lstat, open, readdir, rename, rm, stat, unlink, type FileHandle } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type {
     CommandResponse,
@@ -7,8 +9,10 @@ import type {
     FileReadResponse,
     ListDirectoryResponse,
     StatFilesResponse,
+    WorkspaceDeletePathResponse,
     WorkspaceWriteFileResponse,
 } from '@hapi/protocol/apiTypes'
+import { resolveMaxUploadBytes, UPLOAD_CHUNK_MAX_BYTES } from '@hapi/protocol/apiTypes'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import type { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager'
 import { runGitCommand } from './handlers/git'
@@ -90,6 +94,7 @@ type WorkspaceWriteFileRequest = {
 type WorkspaceDeletePathRequest = {
     cwd?: unknown
     path?: unknown
+    kind?: unknown
 }
 
 type ResolvedWorkspaceCwd = { cwd: string } | { error: string }
@@ -187,7 +192,18 @@ async function listDirectory(path: string): Promise<ListDirectoryResponse> {
 }
 
 const UPLOAD_ID_PATTERN = /^[A-Za-z0-9_-]{8,64}$/
-const MAX_WORKSPACE_UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024
+const MAX_ACTIVE_WORKSPACE_UPLOADS = 16
+const UPLOAD_IDLE_TIMEOUT_MS = 15 * 60 * 1000
+const UNSUPPORTED_LINK_ERRORS = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV'])
+const UPLOAD_OPEN_FLAGS = constants.O_CREAT | constants.O_EXCL | constants.O_RDWR | (constants.O_NOFOLLOW ?? 0)
+
+type WorkspaceUpload = {
+    handle: FileHandle
+    size: number
+    timer?: ReturnType<typeof setTimeout>
+}
+
+type WorkspaceUploads = Map<string, WorkspaceUpload | null>
 
 function isPlainFileName(name: string): boolean {
     return name.length > 0
@@ -199,21 +215,54 @@ function isPlainFileName(name: string): boolean {
         && !name.includes('\0')
 }
 
-function uploadPartPath(dir: string, name: string, uploadId: string): string {
-    return join(dir, `.${name}.hapi-upload-${uploadId}`)
+async function entryStats(path: string) {
+    try {
+        return await lstat(path, { bigint: true })
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+        throw error
+    }
 }
 
-async function pathExists(path: string): Promise<boolean> {
+async function ownedFileStats(path: string, handle: FileHandle) {
+    const [entry, opened] = await Promise.all([entryStats(path), handle.stat({ bigint: true })])
+    return entry?.isFile() && entry.dev === opened.dev && entry.ino === opened.ino ? opened : null
+}
+
+async function discardUploadPart(part: string, handle: FileHandle): Promise<void> {
     try {
-        await lstat(path)
-        return true
-    } catch {
-        return false
+        if (await ownedFileStats(part, handle)) await unlink(part)
+    } finally {
+        await handle.close()
+    }
+}
+
+async function publishNewFile(part: string, target: string, upload: WorkspaceUpload): Promise<void> {
+    try {
+        await link(part, target)
+        return
+    } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code
+        if (!code || !UNSUPPORTED_LINK_ERRORS.has(code)) throw error
+    }
+
+    const destination = await open(target, UPLOAD_OPEN_FLAGS, 0o600)
+    try {
+        if (upload.size > 0) {
+            const source = createReadStream(part, { fd: upload.handle.fd, start: 0, end: upload.size - 1, autoClose: false })
+            await destination.writeFile(source)
+        }
+    } catch (error) {
+        if (await ownedFileStats(target, destination)) await unlink(target)
+        throw error
+    } finally {
+        await destination.close()
     }
 }
 
 async function handleWorkspaceWriteFile(
     pathPolicy: WorkspaceFilePathPolicy,
+    uploads: WorkspaceUploads,
     data: WorkspaceWriteFileRequest,
 ): Promise<WorkspaceWriteFileResponse> {
     const name = typeof data.name === 'string' ? data.name : ''
@@ -230,77 +279,104 @@ async function handleWorkspaceWriteFile(
         return rpcError(resolved.error)
     }
 
+    const target = join(resolved.path, name)
+    const partId = createHash('sha256').update(name).update('\0').update(uploadId).digest('hex')
+    const part = join(resolved.path, `.hapi-upload-${partId}`)
+    let upload = uploads.get(part)
+    if (upload === null) return rpcError('Upload operation already in progress')
+    if (!upload && data.abort === true) return { success: true }
+    if (!upload && uploads.size >= MAX_ACTIVE_WORKSPACE_UPLOADS) return rpcError('Too many concurrent uploads')
+
+    clearTimeout(upload?.timer)
+    uploads.set(part, null)
+    let keepOpen = false
     try {
-        const dirStats = await stat(resolved.path)
-        if (!dirStats.isDirectory()) {
-            return rpcError('Upload target is not a directory')
-        }
+        if (data.abort === true) return { success: true }
 
-        const target = join(resolved.path, name)
-        const part = uploadPartPath(resolved.path, name, uploadId)
-
-        if (data.abort === true) {
-            await rm(part, { force: true })
-            return { success: true }
-        }
-
-        const offset = typeof data.offset === 'number' && Number.isSafeInteger(data.offset) && data.offset >= 0
-            ? data.offset
-            : -1
-        if (offset < 0) {
+        const offset = data.offset
+        if (typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0) {
             return rpcError('Invalid offset')
         }
         const content = typeof data.content === 'string' ? Buffer.from(data.content, 'base64') : Buffer.alloc(0)
-        if (content.byteLength > MAX_WORKSPACE_UPLOAD_CHUNK_BYTES) {
-            return rpcError('Chunk too large')
-        }
-        const overwrite = data.overwrite === true
-
-        if (offset === 0) {
-            if (!overwrite && await pathExists(target)) {
-                return { success: false, code: 'exists', error: 'A file with this name already exists' }
-            }
-            // Upload ids are random per attempt, so (re)starting truncates.
-            await writeFile(part, content)
-        } else {
-            let partSize: number
-            try {
-                partSize = (await lstat(part)).size
-            } catch {
-                return rpcError('Upload was not started or has expired')
-            }
-            if (partSize !== offset) {
-                return rpcError(`Unexpected offset ${offset}; ${partSize} bytes received so far`)
-            }
-            await appendFile(part, content)
-        }
-
         const size = offset + content.byteLength
-        if (data.final === true) {
-            if (!overwrite && await pathExists(target)) {
-                await rm(part, { force: true })
-                return { success: false, code: 'exists', error: 'A file with this name already exists' }
+        if (size > resolveMaxUploadBytes(process.env.HAPI_MAX_UPLOAD_BYTES)) {
+            return rpcError('File exceeds maximum upload size')
+        }
+        if (content.byteLength > UPLOAD_CHUNK_MAX_BYTES) return rpcError('Chunk too large')
+
+        const overwrite = data.overwrite === true
+        const exists = { success: false, code: 'exists', error: 'A file with this name already exists' } as const
+        if (offset === 0) {
+            if (!overwrite && await entryStats(target)) return exists
+            if (upload) {
+                const previous = upload
+                upload = undefined
+                await discardUploadPart(part, previous.handle)
             }
-            const existing = await lstat(target).catch(() => null)
-            if (existing?.isDirectory()) {
-                await rm(part, { force: true })
-                return rpcError('A folder with this name already exists')
-            }
-            await rename(part, target)
-            const relativePath = relative(resolved.cwd, target).split(sep).join('/')
-            return { success: true, size, path: relativePath }
+            upload = { handle: await open(part, UPLOAD_OPEN_FLAGS, 0o600), size: 0 }
+        } else if (!upload) {
+            return rpcError('Upload was not started or has expired')
         }
 
-        return { success: true, size }
-    } catch (error) {
-        return rpcError(getErrorMessage(error, 'Failed to write file'))
+        if ((await ownedFileStats(part, upload.handle))?.size !== BigInt(upload.size)) {
+            return rpcError('Upload staging file has changed')
+        }
+        if (upload.size !== offset) {
+            keepOpen = true
+            return rpcError(`Unexpected offset ${offset}; ${upload.size} bytes received so far`)
+        }
+        await upload.handle.writeFile(content)
+        upload.size = size
+        if (data.final !== true) {
+            keepOpen = true
+            return { success: true, size }
+        }
+
+        if (overwrite) {
+            const existing = await entryStats(target)
+            if (existing?.isDirectory()) return rpcError('A folder with this name already exists')
+            if (existing?.isFile()) await upload.handle.chmod(Number(existing.mode & 0o777n))
+        }
+        if ((await ownedFileStats(part, upload.handle))?.size !== BigInt(size)) {
+            return rpcError('Upload staging file has changed')
+        }
+        if (overwrite) {
+            await rename(part, target)
+        } else {
+            try {
+                await publishNewFile(part, target, upload)
+            } catch (error) {
+                if ((error as NodeJS.ErrnoException).code === 'EEXIST') return exists
+                throw error
+            }
+        }
+        return { success: true, size, path: relative(resolved.cwd, target).split(sep).join('/') }
+    } finally {
+        if (keepOpen && upload) {
+            const handle = upload.handle
+            upload.timer = setTimeout(() => {
+                uploads.set(part, null)
+                void discardUploadPart(part, handle).catch(() => {}).finally(() => uploads.delete(part))
+            }, UPLOAD_IDLE_TIMEOUT_MS)
+            upload.timer.unref()
+            uploads.set(part, upload)
+        } else {
+            try {
+                if (upload) await discardUploadPart(part, upload.handle)
+            } finally {
+                uploads.delete(part)
+            }
+        }
     }
 }
 
 async function handleWorkspaceDeletePath(
     pathPolicy: WorkspaceFilePathPolicy,
     data: WorkspaceDeletePathRequest,
-): Promise<{ success: boolean; error?: string }> {
+): Promise<WorkspaceDeletePathResponse> {
+    if (data.kind !== 'file' && data.kind !== 'directory') {
+        return rpcError('Expected a file or directory confirmation')
+    }
     const cwd = await resolveWorkspaceCwd(pathPolicy, data.cwd)
     if ('error' in cwd) {
         return rpcError(cwd.error)
@@ -328,7 +404,11 @@ async function handleWorkspaceDeletePath(
 
     try {
         const stats = await lstat(target)
-        if (stats.isDirectory()) {
+        const matchesKind = data.kind === 'directory' ? stats.isDirectory() : stats.isFile() || stats.isSymbolicLink()
+        if (!matchesKind) {
+            return { success: false, code: 'kind_mismatch', error: `Entry is no longer a ${data.kind}. Check the refreshed listing.` }
+        }
+        if (data.kind === 'directory') {
             await rm(target, { recursive: true })
         } else {
             await unlink(target)
@@ -532,12 +612,19 @@ export function registerWorkspaceFileHandlers(
         },
     )
 
+    const uploads: WorkspaceUploads = new Map()
     rpcHandlerManager.registerHandler<WorkspaceWriteFileRequest, WorkspaceWriteFileResponse>(
         RPC_METHODS.WorkspaceWriteFile,
-        async (data) => await handleWorkspaceWriteFile(pathPolicy, data),
+        async (data) => {
+            try {
+                return await handleWorkspaceWriteFile(pathPolicy, uploads, data)
+            } catch (error) {
+                return rpcError(getErrorMessage(error, 'Failed to write file'))
+            }
+        },
     )
 
-    rpcHandlerManager.registerHandler<WorkspaceDeletePathRequest, { success: boolean; error?: string }>(
+    rpcHandlerManager.registerHandler<WorkspaceDeletePathRequest, WorkspaceDeletePathResponse>(
         RPC_METHODS.WorkspaceDeletePath,
         async (data) => await handleWorkspaceDeletePath(pathPolicy, data),
     )

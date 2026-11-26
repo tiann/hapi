@@ -38,7 +38,7 @@ export const MACHINE_CAPABILITIES = {
     /** Read-only file/Git/search RPCs available on the long-lived runner. */
     WorkspaceFileAccess: 'workspace-file-access',
     /** Upload into / delete from a session workspace via the runner (files panel). */
-    WorkspaceFileWrite: 'workspace-file-write',
+    WorkspaceFileWrite: 'workspace-file-write-v2',
     /** Normalized local-session import transcripts via ListLocalSessions. */
     LocalSessionImport: 'local-session-import',
 } as const

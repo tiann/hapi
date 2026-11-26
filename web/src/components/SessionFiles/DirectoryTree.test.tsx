@@ -31,9 +31,10 @@ function renderTree(handlers: {
 } = {}) {
     const onOpenFile = handlers.onOpenFile ?? vi.fn()
     const onRequestFileMenu = handlers.onRequestFileMenu ?? vi.fn()
+    const queryClient = new QueryClient()
 
     render(
-        <QueryClientProvider client={new QueryClient()}>
+        <QueryClientProvider client={queryClient}>
         <I18nProvider>
             <ToastProvider>
                 <DirectoryTree
@@ -51,7 +52,7 @@ function renderTree(handlers: {
         </QueryClientProvider>
     )
 
-    return { onOpenFile, onRequestFileMenu }
+    return { onOpenFile, onRequestFileMenu, queryClient }
 }
 
 /** The file name button (a directory row's download button also mentions the name in its aria-label). */
@@ -106,7 +107,22 @@ describe('DirectoryTree upload and delete', () => {
         expect(await screen.findByText('Delete file?')).toBeTruthy()
 
         fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
-        await waitFor(() => expect(deleteWorkspacePath).toHaveBeenCalledWith('session-1', 'README.md'))
+        await waitFor(() => expect(deleteWorkspacePath).toHaveBeenCalledWith('session-1', { path: 'README.md', kind: 'file' }))
+    })
+
+    it('sends the confirmed folder kind and refreshes the parent when the entry has changed', async () => {
+        const deleteWorkspacePath = vi.fn().mockResolvedValue({
+            success: false, code: 'kind_mismatch', error: 'Entry is no longer a directory.',
+        })
+        const { queryClient } = renderTree({ api: { deleteWorkspacePath } })
+        const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+        fireEvent.click(screen.getByRole('button', { name: 'Delete src' }))
+        expect(await screen.findByText('Delete folder?')).toBeTruthy()
+        fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+
+        expect(await screen.findByText('Entry is no longer a directory.')).toBeTruthy()
+        expect(deleteWorkspacePath).toHaveBeenCalledWith('session-1', { path: 'src', kind: 'directory' })
+        expect(invalidate).toHaveBeenCalledWith({ queryKey: ['session-directory', 'session-1', ''] })
     })
 
     it('does not delete when the confirmation is cancelled', async () => {
@@ -192,6 +208,24 @@ describe('DirectoryTree upload progress', () => {
         expect(screen.getByText('Uploaded big.bin to project')).toBeTruthy()
         expect(screen.queryByTestId('pending-upload-row')).toBeNull()
         expect(uploadWorkspaceFileChunk).toHaveBeenCalledTimes(2)
+    })
+
+    it('aborts the partial upload when the hub rejects a later chunk', async () => {
+        const uploadWorkspaceFileChunk = vi.fn()
+            .mockResolvedValueOnce({ success: true, size: 1_048_576 })
+            .mockRejectedValueOnce(new Error('File exceeds the upload limit'))
+        const abortWorkspaceUpload = vi.fn().mockResolvedValue({ success: true })
+        renderTree({ api: { uploadWorkspaceFileChunk, abortWorkspaceUpload } })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Upload files to project' }))
+        const file = new File([new Uint8Array(1_048_577)], 'large.bin')
+        fireEvent.change(screen.getByTestId('workspace-upload-input'), { target: { files: [file] } })
+
+        expect(await screen.findByText('File exceeds the upload limit')).toBeTruthy()
+        expect(abortWorkspaceUpload).toHaveBeenCalledWith('session-1', {
+            dir: '', name: file.name, uploadId: uploadWorkspaceFileChunk.mock.calls[0][1].uploadId,
+        })
+        expect(screen.queryByTestId('pending-upload-row')).toBeNull()
     })
 
     it('drops the row and reports the failure when the upload fails', async () => {

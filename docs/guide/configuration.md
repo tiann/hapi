@@ -194,7 +194,7 @@ are unset, the hub uses the `HAPI_TITLE_PROVIDER_*` connection.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `HAPI_SESSION_IDLE_TIMEOUT_MS` | `43200000` (12 h) | A session that sends only keep-alives for this long, with no visible work or pending request, is shown as idle. `0` disables. |
-| `HAPI_MAX_UPLOAD_BYTES` | `536870912` (512 MiB) | Maximum size of one uploaded file; capped at 10 GiB. The machine that receives the file checks the same variable, so set it on the hub and the CLI/runner. |
+| `HAPI_MAX_UPLOAD_BYTES` | `536870912` (512 MiB) | Maximum size of each file uploaded as a session attachment or through the workspace files panel, capped at 10 GiB. Set it on both the hub and the CLI/runner. Each enforces its own limit. |
 | `HAPI_SCRATCHLIST_MAX_ATTACHMENT_BYTES_PER_FILE` | `10485760` (10 MiB) | Scratchlist attachment limit per file. |
 | `HAPI_SCRATCHLIST_MAX_ATTACHMENTS_PER_ENTRY` | `4` | Attachments per scratchlist entry. |
 | `HAPI_SCRATCHLIST_MAX_ATTACHMENT_BYTES_PER_ENTRY` | `20971520` (20 MiB) | Total attachment size per entry. |

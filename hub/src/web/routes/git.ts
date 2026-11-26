@@ -5,7 +5,7 @@ import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
 import { readBoundedChunkBytes } from './sessions'
-import { UPLOAD_CHUNK_MAX_BYTES } from '@hapi/protocol/apiTypes'
+import { resolveMaxUploadBytes, UPLOAD_CHUNK_MAX_BYTES } from '@hapi/protocol/apiTypes'
 
 const fileSearchSchema = z.object({
     query: z.string().optional(),
@@ -41,6 +41,7 @@ const workspaceUploadAbortSchema = z.object({
 
 const workspaceDeleteSchema = z.object({
     path: z.string().min(1),
+    kind: z.enum(['file', 'directory']),
 })
 
 const generatedImageSchema = z.object({
@@ -577,6 +578,14 @@ export function createGitRoutes(getSyncEngine: () => SyncEngine | null): Hono<We
         }
 
         const { dir, name, uploadId, offset } = parsed.data
+        const maxBytes = resolveMaxUploadBytes(process.env.HAPI_MAX_UPLOAD_BYTES)
+        if (offset + bytes.byteLength > maxBytes) {
+            return c.json({
+                success: false,
+                error: `File exceeds the upload limit of ${maxBytes} bytes`,
+                code: 'upload_too_large',
+            }, 413)
+        }
         const result = await runRpc(() => engine.writeWorkspaceFile(sessionResult.sessionId, {
             dir,
             name,
@@ -620,9 +629,9 @@ export function createGitRoutes(getSyncEngine: () => SyncEngine | null): Hono<We
         }
         const parsed = workspaceDeleteSchema.safeParse(await c.req.json().catch(() => null))
         if (!parsed.success) {
-            return c.json({ success: false, error: 'Invalid path' }, 400)
+            return c.json({ success: false, error: 'Invalid delete path or entry kind' }, 400)
         }
-        const result = await runRpc(() => engine.deleteWorkspacePath(sessionResult.sessionId, parsed.data.path))
+        const result = await runRpc(() => engine.deleteWorkspacePath(sessionResult.sessionId, parsed.data))
         return c.json(result)
     })
 

@@ -1,6 +1,6 @@
 import { HubClock } from '@/lib/hubClock'
 import type { AttachedJob } from '@hapi/protocol'
-import type { BranchConversationRequest, BranchConversationResponse, WorkspaceDeletePathResponse, WorkspaceWriteFileResponse } from '@hapi/protocol/apiTypes'
+import type { BranchConversationRequest, BranchConversationResponse, WorkspaceDeletePathRequest, WorkspaceDeletePathResponse, WorkspaceWriteFileResponse } from '@hapi/protocol/apiTypes'
 import { isAuthRejectionStatus } from '@/lib/authConnection'
 import type {
     AttachmentMetadata,
@@ -822,10 +822,13 @@ export class ApiClient {
     }
 
     /** Delete a file or folder (recursively) from the session workspace on the runner. */
-    async deleteWorkspacePath(sessionId: string, path: string): Promise<WorkspaceDeletePathResponse> {
+    async deleteWorkspacePath(
+        sessionId: string,
+        request: Omit<WorkspaceDeletePathRequest, 'cwd'>
+    ): Promise<WorkspaceDeletePathResponse> {
         return await this.request<WorkspaceDeletePathResponse>(
             `/api/sessions/${encodeURIComponent(sessionId)}/workspace/delete`,
-            { method: 'POST', body: JSON.stringify({ path }) }
+            { method: 'POST', body: JSON.stringify(request) }
         )
     }
 

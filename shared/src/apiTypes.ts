@@ -1320,6 +1320,7 @@ export type WorkspaceDeletePathRequest = {
     cwd: string
     /** Path relative to `cwd`; the workspace root itself cannot be deleted. */
     path: string
+    kind: 'file' | 'directory'
 }
 
 export type WorkspaceDeletePathResponse = {

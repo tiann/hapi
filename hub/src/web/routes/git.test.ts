@@ -531,6 +531,31 @@ describe('workspace upload/delete routes', () => {
         expect(content).toBe('')
     })
 
+    it('forwards a chunk ending at the configured file limit and rejects one that crosses it', async () => {
+        let calls = 0
+        const app = buildApp({
+            resolveSessionAccess: () => ({ ok: true, sessionId: session.id, session }),
+            writeWorkspaceFile: async () => {
+                calls++
+                return { success: true }
+            },
+        })
+        const previous = process.env.HAPI_MAX_UPLOAD_BYTES
+        process.env.HAPI_MAX_UPLOAD_BYTES = '5'
+        try {
+            const url = '/api/sessions/session-1/workspace/upload?name=a.txt&uploadId=upload-0001&offset=3'
+            const accepted = await app.request(url, { method: 'POST', body: 'ab' })
+            expect(accepted.status).toBe(200)
+            const rejected = await app.request(url, { method: 'POST', body: 'abc' })
+            expect(rejected.status).toBe(413)
+            expect(await rejected.json()).toMatchObject({ success: false, code: 'upload_too_large' })
+            expect(calls).toBe(1)
+        } finally {
+            if (previous === undefined) delete process.env.HAPI_MAX_UPLOAD_BYTES
+            else process.env.HAPI_MAX_UPLOAD_BYTES = previous
+        }
+    })
+
     it('rejects malformed upload parameters before reaching the runner', async () => {
         let called = false
         const engine = {
@@ -550,26 +575,48 @@ describe('workspace upload/delete routes', () => {
     })
 
     it('forwards deletes and surfaces runner errors as success:false', async () => {
-        const engine = {
+        const requests: unknown[] = []
+        const app = buildApp({
             resolveSessionAccess: () => ({ ok: true as const, sessionId: 'session-1', session }),
-            deleteWorkspacePath: async (_sessionId: string, path: string) => (
-                path === 'src/a.txt' ? { success: true } : { success: false, error: 'Invalid path' }
-            )
-        } as unknown as Partial<SyncEngine>
-        const app = buildApp(engine)
+            deleteWorkspacePath: async (_sessionId, request) => {
+                requests.push(request)
+                return request.path === 'src/a.txt' ? { success: true } : { success: false, error: 'Invalid path' }
+            },
+        })
 
         const ok = await app.request('/api/sessions/session-1/workspace/delete', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ path: 'src/a.txt' })
+            body: JSON.stringify({ path: 'src/a.txt', kind: 'file' })
         })
         expect(await ok.json()).toEqual({ success: true })
 
         const refused = await app.request('/api/sessions/session-1/workspace/delete', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ path: '..' })
+            body: JSON.stringify({ path: '..', kind: 'directory' })
         })
         expect(await refused.json()).toEqual({ success: false, error: 'Invalid path' })
+        expect(requests).toEqual([{ path: 'src/a.txt', kind: 'file' }, { path: '..', kind: 'directory' }])
+    })
+
+    it('rejects missing and unknown delete kinds before routing', async () => {
+        let calls = 0
+        const app = buildApp({
+            resolveSessionAccess: () => ({ ok: true, sessionId: session.id, session }),
+            deleteWorkspacePath: async () => {
+                calls++
+                return { success: true }
+            },
+        })
+        for (const kind of [undefined, 'other']) {
+            const response = await app.request('/api/sessions/session-1/workspace/delete', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ path: 'src', kind }),
+            })
+            expect(response.status).toBe(400)
+        }
+        expect(calls).toBe(0)
     })
 })

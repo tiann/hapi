@@ -5,12 +5,20 @@ import { Store } from '../store'
 import type { RpcGateway } from './rpcGateway'
 import { SyncEngine } from './syncEngine'
 
-function createEngine(capabilities: string[], options?: { machineOnline?: boolean }) {
+function createEngine(capabilities: string[], {
+    machineOnline = true,
+    sessionMachineId = 'machine-1',
+}: { machineOnline?: boolean; sessionMachineId?: string | null } = {}) {
     const store = new Store(':memory:')
     const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
     const session = engine.getOrCreateSession(
         'workspace-write',
-        { path: '/workspace/project', host: 'runner-host', machineId: 'machine-1', flavor: 'claude' },
+        {
+            path: '/workspace/project',
+            host: 'runner-host',
+            machineId: sessionMachineId ?? undefined,
+            flavor: 'claude',
+        },
         null,
         'default'
     )
@@ -20,7 +28,7 @@ function createEngine(capabilities: string[], options?: { machineOnline?: boolea
         { status: 'running' },
         'default'
     )
-    if (options?.machineOnline !== false) {
+    if (machineOnline) {
         engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
     }
     const gateway = (engine as unknown as { rpcGateway: RpcGateway }).rpcGateway
@@ -38,16 +46,16 @@ describe('SyncEngine workspace upload/delete', () => {
             dir: 'src', name: 'a.txt', uploadId: 'upload-0001', offset: 0, content: 'YQ==', cwd: '/workspace/project',
         })
 
-        await engine.deleteWorkspacePath(sessionId, 'src/a.txt')
-        expect(remove).toHaveBeenCalledWith('machine-1', { cwd: '/workspace/project', path: 'src/a.txt' })
+        await engine.deleteWorkspacePath(sessionId, { path: 'src/a.txt', kind: 'file' })
+        expect(remove).toHaveBeenCalledWith('machine-1', { cwd: '/workspace/project', path: 'src/a.txt', kind: 'file' })
         engine.stop()
     })
 
-    it('explains when the runner is too old instead of calling it', async () => {
-        const { engine, sessionId, gateway } = createEngine([MACHINE_CAPABILITIES.WorkspaceFileAccess])
+    it.each([MACHINE_CAPABILITIES.WorkspaceFileAccess, 'workspace-file-write'])('refuses runners with only %s', async (capability) => {
+        const { engine, sessionId, gateway } = createEngine([capability])
         const remove = spyOn(gateway, 'deleteWorkspacePath')
 
-        const result = await engine.deleteWorkspacePath(sessionId, 'src/a.txt')
+        const result = await engine.deleteWorkspacePath(sessionId, { path: 'src/a.txt', kind: 'file' })
         expect(result).toMatchObject({ success: false, code: 'runner_outdated' })
         expect(remove).not.toHaveBeenCalled()
         engine.stop()
@@ -57,6 +65,20 @@ describe('SyncEngine workspace upload/delete', () => {
         const { engine, sessionId } = createEngine([MACHINE_CAPABILITIES.WorkspaceFileWrite], { machineOnline: false })
         const result = await engine.writeWorkspaceFile(sessionId, { dir: '', name: 'a.txt', uploadId: 'upload-0001', offset: 0 })
         expect(result).toMatchObject({ success: false, code: 'workspace_unavailable' })
+        engine.stop()
+    })
+
+    it.each([null, 'another-machine'])('refuses a same-host runner when the recorded machine ID is %s', async (sessionMachineId) => {
+        const { engine, sessionId, gateway } = createEngine([MACHINE_CAPABILITIES.WorkspaceFileWrite], { sessionMachineId })
+        const write = spyOn(gateway, 'writeWorkspaceFile')
+        const remove = spyOn(gateway, 'deleteWorkspacePath')
+        const unavailable = { success: false, code: 'workspace_unavailable' }
+
+        expect(await engine.writeWorkspaceFile(sessionId, { dir: '', name: 'a.txt', uploadId: 'upload-0001', offset: 0 }))
+            .toMatchObject(unavailable)
+        expect(await engine.deleteWorkspacePath(sessionId, { path: 'a.txt', kind: 'file' })).toMatchObject(unavailable)
+        expect(write).not.toHaveBeenCalled()
+        expect(remove).not.toHaveBeenCalled()
         engine.stop()
     })
 })
