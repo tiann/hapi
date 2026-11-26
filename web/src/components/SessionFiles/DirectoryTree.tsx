@@ -12,6 +12,7 @@ import { useTranslation } from '@/lib/use-translation'
 import { useToast } from '@/lib/toast-context'
 import { downloadBase64File } from '@/lib/file-download'
 import { formatFileMetadata } from '@/lib/file-metadata'
+import { randomId } from '@/lib/randomId'
 import { sortDirectoryEntries, type DirectorySort } from '@/lib/directory-sort'
 
 function ChevronIcon(props: { className?: string; collapsed: boolean }) {
@@ -212,7 +213,7 @@ function useWorkspaceFileActions(props: {
     ): Promise<'ok' | 'exists'> => {
         const api = props.api
         if (!api) throw new Error('Not connected')
-        const uploadId = crypto.randomUUID()
+        const uploadId = randomId()
         let offset = 0
         do {
             const end = Math.min(offset + WORKSPACE_UPLOAD_CHUNK_BYTES, file.size)
@@ -244,7 +245,7 @@ function useWorkspaceFileActions(props: {
         props.onExpand(target.dir)
         const queued = files.map((file) => ({
             file,
-            pending: { id: crypto.randomUUID(), dir: target.dir, name: file.name, size: file.size, loaded: 0 },
+            pending: { id: randomId(), dir: target.dir, name: file.name, size: file.size, loaded: 0 },
         }))
         setPendingUploads((prev) => [...prev, ...queued.map((item) => item.pending)])
 
