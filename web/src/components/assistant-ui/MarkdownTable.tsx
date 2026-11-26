@@ -800,14 +800,24 @@ export async function renderTableAsImage(table: HTMLTableElement): Promise<Blob>
     const tableRect = table.getBoundingClientRect()
     const tableWidth = Math.max(table.scrollWidth, Math.ceil(tableRect.width), 1)
     const tableHeight = getTableExportHeight(table)
-    const tableBackground = getComputedStyle(table).backgroundColor
-    const backgroundColor = tableBackground === 'rgba(0, 0, 0, 0)'
-        ? getComputedStyle(document.body).backgroundColor
-        : tableBackground
+    let backgroundColor: string | null = null
+    // The inline scroll surface, rather than the table itself, paints the
+    // body color. Resolve that surface before cloning the table offscreen.
+    for (let surface: HTMLElement | null = table; surface; surface = surface.parentElement) {
+        const color = getComputedStyle(surface).backgroundColor
+        if (!isTransparentColor(color)) {
+            backgroundColor = color
+            break
+        }
+    }
+    if (backgroundColor === null) {
+        const bodyColor = getComputedStyle(document.body).backgroundColor
+        if (!isTransparentColor(bodyColor)) backgroundColor = bodyColor
+    }
     const scale = getTableExportScale(tableWidth, tableHeight)
     const rasterPixels = tableWidth * tableHeight * scale * scale
     const renderOptions = {
-        backgroundColor: backgroundColor || null,
+        backgroundColor,
         foreignObjectRendering: false,
         logging: false,
         scale,

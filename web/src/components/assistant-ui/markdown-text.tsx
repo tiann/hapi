@@ -881,6 +881,7 @@ function A(props: ComponentPropsWithoutRef<'a'>) {
                 key={key}
                 {...rest}
                 href={domHref}
+                data-hapi-markdown-href={markdownHref}
                 target={target}
                 rel={effectiveRel}
                 onClick={handleClick}

@@ -40,6 +40,40 @@ test.describe('markdown table actions', () => {
         expect(singleLineStyles.every((style) => /rgba\(0, 0, 0, 0\)|transparent/.test(style.backgroundColor) && style.backdropFilter === 'none')).toBe(true)
     })
 
+    test('exports the inline PNG with the visible table surface color', async ({ page }, testInfo) => {
+        await page.goto('/e2e-fixtures/markdown-table-fixture.html')
+        const frame = page.locator('.aui-md-table-frame')
+        await frame.locator('.aui-md-table-scroll').evaluate((surface: HTMLElement) => {
+            surface.style.backgroundColor = 'rgb(211, 225, 239)'
+        })
+        await frame.hover()
+        await frame.getByRole('button', { name: 'Download table' }).hover()
+        const png = page.waitForEvent('download')
+        await page.getByRole('menuitem', { name: 'Download PNG' }).click()
+        const download = await png
+        const dir = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+        const file = dir ? `${dir}/inline-table-surface.png` : testInfo.outputPath('inline-table-surface.png')
+        await download.saveAs(file)
+        const bytes = await readFile(file)
+        const matchingPixels = await page.evaluate(async (b64) => {
+            const img = new Image()
+            img.src = `data:image/png;base64,${b64}`
+            await img.decode()
+            const canvas = document.createElement('canvas')
+            canvas.width = img.width
+            canvas.height = img.height
+            const ctx = canvas.getContext('2d')!
+            ctx.drawImage(img, 0, 0)
+            const pixels = ctx.getImageData(0, Math.floor(img.height / 2), img.width, Math.max(1, Math.floor(img.height / 2))).data
+            let count = 0
+            for (let i = 0; i < pixels.length; i += 4) {
+                if (pixels[i] === 211 && pixels[i + 1] === 225 && pixels[i + 2] === 239 && pixels[i + 3] === 255) count++
+            }
+            return count
+        }, bytes.toString('base64'))
+        expect(matchingPixels).toBeGreaterThan(100)
+    })
+
     test('opens a viewport-sized PC viewer and downloads the CSV', async ({ page }) => {
         await page.goto('/e2e-fixtures/markdown-table-fixture.html')
 

@@ -923,6 +923,19 @@ describe('MarkdownTable', () => {
         expect(serializeTableToMarkdown(screen.getByRole<HTMLTableElement>('table'))).toContain('[Open](custom://target)')
     })
 
+    it('preserves custom Markdown destinations beside interactive image previews', () => {
+        render(
+            <I18nProvider>
+                <MarkdownRenderer standalone content={'| Action |\n| --- |\n| [Open report ![Chart](https://example.com/chart.png)](custom://target) |'} />
+            </I18nProvider>,
+        )
+
+        const link = screen.getByText('Open report').closest('a')
+        expect(link).toHaveAttribute('href', '#')
+        expect(link).toHaveAttribute('data-hapi-markdown-href', 'custom://target')
+        expect(serializeTableToMarkdown(screen.getByRole<HTMLTableElement>('table'))).toContain('[Open report ](custom://target)![Chart]')
+    })
+
     it('round-trips literal Markdown metacharacters in plain table text', () => {
         const source = '| Value |\n| --- |\n| \\*literal\\* \\_literal\\_ &#91;brackets&#93; \\`ticks\\` \\~\\~tilde\\~\\~ \\<angle\\> \\!literal\\! &amp;copy; \\$\\$x\\$\\$ |'
         const firstRender = render(
@@ -1068,6 +1081,24 @@ describe('MarkdownTable', () => {
             'rgb(70, 70, 70)',
             'rgb(80, 80, 80)',
         ])
+    })
+
+    it('uses the inline scroll surface background for a transparent table', async () => {
+        const surface = document.createElement('div')
+        surface.style.backgroundColor = 'rgb(26, 44, 62)'
+        const table = document.createElement('table')
+        table.innerHTML = '<tbody><tr><td>HAPI</td></tr></tbody>'
+        surface.append(table)
+        document.body.append(surface)
+        html2canvas.mockResolvedValue({
+            toBlob: (callback: BlobCallback) => callback(new Blob(['png'], { type: 'image/png' })),
+        })
+        try {
+            await renderTableAsImage(table)
+            expect(html2canvas).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ backgroundColor: 'rgb(26, 44, 62)' }))
+        } finally {
+            surface.remove()
+        }
     })
 
     it('crops trailing table box space from PNG exports', async () => {
