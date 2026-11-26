@@ -38,14 +38,27 @@ export function resolveSessionIdleTimeoutMs(
     return parsed
 }
 
-/** Work the hub can see that must never be reconciled away as a zombie. */
-function hasLiveWork(session: Session): boolean {
+/**
+ * Work the hub can see that must never be reconciled away as a zombie.
+ *
+ * Reports hub *visibility*, not process liveness. A false result means none of
+ * these signals are set — not that the session is safe to reap. A session can
+ * be alive while waiting on CI, a vendor, or a peer reply with none of the
+ * original three turn signals; callers that destroy state must not promote a
+ * false result into a liveness verdict (tiann/hapi#2020). Prefer consulting
+ * `metadata.waiting` / `idleReconcileExempt` as well when the action is
+ * irreversible.
+ */
+export function hasLiveWork(session: Session): boolean {
     if (session.thinking) return true
     if ((session.backgroundTaskCount ?? 0) > 0) return true
     // A permission / input request waiting on the operator is real state the
     // agent is blocked on, not an abandoned socket.
     const requests = session.agentState?.requests
     if (requests && Object.keys(requests).length > 0) return true
+    // Externally blocked work distinct from turn-scoped thinking (#2020).
+    const waiting = session.metadata?.waiting
+    if (waiting && typeof waiting === 'object') return true
     return false
 }
 
