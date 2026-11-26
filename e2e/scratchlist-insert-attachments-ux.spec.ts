@@ -54,3 +54,17 @@ test('inactive session keeps copy and delete while omitting resume-dependent sen
     await expect(menu.getByRole('menuitem', { name: 'Schedule send' })).toHaveCount(0)
     await page.screenshot({ path: testInfo.outputPath('inactive-session-menu.png'), fullPage: true })
 })
+
+test('closing an untouched inline draft preserves a concurrent remote edit', async ({ page }, testInfo) => {
+    await page.goto('/e2e-fixtures/scratchlist-attachments-fixture.html')
+    await page.getByTestId('scratchlist-entry-text').click()
+    const editor = page.getByRole('textbox', { name: 'Edit scratchlist entry' })
+    await expect(editor).toHaveValue('Draft note')
+    await page.evaluate(() => window.scratchlistAttachmentFixture.simulateRemoteText('Updated from another client'))
+    await expect(editor).toHaveValue('Draft note')
+    await editor.press('Enter')
+    await expect(editor).toHaveCount(0)
+    await expect(page.getByTestId('scratchlist-entry-text')).toHaveText('Updated from another client')
+    await expect(page.getByTestId('updates')).toHaveText('0')
+    await page.screenshot({ path: testInfo.outputPath('remote-draft-preserved.png') })
+})

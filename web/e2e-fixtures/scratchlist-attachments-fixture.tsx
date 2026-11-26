@@ -32,7 +32,7 @@ const api = {
 
 declare global {
     interface Window {
-        scratchlistAttachmentFixture: { setFailSave(value: boolean): void }
+        scratchlistAttachmentFixture: { setFailSave(value: boolean): void; simulateRemoteText(text: string): void }
     }
 }
 function App() {
@@ -42,7 +42,9 @@ function App() {
     const [activeActions, setActiveActions] = useState(true)
     const [action, setAction] = useState('')
     const save = (next: ScratchlistEntry[]) => { localStorage.setItem(storageKey, JSON.stringify(next)); setEntries(next) }
-    window.scratchlistAttachmentFixture = { setFailSave }
+    window.scratchlistAttachmentFixture = {
+        setFailSave, simulateRemoteText: text => save(entries.map(entry => ({ ...entry, text }))),
+    }
     return <I18nProvider><main className="mx-auto max-w-2xl p-4">
         <div className="mb-4 flex flex-wrap gap-3">
             <button onClick={() => save([{ ...entries[0]!, attachments: [image] }])}>Single image</button>

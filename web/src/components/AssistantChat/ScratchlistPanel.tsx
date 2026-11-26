@@ -511,6 +511,7 @@ function ScratchlistInventory({
     const copySuccessTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
     const suppressClickRef = useRef(false)
     const editCompletionRef = useRef(false)
+    const originalEditingTextRef = useRef('')
     const scrollViewportRef = useRef<HTMLDivElement | null>(null)
     const entriesRef = useRef(entries)
     entriesRef.current = entries
@@ -919,6 +920,7 @@ function ScratchlistInventory({
             return
         }
         editCompletionRef.current = false
+        originalEditingTextRef.current = entry.text.trim()
         setEditingEntryId(entry.id)
         setEditingText(entry.text)
     }, [disabled])
@@ -1012,7 +1014,8 @@ function ScratchlistInventory({
         editCompletionRef.current = true
         const nextText = editingText.trim()
         const hasAttachments = (entry.attachments?.length ?? 0) > 0
-        if (nextText === entry.text || (nextText.length === 0 && !hasAttachments)) {
+        if (nextText === originalEditingTextRef.current || nextText === entry.text
+            || (nextText.length === 0 && !hasAttachments)) {
             setEditingEntryId(null)
             setEditingText('')
             return

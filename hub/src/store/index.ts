@@ -1426,32 +1426,34 @@ export class Store {
     }
     /** v36→v37: persist scratchlist order and add its lookup index. */
     private migrateFromV36ToV37(): void {
-        // The previous PR schema used v36 without the upstream passkey table.
-        this.migrateFromV35ToV36()
-        const scratchlistColumns = this.db.prepare('PRAGMA table_info(session_scratchlist)').all() as Array<{ name: string }>
-        if (scratchlistColumns.length > 0 && !scratchlistColumns.some((column) => column.name === 'position')) {
-            this.db.exec('ALTER TABLE session_scratchlist ADD COLUMN position INTEGER NOT NULL DEFAULT 0')
-            const sessionRows = this.db.prepare(
-                'SELECT DISTINCT session_id FROM session_scratchlist'
-            ).all() as Array<{ session_id: string }>
-            const rowsForSession = this.db.prepare(
-                `SELECT entry_id FROM session_scratchlist
-                 WHERE session_id = ?
-                 ORDER BY created_at DESC, entry_id DESC`
-            )
-            const updatePosition = this.db.prepare(
-                'UPDATE session_scratchlist SET position = ? WHERE session_id = ? AND entry_id = ?'
-            )
-            for (const { session_id } of sessionRows) {
-                const rows = rowsForSession.all(session_id) as Array<{ entry_id: string }>
-                rows.forEach((row, index) => updatePosition.run(index, session_id, row.entry_id))
+        this.db.transaction(() => {
+            // The previous PR schema used v36 without the upstream passkey table.
+            this.migrateFromV35ToV36()
+            const scratchlistColumns = this.db.prepare('PRAGMA table_info(session_scratchlist)').all() as Array<{ name: string }>
+            if (scratchlistColumns.length > 0 && !scratchlistColumns.some((column) => column.name === 'position')) {
+                this.db.exec('ALTER TABLE session_scratchlist ADD COLUMN position INTEGER NOT NULL DEFAULT 0')
+                const sessionRows = this.db.prepare(
+                    'SELECT DISTINCT session_id FROM session_scratchlist'
+                ).all() as Array<{ session_id: string }>
+                const rowsForSession = this.db.prepare(
+                    `SELECT entry_id FROM session_scratchlist
+                     WHERE session_id = ?
+                     ORDER BY created_at DESC, entry_id DESC`
+                )
+                const updatePosition = this.db.prepare(
+                    'UPDATE session_scratchlist SET position = ? WHERE session_id = ? AND entry_id = ?'
+                )
+                for (const { session_id } of sessionRows) {
+                    const rows = rowsForSession.all(session_id) as Array<{ entry_id: string }>
+                    rows.forEach((row, index) => updatePosition.run(index, session_id, row.entry_id))
+                }
             }
-        }
 
-        this.db.exec(`
-            CREATE INDEX IF NOT EXISTS idx_session_scratchlist_session_position
-                ON session_scratchlist(session_id, position)
-        `)
+            this.db.exec(`
+                CREATE INDEX IF NOT EXISTS idx_session_scratchlist_session_position
+                    ON session_scratchlist(session_id, position)
+            `)
+        })()
     }
 
     /** v35→v36: WebAuthn credentials that can be exchanged for a web JWT. */
