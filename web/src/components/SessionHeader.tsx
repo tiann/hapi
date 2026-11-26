@@ -37,7 +37,7 @@ import { formatGithubPrChipDetailParts } from '@/components/SessionPrChip'
 import { useMachines } from '@/hooks/queries/useMachines'
 import { useMachineLabels } from '@/hooks/useMachineLabels'
 import { formatAbsoluteDateTime, formatRelativeTime } from '@/lib/relativeTime'
-import { sessionHasDurableLiveWork, sessionHasLiveWork } from '@/lib/sessionHasLiveWork'
+import { sessionBlocksHardArchive, sessionHasDurableLiveWork } from '@/lib/sessionHasLiveWork'
 import { useSessionHeaderMetadata } from '@/hooks/useSessionHeaderMetadata'
 import { formatSessionHeaderTimestamp } from '@/lib/sessionHeaderTimestamp'
 import { selectMobileSessionHeaderSecondary } from '@/lib/sessionHeaderMobileMetadata'
@@ -614,7 +614,7 @@ export function SessionHeader(props: {
                 sessionActive={session.active}
                 canArchive={
                     !(session.active
-                        ? sessionHasLiveWork(session)
+                        ? sessionBlocksHardArchive(session)
                         : sessionHasDurableLiveWork(session))
                     && (session.active || isLiveLifecycleState(session.metadata?.lifecycleState))
                 }

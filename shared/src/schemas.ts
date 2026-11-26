@@ -341,8 +341,17 @@ export const MetadataSchema = z.object({
     lifecycleStateSince: z.number().optional(),
     // Opt out of keepalive-idle reconciliation for sessions that are meant to
     // sit quiet indefinitely (operator holding pens, sessions owning work the
-    // hub cannot see). Never reconciled to 'idle' while true.
+    // hub cannot see). Never reconciled to 'idle' while true. Also blocks
+    // hard Archive before Kill (#2020 dogfood — irreversible path must honour
+    // at least the safeguards reversible idle reconcile already uses).
     idleReconcileExempt: z.boolean().optional(),
+    // Externally blocked work distinct from turn-scoped `thinking` (#2020):
+    // waiting on CI, a vendor, or a peer reply. Hub-visible so Archive cannot
+    // treat the row as an idle ghost between polls. CLI may set/clear.
+    waiting: z.object({
+        since: z.number(),
+        reason: z.string().optional(),
+    }).nullable().optional(),
     archivedBy: z.string().optional(),
     archiveReason: z.string().optional(),
     // Set only after a completed fresh-session clear. The source row remains

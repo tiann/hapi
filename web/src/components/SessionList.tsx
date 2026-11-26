@@ -15,7 +15,7 @@ import { useLongPress } from '@/hooks/useLongPress'
 import { useLowRateAnimation } from '@/hooks/useLowRateAnimation'
 import { usePlatform } from '@/hooks/usePlatform'
 import { sessionArchiveMutationKey, sessionPinMutationKey, useSessionActions } from '@/hooks/mutations/useSessionActions'
-import { sessionHasDurableLiveWork, sessionHasLiveWork } from '@/lib/sessionHasLiveWork'
+import { sessionBlocksHardArchive, sessionHasDurableLiveWork } from '@/lib/sessionHasLiveWork'
 import { useIsMutating } from '@tanstack/react-query'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { SessionExportDialog } from '@/components/SessionExportDialog'
@@ -1583,7 +1583,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
     // Disconnected rows may keep stale pending requests after heartbeat
     // expiry; those alone still take Runner-verified cleanup.
     const blockedByLiveWork = s.active
-        ? sessionHasLiveWork(s)
+        ? sessionBlocksHardArchive(s)
         : sessionHasDurableLiveWork(s)
     // The row can turn inactive before the archive request settles (the hub
     // still confirms cleanup); keep the spinner until it does.

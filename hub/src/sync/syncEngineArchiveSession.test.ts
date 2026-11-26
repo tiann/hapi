@@ -338,6 +338,59 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(cache().getSession(sessionId)?.metadata?.lifecycleState).not.toBe('archived')
     })
 
+    it('refuses archive before Kill when idleReconcileExempt (#2020 dogfood)', async () => {
+        // CI-watching / holding-pen peers set exempt so reversible idle
+        // reconcile leaves them alone — hard Archive must honour the same hook.
+        const sessionId = insertActiveSession('sess-exempt-block', 'machine-x')
+        const live = cache().getSession(sessionId)!
+        live.thinking = false
+        live.backgroundTaskCount = 0
+        const current = cache().getSession(sessionId)!
+        const metadata = { ...current.metadata!, idleReconcileExempt: true }
+        const update = store.sessions.updateSessionMetadata(
+            sessionId, metadata, current.metadataVersion, NAMESPACE,
+        )
+        if (update.result !== 'success') throw new Error('metadata update failed')
+        cache().refreshSession(sessionId)
+        let killCalls = 0
+        ;(engine as unknown as { rpcGateway: { killSession: unknown } }).rpcGateway.killSession =
+            async () => { killCalls++; return {} }
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => 'already_gone'
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(killCalls).toBe(0)
+    })
+
+    it('refuses archive before Kill when waiting on external work (#2020 dogfood)', async () => {
+        const sessionId = insertActiveSession('sess-waiting-ci', 'machine-x')
+        const live = cache().getSession(sessionId)!
+        live.thinking = false
+        live.backgroundTaskCount = 0
+        const current = cache().getSession(sessionId)!
+        const metadata = {
+            ...current.metadata!,
+            waiting: { since: Date.now(), reason: 'watch CI on tip' },
+        }
+        const update = store.sessions.updateSessionMetadata(
+            sessionId, metadata, current.metadataVersion, NAMESPACE,
+        )
+        if (update.result !== 'success') throw new Error('metadata update failed')
+        cache().refreshSession(sessionId)
+        let killCalls = 0
+        ;(engine as unknown as { rpcGateway: { killSession: unknown } }).rpcGateway.killSession =
+            async () => { killCalls++; return {} }
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => 'already_gone'
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(killCalls).toBe(0)
+    })
+
     it('refuses archive before stop RPCs for background-only live work (#2020)', async () => {
         const sessionId = insertActiveSession('sess-bg-only-block', 'machine-x')
         const live = cache().getSession(sessionId)!

@@ -90,7 +90,7 @@ import {
 } from './rpcGateway'
 import { SessionCache } from './sessionCache'
 import { ArchiveCleanupError } from './archiveCleanupError'
-import { hasDurableLiveWork, hasLiveWork } from './sessionIdle'
+import { blocksHardArchive, hasDurableLiveWork } from './sessionIdle'
 import { AutomaticTitleSuggestionService } from './automaticTitleSuggestion'
 import { extractMessageEventType } from '../notifications/eventParsing'
 import { SessionEnumerationCache } from './sessionEnumerationCache'
@@ -3924,7 +3924,10 @@ export class SyncEngine {
         const liveBeforeStop = this.sessionCache.getSession(sessionId)
         if (liveBeforeStop) {
             if (liveBeforeStop.active === true) {
-                if (hasLiveWork(liveBeforeStop)) {
+                // Destroy-state gate: hub-visible work OR idleReconcileExempt
+                // OR waiting-on-external (#2020). Do not Kill a CI-watching /
+                // holding-pen peer that hasLiveWork alone would miss.
+                if (blocksHardArchive(liveBeforeStop)) {
                     throw new ArchiveCleanupError('working')
                 }
             } else if (hasDurableLiveWork(liveBeforeStop)) {

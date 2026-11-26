@@ -58,10 +58,24 @@ export function hasDurableLiveWork(session: Session): boolean {
     if (unresolved && typeof unresolved === 'object') {
         return true
     }
+    // Externally blocked work (CI / vendor / peer) — not turn-scoped thinking
+    // (#2020 dogfood). Survives between poll ticks so Archive cannot Kill.
+    const waiting = session.metadata?.waiting
+    if (waiting && typeof waiting === 'object') {
+        return true
+    }
     return false
 }
 
-/** Work the hub can see that must never be reconciled away as a zombie. */
+/**
+ * Work the hub can see that must never be reconciled away as a zombie.
+ *
+ * Scope is hub *visibility*, not process liveness. Callers that destroy state
+ * (hard Archive / KillSession) must not treat a false result as "safe to
+ * reap" — a session can be alive while waiting on CI, a vendor, or a peer
+ * with none of these signals set. Use `blocksHardArchive` for destroy paths
+ * (tiann/hapi#2020).
+ */
 export function hasLiveWork(session: Session): boolean {
     if (hasDurableLiveWork(session)) return true
     // A permission / input request waiting on the operator is real state the
@@ -69,6 +83,18 @@ export function hasLiveWork(session: Session): boolean {
     const requests = session.agentState?.requests
     if (requests && Object.keys(requests).length > 0) return true
     return false
+}
+
+/**
+ * Refuse hard Archive / KillSession before stop RPCs (#2020).
+ *
+ * Broader than `hasLiveWork`: honours `idleReconcileExempt` (already used by
+ * reversible keepalive-idle reconcile) and durable `waiting` for externally
+ * blocked work that hub-visible turn signals miss.
+ */
+export function blocksHardArchive(session: Session): boolean {
+    if (session.metadata?.idleReconcileExempt === true) return true
+    return hasLiveWork(session)
 }
 
 /**

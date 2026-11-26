@@ -11,16 +11,16 @@ import { usePlatform } from '@/hooks/usePlatform'
 import { useLongPress } from '@/hooks/useLongPress'
 import { useAnchoredMenu } from '@/hooks/useAnchoredMenu'
 import { sessionArchiveMutationKey } from '@/hooks/mutations/useSessionActions'
-import { sessionHasDurableLiveWork, sessionHasLiveWork } from '@/lib/sessionHasLiveWork'
+import { sessionBlocksHardArchive, sessionHasDurableLiveWork } from '@/lib/sessionHasLiveWork'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { ArchiveIcon, CopyIcon, PlusIcon } from '@/components/icons'
 
-// Same liveness the hub archive route accepts: skip rows that will 409
-// (active live work, or disconnected durable tool work — tiann/hapi#2020/#2021).
+// Same destroy-state gate the hub archive route accepts: skip rows that will
+// 409 (active blocksHardArchive, or disconnected durable work — #2020/#2021).
 // Disconnected rows with only stale permission requests stay eligible.
 function isArchivable(session: SessionSummary): boolean {
     if (session.active) {
-        if (sessionHasLiveWork(session)) return false
+        if (sessionBlocksHardArchive(session)) return false
     } else if (sessionHasDurableLiveWork(session)) {
         return false
     }

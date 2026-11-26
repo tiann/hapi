@@ -10,7 +10,9 @@ import type { EventPublisher } from './eventPublisher'
 import { SessionCache } from './sessionCache'
 import {
     DEFAULT_SESSION_IDLE_TIMEOUT_MS,
+    blocksHardArchive,
     hasDurableLiveWork,
+    hasLiveWork,
     resolveSessionIdleTimeoutMs,
     shouldClearKeepaliveIdle,
     shouldMarkKeepaliveIdle,
@@ -71,6 +73,46 @@ describe('hasDurableLiveWork', () => {
                 },
             },
         }))).toBe(true)
+    })
+
+    it('treats metadata.waiting as durable external block (#2020)', () => {
+        expect(hasDurableLiveWork(session({
+            thinking: false,
+            metadata: {
+                path: '/tmp/p',
+                host: 'h',
+                waiting: { since: NOW - 1000, reason: 'watch CI on tip' },
+            },
+        }))).toBe(true)
+    })
+})
+
+describe('blocksHardArchive', () => {
+    it('refuses when idleReconcileExempt even if hasLiveWork is false (#2020)', () => {
+        const s = session({
+            thinking: false,
+            metadata: { path: '/tmp/p', host: 'h', idleReconcileExempt: true },
+        })
+        expect(hasLiveWork(s)).toBe(false)
+        expect(blocksHardArchive(s)).toBe(true)
+    })
+
+    it('refuses when waiting on external work (#2020)', () => {
+        expect(blocksHardArchive(session({
+            thinking: false,
+            metadata: {
+                path: '/tmp/p',
+                host: 'h',
+                waiting: { since: NOW, reason: 'watch CI on tip' },
+            },
+        }))).toBe(true)
+    })
+
+    it('allows a quiet connected session with no exempt/waiting', () => {
+        expect(blocksHardArchive(session({
+            thinking: false,
+            metadata: { path: '/tmp/p', host: 'h', lifecycleState: 'running' },
+        }))).toBe(false)
     })
 })
 
