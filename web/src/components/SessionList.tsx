@@ -2613,7 +2613,7 @@ export function SessionList(props: {
     }, [groups, allDirectoryGroups, effectivePinInProgressMode])
     const collapseStorageKey = props.collapseStorageKey ?? null
     const identity = api?.getReadStateScope?.()
-    const legacyFoldKey = identity ? `hapi.closed-projects.v1:${identity}` : null
+    const legacyFoldKey = identity && props.collapseStorageKey !== null ? `hapi.closed-projects.v1:${identity}` : null
     const { collapseOverrides, setManualCollapse, revealGroup } = useProjectGroupCollapse(collapseStorageKey, legacyFoldKey)
     const [filterCollapseOverrides, setFilterCollapseOverrides] = useState<Map<string, boolean>>(
         () => new Map()

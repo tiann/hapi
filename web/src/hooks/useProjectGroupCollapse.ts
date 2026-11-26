@@ -78,7 +78,16 @@ export function useProjectGroupCollapse(storageKey: string | null, legacyFoldKey
         overrides.set(groupKey, collapsed)
         setState({ storageKey, legacyFoldKey, manual, overrides })
         try {
-            if (storageKey) localStorage.setItem(storageKey, JSON.stringify(Object.fromEntries(manual)))
+            if (storageKey) {
+                localStorage.setItem(storageKey, JSON.stringify(Object.fromEntries(manual)))
+            } else if (legacyFoldKey) {
+                // Non-router callers still use the upstream closed-project list.
+                // Temporary reveals are not persisted in either format.
+                const closed = new Set(readLegacyFolds(legacyFoldKey).map(([key]) => key))
+                if (collapsed) closed.add(groupKey)
+                else closed.delete(groupKey)
+                localStorage.setItem(legacyFoldKey, JSON.stringify([...closed].slice(-MAX_SAVED_GROUPS)))
+            }
         } catch {
             // A blocked/full store must not prevent in-memory toggles.
         }
