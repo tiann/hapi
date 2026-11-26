@@ -1,6 +1,6 @@
 import type { ApiSessionClient } from '@/api/apiSession'
 import type { AgentBackend, PermissionRequest, PermissionResponse } from '@/agent/types'
-import type { GrokPermissionMode } from '@hapi/protocol/types'
+import type { PermissionModeOf, Flavors } from '@hapi/protocol/types'
 import { deriveToolInput, deriveToolName } from '@/agent/utils'
 import { logger } from '@/ui/logger'
 import { settleRequestsOfPreviousAgentProcess } from '@/modules/common/permission/settleStaleRequests'
@@ -59,7 +59,7 @@ export class GrokPermissionHandler extends BasePermissionHandler<PermissionRespo
     constructor(
         session: ApiSessionClient,
         private readonly backend: AgentBackend,
-        private readonly getPermissionMode: () => GrokPermissionMode | undefined
+        private readonly getPermissionMode: () => PermissionModeOf<typeof Flavors.grok> | undefined
     ) {
         super(session)
         settleRequestsOfPreviousAgentProcess(this.backend, session)

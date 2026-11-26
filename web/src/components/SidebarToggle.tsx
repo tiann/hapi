@@ -50,6 +50,7 @@ export function SidebarResizeHandle(props: {
     return (
         <div
             className="sidebar-resize-handle hidden split:block shrink-0"
+            data-can-hide={props.canHide || undefined}
             data-dragging={props.isDragging || undefined}
             onPointerDown={props.onPointerDown}
         >
@@ -57,6 +58,7 @@ export function SidebarResizeHandle(props: {
                 <button
                     type="button"
                     className="sidebar-hide-button"
+                    disabled={props.isDragging}
                     aria-label={props.hideLabel}
                     title={props.hideLabel}
                     onPointerDown={(event) => event.stopPropagation()}

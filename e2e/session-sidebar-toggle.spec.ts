@@ -38,9 +38,17 @@ test.describe('session sidebar toggle', () => {
         await expect(page.getByRole('button', { name: 'Hide session list' })).toHaveCSS('opacity', '1')
         await page.mouse.down()
         await expect(page.locator('.sidebar-resize-handle')).toHaveAttribute('data-dragging', 'true')
+        const hide = page.getByRole('button', { name: 'Hide session list' })
+        await expect(hide).toBeDisabled()
+        await page.keyboard.press('Tab')
+        await expect(hide).not.toBeFocused()
+        await page.keyboard.press('Enter')
+        await page.keyboard.press('Space')
+        await expect(sidebar).toBeVisible()
         await page.mouse.move(x + 60, y)
         await page.mouse.up()
         await expect.poll(async () => (await sidebar.boundingBox())!.width).toBe(previous + 60)
+        await expect(hide).toBeEnabled()
     })
 
     test('transfers keyboard focus to the new toggle in both directions', async ({ page }) => {
@@ -65,6 +73,22 @@ test.describe('session sidebar toggle', () => {
 
         test('keeps the hide action visible and tappable on split layouts', async ({ page }) => {
             await assertTouchToggle(page)
+        })
+
+        test('keeps the touch toggle outside the detail content', async ({ page }) => {
+            await page.goto('/e2e-fixtures/session-sidebar-toggle-fixture.html')
+            const hide = (await page.getByRole('button', { name: 'Hide session list' }).boundingBox())!
+            const divider = (await page.locator('.sidebar-resize-handle').boundingBox())!
+            const detail = (await page.getByRole('main').boundingBox())!
+            expect(divider.width).toBe(4)
+            expect(hide.x).toBeGreaterThanOrEqual(divider.x + divider.width)
+            expect(hide.x + hide.width).toBeLessThanOrEqual(detail.x)
+            await expect(page.getByTestId('terminal-first-column')).toBeVisible()
+            await page.getByTestId('terminal-first-column').tap()
+            await expect(page.getByRole('complementary')).toBeVisible()
+            if (process.env.HAPI_REVIEW_SCREENSHOT_DIR) {
+                await page.screenshot({ path: `${process.env.HAPI_REVIEW_SCREENSHOT_DIR}/sidebar-touch-terminal.png` })
+            }
         })
 
         test('keeps the hybrid-pointer override after fine-pointer and before drag-state rules', async ({ page }) => {

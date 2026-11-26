@@ -13,7 +13,7 @@ function Harness() {
         <div className="flex h-screen min-h-0 bg-[var(--app-bg)]">
             {sidebarVisible ? (
                 <>
-                    <aside style={{ width: sidebar.width }} className="flex shrink-0 items-center justify-center border-r border-[var(--app-border)]">
+                    <aside style={{ '--sidebar-w': `${sidebar.width}px` } as React.CSSProperties} className="flex shrink-0 items-center justify-center border-r border-[var(--app-border)]">
                         Session list
                     </aside>
                     <SidebarResizeHandle
@@ -34,6 +34,7 @@ function Harness() {
                         onShow={() => setSidebarVisible(true)}
                     />
                 ) : null}
+                <div className="absolute left-3 top-1/2 -translate-y-1/2 font-mono" data-testid="terminal-first-column">$ echo terminal</div>
                 Session detail
             </main>
         </div>

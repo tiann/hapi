@@ -3,8 +3,8 @@ import { authAndSetupMachineIfNeeded } from '@/ui/auth'
 import { initializeToken } from '@/ui/tokenInit'
 import { maybeAutoStartServer } from '@/utils/autoStartServer'
 import type { CommandDefinition } from './types'
-import { COPILOT_PERMISSION_MODES } from '@hapi/protocol/modes'
-import type { CopilotPermissionMode } from '@hapi/protocol/types'
+import { Flavors } from '@hapi/protocol/modes'
+import type { PermissionModeOf } from '@hapi/protocol/types'
 import { isCopilotAgentMode, type CopilotAgentMode } from '@hapi/protocol'
 
 export const copilotCommand: CommandDefinition = {
@@ -15,7 +15,7 @@ export const copilotCommand: CommandDefinition = {
             const options: {
                 startedBy?: 'runner' | 'terminal'
                 startingMode?: 'local' | 'remote'
-                permissionMode?: CopilotPermissionMode
+                permissionMode?: PermissionModeOf<typeof Flavors.copilot>
                 model?: string
                 effort?: string
                 copilotAgentMode?: CopilotAgentMode
@@ -52,10 +52,10 @@ export const copilotCommand: CommandDefinition = {
                     options.existingSessionId = sessionId
                 } else if (arg === '--permission-mode') {
                     const mode = commandArgs[++i]
-                    if (!mode || !(COPILOT_PERMISSION_MODES as readonly string[]).includes(mode)) {
+                    if (!mode || !Flavors.copilot.allowsPermissionMode(mode)) {
                         throw new Error(`Invalid --permission-mode value: ${mode ?? '(missing)'}`)
                     }
-                    options.permissionMode = mode as CopilotPermissionMode
+                    options.permissionMode = mode
                     hasExplicitPermissionMode = true
                 } else if (arg === '--yolo' && !hasExplicitPermissionMode) {
                     options.permissionMode = 'yolo'

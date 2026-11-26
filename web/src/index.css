@@ -603,12 +603,15 @@ html:has(.chat-scroll-y) #root {
        424px = 420px min detail pane + 4px resize handle, which preserves the
        previous 1024px worst case (1024 - 600 - 4 = 420) down to 920px. The cap
        is a no-op on desktop where 100vw - 424px exceeds the stored width. */
-    div[style*="--sidebar-w"] {
+    [style*="--sidebar-w"] {
         width: min(var(--sidebar-w), calc(100vw - 424px)) !important;
     }
 }
 
 /* Sidebar resize handle */
+:root {
+    --sidebar-toggle-width: 36px;
+}
 .sidebar-resize-handle {
     position: relative;
     width: 4px;
@@ -645,7 +648,7 @@ html:has(.chat-scroll-y) #root {
     transform-origin: left center;
     z-index: 10;
     display: flex;
-    width: 36px;
+    width: var(--sidebar-toggle-width);
     height: 48px;
     cursor: pointer;
     align-items: center;
@@ -685,6 +688,17 @@ html:has(.chat-scroll-y) #root {
 
 /* Hybrid devices may keep a fine primary pointer while also exposing touch. */
 @media (any-pointer: coarse) {
+    /* Give the touch action its own gutter without widening the drag target. */
+    .sidebar-resize-handle[data-can-hide] {
+        margin-right: var(--sidebar-toggle-width);
+    }
+
+    @media (min-width: 920px) {
+        [style*="--sidebar-w"]:has(+ .sidebar-resize-handle[data-can-hide]) {
+            width: min(var(--sidebar-w), calc(100vw - 424px - var(--sidebar-toggle-width))) !important;
+        }
+    }
+
     .sidebar-hide-button {
         transform: translateY(-50%) scale(1);
         opacity: 1;
@@ -715,7 +729,7 @@ html:has(.chat-scroll-y) #root {
     top: 50%;
     left: 0;
     z-index: 20;
-    width: 36px;
+    width: var(--sidebar-toggle-width);
     height: 48px;
     cursor: pointer;
     align-items: center;

@@ -66,6 +66,11 @@ export function mergeSessionMetadataForSessionMerge(
         changed = true
     }
 
+    if (typeof oldObj.translateInput === 'boolean' && typeof newObj.translateInput !== 'boolean') {
+        merged.translateInput = oldObj.translateInput
+        changed = true
+    }
+
     const oldSummary = oldObj.summary as { text?: unknown; updatedAt?: unknown } | undefined
     const newSummary = newObj.summary as { text?: unknown; updatedAt?: unknown } | undefined
     const oldUpdatedAt = typeof oldSummary?.updatedAt === 'number' ? oldSummary.updatedAt : null
@@ -154,8 +159,9 @@ export function mergeSessionMetadataForSessionMerge(
  * transcript from. Two sessions recorded on different machines are
  * therefore separate conversations even when the native ids collide
  * (copied or shared agent homes): dedup must not merge one into the other.
- * Rows without a machine keep the id-only match. Pi and OpenCode are
- * scoped strictly by their dedupe key instead.
+ * Cursor follows the same machine boundary. Rows without a machine keep the
+ * id-only match. Pi and OpenCode are scoped strictly by their dedupe key
+ * instead.
  */
 function isDistinctNativeIdentity(
     field: string,
@@ -165,7 +171,7 @@ function isDistinctNativeIdentity(
     // An attached projection is not an owned engine or another post-rewrite
     // view of the same native thread. Never merge their transcripts/queues.
     if (field === 'codexSessionId' && a.codexRuntime?.bindingId !== b.codexRuntime?.bindingId) return true
-    if (field !== 'codexSessionId' && field !== 'claudeSessionId') return false
+    if (field !== 'codexSessionId' && field !== 'claudeSessionId' && field !== 'cursorSessionId') return false
     return typeof a.machineId === 'string'
         && typeof b.machineId === 'string'
         && a.machineId !== b.machineId
@@ -1179,6 +1185,7 @@ export class SessionCache {
             // same stop time, or stopped rows reorder after a hub restart.
             this.store.sessions.setSessionActive(session.id, false, session.activeAt, session.namespace)
             session.thinking = false
+            session.activeTurnStartedAt = null
             // The keepalive died, not the tasks: reset the transient work
             // state like handleSessionEnd does, or a session that expired
             // mid-background-work keeps its stale backgroundTaskCount (and
@@ -1196,6 +1203,8 @@ export class SessionCache {
                 sessionId: session.id,
                 data: {
                     active: false,
+                    thinking: false,
+                    activeTurnStartedAt: null,
                     // The last keepalive: when the session stopped, for clients
                     // that only saw an older activeAt.
                     activeAt: session.activeAt,
@@ -1419,6 +1428,45 @@ export class SessionCache {
                 return
             }
 
+            this.refreshSession(sessionId)
+        }
+
+        throw new Error('Session was modified concurrently. Please try again.')
+    }
+
+    /** Hub-owned per-session toggle; written as an explicit boolean so `false` survives carry-forward. */
+    async setSessionTranslateInput(sessionId: string, enabled: boolean): Promise<void> {
+        for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
+            const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+            if (!session) {
+                throw new Error('Session not found')
+            }
+
+            // Same as mutateSessionExternalRefs: write over the stored blob, never
+            // the `{ path, host }` fallback a schema-invalid cache entry would give.
+            const stored = this.store.sessions.getSessionByNamespace(sessionId, session.namespace)
+            const storedMetadata = stored?.metadata
+            if (!stored || typeof storedMetadata !== 'object' || storedMetadata === null || Array.isArray(storedMetadata)) {
+                throw new Error('Cannot update translation setting while session metadata is invalid')
+            }
+            const currentMetadata = storedMetadata as Record<string, unknown>
+            if (currentMetadata.translateInput === enabled) return
+
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                { ...currentMetadata, translateInput: enabled },
+                stored.metadataVersion,
+                session.namespace,
+                { touchUpdatedAt: false, preservePreallocation: true }
+            )
+
+            if (result.result === 'error') {
+                throw new Error('Failed to update session metadata')
+            }
+            if (result.result === 'success') {
+                this.refreshSession(sessionId)
+                return
+            }
             this.refreshSession(sessionId)
         }
 
