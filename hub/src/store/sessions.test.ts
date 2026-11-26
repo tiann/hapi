@@ -818,6 +818,44 @@ describe('updateSessionMetadata: protocol resume token preservation', () => {
         expect(metadata?.[field]).toBe(value)
     })
 
+    it('preserves agySessionId across a sparse metadata write and clears it on explicit null', () => {
+        const store = makeStore()
+        const agyId = '7f3c1e9a-2b4d-4c6e-8a1f-5d9b0e3c7a21'
+        const session = store.sessions.getOrCreateSession(
+            'agy-carry-forward',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'agy',
+                agySessionId: agyId
+            },
+            null,
+            'default'
+        )
+
+        const sparse = store.sessions.updateSessionMetadata(
+            session.id,
+            { path: '/tmp/project', host: 'example' },
+            session.metadataVersion,
+            'default'
+        )
+        expect(sparse.result).toBe('success')
+        const afterSparse = getMetadata(store, session.id)
+        expect(afterSparse?.agySessionId).toBe(agyId)
+        expect(afterSparse?.flavor).toBe('agy')
+
+        const refreshed = store.sessions.getSession(session.id)
+        const cleared = store.sessions.updateSessionMetadata(
+            session.id,
+            { path: '/tmp/project', host: 'example', agySessionId: null },
+            refreshed?.metadataVersion ?? session.metadataVersion + 1,
+            'default'
+        )
+        expect(cleared.result).toBe('success')
+        const afterClear = getMetadata(store, session.id) as Record<string, unknown> | null
+        expect('agySessionId' in (afterClear ?? {})).toBe(false)
+    })
+
     it('preserves cursorSessionProtocol independently of cursorSessionId', () => {
         const store = makeStore()
         const session = store.sessions.getOrCreateSession(

@@ -1,12 +1,12 @@
 ---
-description: "Import Claude Code, Codex, OpenCode and Pi conversations started outside HAPI and continue them from the web app."
+description: "Import Claude Code, Codex, Cursor, OpenCode and Pi conversations started outside HAPI and continue them from the web app."
 ---
 
 # Import local sessions
 
 Conversations you had with an agent **outside** HAPI — in a plain terminal, before you installed HAPI, or on another tool that shares the agent's history — can be imported into HAPI and continued from the web app.
 
-Importing copies the native transcript into the hub as a HAPI session on the machine that owns it. The original history on disk is not modified.
+Importing copies the native transcript into the hub as a HAPI session on the machine that owns it. The original history on disk is not modified. Cursor is the exception: import verifies the ACP store (and may transplant a legacy chat), then attaches a HAPI row; scrollback comes from ACP resume.
 
 ## Supported agents
 
@@ -14,22 +14,23 @@ Importing copies the native transcript into the hub as a HAPI session on the mac
 |-------|--------------------|---------------------------|
 | Claude Code | `~/.claude/projects/` (or `$CLAUDE_CONFIG_DIR/projects/`), including subagent transcripts | Archived |
 | Codex | `~/.codex/sessions/` (or `$CODEX_HOME/sessions/`) | Imported |
+| Cursor | `~/.cursor/acp-sessions/` and legacy `~/.cursor/chats/` (ACP verify required) | Imported |
 | OpenCode | `opencode.db` under `~/.local/share/opencode` (or `$OPENCODE_HOME`, `$XDG_DATA_HOME/opencode`) | Archived |
 | Pi | `~/.pi/agent/sessions/` (or `$PI_CODING_AGENT_DIR/sessions`, `$PI_CODING_AGENT_SESSION_DIR`) | Archived |
 
-All four go through one import pipeline on the hub, so they behave the same way: same machine selection, same duplicate handling, same limits. Other agents do not support history import.
+Claude, Codex, OpenCode and Pi go through one message-backfill import pipeline on the hub. Cursor uses the same discovery REST pair and machine selection, but prepare/verify is Cursor-specific. Other agents do not support history import.
 
 ## Importing from the web app
 
-1. Open **New session** and pick the machine and agent (Claude, Codex, OpenCode or Pi).
+1. Open **New session** and pick the machine and agent (Claude, Codex, Cursor, OpenCode or Pi).
 2. Below the agent picker, find **Import \<agent\> history** and choose **Choose history**.
 3. The dialog lists the most recent local sessions on that machine, newest first. Filter by working directory or search by title, prompt, path or ID. Sessions already in HAPI are marked **Imported** (for Codex, this badge is remembered by the browser that imported them).
 4. Select one or more sessions:
-   - **One selection** becomes the session to continue: press **Import** and the dialog closes with that session selected in the form. Adjust model / effort / permission mode, then create the session. HAPI imports the transcript, applies your settings, and opens the session ready for the next message.
+   - **One selection** becomes the session to continue: press **Import** and the dialog closes with that session selected in the form. Adjust model / effort / permission mode, then create the session. HAPI imports the transcript (or, for Cursor, verifies ACP and attaches), applies your settings, and opens the session ready for the next message.
    - **Several selections** are imported right away when you press **Import**, without opening any of them. A toast reports how many succeeded, and the sessions appear in the session list.
 
 ::: warning Close other copies first
-Several processes can open the same native session. Before continuing an imported session in HAPI, close or reload any other Claude / Codex / OpenCode / Pi process that has it open, so the two do not write diverging histories.
+Several processes can open the same native session. Before continuing an imported session in HAPI, close or reload any other Claude / Codex / Cursor / OpenCode / Pi process that has it open, so the two do not write diverging histories.
 :::
 
 The iOS and Android apps do not have an import picker. Sessions imported from the web appear in their session lists like any other.
@@ -42,7 +43,7 @@ Native history lives on one machine, so the import runs on that machine's runner
 2. Otherwise, the one online machine whose workspace roots contain the requested directory
 3. Otherwise, the first online machine
 
-If no machine is online the import fails with *No online machine available*. Codex, OpenCode and Pi import also work with older runners through their previous per-agent path; Claude import needs a current runner, and an older one reports *Claude runner does not support local history import* — upgrade HAPI on that machine and restart the runner.
+If no machine is online the import fails with *No online machine available*. Codex, OpenCode and Pi import also work with older runners through their previous per-agent path; Claude and Cursor import need a current runner that advertises `local-session-import`, and an older one reports that the runner does not support local history import — upgrade HAPI on that machine and restart the runner.
 
 ## Importing again (deduplication)
 

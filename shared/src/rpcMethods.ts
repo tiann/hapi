@@ -49,6 +49,8 @@ export const RPC_METHODS = {
     ListPiModelsForMachine: 'listPiModelsForMachine',
     ListCodexSessions: 'listCodexSessions',
     ListLocalSessions: 'listLocalSessions',
+    /** Cursor-only: ACP verify + legacy→ACP transplant before creating a HAPI row. */
+    PrepareCursorImport: 'prepareCursorImport',
     ArchiveCodexSession: 'archiveCodexSession',
     ListCursorModels: 'listCursorModels',
     ListPiModels: 'listPiModels',

@@ -285,8 +285,9 @@ export function mergeSessionMetadataForSessionMerge(
  * transcript from. Two sessions recorded on different machines are
  * therefore separate conversations even when the native ids collide
  * (copied or shared agent homes): dedup must not merge one into the other.
- * Rows without a machine keep the id-only match. Pi and OpenCode are
- * scoped strictly by their dedupe key instead.
+ * Cursor follows the same machine boundary. Rows without a machine keep the
+ * id-only match. Pi and OpenCode are scoped strictly by their dedupe key
+ * instead.
  */
 function isDistinctNativeIdentity(
     field: string,
@@ -296,7 +297,7 @@ function isDistinctNativeIdentity(
     // An attached projection is not an owned engine or another post-rewrite
     // view of the same native thread. Never merge their transcripts/queues.
     if (field === 'codexSessionId' && a.codexRuntime?.bindingId !== b.codexRuntime?.bindingId) return true
-    if (field !== 'codexSessionId' && field !== 'claudeSessionId') return false
+    if (field !== 'codexSessionId' && field !== 'claudeSessionId' && field !== 'cursorSessionId') return false
     return typeof a.machineId === 'string'
         && typeof b.machineId === 'string'
         && a.machineId !== b.machineId
