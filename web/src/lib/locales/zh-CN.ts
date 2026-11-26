@@ -69,7 +69,7 @@ export default {
   'login.error.loginUnavailable': '登录服务不可用。',
   'login.error.bindFailed': '绑定失败',
   'login.error.authFailed': '认证失败',
-'login.error.redirected': '请求已被重定向',
+  'login.error.redirected': '请求已被重定向',
   'login.redirect.open': '打开 {host}',
   'login.cloudflare.signIn': '通过 Cloudflare Access 登录',
   'login.cloudflare.retry': '重试',
