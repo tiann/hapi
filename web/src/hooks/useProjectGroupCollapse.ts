@@ -38,17 +38,33 @@ function readOverrides(key: string | null): Map<string, boolean> {
     }
 }
 
-function loadState(storageKey: string | null) {
-    const manual = readOverrides(storageKey)
-    return { storageKey, manual, overrides: manual }
+function readLegacyFolds(key: string | null): Array<[string, boolean]> {
+    try {
+        if (!key) return []
+        const stored: unknown = JSON.parse(localStorage.getItem(key) ?? '[]')
+        return Array.isArray(stored)
+            ? stored.filter((value): value is string => typeof value === 'string').slice(-MAX_SAVED_GROUPS).map(value => [value, true])
+            : []
+    } catch {
+        return []
+    }
 }
 
-export function useProjectGroupCollapse(storageKey: string | null) {
-    const [state, setState] = useState(() => loadState(storageKey))
+function loadState(storageKey: string | null, legacyFoldKey: string | null) {
+    // Honor existing main-branch closed projects. Explicit choices (including
+    // reopening one of those projects) take precedence without rewriting the old key.
+    const legacy = readLegacyFolds(legacyFoldKey)
+    const manual = readOverrides(storageKey)
+    const overrides = new Map([...legacy, ...manual])
+    return { storageKey, legacyFoldKey, manual, overrides }
+}
+
+export function useProjectGroupCollapse(storageKey: string | null, legacyFoldKey: string | null = null) {
+    const [state, setState] = useState(() => loadState(storageKey, legacyFoldKey))
     // Restore the new identity before rendering it; never expose or write the
     // previous Hub/user's choices under the new storage key.
-    if (state.storageKey !== storageKey) {
-        setState(loadState(storageKey))
+    if (state.storageKey !== storageKey || state.legacyFoldKey !== legacyFoldKey) {
+        setState(loadState(storageKey, legacyFoldKey))
     }
 
     const setManualCollapse = (groupKey: string, collapsed: boolean) => {
@@ -60,7 +76,7 @@ export function useProjectGroupCollapse(storageKey: string | null) {
         if (manual.size > MAX_SAVED_GROUPS) manual.delete(manual.keys().next().value!)
         const overrides = new Map(state.overrides)
         overrides.set(groupKey, collapsed)
-        setState({ storageKey, manual, overrides })
+        setState({ storageKey, legacyFoldKey, manual, overrides })
         try {
             if (storageKey) localStorage.setItem(storageKey, JSON.stringify(Object.fromEntries(manual)))
         } catch {

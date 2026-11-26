@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { Database } from 'bun:sqlite'
+import { isAttachedJobStale } from '@hapi/protocol'
 import type { AttachedJob, AttachedJobPatch, AttachedJobStatus, AttachedJobUpsert } from '@hapi/protocol'
 
 import type { StoredSessionJob } from './types'
@@ -95,18 +96,6 @@ export function getSessionJob(
     return row ? toStored(row) : null
 }
 
-/** Earliest-started `running` job for a session, or null (stable list chrome). */
-export function getPrimaryRunningJob(db: Database, sessionId: string): StoredSessionJob | null {
-    const row = db.prepare(
-        `SELECT ${JOB_COLUMNS}
-         FROM session_jobs
-         WHERE session_id = ? AND status = 'running'
-         ORDER BY started_at ASC, job_key ASC
-         LIMIT 1`
-    ).get(sessionId) as DbJobRow | undefined
-    return row ? toStored(row) : null
-}
-
 /**
  * Batch primary running jobs for session list enrichment.
  * Returns Map sessionId → AttachedJob.
@@ -126,10 +115,18 @@ export function getPrimaryRunningJobsBySessionIds(
          ORDER BY started_at ASC, job_key ASC`
     ).all(...sessionIds) as DbJobRow[]
 
+    const now = Date.now()
     for (const row of rows) {
-        // First row per session wins — earliest started_at (stable primary).
-        if (result.has(row.session_id)) continue
-        result.set(row.session_id, toAttachedJob(toStored(row)))
+        const prior = result.get(row.session_id)
+        if (!prior) {
+            result.set(row.session_id, toAttachedJob(toStored(row)))
+            continue
+        }
+        // Prefer the oldest reporting job, keeping the oldest stale record when none report.
+        const primary = isAttachedJobStale(prior, now) && !isAttachedJobStale({ heartbeatAt: row.heartbeat_at }, now)
+            ? toAttachedJob(toStored(row)) : prior
+        primary.latestRunningHeartbeatAt = Math.max(prior.latestRunningHeartbeatAt ?? prior.heartbeatAt, row.heartbeat_at)
+        result.set(row.session_id, primary)
     }
     return result
 }

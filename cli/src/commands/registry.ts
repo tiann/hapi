@@ -21,6 +21,7 @@ const commandMap = new Map<string, () => Promise<CommandDefinition>>([
     ['auth', async () => (await import('./auth')).authCommand],
     ['attach', async () => (await import('./attach')).attachCommand],
     ['detach', async () => (await import('./attach')).detachCommand],
+    ['codex-desktop', async () => (await import('./codexDesktop')).codexDesktopCommand],
     ['claude', async () => (await import('./claude')).claudeCommand],
     ['connect', async () => (await import('./connect')).connectCommand],
     ['codex', async () => (await import('./codex')).codexCommand],

@@ -52,6 +52,19 @@ describe('project collapse storage failures', () => {
         expect(JSON.parse(localStorage.getItem('scope')!).constructor).toBe(false)
     })
 
+    it('keeps existing closed projects until explicitly reopened in the same scope', () => {
+        const legacy = 'hapi.closed-projects.v1:scope'
+        localStorage.setItem(legacy, JSON.stringify(['manual-reopen', 'keep-closed']))
+        const { result, unmount } = renderHook(() => useProjectGroupCollapse('scope', legacy))
+        expect(result.current.collapseOverrides.get('manual-reopen')).toBe(true)
+        act(() => result.current.setManualCollapse('manual-reopen', false))
+        unmount()
+        const reloaded = renderHook(() => useProjectGroupCollapse('scope', legacy))
+        expect(reloaded.result.current.collapseOverrides.get('manual-reopen')).toBe(false)
+        expect(reloaded.result.current.collapseOverrides.get('keep-closed')).toBe(true)
+        expect(localStorage.getItem(legacy)).toBe('["manual-reopen","keep-closed"]')
+    })
+
     it('never writes automatic reveals, including after a later manual toggle', () => {
         const { result } = renderHook(() => useProjectGroupCollapse('scope'))
         act(() => result.current.revealGroup('auto'))

@@ -18,6 +18,10 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 393, height: 852 
             await expect(panel(page)).toHaveAttribute('data-open', 'true')
             await page.reload()
             await expect(panel(page)).toHaveAttribute('data-open', 'true')
+            const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+            if (screenshots && viewport.width === 393) {
+                await page.screenshot({ path: `${screenshots}/project-expanded-after-reload.png` })
+            }
             await page.getByRole('button', { name: 'Toggle list', exact: true }).click()
             await page.getByRole('button', { name: 'Toggle list', exact: true }).click()
             await expect(panel(page)).toHaveAttribute('data-open', 'true')
