@@ -2585,6 +2585,55 @@ export function HappyThread(props: {
     ])
 
     useEffect(() => {
+        // Width changes (opening/resizing/closing the files panel, dragging the
+        // sidebar, resizing the window) rewrap every message, so the same
+        // scrollTop shows a different message. Row-level scroll anchoring is
+        // disabled (see index.css), and the tail-follow observer below only
+        // handles a viewport pinned to the bottom. Remember the first visible
+        // message while the user reads, and put it back after a width reflow.
+        const content = contentRef.current
+        const viewport = viewportRef.current
+        if (!content || !viewport || typeof ResizeObserver === 'undefined') {
+            return
+        }
+
+        const followingTail = () => tailScrollInProgressRef.current
+            || (autoScrollEnabledRef.current && atBottomRef.current)
+        // While the tail is followed the other observer pins the bottom, so
+        // skip the per-message scan.
+        const captureReadingAnchor = () => (followingTail() ? null : captureScrollAnchor(viewport))
+        let anchor: ScrollAnchor | null = captureReadingAnchor()
+        let lastWidth = content.getBoundingClientRect().width
+        let frame: number | null = null
+        const handleScroll = () => {
+            if (frame !== null) return
+            frame = requestAnimationFrame(() => {
+                frame = null
+                anchor = captureReadingAnchor()
+            })
+        }
+        viewport.addEventListener('scroll', handleScroll, { passive: true })
+
+        const observer = new ResizeObserver(() => {
+            const width = content.getBoundingClientRect().width
+            const widthChanged = width !== lastWidth
+            lastWidth = width
+            // A settled search result keeps its history lock, and its row is
+            // the visible anchor, so it stays in view through the reflow too.
+            if (widthChanged && anchor && !followingTail() && !hasBlockingScrollRestore()) {
+                restoreScrollAnchor(viewport, anchor)
+            }
+            anchor = captureReadingAnchor()
+        })
+        observer.observe(content)
+        return () => {
+            observer.disconnect()
+            viewport.removeEventListener('scroll', handleScroll)
+            if (frame !== null) cancelAnimationFrame(frame)
+        }
+    }, [hasBlockingScrollRestore])
+
+    useEffect(() => {
         const content = contentRef.current
         if (!content || typeof ResizeObserver === 'undefined') {
             return
