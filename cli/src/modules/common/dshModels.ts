@@ -10,6 +10,11 @@ interface CacheEntry {
 
 const CACHE_TTL_MS = 60_000
 const PROBE_TIMEOUT_MS = 30_000
+/** Time budget for the per-model effort enumeration. The hub gives a cold
+ * catalog fetch 8s before it answers with an error, so the switching loop
+ * stops spending the budget: models left unenumerated simply carry no
+ * `reasoningEfforts` (the create form hides the effort select for them). */
+const PROBE_SWITCH_BUDGET_MS = 5_000
 let cache: CacheEntry | null = null
 let inflight: Promise<ListDshModelsForMachineResponse> | null = null
 
@@ -58,6 +63,7 @@ async function runDshModelsProbe(): Promise<ListDshModelsForMachineResponse> {
 
                 const modelOption = backend.getConfigOptionByCategory(sessionId, 'model')
                 const effortByModel = new Map<string, DshReasoningEffortOption[]>()
+                const switchBudgetStart = Date.now()
                 const currentThoughtLevel = backend.getConfigOptionByCategory(sessionId, 'thought_level')
                 if (metadata.currentModelId && currentThoughtLevel) {
                     effortByModel.set(metadata.currentModelId, currentThoughtLevel.options)
@@ -65,6 +71,7 @@ async function runDshModelsProbe(): Promise<ListDshModelsForMachineResponse> {
                 if (modelOption) {
                     for (const model of metadata.availableModels) {
                         if (model.modelId === metadata.currentModelId) continue
+                        if (Date.now() - switchBudgetStart > PROBE_SWITCH_BUDGET_MS) break
                         try {
                             await backend.setConfigOption(sessionId, modelOption.id, model.modelId)
                             const thoughtLevel = backend.getConfigOptionByCategory(sessionId, 'thought_level')

@@ -8,8 +8,10 @@ export interface DshModelsState {
     currentModelId: string | null
     /** Session-scoped only: the live `reasoning_effort` config option of the
      * session's CURRENT model; the composer prefers these over its static
-     * presets. Undefined when the model exposes no thought_level option. */
+     * presets. Undefined while the catalog is loading or failed; `[]` once
+     * it says the current model has no thought levels. */
     effortOptions?: DshReasoningEffortOption[]
+    /** The level the session currently runs with. */
     currentEffortId: string | null
     isLoading: boolean
     error: string | null

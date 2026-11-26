@@ -207,6 +207,31 @@ describe('resumeCommand', () => {
         })
     })
 
+    it('seeds the stored model and reasoning effort into the resumed DSH session', async () => {
+        // The web reopen path forwards the session's model and effort; the CLI
+        // resume path must agree with it or the launcher starts untracked.
+        getLocalResumeTargetMock.mockResolvedValue({
+            sessionId: 'hapi-session-dsh-effort',
+            flavor: 'dsh',
+            directory: '/tmp/project',
+            machineId: 'machine-1',
+            active: false,
+            thinking: false,
+            controlledByUser: false,
+            agentSessionId: 'dsh-session-effort',
+            model: 'deepseek-v4-pro',
+            modelReasoningEffort: 'max'
+        })
+
+        await resumeCommand.run(createContext(['hapi-session-dsh-effort']))
+
+        expect(runDshMock).toHaveBeenCalledWith(expect.objectContaining({
+            resumeSessionId: 'dsh-session-effort',
+            model: 'deepseek-v4-pro',
+            modelReasoningEffort: 'max'
+        }))
+    })
+
     it('hands off an active DSH target before starting its remote launcher', async () => {
         getLocalResumeTargetMock.mockResolvedValue({
             sessionId: 'hapi-session-dsh-active',

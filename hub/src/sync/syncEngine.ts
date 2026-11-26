@@ -4316,6 +4316,7 @@ export class SyncEngine {
             // an RPC call — the CLI is not running yet. The updated value will be
             // passed to the spawned process when the session is resumed.
             this.sessionCache.applySessionConfig(sessionId, config)
+            this.releaseSessionModelCatalog(sessionId, config)
             return
         }
 
@@ -4351,6 +4352,20 @@ export class SyncEngine {
         }
 
         this.sessionCache.applySessionConfig(sessionId, applied)
+        this.releaseSessionModelCatalog(sessionId, config)
+    }
+
+    /**
+     * A model change moves the session's live catalogs: dsh's session-scoped
+     * list carries the CURRENT model's reasoning-effort options, so a cached
+     * answer would describe the previous model for the rest of the TTL (the
+     * web invalidates its query on the switch and expects a cold answer).
+     * `release` takes the scope, so every `<sessionId>|…` list is dropped.
+     */
+    private releaseSessionModelCatalog(sessionId: string, config: { model?: unknown }): void {
+        if (config.model !== undefined) {
+            this.modelListCache.release(sessionId)
+        }
     }
 
     async spawnSession(

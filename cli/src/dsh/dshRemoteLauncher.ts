@@ -11,6 +11,7 @@ import {
 import { RemoteModeDisplay } from '@/ui/ink/RemoteModeDisplay'
 import { AcpPermissionHandler } from '@/modules/common/permission/AcpPermissionHandler'
 import { isAcpIndeterminateError } from '@/agent/backends/acp/AcpStdioTransport'
+import type { AcpConfigOptionDescriptor } from '@/agent/backends/acp'
 import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge'
 import { createDshBackend } from './utils/dshBackend'
 import { buildDshPromptContent } from './utils/dshPromptContent'
@@ -66,6 +67,11 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
     private currentBackendModel: string | null = null
     /** Live reasoning-effort preference ('' = Provider default); re-applied on respawn. */
     private currentReasoningEffort: string | null = null
+    /** True after a model switch: dsh records the new route as a bare
+     * `{provider, model}` selection, which drops the session's reasoning
+     * effort back to the new model's default — so the next effort apply must
+     * hit the wire even when the preference itself is unchanged. */
+    private effortResetByModelSwitch = false
     /** Server default captured at session creation, before any override. */
     private initialBackendModel: string | null = null
     /** ACP session id on the CURRENT backend — swapped by every respawn so
@@ -98,6 +104,11 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
              * stops showing the failed value and later turns stop
              * re-requesting it (mirror of onModelRollback). */
             onEffortRollback?: (effort: string | null | undefined) => void
+        /** A session was established with no effort preference tracked: the
+         * argument is the level the agent actually runs with (from its live
+         * `reasoning_effort` option). The host adopts it so the picker shows
+         * the real level — dsh has no "unset" to fall back to. */
+        onEffortDiscovered?: (effort: string) => void
         } = {}
     ) {
         super(process.env.DEBUG ? session.logPath : undefined)
@@ -153,20 +164,19 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 return { success: false, error: 'DSH model metadata is not available' }
             }
             // The live `reasoning_effort` config option (category
-            // thought_level) of the session's CURRENT model: the in-chat
-            // effort picker shows these discovered options; the key is absent
-            // when the session exposes no thought_level option.
+            // thought_level) of the session's CURRENT model, shown by the
+            // in-chat effort picker.
             const thoughtLevel = backend.getConfigOptionByCategory(acpSessionId, 'thought_level')
             return {
                 success: true,
                 availableModels: metadata.availableModels,
                 currentModelId: this.currentBackendModel ?? metadata.currentModelId,
-                ...(thoughtLevel
-                    ? {
-                        effortOptions: thoughtLevel.options,
-                        currentEffortId: thoughtLevel.currentValue ?? null
-                    }
-                    : {})
+                // An EMPTY effort list is a positive answer — the catalog is
+                // in and this model has no thought levels, so there is
+                // nothing to pick; the key is never absent once a session
+                // answered.
+                effortOptions: thoughtLevel ? effortChoices(thoughtLevel) : [],
+                currentEffortId: thoughtLevel?.currentValue ?? null
             }
         })
 
@@ -493,8 +503,16 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
             // option (category thought_level; '' = Provider default). The web
             // reasoning-effort picker drives this via the queued turn's mode.
             const requestedEffort = batch.mode.modelReasoningEffort
-            if (requestedEffort !== undefined) {
-                const appliedEffort = await this.applyReasoningEffort(backend, acpSessionId, requestedEffort)
+            // A model switch in this batch (or the spawn-time override) reset
+            // the agent-side effort: when the batch names none, re-assert the
+            // tracked preference so the picker keeps telling the truth.
+            const effortToApply = requestedEffort !== undefined
+                ? requestedEffort
+                : (this.effortResetByModelSwitch && this.currentReasoningEffort !== null
+                    ? this.currentReasoningEffort
+                    : undefined)
+            if (effortToApply !== undefined) {
+                const appliedEffort = await this.applyReasoningEffort(backend, acpSessionId, effortToApply)
                 if (appliedEffort === null) {
                     // Same contract as the model switch: the failed
                     // preference never took, so the host's tracking (and
@@ -770,6 +788,16 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 this.currentReasoningEffort = null
                 this.opts.onEffortRollback?.(undefined)
             }
+        } else if (!opts.respawn && this.currentReasoningEffort === null) {
+            // Nothing was requested for this session: adopt the level the agent
+            // actually runs with (after any spawn-time model switch above) so
+            // the picker shows it — dsh always runs on SOME level and its
+            // stock adapter offers no "Default" to fall back to.
+            const live = backend.getConfigOptionByCategory(acpSessionId, 'thought_level')?.currentValue
+            if (live !== undefined) {
+                this.currentReasoningEffort = live
+                this.opts.onEffortDiscovered?.(live)
+            }
         }
         if (this.currentBackendModel) {
             this.messageBuffer.addMessage(`[MODEL:${this.currentBackendModel}]`, 'system')
@@ -996,6 +1024,10 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         try {
             await backend.setConfigOption(acpSessionId, option.id, model)
             this.currentBackendModel = model
+            // dsh records the new route as a bare {provider, model} selection,
+            // which resets the session's reasoning effort to the new model's
+            // default; the effort step of this batch re-asserts the preference.
+            this.effortResetByModelSwitch = true
             this.messageBuffer.addMessage(`[MODEL:${model}]`, 'system')
             return model
         } catch (error) {
@@ -1012,8 +1044,12 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
 /**
      * Apply a reasoning-effort change through the 'reasoning_effort' config
      * option (category thought_level). DSH's value space is the model's
-     * effort ids (off/low/high/max for DeepSeek) with '' = Provider default,
-     * so the picker's null ("Default") maps to ''. Returns the applied value,
+     * effort ids (off/low/high/max for DeepSeek); '' ("Provider default") is
+     * only a legal level where the model declares no default effort, so the
+     * picker's null ("Default") maps to '' and is bounced back to the live
+     * level when the model does not offer it. A model switch resets the
+     * agent-side level, so an unchanged preference is re-sent after one.
+     * Returns the applied value,
      * or null when the switch failed or the model exposes no thought_level
      * option (the caller keeps the previous effort and corrects the host via
      * onEffortRollback) — the same contract as applyModelSwitch. A request
@@ -1025,7 +1061,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         effort: string | null
     ): Promise<string | null> {
         const value = effort ?? ''
-        if (value === this.currentReasoningEffort) return value
+        if (!this.effortResetByModelSwitch && value === this.currentReasoningEffort) return value
         return this.applyEffortValue(backend, acpSessionId, value)
     }
 
@@ -1051,9 +1087,23 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
             })
             return null
         }
+        if (value === '' && !effortChoices(option).some((choice) => choice.value === '')) {
+            // dsh only accepts "" when the model declares no default effort;
+            // its stock adapter always declares one. "Default" is then not a
+            // switch: never send it (it would be rejected and, re-queued every
+            // turn, fail every turn) — keep the live level and let the caller
+            // report it through onEffortRollback.
+            const live = option.currentValue
+            if (live !== undefined) {
+                this.currentReasoningEffort = live
+            }
+            this.effortResetByModelSwitch = false
+            return null
+        }
         try {
             await backend.setConfigOption(acpSessionId, option.id, value)
             this.currentReasoningEffort = value
+            this.effortResetByModelSwitch = false
             this.messageBuffer.addMessage(`[EFFORT:${value || 'default'}]`, 'system')
             return value
         } catch (error) {
@@ -1116,6 +1166,12 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
     private async handleExitFromUi(): Promise<void> {
         await this.requestExit('exit', () => this.handleAbort(true))
     }
+}
+
+/** Selectable choices of a thought_level option; a wrapper may advertise the
+ * option without a choice list. */
+function effortChoices(option: AcpConfigOptionDescriptor): Array<{ value: string; name?: string }> {
+    return Array.isArray(option.options) ? option.options : []
 }
 
 function toAcpMcpServers(config: Record<string, { command: string; args: string[] }>): McpServerStdio[] {

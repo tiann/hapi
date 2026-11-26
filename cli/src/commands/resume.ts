@@ -112,7 +112,12 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
             startingMode: 'remote',
             // Spawn-time sandbox preset only (dsh has no runtime mode RPC):
             // read-only/yolo pin DSH_PERMISSION_MODE on the respawned child.
-            permissionMode: base.permissionMode as string | undefined
+            permissionMode: base.permissionMode as string | undefined,
+            // Seed the stored model and reasoning effort like the web reopen
+            // path does (the launcher adopts the agent's live values when
+            // none are stored).
+            model: target.model ?? undefined,
+            modelReasoningEffort: target.modelReasoningEffort ?? undefined
         })
         return
     }

@@ -24,9 +24,9 @@ export type EffortFieldProps = {
     codexReasoningOptions?: Array<{ value: string; name?: string }>
     /** Model-dependent reasoning-effort options for DSH (the selected
      * model's `reasoningEfforts` from the machine catalog; the shared
-     * reasoningEffort state rail holds the pick, 'default' = unset).
-     * Undefined or empty hides the field — DSH has no static fallback and
-     * its options never include a provider-default entry. */
+     * reasoningEffort state rail holds the pick, 'default' = unset — dsh
+     * then starts on its own default level). Undefined or empty hides the
+     * field: DSH has no static fallback. */
     dshOptions?: Array<{ value: string; label: string }>
     /** Model-dependent variant values from the OpenCode catalog (OpenCode). Array = dynamic list, [] = hide field, null/undefined = static fallback. */
     opencodeVariantOptions?: string[] | null
@@ -58,7 +58,11 @@ export function EffortField(props: EffortFieldProps) {
     let options: Array<{ value: string; label: string }>
     if (props.agent === 'dsh') {
         if (!props.dshOptions?.length) return null
-        options = props.dshOptions
+        // A native select with no matching option shows its FIRST option, so
+        // an unset pick ('default' = dsh's own default level) must have an
+        // explicit row — otherwise the form reads "Off" while the session
+        // starts on the default level.
+        options = [{ value: 'default', label: t('newSession.model.default') }, ...props.dshOptions]
     } else if (props.agent === 'agy') {
         if (!props.agyOptions?.length) return null
         options = [{ value: 'auto', label: t('newSession.model.default') }, ...props.agyOptions]

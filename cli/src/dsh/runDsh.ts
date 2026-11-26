@@ -149,16 +149,24 @@ export async function runDsh(opts: {
             syncSessionMode()
         },
         onEffortRollback: (effort) => {
-            // A failed effort switch never took on the dsh side: reset the
-            // tracking to the launcher's live value and re-sync so the hub
-            // picker drops the failed pick and later turns stop carrying it
-            // (mirror of the model rollback path above). A dropped
-            // preference arrives as undefined; normalize it to null — the
-            // explicit "Default" spelling — so the keepalive overwrite
-            // clears the picker instead of leaving the last value in place
-            // (undefined is skipped by the merge), and later turns carry an
-            // explicit '' reset rather than no opinion.
-            currentReasoningEffort = effort ?? null
+            // A failed effort switch never took on the dsh side: track what
+            // the launcher really runs with (mirror of the model rollback
+            // path above). undefined = nothing tracked, and it must STAY
+            // undefined: normalizing it to null would put an explicit
+            // "Default" on every later turn and re-fail the switch each time.
+            // The picker's failed pick is cleared once, right here — this
+            // keepalive writes null (which overwrites the hub value) while
+            // later keepalives carry no effort opinion at all.
+            currentReasoningEffort = effort
+            const active = sessionRef.current
+            if (!active) return
+            active.setModelReasoningEffort(effort ?? null)
+            active.pushKeepAlive()
+        },
+        onEffortDiscovered: (effort) => {
+            // The session came up on a level nobody picked (dsh always runs on
+            // some level): show it instead of a "Default" dsh does not have.
+            currentReasoningEffort = effort
             syncSessionMode()
         },
         onConfigDiscovered: (model) => {
