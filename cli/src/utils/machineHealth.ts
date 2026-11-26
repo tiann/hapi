@@ -1,6 +1,6 @@
 import { execSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
-import { availableParallelism, cpus, freemem, loadavg, platform, totalmem, uptime } from 'node:os'
+import { readFileSync, statfsSync } from 'node:fs'
+import { availableParallelism, cpus, freemem, homedir, loadavg, platform, totalmem, uptime } from 'node:os'
 import type { MachineHealth } from '@hapi/protocol/types'
 import { MachineHealthSchema } from '@hapi/protocol/schemas'
 
@@ -176,11 +176,45 @@ function computeUptimeSeconds(): number | undefined {
     return Math.floor(seconds)
 }
 
+type DiskUsage = { diskTotalBytes: number; diskUsedBytes: number; diskAvailableBytes: number }
+
+/** `df`-style numbers from statfs block counts. Testable without a filesystem. */
+export function diskUsageFromStatfs(stats: { bsize: number; blocks: number; bfree: number; bavail: number }): DiskUsage | undefined {
+    const { bsize, blocks, bfree, bavail } = stats
+    if (![bsize, blocks, bfree, bavail].every((value) => Number.isFinite(value) && value >= 0) || bsize <= 0 || blocks <= 0) {
+        return undefined
+    }
+    return {
+        diskTotalBytes: blocks * bsize,
+        diskUsedBytes: Math.max(0, blocks - bfree) * bsize,
+        diskAvailableBytes: Math.min(bavail, blocks) * bsize,
+    }
+}
+
+/**
+ * Storage on the filesystem holding the runner user's home directory — where
+ * workspaces and files uploaded from the files panel normally land.
+ */
+function computeDiskUsage(): DiskUsage | undefined {
+    try {
+        const stats = statfsSync(homedir())
+        return diskUsageFromStatfs({
+            bsize: Number(stats.bsize),
+            blocks: Number(stats.blocks),
+            bfree: Number(stats.bfree),
+            bavail: Number(stats.bavail),
+        })
+    } catch {
+        return undefined
+    }
+}
+
 export function collectMachineHealth(now: number = Date.now()): MachineHealth {
     const cpuCount = availableParallelism()
     const memoryPercent = computeMemoryPercent()
     const uptimeSeconds = computeUptimeSeconds()
     const load1m = isUnixLikeLoadPlatform() ? loadavg()[0] : undefined
+    const disk = computeDiskUsage()
 
     const cpuSnapshot = sumCpuTimes()
     let cpuPercent: number | undefined
@@ -197,7 +231,8 @@ export function collectMachineHealth(now: number = Date.now()): MachineHealth {
         ...(load1m !== undefined ? { load1m } : {}),
         ...(cpuPercent !== undefined ? { cpuPercent } : {}),
         ...(memoryPercent !== undefined ? { memoryPercent } : {}),
-        ...(uptimeSeconds !== undefined ? { uptimeSeconds } : {})
+        ...(uptimeSeconds !== undefined ? { uptimeSeconds } : {}),
+        ...(disk ?? {})
     }
 
     const parsed = MachineHealthSchema.safeParse(health)
