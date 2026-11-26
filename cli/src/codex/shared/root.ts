@@ -78,6 +78,7 @@ export class SharedCodexRoot {
     private closing?: Promise<void>;
     private readonly controls = new Set<Promise<unknown>>();
     private reconnecting = false;
+    private terminalForkTitlePending = false;
     private settings: RuntimeSettings = {};
     private settingsNative: Record<string, unknown> = {};
     private settingsNotification?: Record<string, unknown>;
@@ -185,13 +186,23 @@ export class SharedCodexRoot {
             this.publishedPlanId = undefined;
             this.publishedCompactionIds = undefined;
             void this.refresh().then(() => this.refreshChildren(false)).then(() => this.queue.replay())
-                .then(() => {
+                .then(async () => {
                     // Hub restart loses its ephemeral readiness fence. Replay
                     // it only after native revalidation and completed activation.
-                    if (wasActivated && this.heartbeat && !this.closed && !this.stopping && this.client.isInitialized()) this.session.emitSessionReady();
+                    if (!wasActivated || !this.heartbeat || this.closed || this.stopping || !this.client.isInitialized()) return;
+                    this.session.emitSessionReady();
+                    if (this.terminalForkTitlePending) await this.publishForkBindingReady();
                 })
                 .catch(error => { logger.debug('[Codex shared] hub resync', error); this.failAttached(); });
         });
+    }
+
+    async publishForkBindingReady(terminalFork = false): Promise<void> {
+        if (terminalFork) this.terminalForkTitlePending = true;
+        if (!await this.session.flush() || this.closed || this.stopping) return;
+        const titleReady = this.terminalForkTitlePending;
+        this.terminalForkTitlePending = false;
+        this.session.emitSessionReady({ nativeForkTitleReady: titleReady });
     }
 
     /** The host's approval hooks: a wait for the user is not generation time. */

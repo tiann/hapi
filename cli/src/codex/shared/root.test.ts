@@ -564,6 +564,22 @@ async function completePlan(f: Awaited<ReturnType<typeof fixture>>, status = 'co
     return codexPlanProposalId('thread', turn.id, 'plan-item');
 }
 
+it('publishes terminal fork title readiness only after a replay flush succeeds', async () => {
+    const f = await fixture();
+    await f.root.activate();
+    f.sessionReady.mockClear();
+    const flush = vi.spyOn(f.root.session, 'flush').mockResolvedValueOnce(false).mockResolvedValue(true);
+    await f.root.publishForkBindingReady(true);
+    expect(f.sessionReady).not.toHaveBeenCalled();
+
+    f.reconnect();
+    await vi.waitFor(() => expect(f.sessionReady).toHaveBeenCalledWith({ nativeForkTitleReady: true }));
+    expect(flush).toHaveBeenCalledTimes(2);
+    f.reconnect();
+    await vi.waitFor(() => expect(f.sessionReady).toHaveBeenCalledTimes(3));
+    expect(f.sessionReady.mock.calls.filter(([options]) => options?.nativeForkTitleReady === true)).toHaveLength(1);
+});
+
 it('keeps the active round measurable when only the hub reconnects', async () => {
         vi.useFakeTimers();
         try {

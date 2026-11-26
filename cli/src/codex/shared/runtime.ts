@@ -240,7 +240,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         await root.activate(initialOptions);
         // Only terminal gateway forks can request a title here, after replay
         // is durable. Hub-requested forks must wait for the validating RPC.
-        if (await root.session.flush()) root.session.emitSessionReady({ nativeForkTitleReady: terminalFork });
+        await root.publishForkBindingReady(terminalFork);
         await persist();
         // The hub's view of the metadata is what the hub kept of it: a hub
         // without the field strips hostStartMarker, and the runner ignores an
