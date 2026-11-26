@@ -147,14 +147,26 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 const message = error instanceof Error ? error.message : String(error)
                 return { success: false, error: `DSH session is not available: ${message}` }
             }
-            const metadata = readiness.backend?.getSessionModelsMetadata(acpSessionId)
-            if (!metadata) {
+            const backend = readiness.backend
+            const metadata = backend?.getSessionModelsMetadata(acpSessionId)
+            if (!backend || !metadata) {
                 return { success: false, error: 'DSH model metadata is not available' }
             }
+            // The live `reasoning_effort` config option (category
+            // thought_level) of the session's CURRENT model: the in-chat
+            // effort picker shows these discovered options; the key is absent
+            // when the session exposes no thought_level option.
+            const thoughtLevel = backend.getConfigOptionByCategory(acpSessionId, 'thought_level')
             return {
                 success: true,
                 availableModels: metadata.availableModels,
-                currentModelId: this.currentBackendModel ?? metadata.currentModelId
+                currentModelId: this.currentBackendModel ?? metadata.currentModelId,
+                ...(thoughtLevel
+                    ? {
+                        effortOptions: thoughtLevel.options,
+                        currentEffortId: thoughtLevel.currentValue ?? null
+                    }
+                    : {})
             }
         })
 

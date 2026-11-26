@@ -14,9 +14,12 @@ export const DSH_PERMISSION_MODES = ['default', 'read-only', 'safe-yolo', 'yolo'
 
 export function parseDshCommandOptions(commandArgs: string[]) {
     const options = parseRemoteAgentCommandOptions(commandArgs, DSH_PERMISSION_MODES, ['remote'])
-    if (options.effort || options.modelReasoningEffort) {
-        throw new Error('DeepSeek Harness effort is configured by the ACP server')
+    if (options.effort) {
+        throw new Error('DeepSeek Harness launch-effort is not supported; use --model-reasoning-effort')
     }
+    // --model-reasoning-effort seeds the reasoning-effort preference
+    // (off/low/high/max) applied to the ACP session through
+    // `session/set_config_option` (category thought_level) on the first turn.
     return { ...options, startingMode: 'remote' as const }
 }
 

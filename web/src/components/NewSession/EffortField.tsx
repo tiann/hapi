@@ -22,6 +22,12 @@ export type EffortFieldProps = {
     claudeOptions?: Array<{ value: string; label: string }>
     /** Model-dependent reasoning-effort options (Codex). */
     codexReasoningOptions?: Array<{ value: string; name?: string }>
+    /** Model-dependent reasoning-effort options for DSH (the selected
+     * model's `reasoningEfforts` from the machine catalog; the shared
+     * reasoningEffort state rail holds the pick, 'default' = unset).
+     * Undefined or empty hides the field — DSH has no static fallback and
+     * its options never include a provider-default entry. */
+    dshOptions?: Array<{ value: string; label: string }>
     /** Model-dependent variant values from the OpenCode catalog (OpenCode). Array = dynamic list, [] = hide field, null/undefined = static fallback. */
     opencodeVariantOptions?: string[] | null
     /** Selected Pi model — hides effort when the model cannot reason and filters levels via thinkingLevelMap. */
@@ -47,10 +53,13 @@ export function EffortField(props: EffortFieldProps) {
         return null
     }
 
-    const isReasoningEffort = props.agent === 'codex' || props.agent === 'opencode'
+    const isReasoningEffort = props.agent === 'codex' || props.agent === 'opencode' || props.agent === 'dsh'
 
     let options: Array<{ value: string; label: string }>
-    if (props.agent === 'agy') {
+    if (props.agent === 'dsh') {
+        if (!props.dshOptions?.length) return null
+        options = props.dshOptions
+    } else if (props.agent === 'agy') {
         if (!props.agyOptions?.length) return null
         options = [{ value: 'auto', label: t('newSession.model.default') }, ...props.agyOptions]
     } else if (props.agent === 'grok') {

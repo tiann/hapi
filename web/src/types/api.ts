@@ -34,6 +34,7 @@ export type {
     DirectoryEntry,
     DshModelsResponse,
     DshModelSummary,
+    DshReasoningEffortOption,
     FileReadResponse,
     GitCommandResponse,
     GrokModelsResponse,

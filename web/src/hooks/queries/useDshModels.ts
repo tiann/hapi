@@ -1,11 +1,16 @@
 import { useQuery } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
-import type { DshModelSummary } from '@/types/api'
+import type { DshModelSummary, DshReasoningEffortOption } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
 
 export interface DshModelsState {
     availableModels: DshModelSummary[]
     currentModelId: string | null
+    /** Session-scoped only: the live `reasoning_effort` config option of the
+     * session's CURRENT model; the composer prefers these over its static
+     * presets. Undefined when the model exposes no thought_level option. */
+    effortOptions?: DshReasoningEffortOption[]
+    currentEffortId: string | null
     isLoading: boolean
     error: string | null
 }
@@ -33,6 +38,8 @@ export function useDshModelsForMachine(args: {
     return {
         availableModels: query.data?.availableModels ?? [],
         currentModelId: query.data?.currentModelId ?? null,
+        effortOptions: query.data?.effortOptions,
+        currentEffortId: query.data?.currentEffortId ?? null,
         isLoading: query.isLoading,
         error: query.data?.success === false
             ? (query.data.error ?? 'Failed to load DSH models')
@@ -63,6 +70,8 @@ export function useDshModelsForSession(args: {
     return {
         availableModels: query.data?.availableModels ?? [],
         currentModelId: query.data?.currentModelId ?? null,
+        effortOptions: query.data?.effortOptions,
+        currentEffortId: query.data?.currentEffortId ?? null,
         isLoading: query.isLoading,
         error: query.data?.success === false
             ? (query.data.error ?? 'Failed to load DSH models')

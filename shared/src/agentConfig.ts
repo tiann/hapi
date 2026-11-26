@@ -70,7 +70,15 @@ const BUILTIN_DESCRIPTORS: Record<AgentFlavor, AgentConfigFieldDescriptor[]> = {
         { id: 'serviceTier', section: 'settings', kind: 'select', optionSource: 'model', availability: 'both' },
         { id: 'collaborationMode', section: 'settings', kind: 'select', optionSource: 'static', availability: 'both' }
     ),
-    dsh: fields(MANAGED_PERMISSION),
+    // DSH rides the codex-style reasoning-effort rail (`reasoning_effort`
+    // ACP config option, category thought_level); options are model-dependent
+    // and arrive through the DSH model catalogs (ListDshModels /
+    // ListDshModelsForMachine). The launcher already applies effort via
+    // session/set_config_option.
+    dsh: fields(
+        { id: 'effort', section: 'effort', kind: 'select', optionSource: 'model', availability: 'both' },
+        MANAGED_PERMISSION
+    ),
     copilot: fields({ ...MODEL, optionSource: 'directory' }, PERMISSION),
     cursor: fields({ id: 'model', section: 'model', kind: 'dependent-select', optionSource: 'machine', availability: 'both' }, PERMISSION),
     gemini: fields(MODEL, PERMISSION),

@@ -22,6 +22,12 @@ export async function runDsh(opts: {
     reservedSessionId?: string
     /** Spawn-time model override (opaque ACP config-option value). */
     model?: string
+    /** Spawn-time reasoning-effort preference (off/low/high/max; dsh's
+     *  `reasoning_effort` ACP config option, category thought_level). Seeded
+     *  as the live preference so the first queued turn applies it through
+     *  session/set_config_option; the "Default" reset maps null → '' like
+     *  the in-chat picker. */
+    modelReasoningEffort?: string
     /** Spawn-time permission mode — pinned into the child env as
      * DSH_PERMISSION_MODE (read-only / danger-full-access); dsh reads it only
      * at spawn and has no runtime mode RPC. */
@@ -49,7 +55,8 @@ export async function runDsh(opts: {
             workingDirectory,
             agentState: initialState,
             reservedSessionId: opts.reservedSessionId,
-            model: opts.model
+            model: opts.model,
+            modelReasoningEffort: opts.modelReasoningEffort
         })
     const { api, session, sessionInfo } = bootstrap
     setControlledByUser(session, startingMode)
@@ -62,8 +69,10 @@ export async function runDsh(opts: {
     // reset, string = a concrete model. Only the config RPC ever sets null.
     let currentModel: string | null | undefined = opts.model
     // Reasoning-effort preference (undefined until the picker is used; null =
-    // the "Default" reset, mapped to DSH's '' = Provider default).
-    let currentReasoningEffort: string | null | undefined = undefined
+    // the "Default" reset, mapped to DSH's '' = Provider default). A spawn-time
+    // --model-reasoning-effort seeds it so the first queued turn applies it
+    // through session/set_config_option.
+    let currentReasoningEffort: string | null | undefined = opts.modelReasoningEffort
 
     const syncSessionMode = () => {
         const active = sessionRef.current
