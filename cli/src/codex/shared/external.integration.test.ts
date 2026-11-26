@@ -71,7 +71,7 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1' || process.platf
     let modelRequests: Record<string, unknown>[];
     let answer: (request: Record<string, unknown>) => Promise<Record<string, unknown>>;
     const releases: Array<() => void> = [];
-    const workers: Array<{ abort: AbortController; running: Promise<void> }> = [];
+    const workers: Array<{ abort: AbortController; running: Promise<unknown> }> = [];
 
     const message = (text: string) => ({ type: 'message', role: 'assistant', id: `msg_${randomUUID()}`,
         content: [{ type: 'output_text', text }] });

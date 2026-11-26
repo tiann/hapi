@@ -3,6 +3,8 @@ import spawn from 'cross-spawn';
 import { readFileSync } from 'node:fs';
 import { monotonicTimeMs } from '@/utils/time';
 import { stopWindowsProcessTree, type WindowsStopReport } from './windowsProcessStop';
+import { windowsSystemTool } from './windowsSystemTools';
+
 export const isWindows = (): boolean => process.platform === 'win32';
 
 /** Bound hung WMI/tasklist/ps so a wedged spawn cannot darken the runner (#1911 Overseer B3). */
@@ -18,7 +20,7 @@ export function isProcessAlive(pid: number): boolean {
   if (isWindows()) {
     try {
       const result = spawn.sync(
-        'tasklist',
+        windowsSystemTool('tasklist'),
         ['/FI', `PID eq ${pid}`, '/NH'],
         { stdio: 'pipe', windowsHide: true, encoding: 'utf8', timeout: SPAWN_SYNC_TIMEOUT_MS }
       );
@@ -109,7 +111,7 @@ export function getProcessStartMarker(pid: number): string | null {
     // preceding tasklist adds a process launch without strengthening identity.
     // Same UTC ISO 'o' string as orphanReap listWindowsProcessesWithCommandLine.
     // Do not print raw DateTime or use WMIC DMTF (format mismatch skips reap).
-    const powershell = spawn.sync('powershell', [
+    const powershell = spawn.sync(windowsSystemTool('powershell'), [
       '-NoProfile', '-NonInteractive', '-Command',
       windowsProcessMarkerCimCommand(pid),
     ], { stdio: 'pipe', windowsHide: true, timeout: SPAWN_SYNC_TIMEOUT_MS });
@@ -140,7 +142,7 @@ export function readWindowsProcessStartMarkers(): ReadonlyMap<number, string | n
         + `@{N='CreationDate';E={if ($_.CreationDate) { ${WINDOWS_CIM_CREATION_DATE_MARKER_EXPR} } else { $null }}}`
         + ' | ConvertTo-Json -Compress',
     ].join('\n');
-    const result = spawn.sync('powershell', ['-NoProfile', '-NonInteractive', '-Command', command], {
+    const result = spawn.sync(windowsSystemTool('powershell'), ['-NoProfile', '-NonInteractive', '-Command', command], {
       encoding: 'utf8', windowsHide: true, timeout: SPAWN_SYNC_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024
     });
     if (result.error || result.status !== 0) return null;
@@ -169,7 +171,7 @@ function isRunnerCommand(commandLine: string): boolean {
 function getWindowsProcessCommandLine(pid: number): string | null {
   if (!Number.isInteger(pid) || pid <= 0) return null;
 
-  const powershell = spawn.sync('powershell', [
+  const powershell = spawn.sync(windowsSystemTool('powershell'), [
     '-NoProfile',
     '-NonInteractive',
     '-Command',
@@ -180,7 +182,7 @@ function getWindowsProcessCommandLine(pid: number): string | null {
     if (commandLine.trim()) return commandLine;
   }
 
-  const wmic = spawn.sync('wmic', [
+  const wmic = spawn.sync(windowsSystemTool('wmic'), [
     'process', 'where', `ProcessId=${pid}`, 'get', 'CommandLine'
   ], { stdio: 'pipe', windowsHide: true, timeout: SPAWN_SYNC_TIMEOUT_MS });
   if (!wmic.error && wmic.status === 0) {
@@ -244,7 +246,7 @@ function killProcessWindows(pid: number, force: boolean, deadlineMs?: number): b
     args.unshift('/F');
   }
   try {
-    const result = spawn.sync('taskkill', args, {
+    const result = spawn.sync(windowsSystemTool('taskkill'), args, {
       stdio: 'pipe',
       windowsHide: true,
       timeout: SPAWN_SYNC_TIMEOUT_MS,
@@ -329,7 +331,7 @@ export function collectWindowsProcessTree(pid: number): number[] | 'scan_failed'
   if (!Number.isFinite(n) || n <= 0) return 'scan_failed'
 
   const result = spawn.sync(
-    'powershell',
+    windowsSystemTool('powershell'),
     [
       '-NoProfile',
       '-NonInteractive',
@@ -368,7 +370,8 @@ async function signalAndWaitWindowsRoot(pid: number, force: boolean, deadlineMs?
 }
 
 export async function killProcess(pid: number, force: boolean = false, deadlineMs?: number,
-  canSignal?: () => boolean): Promise<boolean> {  const n = typeof pid === 'number' ? pid : Number(pid)
+  canSignal?: () => boolean): Promise<boolean> {
+  const n = typeof pid === 'number' ? pid : Number(pid)
   if (!Number.isFinite(n) || n <= 0) {
     return false;
   }
@@ -381,7 +384,8 @@ export async function killProcess(pid: number, force: boolean = false, deadlineM
     // but the PID is still draining, honor the grace wait before /F so archive
     // flush can finish.
     // Root-only verify — callers that need full-tree proof use killProcessTreeByPid.
-    await signalAndWaitWindowsRoot(n, force, deadlineMs, canSignal);    return !isProcessAlive(n);
+    await signalAndWaitWindowsRoot(n, force, deadlineMs, canSignal);
+    return !isProcessAlive(n);
   }
 
   try {

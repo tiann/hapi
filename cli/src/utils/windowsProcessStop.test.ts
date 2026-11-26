@@ -7,6 +7,7 @@ vi.mock('cross-spawn', () => ({ default: { sync: syncMock } }))
 vi.mock('./time', () => ({ monotonicTimeMs: () => authority.now }))
 import { killProcessTreeByPid } from './process'
 import { readWindowsProcessTable, windowsGenerationMayBeAlive } from './windowsProcessStop'
+import { windowsSystemTool } from './windowsSystemTools'
 
 const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!
 type Row = { ProcessId: number; ParentProcessId: number; CreationDate: string | null }
@@ -19,7 +20,7 @@ describe('Windows asynchronous tree stop', () => {
         let scans = 0
         execFileMock.mockImplementation((file, _args, _options, callback) => {
             queueMicrotask(() => {
-                if (file !== 'powershell') return callback(null, '', '')
+                if (file !== windowsSystemTool('powershell')) return callback(null, '', '')
                 scans += 1
                 if (scans === 1) callback(new Error('CIM unavailable'), '', '')
                 else callback(null, JSON.stringify({ complete: true, processes: [row(100)] }), '')
@@ -46,7 +47,7 @@ describe('Windows asynchronous tree stop', () => {
         syncMock.mockReset().mockReturnValue({ status: 1, error: new Error('No synchronous probes permitted') })
         execFileMock.mockReset().mockImplementation((file, args, _options, callback) => {
             queueMicrotask(() => {
-                if (file === 'powershell') {
+                if (file === windowsSystemTool('powershell')) {
                     callback(null, JSON.stringify({ complete: true, processes: rows }), '')
                 } else {
                     const pid = Number(args[args.indexOf('/PID') + 1])
@@ -78,7 +79,7 @@ describe('Windows asynchronous tree stop', () => {
         let scans = 0
         execFileMock.mockImplementation((file, args, _options, callback) => {
             queueMicrotask(() => {
-                if (file === 'powershell') {
+                if (file === windowsSystemTool('powershell')) {
                     const sampled = [...rows]
                     if (++scans === 2) rows = rows.filter(process => process.ProcessId !== 100)
                     callback(null, JSON.stringify({ complete: true, processes: sampled }), '')
@@ -103,7 +104,7 @@ describe('Windows asynchronous tree stop', () => {
         onKill = (pid, force) => { if (force) rows = rows.filter(entry => entry.ProcessId !== pid) }
         const execute = execFileMock.getMockImplementation()!
         execFileMock.mockImplementation((file, args, options, callback) => {
-            if (file !== 'powershell') return execute(file, args, options, callback)
+            if (file !== windowsSystemTool('powershell')) return execute(file, args, options, callback)
             return execute(file, args, options, (error: Error | null, stdout: string, stderr: string) => {
                 if (++scans === 4) rows = rows.filter(entry => entry.ProcessId !== 100)
                 callback(error, stdout, stderr)
@@ -133,7 +134,7 @@ describe('Windows asynchronous tree stop', () => {
         let scans = 0
         const implementation = execFileMock.getMockImplementation()!
         execFileMock.mockImplementation((file, ...args) => {
-            if (file === 'powershell' && ++scans === scan) authority.now = 100
+            if (file === windowsSystemTool('powershell') && ++scans === scan) authority.now = 100
             return implementation(file, ...args)
         })
         expect(await killProcessTreeByPid(100, true, undefined, 100)).toBe(false)
@@ -148,7 +149,7 @@ describe('Windows asynchronous tree stop', () => {
         const pendingSnapshot = new Promise<void>(resolve => { snapshotStarted = resolve })
         const implementation = execFileMock.getMockImplementation()!
         execFileMock.mockImplementation((file, args, options, callback) => {
-            if (file === 'powershell' && ++scans === 2) {
+            if (file === windowsSystemTool('powershell') && ++scans === 2) {
                 snapshotBudget = options.timeout
                 resumeSnapshot = () => callback(null, JSON.stringify({ complete: true, processes: rows }), '')
                 snapshotStarted()
@@ -159,12 +160,12 @@ describe('Windows asynchronous tree stop', () => {
         const operation = killProcessTreeByPid(100, force, undefined, 100)
         await pendingSnapshot
         expect(authority.now).toBe(0)
-        expect(execFileMock.mock.calls.filter(([file]) => file === 'taskkill')).toEqual([])
+        expect(execFileMock.mock.calls.filter(([file]) => file === windowsSystemTool('taskkill'))).toEqual([])
         authority.now = 100
         resumeSnapshot()
         expect(await operation).toBe(false)
         expect(snapshotBudget).toBeLessThanOrEqual(100)
-        expect(execFileMock.mock.calls.filter(([file]) => file === 'taskkill')).toEqual([])
+        expect(execFileMock.mock.calls.filter(([file]) => file === windowsSystemTool('taskkill'))).toEqual([])
         expect(kills).toEqual([])
         expect(syncMock).not.toHaveBeenCalled()
     })
@@ -203,7 +204,7 @@ describe('Windows asynchronous tree stop', () => {
     it('does not use the CIM fallback root probe after its caller lease expires', async () => {
         execFileMock.mockImplementation((file, args, _options, callback) => {
             queueMicrotask(() => {
-                if (file === 'powershell') {
+                if (file === windowsSystemTool('powershell')) {
                     if (String(args.at(-1)).includes('Get-CimInstance')) callback(new Error('CIM failed'), '', '')
                     else { authority.now = 100; callback(null, JSON.stringify({ complete: true, processes: [row(100)] }), '') }
                 } else { kills.push({ pid: 100, force: true, tree: true }); callback(null, '', '') }
@@ -296,7 +297,7 @@ describe('Windows asynchronous tree stop', () => {
     it('attempts root tree termination through a direct probe when CIM is unavailable', async () => {
         execFileMock.mockImplementation((file, args, _options, callback) => {
             queueMicrotask(() => {
-                if (file === 'powershell') {
+                if (file === windowsSystemTool('powershell')) {
                     const script = String(args.at(-1))
                     if (script.includes('Get-CimInstance')) callback(new Error('CIM failed'), '', '')
                     else callback(null, JSON.stringify({ complete: true, processes: [row(100)] }), '')
@@ -342,7 +343,7 @@ describe('Windows asynchronous tree stop', () => {
         let scans = 0
         const implementation = execFileMock.getMockImplementation()!
         execFileMock.mockImplementation((file, ...args) => {
-            if (file === 'powershell' && ++scans === 2) rows = [row(0, 0, null), row(100, 0, 'new-root')]
+            if (file === windowsSystemTool('powershell') && ++scans === 2) rows = [row(0, 0, null), row(100, 0, 'new-root')]
             return implementation(file, ...args)
         })
         await expect(killProcessTreeByPid(100, true)).resolves.toBe(true)

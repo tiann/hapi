@@ -37,10 +37,11 @@ describe('resume schemas', () => {
             updatedAt: 123,
             name: 'project work',
             summary: 'finish docs',
+            promptTitle: 'Resume UX',
             firstUserMessage: 'implement resume picker'
         })
 
-        expect(parsed.success).toBe(true)
+        expect(parsed).toMatchObject({ success: true, data: { promptTitle: 'Resume UX' } })
     })
 
     it('accepts handoff as a session end reason', () => {

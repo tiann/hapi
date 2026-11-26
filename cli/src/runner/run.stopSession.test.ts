@@ -13,7 +13,7 @@ const mocks = vi.hoisted(() => ({
     kill: vi.fn(),
     windows: vi.fn(() => false),
     startMarker: vi.fn(() => 'generation'),
-    threadGroupId: vi.fn(() => 42),
+    threadGroupId: vi.fn((pid: number) => pid),
     bootId: vi.fn(() => 'boot'),
 }))
 
@@ -78,6 +78,7 @@ describe('persisted session heartbeat generation', () => {
 describe('runner stop confirmation after shared Codex tracking loss', () => {
     let stopSession: Parameters<typeof startRunnerControlServer>[0]['stopSession']
     let reportSession: Parameters<typeof startRunnerControlServer>[0]['onHappySessionWebhook']
+    let getChildren: Parameters<typeof startRunnerControlServer>[0]['getChildren']
     let record: CodexRuntimeRecord
     let home: string
 
@@ -88,6 +89,7 @@ describe('runner stop confirmation after shared Codex tracking loss', () => {
         mocks.controlServer.mockImplementation(async handlers => {
             stopSession = handlers.stopSession
             reportSession = handlers.onHappySessionWebhook
+            getChildren = handlers.getChildren
             throw captured
         })
         // Stop startup at control-server registration. Exercise its real closure
@@ -148,6 +150,7 @@ describe('runner stop confirmation after shared Codex tracking loss', () => {
     it('lets verified exit confirm stop despite an unrelated protected wrapper', async () => {
         record.sessions = {}
         reportSession('other', { hostPid: 4242, startedBy: 'terminal', capabilities: { concurrentClients: true } } as Parameters<typeof reportSession>[1])
+        expect(getChildren()).toEqual(expect.arrayContaining([expect.objectContaining({ pid: 4242, happySessionId: 'other' })]))
         await expect(stopSession('exited')).resolves.toBe('already_gone')
         await expect(stopSession('target')).resolves.toBe('unknown')
     })

@@ -1,6 +1,6 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'bun:test'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'bun:test'
 import { createHash, randomBytes } from 'node:crypto'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -9,7 +9,7 @@ import {
 } from '@hapi/protocol/passkey'
 import { Hono } from 'hono'
 import { SoftAuthenticator } from '../testHelpers/passkeyAuthenticator'
-import { createConfiguration, getConfiguration } from '../../configuration'
+import { createConfiguration, getConfiguration, resetConfigurationForTests } from '../../configuration'
 import { createAuthMiddleware, type WebAppEnv } from '../middleware/auth'
 import { Store } from '../../store'
 import { signWebJwt } from '../authTokens'
@@ -111,9 +111,23 @@ async function exchange(app: Hono<WebAppEnv>, redirect: Response, proof = verifi
     return post(app, '/api/passkey/browser/exchange', { code: new URLSearchParams(target.hash.slice(1)).get('code'), verifier: proof })
 }
 
+let homeDir = ''
+let previousHapiHome: string | undefined
+
 beforeAll(async () => {
-    process.env.HAPI_HOME ??= mkdtempSync(join(tmpdir(), 'hapi-passkey-test-'))
+    previousHapiHome = process.env.HAPI_HOME
+    homeDir = mkdtempSync(join(tmpdir(), 'hapi-passkey-test-'))
+    process.env.HAPI_HOME = homeDir
+    resetConfigurationForTests()
     await createConfiguration()
+})
+afterAll(() => {
+    if (previousHapiHome === undefined) delete process.env.HAPI_HOME
+    else process.env.HAPI_HOME = previousHapiHome
+    if (homeDir) {
+        resetConfigurationForTests(homeDir)
+        rmSync(homeDir, { recursive: true, force: true })
+    }
 })
 beforeEach(() => { getConfiguration()._setCliApiToken('token-one', 'env', false) })
 

@@ -185,6 +185,11 @@ private open class FakeMessagesApi : ChatSessionApi {
     override suspend fun abortSession(sessionId: String) {}
     override suspend fun clearConversation(sessionId: String): ResumeSessionResponse = error("Unexpected clear")
     override suspend fun implementCodexPlan(sessionId: String, planId: String) = error("Unexpected plan implementation")
+    override suspend fun getFeatures(): app.hapi.protocol.wire.FeaturesResponse =
+        app.hapi.protocol.wire.FeaturesResponse()
+    override suspend fun getHubSettings(): app.hapi.protocol.wire.HubSettingsResponse =
+        app.hapi.protocol.wire.HubSettingsResponse()
+    override suspend fun setSessionTranslateInput(sessionId: String, enabled: Boolean) {}
 
     override suspend fun resumeSession(sessionId: String, permissionMode: String?): ResumeSessionResponse =
         ResumeSessionResponse(sessionId = sessionId)

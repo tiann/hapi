@@ -18,6 +18,7 @@ import spawn from 'cross-spawn'
 import { execFile } from 'node:child_process'
 import { getProcessStartMarker, isProcessAlive, windowsProcessListCimCommand } from '@/utils/process'
 import { readWindowsProcessTable } from '@/utils/windowsProcessStop'
+import { windowsSystemTool } from '@/utils/windowsSystemTools'
 
 export type ProcessSnapshot = {
     pid: number
@@ -185,7 +186,7 @@ export {
 /** Win32 process list with CommandLine + CreationDate for argv orphan matching. */
 export function listWindowsProcessesWithCommandLine(): ProcessSnapshot[] {
     const result = spawn.sync(
-        'powershell',
+        windowsSystemTool('powershell'),
         [
             '-NoProfile',
             '-NonInteractive',
