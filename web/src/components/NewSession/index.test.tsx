@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactElement } from 'react'
-import type { ApiClient } from '@/api/client'
+import { ApiError, type ApiClient } from '@/api/client'
 import type { AgentAvailabilityEntry, ClaudeModelSummary, Machine, PiModelSummary } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
 import { saveNewSessionFormDraft } from './newSessionFormDraft'
@@ -39,6 +39,7 @@ const mocks = vi.hoisted(() => ({
     opencodeVariantsLoading: false,
     opencodeVariantsEnabled: false,
     piDialogSelection: ['pi-native-1'] as string[],
+    claudeDialogSelection: ['claude-native-1'] as string[],
     piModels: [] as PiModelSummary[],
     piModelsLoading: false,
     piModelsError: null as string | null,
@@ -222,6 +223,13 @@ vi.mock('@/components/PiSessionImportDialog', () => ({
                 select pi history
             </button>
         </>
+    ) : null
+}))
+vi.mock('@/components/ClaudeSessionImportDialog', () => ({
+    ClaudeSessionImportDialog: (props: { isOpen: boolean; sessions: Array<{ id: string }>; onConfirm: (ids: string[]) => Promise<void> }) => props.isOpen ? (
+        <button type="button" data-testid="select-claude-history" disabled={props.sessions.length === 0} onClick={() => void props.onConfirm(mocks.claudeDialogSelection)}>
+            select claude history
+        </button>
     ) : null
 }))
 vi.mock('./DirectorySection', () => ({ DirectorySection: () => null }))
@@ -1404,6 +1412,67 @@ describe('NewSession launch preferences', () => {
         expect(mocks.spawnSession).not.toHaveBeenCalled()
     })
 
+    it('imports the selected Claude history with the chosen launch settings before reopening it', async () => {
+        savePreferredAgent('claude')
+        savePreferredLaunchSettings('machine-1', 'claude', { model: 'sonnet', cursorSelectedBase: 'auto', effort: 'high', modelReasoningEffort: 'default' })
+        const calls: string[] = []
+        const claudeApi = {
+            getClaudeSessions: vi.fn().mockResolvedValue({
+                success: true,
+                machineId: 'machine-1',
+                sessions: [{
+                    id: 'claude-native-1',
+                    title: 'Existing Claude session',
+                    cwd: 'C:\\repo',
+                    file: 'C:\\claude-native-1.jsonl',
+                    modifiedAt: 1,
+                    messageCount: 2
+                }]
+            }),
+            importClaudeSessions: vi.fn().mockImplementation(async () => {
+                calls.push('import')
+                return {
+                    success: true,
+                    machineId: 'machine-1',
+                    results: [{ claudeSessionId: 'claude-native-1', hapiSessionId: 'hapi-claude-1', action: 'created', appended: 2 }]
+                }
+            }),
+            reopenSession: vi.fn().mockImplementation(async () => {
+                calls.push('reopen')
+                return { ok: true, sessionId: 'hapi-claude-1', resumed: true }
+            })
+        } as unknown as ApiClient
+
+        renderWithQuery(
+            <NewSession
+                api={claudeApi}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        fireEvent.click(screen.getByTestId('permission-mode-plan'))
+        fireEvent.click(screen.getByRole('button', { name: 'claudeImport.inline.choose' }))
+        await waitFor(() => expect(screen.getByTestId('select-claude-history')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('select-claude-history'))
+        fireEvent.click(screen.getByTestId('create'))
+
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('hapi-claude-1'))
+        expect(claudeApi.importClaudeSessions).toHaveBeenCalledWith({
+            sessionIds: ['claude-native-1'],
+            cwd: 'C:\\repo',
+            machineId: 'machine-1',
+            model: 'sonnet',
+            effort: 'high',
+            permissionMode: 'plan'
+        })
+        expect(calls).toEqual(['import', 'reopen'])
+        expect(mocks.spawnSession).not.toHaveBeenCalled()
+    })
+
     it('discards a stale Pi scan after switching machines', async () => {
         savePreferredAgent('pi')
         mocks.piDialogSelection = ['pi-machine-b']
@@ -1523,6 +1592,51 @@ describe('NewSession launch preferences', () => {
             body: 'piImport.success.body'
         }))
         expect(mocks.addToast).toHaveBeenCalledWith(expect.objectContaining({ title: 'piImport.failed.title' }))
+    })
+
+    it('shows the hub error text, not the raw HTTP envelope, when a Pi bulk import fails', async () => {
+        savePreferredAgent('pi')
+        mocks.piDialogSelection = ['pi-native-1', 'pi-native-2']
+        const piApi = {
+            getPiSessions: vi.fn().mockResolvedValue({
+                success: true,
+                machineId: 'machine-1',
+                sessions: [1, 2].map((index) => ({
+                    id: `pi-native-${index}`,
+                    title: `Pi ${index}`,
+                    cwd: 'C:\\repo',
+                    file: `C:\\pi-${index}.jsonl`,
+                    modifiedAt: index,
+                    messageCount: 1
+                }))
+            }),
+            importPiSessions: vi.fn().mockRejectedValue(new ApiError(
+                'HTTP 503 Service Unavailable: {"success":false,"error":"Runner is offline"}',
+                503,
+                undefined,
+                '{"success":false,"error":"Runner is offline"}'
+            ))
+        } as unknown as ApiClient
+
+        renderWithQuery(
+            <NewSession
+                api={piApi}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        fireEvent.click(screen.getByRole('button', { name: 'piImport.inline.choose' }))
+        await waitFor(() => expect(screen.getByTestId('select-pi-history')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('select-pi-history'))
+
+        await waitFor(() => expect(mocks.addToast).toHaveBeenCalledWith(expect.objectContaining({
+            title: 'piImport.failed.title',
+            body: 'Runner is offline'
+        })))
     })
 
     it('does not save changed launch settings when creation fails', async () => {

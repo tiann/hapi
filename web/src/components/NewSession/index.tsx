@@ -1,9 +1,10 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
+import { apiErrorMessage } from '@/api/client'
 import type { CodexDuplicateSessionGroup, CodexLocalSessionSummary, Machine, OpencodeLocalSessionSummary, PiLocalSessionSummary } from '@/types/api'
-import { CREATABLE_AGENT_FLAVORS, resolveHapiYoloPermissionMode, getAgyModelChoices, splitAgyModelSelection, getClaudeEffortLevelsForModel, resolveClaudeEffortForModel } from '@hapi/protocol'
-import type { AgentAvailabilityEntry, CodexCollaborationMode, GrokPermissionMode, PermissionMode, CopilotAgentMode } from '@hapi/protocol'
+import { CREATABLE_AGENT_FLAVORS, getYoloToggleMigrationMode, usesNativePermissionSelect, usesSharedPermissionModeState, getAgyModelChoices, splitAgyModelSelection, getClaudeEffortLevelsForModel, resolveClaudeEffortForModel } from '@hapi/protocol'
+import type { AgentAvailabilityEntry, CodexCollaborationMode, PermissionModeOf, Flavors, PermissionMode, CopilotAgentMode } from '@hapi/protocol'
 import { codexModelAdvertisesFastTier } from '@/components/AssistantChat/codexFastMode'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useMachinePathsExists } from '@/hooks/useMachinePathsExists'
@@ -55,6 +56,8 @@ import { CollaborationModeSelector } from './CollaborationModeSelector'
 import { CodexImportActions } from './CodexImportActions'
 import { PiImportActions } from './PiImportActions'
 import { OpencodeImportActions } from './OpencodeImportActions'
+import { ClaudeImportActions } from './ClaudeImportActions'
+import { CursorImportActions } from './CursorImportActions'
 import { clearBatchImportedCodexSelection, resolveCodexImportRedirectSessionId } from './codexImportMerge'
 import { AgyModelSelector } from './AgyModelSelector'
 import { DirectorySection } from './DirectorySection'
@@ -84,10 +87,13 @@ import {
 import { resolvePermissionModeForFlavor } from '@hapi/protocol/peerSpawnDefaults'
 import { SessionTypeSelector } from './SessionTypeSelector'
 import { PermissionField } from './PermissionField'
-import { usesNativePermissionSelect, usesSharedPermissionModeState, LEGACY_YOLO_BRIDGE_AGENTS } from '@/lib/codexFamilyPermissionAgents'
 import { CodexSessionSyncDialog } from '@/components/CodexSessionSyncDialog'
 import { PiSessionImportDialog } from '@/components/PiSessionImportDialog'
 import { OpencodeSessionImportDialog } from '@/components/OpencodeSessionImportDialog'
+import { ClaudeSessionImportDialog } from '@/components/ClaudeSessionImportDialog'
+import { CursorSessionImportDialog } from '@/components/CursorSessionImportDialog'
+import { useLocalSessionImport } from '@/hooks/useLocalSessionImport'
+import type { LocalSessionImportApi, LocalSessionListItem } from '@/lib/localSessionImport'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { formatRunnerSpawnError } from '../../utils/formatRunnerSpawnError'
 import { markCodexSessionsImported } from '@/lib/codexImportedSessions'
@@ -174,7 +180,7 @@ export function NewSession(props: {
     const [copilotAgentMode, setCopilotAgentMode] = useState<CopilotAgentMode>('interactive')
     const [yoloMode, setYoloMode] = useState(loadPreferredYoloMode)
     const [nativePermissionMode, setNativePermissionMode] = useState<PermissionMode>('default')
-    const [grokPermissionMode, setGrokPermissionMode] = useState<GrokPermissionMode>('default')
+    const [grokPermissionMode, setGrokPermissionMode] = useState<PermissionModeOf<typeof Flavors.grok>>('default')
     const [sessionType, setSessionType] = useState<SessionType>('simple')
     const [worktreeName, setWorktreeName] = useState('')
     const [directoryCreationConfirmed, setDirectoryCreationConfirmed] = useState(false)
@@ -186,24 +192,66 @@ export function NewSession(props: {
     const [codexImportError, setCodexImportError] = useState<string | null>(null)
     const [isImportingCodexSession, setIsImportingCodexSession] = useState(false)
     const [isCodexImportDialogOpen, setIsCodexImportDialogOpen] = useState(false)
-    const [piImportSessions, setPiImportSessions] = useState<PiLocalSessionSummary[]>([])
+    const piImportApiAdapter = useMemo<LocalSessionImportApi>(() => ({
+        getLocalSessions: (_flavor, cwd, adapterMachineId) => props.api.getPiSessions(cwd ?? null, adapterMachineId ?? null),
+        importLocalSessions: (_flavor, payload) => props.api.importPiSessions(payload)
+    }), [props.api])
+    const piImport = useLocalSessionImport({
+        api: piImportApiAdapter,
+        flavor: 'pi',
+        directory,
+        machineId,
+        auto: false
+    })
     const [selectedPiImportSessionId, setSelectedPiImportSessionId] = useState<string | null>(null)
-    const [piImportMachineId, setPiImportMachineId] = useState<string | null>(null)
-    const [isLoadingPiImportSessions, setIsLoadingPiImportSessions] = useState(false)
-    const [piImportError, setPiImportError] = useState<string | null>(null)
     const [isImportingPiSession, setIsImportingPiSession] = useState(false)
     const [isBulkImportingPiSessions, setIsBulkImportingPiSessions] = useState(false)
     const [isPiImportDialogOpen, setIsPiImportDialogOpen] = useState(false)
-    const piLoadGenerationRef = useRef(0)
-    const [opencodeImportSessions, setOpencodeImportSessions] = useState<OpencodeLocalSessionSummary[]>([])
+    const opencodeImportApiAdapter = useMemo<LocalSessionImportApi>(() => ({
+        getLocalSessions: (_flavor, cwd, adapterMachineId) => props.api.getOpencodeSessions(cwd ?? null, adapterMachineId ?? null),
+        importLocalSessions: (_flavor, payload) => props.api.importOpencodeSessions(payload)
+    }), [props.api])
+    const opencodeImport = useLocalSessionImport({
+        api: opencodeImportApiAdapter,
+        flavor: 'opencode',
+        directory,
+        machineId,
+        auto: false
+    })
     const [selectedOpencodeImportSessionId, setSelectedOpencodeImportSessionId] = useState<string | null>(null)
-    const [opencodeImportMachineId, setOpencodeImportMachineId] = useState<string | null>(null)
-    const [isLoadingOpencodeImportSessions, setIsLoadingOpencodeImportSessions] = useState(false)
-    const [opencodeImportError, setOpencodeImportError] = useState<string | null>(null)
     const [isImportingOpencodeSession, setIsImportingOpencodeSession] = useState(false)
     const [isBulkImportingOpencodeSessions, setIsBulkImportingOpencodeSessions] = useState(false)
     const [isOpencodeImportDialogOpen, setIsOpencodeImportDialogOpen] = useState(false)
-    const opencodeLoadGenerationRef = useRef(0)
+    const claudeImportApiAdapter = useMemo<LocalSessionImportApi>(() => ({
+        getLocalSessions: (_flavor, cwd, adapterMachineId) => props.api.getClaudeSessions(cwd ?? null, adapterMachineId ?? null),
+        importLocalSessions: (_flavor, payload) => props.api.importClaudeSessions(payload)
+    }), [props.api])
+    const claudeImport = useLocalSessionImport({
+        api: claudeImportApiAdapter,
+        flavor: 'claude',
+        directory,
+        machineId,
+        auto: false
+    })
+    const [selectedClaudeImportSessionId, setSelectedClaudeImportSessionId] = useState<string | null>(null)
+    const [isImportingClaudeSession, setIsImportingClaudeSession] = useState(false)
+    const [isBulkImportingClaudeSessions, setIsBulkImportingClaudeSessions] = useState(false)
+    const [isClaudeImportDialogOpen, setIsClaudeImportDialogOpen] = useState(false)
+    const cursorImportApiAdapter = useMemo<LocalSessionImportApi>(() => ({
+        getLocalSessions: (_flavor, cwd, adapterMachineId) => props.api.getCursorSessions(cwd ?? null, adapterMachineId ?? null),
+        importLocalSessions: (_flavor, payload) => props.api.importCursorSessions(payload)
+    }), [props.api])
+    const cursorImport = useLocalSessionImport({
+        api: cursorImportApiAdapter,
+        flavor: 'cursor',
+        directory,
+        machineId,
+        auto: false
+    })
+    const [selectedCursorImportSessionId, setSelectedCursorImportSessionId] = useState<string | null>(null)
+    const [isImportingCursorSession, setIsImportingCursorSession] = useState(false)
+    const [isBulkImportingCursorSessions, setIsBulkImportingCursorSessions] = useState(false)
+    const [isCursorImportDialogOpen, setIsCursorImportDialogOpen] = useState(false)
     const [isCreating, setIsCreating] = useState(false)
     const createInFlightRef = useRef(false)
     const [isBulkImportingCodexSessions, setIsBulkImportingCodexSessions] = useState(false)
@@ -223,6 +271,10 @@ export function NewSession(props: {
         || isBulkImportingPiSessions
         || isImportingOpencodeSession
         || isBulkImportingOpencodeSessions
+        || isImportingClaudeSession
+        || isBulkImportingClaudeSessions
+        || isImportingCursorSession
+        || isBulkImportingCursorSessions
     )
     const worktreeInputRef = useRef<HTMLInputElement>(null)
     const preserveRestoredDraftRef = useRef(false)
@@ -357,13 +409,14 @@ export function NewSession(props: {
             ? loadPreferredLaunchSettings(machineId, targetAgent)
             : null
         if (!editedPermissionRef.current && !savedLaunch?.permissionMode) {
+            const migrationMode = getYoloToggleMigrationMode(targetAgent)
             if (
                 legacyYoloBridge?.agent === targetAgent
                 && usesSharedPermissionModeState(targetAgent)
-                && LEGACY_YOLO_BRIDGE_AGENTS.includes(targetAgent)
+                && migrationMode !== null
             ) {
                 const bridged = legacyYoloBridge.enabled
-                    ? resolveHapiYoloPermissionMode(targetAgent)
+                    ? migrationMode
                     : resolvePermissionModeForFlavor('default', targetAgent)
                 if (bridged) {
                     setNativePermissionMode(bridged)
@@ -1322,84 +1375,59 @@ export function NewSession(props: {
             setCodexImportSessions([])
             setCodexImportMachineId(null)
             setSelectedCodexImportSessionId(null)
-            setCodexImportError(e instanceof Error ? e.message : t('codexSync.failed.body'))
+            setCodexImportError(apiErrorMessage(e, t('codexSync.failed.body')))
         } finally {
             setIsLoadingCodexImportSessions(false)
         }
     }, [agent, machineId, props.api, trimmedDirectory, t])
 
+    // Keep the inline selection consistent with the loaded session list:
+    // a refresh that drops or errors clears the stale pick.
     useEffect(() => {
-        piLoadGenerationRef.current += 1
-        setIsLoadingPiImportSessions(false)
-    }, [agent, machineId, trimmedDirectory])
-
-    useEffect(() => () => {
-        piLoadGenerationRef.current += 1
-    }, [])
-
-    const loadPiImportSessions = useCallback(async () => {
-        if (agent !== 'pi' || !machineId) return
-        const generation = ++piLoadGenerationRef.current
-        setIsLoadingPiImportSessions(true)
-        setPiImportError(null)
-        try {
-            const result = await props.api.getPiSessions(trimmedDirectory || null, machineId)
-            if (generation !== piLoadGenerationRef.current) return
-            if (!result.success) throw new Error(result.error)
-            setPiImportSessions(result.sessions)
-            setPiImportMachineId(result.machineId ?? machineId)
-            setSelectedPiImportSessionId((current) => current && result.sessions.some((session) => session.id === current) ? current : null)
-        } catch (loadError) {
-            if (generation !== piLoadGenerationRef.current) return
-            setPiImportSessions([])
-            setPiImportMachineId(null)
-            setSelectedPiImportSessionId(null)
-            setPiImportError(loadError instanceof Error ? loadError.message : t('piImport.failed.body'))
-        } finally {
-            if (generation === piLoadGenerationRef.current) setIsLoadingPiImportSessions(false)
-        }
-    }, [agent, machineId, props.api, trimmedDirectory, t])
+        setSelectedPiImportSessionId((current) => current && piImport.sessions.some((session) => session.id === current) ? current : null)
+    }, [piImport.sessions])
 
     const formatPiImportError = useCallback((code?: string, message?: string): string => {
         if (code === 'transcript_diverged') return t('piImport.error.diverged')
+        if (code === 'already_in_hapi') return t('piImport.error.alreadyImported')
         if (code === 'session_active') return t('piImport.error.active')
         return message?.trim() || t('piImport.failed.body')
     }, [t])
 
+    // Keep the inline selection consistent with the loaded session list:
+    // a refresh that drops or errors clears the stale pick.
     useEffect(() => {
-        opencodeLoadGenerationRef.current += 1
-        setIsLoadingOpencodeImportSessions(false)
-    }, [agent, machineId, trimmedDirectory])
+        setSelectedOpencodeImportSessionId((current) => current && opencodeImport.sessions.some((session) => session.id === current) ? current : null)
+    }, [opencodeImport.sessions])
 
-    useEffect(() => () => {
-        opencodeLoadGenerationRef.current += 1
-    }, [])
+    // Keep the inline selection consistent with the loaded session list:
+    // a refresh that drops or errors clears the stale pick.
+    useEffect(() => {
+        setSelectedClaudeImportSessionId((current) => current && claudeImport.sessions.some((session) => session.id === current) ? current : null)
+    }, [claudeImport.sessions])
 
-    const loadOpencodeImportSessions = useCallback(async () => {
-        if (agent !== 'opencode' || !machineId) return
-        const generation = ++opencodeLoadGenerationRef.current
-        setIsLoadingOpencodeImportSessions(true)
-        setOpencodeImportError(null)
-        try {
-            const result = await props.api.getOpencodeSessions(trimmedDirectory || null, machineId)
-            if (generation !== opencodeLoadGenerationRef.current) return
-            if (!result.success) throw new Error(result.error)
-            setOpencodeImportSessions(result.sessions)
-            setOpencodeImportMachineId(result.machineId ?? machineId)
-            setSelectedOpencodeImportSessionId((current) => current && result.sessions.some((session) => session.id === current) ? current : null)
-        } catch (loadError) {
-            if (generation !== opencodeLoadGenerationRef.current) return
-            setOpencodeImportSessions([])
-            setOpencodeImportMachineId(null)
-            setSelectedOpencodeImportSessionId(null)
-            setOpencodeImportError(loadError instanceof Error ? loadError.message : t('opencodeSync.failed.body'))
-        } finally {
-            if (generation === opencodeLoadGenerationRef.current) setIsLoadingOpencodeImportSessions(false)
-        }
-    }, [agent, machineId, props.api, trimmedDirectory, t])
+    useEffect(() => {
+        setSelectedCursorImportSessionId((current) => current && cursorImport.sessions.some((session) => session.id === current) ? current : null)
+    }, [cursorImport.sessions])
+
+    const formatClaudeImportError = useCallback((code?: string, message?: string): string => {
+        if (code === 'transcript_diverged') return t('claudeImport.error.diverged')
+        if (code === 'already_in_hapi') return t('claudeImport.error.alreadyImported')
+        if (code === 'session_active') return t('claudeImport.error.active')
+        return message?.trim() || t('claudeImport.failed.body')
+    }, [t])
+
+    const formatCursorImportError = useCallback((code?: string, message?: string): string => {
+        if (!code) return message?.trim() || t('cursorImport.failed.body')
+        const key = `cursorImport.error.${code}` as const
+        const localized = t(key)
+        if (localized !== key) return localized
+        return message?.trim() || t('cursorImport.failed.body')
+    }, [t])
 
     const formatOpencodeImportError = useCallback((code?: string, message?: string): string => {
         if (code === 'transcript_diverged') return t('opencodeSync.error.diverged')
+        if (code === 'already_in_hapi') return t('opencodeSync.error.alreadyImported')
         if (code === 'session_active') return t('opencodeSync.error.active')
         return message?.trim() || t('opencodeSync.failed.body')
     }, [t])
@@ -1599,13 +1627,13 @@ export function NewSession(props: {
     ])
 
     const handleBulkImportPiSessions = useCallback(async (sessionIds: string[]) => {
-        if (isBulkImportingPiSessions || isLoadingPiImportSessions) return
+        if (isBulkImportingPiSessions || piImport.isLoading) return
         setIsBulkImportingPiSessions(true)
         try {
             const result = await props.api.importPiSessions({
                 sessionIds,
                 cwd: trimmedDirectory || null,
-                machineId: piImportMachineId ?? machineId
+                machineId: piImport.machineId ?? machineId
             })
             const importedCount = result.results.filter((item) => item.hapiSessionId && !item.error).length
             const failed = result.results.filter((item) => item.error)
@@ -1617,7 +1645,7 @@ export function NewSession(props: {
                     url: ''
                 })
                 await refetchSessions()
-                await loadPiImportSessions()
+                await piImport.refresh()
             }
             if (failed.length > 0) {
                 const first = failed[0]!.error!
@@ -1637,7 +1665,7 @@ export function NewSession(props: {
         } catch (importError) {
             addToast({
                 title: t('piImport.failed.title'),
-                body: importError instanceof Error ? importError.message : t('piImport.failed.body'),
+                body: apiErrorMessage(importError, t('piImport.failed.body')),
                 sessionId: '',
                 url: ''
             })
@@ -1648,10 +1676,10 @@ export function NewSession(props: {
         addToast,
         formatPiImportError,
         isBulkImportingPiSessions,
-        isLoadingPiImportSessions,
-        loadPiImportSessions,
         machineId,
-        piImportMachineId,
+        piImport.isLoading,
+        piImport.machineId,
+        piImport.refresh,
         props.api,
         refetchSessions,
         t,
@@ -1659,13 +1687,13 @@ export function NewSession(props: {
     ])
 
     const handleBulkImportOpencodeSessions = useCallback(async (sessionIds: string[]) => {
-        if (isBulkImportingOpencodeSessions || isLoadingOpencodeImportSessions) return
+        if (isBulkImportingOpencodeSessions || opencodeImport.isLoading) return
         setIsBulkImportingOpencodeSessions(true)
         try {
             const result = await props.api.importOpencodeSessions({
                 sessionIds,
                 cwd: trimmedDirectory || null,
-                machineId: opencodeImportMachineId ?? machineId
+                machineId: opencodeImport.machineId ?? machineId
             })
             const importedCount = result.results.filter((item) => item.hapiSessionId && !item.error && (item.action === 'created' || (item.appended ?? 0) > 0)).length
             const failed = result.results.filter((item) => item.error)
@@ -1677,7 +1705,7 @@ export function NewSession(props: {
                     url: ''
                 })
                 await refetchSessions()
-                await loadOpencodeImportSessions()
+                await opencodeImport.refresh()
             }
             if (failed.length > 0) {
                 const first = failed[0]!.error!
@@ -1697,7 +1725,7 @@ export function NewSession(props: {
         } catch (importError) {
             addToast({
                 title: t('opencodeSync.failed.title'),
-                body: importError instanceof Error ? importError.message : t('opencodeSync.failed.body'),
+                body: apiErrorMessage(importError, t('opencodeSync.failed.body')),
                 sessionId: '',
                 url: ''
             })
@@ -1708,10 +1736,130 @@ export function NewSession(props: {
         addToast,
         formatOpencodeImportError,
         isBulkImportingOpencodeSessions,
-        isLoadingOpencodeImportSessions,
-        loadOpencodeImportSessions,
         machineId,
-        opencodeImportMachineId,
+        opencodeImport.isLoading,
+        opencodeImport.machineId,
+        opencodeImport.refresh,
+        props.api,
+        refetchSessions,
+        t,
+        trimmedDirectory
+    ])
+
+    const handleBulkImportClaudeSessions = useCallback(async (sessionIds: string[]) => {
+        if (isBulkImportingClaudeSessions || claudeImport.isLoading) return
+        setIsBulkImportingClaudeSessions(true)
+        try {
+            const result = await props.api.importClaudeSessions({
+                sessionIds,
+                cwd: trimmedDirectory || null,
+                machineId: claudeImport.machineId ?? machineId
+            })
+            const importedCount = result.results.filter((item) => item.hapiSessionId && !item.error && (item.action === 'created' || (item.appended ?? 0) > 0)).length
+            const failed = result.results.filter((item) => item.error)
+            if (importedCount > 0) {
+                addToast({
+                    title: t('claudeImport.success.title'),
+                    body: t('claudeImport.success.body', { n: importedCount }),
+                    sessionId: '',
+                    url: ''
+                })
+                await refetchSessions()
+                await claudeImport.refresh()
+            }
+            if (failed.length > 0) {
+                const first = failed[0]!.error!
+                addToast({
+                    title: t('claudeImport.failed.title'),
+                    body: t('claudeImport.failed.partial', {
+                        failed: failed.length,
+                        reason: formatClaudeImportError(first.code, first.message)
+                    }),
+                    sessionId: '',
+                    url: ''
+                })
+                return
+            }
+            setIsClaudeImportDialogOpen(false)
+            setSelectedClaudeImportSessionId(null)
+        } catch (importError) {
+            addToast({
+                title: t('claudeImport.failed.title'),
+                body: apiErrorMessage(importError, t('claudeImport.failed.body')),
+                sessionId: '',
+                url: ''
+            })
+        } finally {
+            setIsBulkImportingClaudeSessions(false)
+        }
+    }, [
+        addToast,
+        claudeImport.isLoading,
+        claudeImport.machineId,
+        claudeImport.refresh,
+        formatClaudeImportError,
+        isBulkImportingClaudeSessions,
+        machineId,
+        props.api,
+        refetchSessions,
+        t,
+        trimmedDirectory
+    ])
+
+    const handleBulkImportCursorSessions = useCallback(async (sessionIds: string[]) => {
+        if (isBulkImportingCursorSessions || cursorImport.isLoading) return
+        setIsBulkImportingCursorSessions(true)
+        try {
+            const result = await props.api.importCursorSessions({
+                sessionIds,
+                cwd: trimmedDirectory || null,
+                machineId: cursorImport.machineId ?? machineId
+            })
+            const importedCount = result.results.filter((item) => item.hapiSessionId && !item.error && item.action === 'created').length
+            const failed = result.results.filter((item) => item.error)
+            if (importedCount > 0) {
+                addToast({
+                    title: t('cursorImport.success.title'),
+                    body: t('cursorImport.success.body', { n: importedCount }),
+                    sessionId: '',
+                    url: ''
+                })
+                await refetchSessions()
+                await cursorImport.refresh()
+            }
+            if (failed.length > 0) {
+                const first = failed[0]!.error!
+                addToast({
+                    title: t('cursorImport.failed.title'),
+                    body: t('cursorImport.failed.partial', {
+                        failed: failed.length,
+                        reason: formatCursorImportError(first.code, first.message)
+                    }),
+                    sessionId: '',
+                    url: ''
+                })
+                return
+            }
+            setIsCursorImportDialogOpen(false)
+            setSelectedCursorImportSessionId(null)
+        } catch (importError) {
+            addToast({
+                title: t('cursorImport.failed.title'),
+                body: apiErrorMessage(importError, t('cursorImport.failed.body')),
+                sessionId: '',
+                url: ''
+            })
+        } finally {
+            setIsBulkImportingCursorSessions(false)
+        }
+    }, [
+        addToast,
+        cursorImport.isLoading,
+        cursorImport.machineId,
+        cursorImport.refresh,
+        formatCursorImportError,
+        isBulkImportingCursorSessions,
+        machineId,
         props.api,
         refetchSessions,
         t,
@@ -1723,12 +1871,20 @@ export function NewSession(props: {
         [codexImportSessions, selectedCodexImportSessionId]
     )
     const selectedPiImportSession = useMemo(
-        () => piImportSessions.find((session) => session.id === selectedPiImportSessionId) ?? null,
-        [piImportSessions, selectedPiImportSessionId]
+        () => piImport.sessions.find((session) => session.id === selectedPiImportSessionId) ?? null,
+        [piImport.sessions, selectedPiImportSessionId]
     )
     const selectedOpencodeImportSession = useMemo(
-        () => opencodeImportSessions.find((session) => session.id === selectedOpencodeImportSessionId) ?? null,
-        [opencodeImportSessions, selectedOpencodeImportSessionId]
+        () => opencodeImport.sessions.find((session) => session.id === selectedOpencodeImportSessionId) ?? null,
+        [opencodeImport.sessions, selectedOpencodeImportSessionId]
+    )
+    const selectedClaudeImportSession = useMemo(
+        () => claudeImport.sessions.find((session) => session.id === selectedClaudeImportSessionId) ?? null,
+        [claudeImport.sessions, selectedClaudeImportSessionId]
+    )
+    const selectedCursorImportSession = useMemo(
+        () => cursorImport.sessions.find((session) => session.id === selectedCursorImportSessionId) ?? null,
+        [cursorImport.sessions, selectedCursorImportSessionId]
     )
     // Pi history import reopens the native session as-is; the launch-only
     // model/effort controls would silently not apply, so hide them.
@@ -1749,11 +1905,8 @@ export function NewSession(props: {
         setCodexImportSessions([])
         setCodexImportMachineId(null)
         setSelectedPiImportSessionId(null)
-        setPiImportSessions([])
-        setPiImportMachineId(null)
         setSelectedOpencodeImportSessionId(null)
-        setOpencodeImportSessions([])
-        setOpencodeImportMachineId(null)
+        setSelectedClaudeImportSessionId(null)
         const paths = getRecentPaths(newMachineId)
         if (paths[0]) {
             setDirectory(paths[0])
@@ -1849,13 +2002,23 @@ export function NewSession(props: {
         }
     }, [])
 
-    const handleSelectPiImportSession = useCallback((session: PiLocalSessionSummary) => {
+    const handleSelectPiImportSession = useCallback((session: LocalSessionListItem) => {
         setSelectedPiImportSessionId(session.id)
         if (session.cwd?.trim()) setDirectory(session.cwd.trim())
     }, [])
 
-    const handleSelectOpencodeImportSession = useCallback((session: OpencodeLocalSessionSummary) => {
+    const handleSelectOpencodeImportSession = useCallback((session: LocalSessionListItem) => {
         setSelectedOpencodeImportSessionId(session.id)
+        if (session.cwd?.trim()) setDirectory(session.cwd.trim())
+    }, [])
+
+    const handleSelectClaudeImportSession = useCallback((session: LocalSessionListItem) => {
+        setSelectedClaudeImportSessionId(session.id)
+        if (session.cwd?.trim()) setDirectory(session.cwd.trim())
+    }, [])
+
+    const handleSelectCursorImportSession = useCallback((session: LocalSessionListItem) => {
+        setSelectedCursorImportSessionId(session.id)
         if (session.cwd?.trim()) setDirectory(session.cwd.trim())
     }, [])
 
@@ -2038,7 +2201,7 @@ export function NewSession(props: {
                 const result = await props.api.importPiSessions({
                     sessionIds: [selectedPiImportSession.id],
                     cwd: selectedPiImportSession.cwd ?? trimmedDirectory,
-                    machineId: piImportMachineId ?? machineId
+                    machineId: piImport.machineId ?? machineId
                 })
                 const imported = result.results.find((item) => item.piSessionId === selectedPiImportSession.id)
                 if (imported?.error) {
@@ -2063,7 +2226,7 @@ export function NewSession(props: {
                 const result = await props.api.importOpencodeSessions({
                     sessionIds: [selectedOpencodeImportSession.id],
                     cwd: selectedOpencodeImportSession.cwd ?? trimmedDirectory,
-                    machineId: opencodeImportMachineId ?? machineId,
+                    machineId: opencodeImport.machineId ?? machineId,
                     model: resolvedModel ?? null,
                     modelReasoningEffort: resolvedModelReasoningEffort ?? null,
                     permissionMode: nativePermissionMode
@@ -2076,6 +2239,61 @@ export function NewSession(props: {
                     return
                 }
                 if (!imported?.hapiSessionId) throw new Error(result.error || t('opencodeSync.failed.body'))
+                const reopened = await props.api.reopenSession(imported.hapiSessionId)
+                haptic.notification('success')
+                savePreferredLaunchSettings(machineId, agent, preferredLaunchSettings)
+                clearNewSessionFormDraft()
+                setLastUsedMachineId(machineId)
+                addRecentPath(machineId, trimmedDirectory)
+                props.onSuccess(reopened.sessionId)
+                return
+            }
+
+            if (agent === 'claude' && selectedClaudeImportSession) {
+                setIsImportingClaudeSession(true)
+                // The reopen launches with the persisted session config, so the
+                // form's selections go through the import first.
+                const result = await props.api.importClaudeSessions({
+                    sessionIds: [selectedClaudeImportSession.id],
+                    cwd: selectedClaudeImportSession.cwd ?? trimmedDirectory,
+                    machineId: claudeImport.machineId ?? machineId,
+                    model: resolvedModel ?? null,
+                    effort: resolvedEffort ?? null,
+                    permissionMode: nativePermissionMode
+                })
+                const imported = result.results.find((item) => item.claudeSessionId === selectedClaudeImportSession.id)
+                if (imported?.error) {
+                    setIsImportingClaudeSession(false)
+                    haptic.notification('error')
+                    setError(formatClaudeImportError(imported.error.code, imported.error.message))
+                    return
+                }
+                if (!imported?.hapiSessionId) throw new Error(result.error || t('claudeImport.failed.body'))
+                const reopened = await props.api.reopenSession(imported.hapiSessionId)
+                haptic.notification('success')
+                savePreferredLaunchSettings(machineId, agent, preferredLaunchSettings)
+                clearNewSessionFormDraft()
+                setLastUsedMachineId(machineId)
+                addRecentPath(machineId, trimmedDirectory)
+                props.onSuccess(reopened.sessionId)
+                return
+            }
+
+            if (agent === 'cursor' && selectedCursorImportSession) {
+                setIsImportingCursorSession(true)
+                const result = await props.api.importCursorSessions({
+                    sessionIds: [selectedCursorImportSession.id],
+                    cwd: selectedCursorImportSession.cwd ?? trimmedDirectory,
+                    machineId: cursorImport.machineId ?? machineId
+                })
+                const imported = result.results.find((item) => item.cursorSessionId === selectedCursorImportSession.id)
+                if (imported?.error) {
+                    setIsImportingCursorSession(false)
+                    haptic.notification('error')
+                    setError(formatCursorImportError(imported.error.code, imported.error.message))
+                    return
+                }
+                if (!imported?.hapiSessionId) throw new Error(result.error || t('cursorImport.failed.body'))
                 const reopened = await props.api.reopenSession(imported.hapiSessionId)
                 haptic.notification('success')
                 savePreferredLaunchSettings(machineId, agent, preferredLaunchSettings)
@@ -2123,8 +2341,10 @@ export function NewSession(props: {
             setIsImportingCodexSession(false)
             setIsImportingPiSession(false)
             setIsImportingOpencodeSession(false)
+            setIsImportingClaudeSession(false)
+            setIsImportingCursorSession(false)
             haptic.notification('error')
-            setError(e instanceof Error ? e.message : 'Failed to create session')
+            setError(apiErrorMessage(e, 'Failed to create session'))
         } finally {
             createInFlightRef.current = false
             setIsCreating(false)
@@ -2272,12 +2492,12 @@ export function NewSession(props: {
             {agent === 'pi' ? (
                 <PiImportActions
                     selectedSession={selectedPiImportSession}
-                    isLoading={isLoadingPiImportSessions}
+                    isLoading={piImport.isLoading}
                     isDisabled={isFormDisabled}
-                    error={piImportError}
+                    error={piImport.error}
                     onChooseHistory={() => {
                         setIsPiImportDialogOpen(true)
-                        void loadPiImportSessions()
+                        void piImport.refresh()
                     }}
                     onClear={() => setSelectedPiImportSessionId(null)}
                 />
@@ -2285,14 +2505,40 @@ export function NewSession(props: {
             {agent === 'opencode' ? (
                 <OpencodeImportActions
                     selectedSession={selectedOpencodeImportSession}
-                    isLoading={isLoadingOpencodeImportSessions}
+                    isLoading={opencodeImport.isLoading}
                     isDisabled={isFormDisabled}
-                    error={opencodeImportError}
+                    error={opencodeImport.error}
                     onChooseHistory={() => {
                         setIsOpencodeImportDialogOpen(true)
-                        void loadOpencodeImportSessions()
+                        void opencodeImport.refresh()
                     }}
                     onClear={() => setSelectedOpencodeImportSessionId(null)}
+                />
+            ) : null}
+            {agent === 'claude' ? (
+                <ClaudeImportActions
+                    selectedSession={selectedClaudeImportSession}
+                    isLoading={claudeImport.isLoading}
+                    isDisabled={isFormDisabled}
+                    error={claudeImport.error}
+                    onChooseHistory={() => {
+                        setIsClaudeImportDialogOpen(true)
+                        void claudeImport.refresh()
+                    }}
+                    onClear={() => setSelectedClaudeImportSessionId(null)}
+                />
+            ) : null}
+            {agent === 'cursor' ? (
+                <CursorImportActions
+                    selectedSession={selectedCursorImportSession}
+                    isLoading={cursorImport.isLoading}
+                    isDisabled={isFormDisabled}
+                    error={cursorImport.error}
+                    onChooseHistory={() => {
+                        setIsCursorImportDialogOpen(true)
+                        void cursorImport.refresh()
+                    }}
+                    onClear={() => setSelectedCursorImportSessionId(null)}
                 />
             ) : null}
             {agent === 'dsh' ? (
@@ -2463,7 +2709,7 @@ export function NewSession(props: {
                 onNativeChange={(mode) => {
                     editedPermissionRef.current = true
                     if (agent === 'grok') {
-                        setGrokPermissionMode(mode as GrokPermissionMode)
+                        setGrokPermissionMode(mode as PermissionModeOf<typeof Flavors.grok>)
                     } else {
                         setNativePermissionMode(mode)
                     }
@@ -2500,7 +2746,7 @@ export function NewSession(props: {
             ) : null}
 
             <ActionButtons
-                isPending={isCreating || isPending || isImportingCodexSession || isImportingPiSession || isImportingOpencodeSession}
+                isPending={isCreating || isPending || isImportingCodexSession || isImportingPiSession || isImportingOpencodeSession || isImportingClaudeSession || isImportingCursorSession}
                 canCreate={canCreate}
                 isDisabled={isFormDisabled}
                 createLabel={createLabel}
@@ -2534,12 +2780,12 @@ export function NewSession(props: {
             <PiSessionImportDialog
                 isOpen={isPiImportDialogOpen}
                 onClose={() => setIsPiImportDialogOpen(false)}
-                sessions={piImportSessions}
+                sessions={piImport.sessions}
                 currentSessionId={selectedPiImportSessionId}
                 currentWorkDirectory={trimmedDirectory}
                 onConfirm={async (sessionIds) => {
                     if (sessionIds.length === 1) {
-                        const session = piImportSessions.find((candidate) => candidate.id === sessionIds[0])
+                        const session = piImport.sessions.find((candidate) => candidate.id === sessionIds[0])
                         if (session) {
                             handleSelectPiImportSession(session)
                             setIsPiImportDialogOpen(false)
@@ -2549,17 +2795,17 @@ export function NewSession(props: {
                     await handleBulkImportPiSessions(sessionIds)
                 }}
                 isPending={isBulkImportingPiSessions}
-                isLoading={isLoadingPiImportSessions}
+                isLoading={piImport.isLoading}
             />
             <OpencodeSessionImportDialog
                 isOpen={isOpencodeImportDialogOpen}
                 onClose={() => setIsOpencodeImportDialogOpen(false)}
-                sessions={opencodeImportSessions}
+                sessions={opencodeImport.sessions}
                 currentSessionId={selectedOpencodeImportSessionId}
                 currentWorkDirectory={trimmedDirectory}
                 onConfirm={async (sessionIds) => {
                     if (sessionIds.length === 1) {
-                        const session = opencodeImportSessions.find((candidate) => candidate.id === sessionIds[0])
+                        const session = opencodeImport.sessions.find((candidate) => candidate.id === sessionIds[0])
                         if (session) {
                             handleSelectOpencodeImportSession(session)
                             setIsOpencodeImportDialogOpen(false)
@@ -2569,7 +2815,47 @@ export function NewSession(props: {
                     await handleBulkImportOpencodeSessions(sessionIds)
                 }}
                 isPending={isBulkImportingOpencodeSessions}
-                isLoading={isLoadingOpencodeImportSessions}
+                isLoading={opencodeImport.isLoading}
+            />
+            <ClaudeSessionImportDialog
+                isOpen={isClaudeImportDialogOpen}
+                onClose={() => setIsClaudeImportDialogOpen(false)}
+                sessions={claudeImport.sessions}
+                currentSessionId={selectedClaudeImportSessionId}
+                currentWorkDirectory={trimmedDirectory}
+                onConfirm={async (sessionIds) => {
+                    if (sessionIds.length === 1) {
+                        const session = claudeImport.sessions.find((candidate) => candidate.id === sessionIds[0])
+                        if (session) {
+                            handleSelectClaudeImportSession(session)
+                            setIsClaudeImportDialogOpen(false)
+                        }
+                        return
+                    }
+                    await handleBulkImportClaudeSessions(sessionIds)
+                }}
+                isPending={isBulkImportingClaudeSessions}
+                isLoading={claudeImport.isLoading}
+            />
+            <CursorSessionImportDialog
+                isOpen={isCursorImportDialogOpen}
+                onClose={() => setIsCursorImportDialogOpen(false)}
+                sessions={cursorImport.sessions}
+                currentSessionId={selectedCursorImportSessionId}
+                currentWorkDirectory={trimmedDirectory}
+                onConfirm={async (sessionIds) => {
+                    if (sessionIds.length === 1) {
+                        const session = cursorImport.sessions.find((candidate) => candidate.id === sessionIds[0])
+                        if (session) {
+                            handleSelectCursorImportSession(session)
+                            setIsCursorImportDialogOpen(false)
+                        }
+                        return
+                    }
+                    await handleBulkImportCursorSessions(sessionIds)
+                }}
+                isPending={isBulkImportingCursorSessions}
+                isLoading={cursorImport.isLoading}
             />
             <ConfirmDialog
                 isOpen={isDuplicateMergeConfirmOpen && duplicateSessionGroups.length > 0}

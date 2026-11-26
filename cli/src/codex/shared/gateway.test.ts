@@ -25,7 +25,7 @@ async function fixture(after: (request: Envelope, response: Envelope, connection
         const client = new WebSocket(gateway.endpoint, { headers: { Authorization: 'Bearer secret' } }); clients.push(client);
         await new Promise<void>((resolve, reject) => { client.once('open', resolve); client.once('error', reject); }); return client;
     };
-    return { gateway, connect, before, async close() {
+    return { gateway, connect, before, connections, async close() {
         for (const client of clients) client.terminate(); await gateway.close();
         for (const client of engine.clients) client.terminate();
         await new Promise<void>(resolve => engine.close(() => resolve()));
@@ -56,6 +56,22 @@ describe('native gateway barriers', () => {
             client.send(JSON.stringify({ id: 1, method: 'turn/start', params: { threadId: 'root' } }));
             expect(await result).toMatchObject({ error: { message: 'rewind pending' } });
             expect(f.before).not.toHaveBeenCalled();
+        } finally { await f.close(); }
+    });
+
+    it('returns an owned queue mutation response without forwarding or running after twice', async () => {
+        const after = vi.fn(async () => {}); const release = vi.fn();
+        const f = await fixture(after, async () => release);
+        const response = { id: 7, result: { deleted: true } };
+        f.before.mockImplementation(async () => response);
+        try {
+            const client = await f.connect();
+            const reply = new Promise<Envelope>(resolve => client.once('message', data => resolve(JSON.parse(data.toString()))));
+            client.send(JSON.stringify({ id: 7, method: 'thread/queue/delete', params: { threadId: 'thread', queuedSubmissionId: 'n' } }));
+            expect(await reply).toEqual(response);
+            expect([...f.connections.values()].flat()).toEqual([]);
+            expect(after).not.toHaveBeenCalled();
+            expect(release).toHaveBeenCalledOnce();
         } finally { await f.close(); }
     });
     it('round-trips payloads larger than 64 MiB through the gateway and app-server client', async () => {

@@ -1,3 +1,7 @@
+---
+description: "Share one Codex app-server between the official Codex terminal UI and HAPI web and native clients, including usage limits and attaching to desktop runtimes."
+---
+
 # Codex shared sessions
 
 Codex **0.154.0 or newer**: the official terminal UI and HAPI Web / native
@@ -18,6 +22,123 @@ service. Reattaching uses the **same executable** as the running app-server, eve
 has since changed. A compatible runner is required when one is already running.
 Update CLI, Runner and Hub together: the Hub must preserve shared pending input
 on execution exit rather than applying the legacy session-end queue sweep.
+
+## Experimental external desktop bridge (macOS)
+
+An **owned** execution (`hapi codex`) and a bridge to a desktop app-server can
+coexist. They are independent: the bridge uses the desktop daemon and cannot
+stop it. Desktop sync is opt-in; starting HAPI or its Runner alone does not
+discover or adopt desktop threads.
+
+### One-time ChatGPT desktop setup
+
+On macOS, with a compatible `/Applications/ChatGPT.app`, the default `~/.codex`
+directory, and a saved connection to a running HAPI Hub, run as your logged-in
+user (no `sudo`). Save your HAPI token with `hapi auth login` if it was only set
+in your terminal environment.
+
+```bash
+hapi codex-desktop setup --restart
+```
+
+This starts the bundled Codex daemon, sets `CODEX_APP_SERVER_USE_LOCAL_DAEMON=1`
+in your GUI login environment, and installs a per-user LaunchAgent to run
+desktop sync now and at future GUI logins. It uses your saved HAPI settings,
+not terminal-only credentials. The launch setting applies to the GUI login
+session; existing custom GUI Codex overrides are not overwritten.
+Use `--restart` only when ready to quit ChatGPT. Without it, quit and reopen
+ChatGPT yourself; setup will not interrupt the GUI. If macOS restores ChatGPT
+before the daemon is ready at login, quit and reopen it once.
+
+Open a **Codex** conversation in ChatGPT and it appears automatically in HAPI.
+Already-loaded conversations and ones opened later are eligible. Desktop and
+HAPI clients can send messages to the same thread; reconnect reuses the same
+HAPI conversation. HAPI does not import unopened desktop history, cloud ChatGPT
+chats, or migrate threads created by `hapi codex` into the desktop daemon. If
+no desktop sessions appear after setup, quit and reopen ChatGPT and verify
+that your HAPI Hub is reachable. Custom installs and other external engines
+can still use an explicit socket below.
+
+To undo the setup, run `hapi codex-desktop remove` and reopen ChatGPT, or use
+`hapi codex-desktop remove --restart` to reopen it automatically. Removal
+unloads the HAPI LaunchAgent, detaches automatically synced sessions, and clears
+the GUI flag only if HAPI set it for this login and it has not changed. It
+preserves a pre-existing manual setting and does not stop the daemon, interrupt
+turns, delete HAPI history, or stop manual attachment workers.
+
+### Manual attachment
+
+```bash
+# The desktop/owner must already expose a compatible WebSocket-over-Unix socket.
+hapi attach --socket /absolute/private/engine.sock --list
+hapi attach <native-thread-id> --socket /absolute/private/engine.sock
+# In another shell; this is the HAPI ID printed by attach, not the native ID:
+hapi detach <hapi-session-id>
+```
+
+`attach` is a **foreground worker**, not a launcher for the official App. The
+socket must belong to the current user, have owner-only permissions, and be in
+a same-user directory not writable by others. Official daemon-style symlinks
+are supported. TCP/remote endpoints and configuration/permission injection
+flags are rejected. The worker reads the server's actual `CODEX_HOME`; it does
+not use a different local engine as a fallback. Update CLI, Hub and Runner
+together; startup refuses a Hub that drops the attached identity marker.
+
+Only persistent user-root threads **already loaded in that external engine**
+are eligible. There is a loaded-thread preflight immediately before subscription;
+current native protocols do not offer an atomic "subscribe only if still loaded"
+operation, so an external unload racing that check is not fully fenced. HAPI
+does not intentionally cold-resume an unloaded desktop thread. A thread with an
+owned HAPI binding cannot be implicitly migrated into an attached binding; fork
+it in the external owner and attach the new thread instead.
+
+- Messages, native queue, explicit settings changes, approvals and questions
+  use the external engine. HAPI does **not** inject its system instructions,
+  MCP server, environment variables or default permission settings at attach.
+- Ctrl-C, `hapi detach`, and **End session** disconnect the HAPI worker only.
+  They do not interrupt the native turn, delete native queued input, archive the
+  native thread, or kill the App/server. **Stop** remains an explicit turn
+  interrupt. A native archive ends the bridge and archives its HAPI view.
+- Native transport loss ends the worker; it never launches a replacement
+  engine. Desktop sync reconnects automatically when the native thread is
+  loaded again; for manual attachment, rerun `hapi attach` after the owner
+  restores it. Explicit detach of an automatic session keeps that view
+  disconnected until the native thread unloads and is reopened, or the
+  desktop sync service restarts.
+  Reattachment in the same HAPI home, Hub and auth namespace reuses the HAPI
+  session and projection identity. An inactive attached view cannot use
+  ordinary `hapi resume`, Runner resume-on-send, or an archived-history fork.
+- Terminal attachment and HAPI create/fork/rewind actions are unavailable for
+  these views. Create/fork/revert in the owning desktop, then attach explicitly.
+- A native revert notification or a changed history checkpoint freezes
+  the old HAPI view. Checkpoints fence observed turn IDs and seal completed
+  content, including changes missed while detached. Use
+  `hapi attach <native-id> --socket <path> --new-view` to explicitly
+  create a fresh HAPI projection; old transcripts/queues are not merged into it.
+  Unverifiable history/checkpoints fail closed rather than silently resetting.
+
+Private local state uses the existing runtime registry and native-store
+ownership directory, plus `$HAPI_HOME/codex-runtimes/attached-history` for history
+checkpoints. Only HAPI's local detach control endpoint is registered; the
+external PID is never recorded as owned. Native endpoints/tokens are not
+published in session metadata or SSE.
+
+**Acceptance boundary:** isolated native-protocol and CLI → Hub integration
+tests use blank homes and a local mock model; those automated tests alone are
+not GUI acceptance. On 2026-11-16, a separate manual desktop smoke test with
+ChatGPT App **26.1111.21308** (build 27194) and its bundled Codex
+**0.169.0-alpha.11.1** verified WebSocket initialization, desktop-origin messages
+mirrored into HAPI, HAPI-origin messages processed by the same engine, desktop
+messages after HAPI detached, and reattachment to the same HAPI session with
+detached-period history backfilled. The upgraded binary also passed all 12
+external-engine protocol and CLI → Hub integration tests. The GUI smoke test
+used an isolated App profile and a local Responses mock, without copying account
+credentials; production login, real-model requests and long-running desktop
+use remain unverified. The earlier App 26.908.31748 frontend startup failure
+did not recur in this upgraded test.
+
+Desktop sync is a separate, opt-in login service. The Runner does not scan for
+external runtimes, and manual attachment still requires a compatible endpoint.
 
 ## Lifecycle
 

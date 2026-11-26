@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, utimesSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import { archiveLocalCodexSession, listLocalCodexSessionSummaries, listLocalCodexSessionsWithMessagesByIds } from './codexSessions'
 
 vi.mock('node:fs', async (importOriginal) => {
@@ -227,5 +228,299 @@ describe('listLocalCodexSessionSummaries', () => {
             spy.mockClear()
             rmSync(root, { recursive: true, force: true })
         }
+    })
+})
+
+type CodexTranscriptLine = Record<string, unknown>
+
+function sessionMetaLine(sessionId: string): CodexTranscriptLine {
+    return {
+        type: 'session_meta',
+        payload: {
+            id: sessionId,
+            cwd: '/tmp/project',
+            originator: 'codex_cli_rs',
+            cli_version: '0.0.0-test'
+        }
+    }
+}
+
+function responseUserLine(text: string): CodexTranscriptLine {
+    return {
+        type: 'response_item',
+        payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] }
+    }
+}
+
+function responseAssistantLine(text: string): CodexTranscriptLine {
+    return {
+        type: 'response_item',
+        payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] }
+    }
+}
+
+function eventUserLine(text: string): CodexTranscriptLine {
+    return { type: 'event_msg', payload: { type: 'user_message', message: text } }
+}
+
+function eventAgentLine(text: string): CodexTranscriptLine {
+    return { type: 'event_msg', payload: { type: 'agent_message', message: text } }
+}
+
+describe('Codex transcript import parity', () => {
+    const originalCodexHome = process.env.CODEX_HOME
+    let codexHome = ''
+
+    afterEach(() => {
+        if (originalCodexHome === undefined) delete process.env.CODEX_HOME
+        else process.env.CODEX_HOME = originalCodexHome
+        if (codexHome) rmSync(codexHome, { recursive: true, force: true })
+        codexHome = ''
+    })
+
+    function writeTranscript(name: string, sessionId: string, lines: CodexTranscriptLine[]): void {
+        const dir = join(codexHome, 'sessions', '2026', '06', '04')
+        mkdirSync(dir, { recursive: true })
+        writeFileSync(join(dir, name), `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`, 'utf-8')
+    }
+
+    function importMessages(sessionId: string) {
+        const sessions = listLocalCodexSessionsWithMessagesByIds(new Set([sessionId]))
+        const session = sessions.find((item) => item.id === sessionId)
+        if (!session) throw new Error(`Codex session ${sessionId} was not found`)
+        return session.messages
+    }
+
+    function useCodexHome(): string {
+        codexHome = mkdtempSync(join(tmpdir(), 'codex-home-'))
+        process.env.CODEX_HOME = codexHome
+        return codexHome
+    }
+
+    it('imports normal response_item chat messages', () => {
+        useCodexHome()
+        writeTranscript('normal.jsonl', 'normal-session-id', [
+            sessionMetaLine('normal-session-id'),
+            responseUserLine('normal user message'),
+            responseAssistantLine('normal assistant message')
+        ])
+
+        const messages = importMessages('normal-session-id')
+
+        expect(messages).toHaveLength(2)
+        expect(messages[0]).toEqual({
+            role: 'user',
+            content: { type: 'text', text: 'normal user message' },
+            meta: { sentFrom: 'cli' }
+        })
+        expect(messages[1]).toEqual({
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: { type: 'message', message: 'normal assistant message', id: expect.any(String) }
+            },
+            meta: { sentFrom: 'cli' }
+        })
+    })
+
+    it('deduplicates mirrored event_msg and response_item user messages', () => {
+        useCodexHome()
+        writeTranscript('mirrored.jsonl', 'mirrored-session-id', [
+            sessionMetaLine('mirrored-session-id'),
+            eventUserLine('mirrored user message'),
+            responseUserLine('mirrored user message\n')
+        ])
+
+        const messages = importMessages('mirrored-session-id')
+
+        expect(messages).toHaveLength(1)
+        expect(messages[0]).toEqual({
+            role: 'user',
+            content: { type: 'text', text: 'mirrored user message' },
+            meta: { sentFrom: 'cli' }
+        })
+    })
+
+    it('deduplicates adjacent mirrored agent messages with different ids', () => {
+        useCodexHome()
+        writeTranscript('mirrored-agent.jsonl', 'mirrored-agent-session-id', [
+            sessionMetaLine('mirrored-agent-session-id'),
+            eventAgentLine('duplicated assistant message'),
+            responseAssistantLine('duplicated assistant message')
+        ])
+
+        const messages = importMessages('mirrored-agent-session-id')
+
+        expect(messages).toHaveLength(1)
+        expect(messages[0]).toEqual({
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: { type: 'message', message: 'duplicated assistant message', id: expect.any(String) }
+            },
+            meta: { sentFrom: 'cli' }
+        })
+    })
+
+    it('skips injected response_item user context messages', () => {
+        useCodexHome()
+        writeTranscript('injected.jsonl', 'injected-session-id', [
+            sessionMetaLine('injected-session-id'),
+            responseUserLine('# AGENTS.md instructions for /repo\n<INSTRUCTIONS>ignore</INSTRUCTIONS>'),
+            responseUserLine('<environment_context>\n<current_date>2026-07-07</current_date>\n<filesystem>workspace</filesystem>\n</environment_context>'),
+            eventUserLine('real event user message')
+        ])
+
+        const messages = importMessages('injected-session-id')
+
+        expect(messages).toHaveLength(1)
+        expect(messages[0]).toEqual({
+            role: 'user',
+            content: { type: 'text', text: 'real event user message' },
+            meta: { sentFrom: 'cli' }
+        })
+    })
+
+    it('preserves a real response_item user prompt containing embedded environment_context text', () => {
+        useCodexHome()
+        writeTranscript('embedded-env.jsonl', 'embedded-env-session-id', [
+            sessionMetaLine('embedded-env-session-id'),
+            responseUserLine('Please inspect this transcript block:\n<environment_context>\n<current_date>2026-07-07</current_date>\n</environment_context>\nThis is part of my prompt.')
+        ])
+
+        const messages = importMessages('embedded-env-session-id')
+
+        expect(messages).toHaveLength(1)
+        expect(messages[0]).toMatchObject({
+            role: 'user',
+            content: { type: 'text', text: expect.stringContaining('<environment_context>') }
+        })
+    })
+
+    it('preserves adjacent duplicate messages from the same transcript source', () => {
+        useCodexHome()
+        writeTranscript('same-source.jsonl', 'same-source-session-id', [
+            sessionMetaLine('same-source-session-id'),
+            responseUserLine('same source user message'),
+            responseUserLine('same source user message'),
+            responseAssistantLine('same source assistant message'),
+            responseAssistantLine('same source assistant message')
+        ])
+
+        const messages = importMessages('same-source-session-id')
+
+        expect(messages).toHaveLength(4)
+        expect(messages.map((message) => message.role)).toEqual(['user', 'user', 'agent', 'agent'])
+    })
+
+    it('keeps a later response_item-only user turn with the same text', () => {
+        useCodexHome()
+        writeTranscript('repeat-user.jsonl', 'repeat-user-session-id', [
+            sessionMetaLine('repeat-user-session-id'),
+            eventUserLine('repeat user message'),
+            responseUserLine('repeat user message'),
+            responseAssistantLine('assistant answer'),
+            responseUserLine('repeat user message')
+        ])
+
+        const messages = importMessages('repeat-user-session-id')
+
+        expect(messages.map((message) => message.role)).toEqual(['user', 'agent', 'user'])
+        expect(messages[0]).toMatchObject({
+            role: 'user',
+            content: { type: 'text', text: 'repeat user message' }
+        })
+        expect(messages[2]).toMatchObject({
+            role: 'user',
+            content: { type: 'text', text: 'repeat user message' }
+        })
+    })
+
+    it('keeps distinct user turns while deduplicating mirrored user events', () => {
+        useCodexHome()
+        writeTranscript('distinct-user.jsonl', 'distinct-user-session-id', [
+            sessionMetaLine('distinct-user-session-id'),
+            eventUserLine('first user message'),
+            responseUserLine('first user message'),
+            eventUserLine('second user message')
+        ])
+
+        const messages = importMessages('distinct-user-session-id')
+
+        expect(messages).toHaveLength(2)
+        expect(messages.map((message) => message.content)).toEqual([
+            { type: 'text', text: 'first user message' },
+            { type: 'text', text: 'second user message' }
+        ])
+    })
+
+    it('uses the latest session_index thread_name for the session title', () => {
+        useCodexHome()
+        writeTranscript('index-title.jsonl', 'index-title-session-id', [
+            sessionMetaLine('index-title-session-id'),
+            responseUserLine('normal user message')
+        ])
+        writeFileSync(join(codexHome, 'session_index.jsonl'), [
+            JSON.stringify({ id: 'index-title-session-id', thread_name: 'old thread title', updated_at: '2026-07-07T01:00:00.000000000Z' }),
+            JSON.stringify({ id: 'index-title-session-id', thread_name: 'new thread title', updated_at: '2026-07-07T02:00:00.000000000Z' })
+        ].join('\n'))
+
+        expect(listLocalCodexSessionSummaries()[0]?.title).toBe('new thread title')
+    })
+
+    it('falls back to the transcript title when session_index is missing', () => {
+        useCodexHome()
+        writeTranscript('no-index-title.jsonl', 'no-index-title-session-id', [
+            sessionMetaLine('no-index-title-session-id'),
+            responseUserLine('normal user message')
+        ])
+
+        expect(listLocalCodexSessionSummaries()[0]?.title).toBe('normal user message')
+    })
+
+    it('falls back to the transcript title when session_index has no matching id', () => {
+        useCodexHome()
+        writeTranscript('index-miss-title.jsonl', 'index-miss-title-session-id', [
+            sessionMetaLine('index-miss-title-session-id'),
+            responseUserLine('normal user message')
+        ])
+        writeFileSync(join(codexHome, 'session_index.jsonl'), [
+            JSON.stringify({ id: 'other-session-id', thread_name: 'unrelated title', updated_at: '2026-07-07T03:00:00.000000000Z' })
+        ].join('\n'))
+
+        expect(listLocalCodexSessionSummaries()[0]?.title).toBe('normal user message')
+    })
+
+    it('keeps event_msg user messages that only look like injected context', () => {
+        useCodexHome()
+        writeTranscript('event-injected.jsonl', 'event-injected-session-id', [
+            sessionMetaLine('event-injected-session-id'),
+            eventUserLine('# AGENTS.md instructions for /repo')
+        ])
+
+        const messages = importMessages('event-injected-session-id')
+
+        expect(messages).toHaveLength(1)
+        expect(messages[0]).toEqual({
+            role: 'user',
+            content: { type: 'text', text: '# AGENTS.md instructions for /repo' },
+            meta: { sentFrom: 'cli' }
+        })
+    })
+
+    it('keeps a response_item user prompt with an unclosed environment_context block', () => {
+        useCodexHome()
+        writeTranscript('unclosed-env.jsonl', 'unclosed-env-session-id', [
+            sessionMetaLine('unclosed-env-session-id'),
+            responseUserLine('<environment_context>\n<current_date>2026-07-07</current_date>')
+        ])
+
+        const messages = importMessages('unclosed-env-session-id')
+
+        expect(messages).toHaveLength(1)
+        expect(messages[0]).toMatchObject({
+            role: 'user',
+            content: { type: 'text', text: expect.stringContaining('<environment_context>') }
+        })
     })
 })

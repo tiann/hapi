@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ApiSessionClient } from '@/api/apiSession';
-import type { AgentState } from '@/api/types';
+import { AgentStateSchema, type AgentState } from '@/api/types';
 import { INDETERMINATE_SYMBOL } from '../codexAppServerClient';
 import { asyncQuestionsForItem, SharedCodexAsyncQuestions } from './asyncQuestions';
 
@@ -11,14 +11,14 @@ function nativeReply(questionItemId: string, answer: string) {
     return { type: 'userMessage', content: [{ type: 'text', text:
         `<send_user_message_question_reply>\n${JSON.stringify([{ questionItemId, answer, question: 'Which client?' }])}\n</send_user_message_question_reply>` }] };
 }
-function fixture() {
-    let state: AgentState = {};
+function fixture(initialState: AgentState = {}) {
+    let state = initialState;
     const send = vi.fn();
     const session = { getMetadata: () => ({ codexSessionId: 'thread' }), sendAgentMessage: send,
         updateAgentState: (fn: (state: AgentState) => AgentState) => { state = fn(state); }
     } as unknown as ApiSessionClient;
     const submit = vi.fn(async (_threadId: string, _text: string, _id: string) => {});
-    const manager = new SharedCodexAsyncQuestions(session, submit);
+    const manager = new SharedCodexAsyncQuestions(session, submit, initialState.completedRequests);
     return { manager, send, submit, state: () => state };
 }
 
@@ -158,6 +158,24 @@ describe('Codex queued follow-up questions', () => {
         expect(f.state().requests![q.id]).toBeUndefined();
         f.manager.observeItem('thread', nativeReply(q.questionItemId, 'Terminal'));
         expect(f.state().completedRequests![q.id].status).toBe('resolved');
+    });
+
+    it('keeps a dismissed question closed after restart and restores an unanswered sibling', async () => {
+        const before = fixture();
+        const [dismissed, unanswered] = questions;
+        before.manager.observeItem('thread', item);
+        await before.manager.answer({ id: dismissed.id, approved: false });
+        before.manager.close();
+
+        const restored = fixture(AgentStateSchema.parse(JSON.parse(JSON.stringify(before.state()))));
+        restored.manager.observeItem('thread', item);
+        expect(Object.keys(restored.state().requests ?? {})).toEqual([unanswered.id]);
+        expect(restored.state().completedRequests?.[dismissed.id]).toEqual(before.state().completedRequests?.[dismissed.id]);
+        expect(await restored.manager.answer({ id: dismissed.id, approved: false })).toBe(false);
+        expect(restored.send).not.toHaveBeenCalled();
+
+        restored.manager.observeItem('thread', nativeReply(dismissed.questionItemId, 'Terminal'));
+        expect(restored.state().completedRequests?.[dismissed.id]?.status).toBe('resolved');
     });
 
     it('parses literal reply tags inside an answer and ignores quoted or malformed replies', () => {

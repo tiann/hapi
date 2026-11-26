@@ -28,6 +28,10 @@ export const RPC_METHODS = {
     StatFiles: 'statFiles',
     GetDirectoryTree: 'getDirectoryTree',
     UploadFile: 'uploadFile',
+    UploadInit: 'uploadInit',
+    UploadChunk: 'uploadChunk',
+    UploadFinalize: 'uploadFinalize',
+    UploadAbort: 'uploadAbort',
     DeleteUpload: 'deleteUpload',
     WorkspaceReadFile: 'workspace-read-file',
     WorkspaceListDirectory: 'workspace-list-directory',
@@ -44,6 +48,9 @@ export const RPC_METHODS = {
     ListCodexModels: 'listCodexModels',
     ListPiModelsForMachine: 'listPiModelsForMachine',
     ListCodexSessions: 'listCodexSessions',
+    ListLocalSessions: 'listLocalSessions',
+    /** Cursor-only: ACP verify + legacy→ACP transplant before creating a HAPI row. */
+    PrepareCursorImport: 'prepareCursorImport',
     ArchiveCodexSession: 'archiveCodexSession',
     ListCursorModels: 'listCursorModels',
     ListPiModels: 'listPiModels',
@@ -69,6 +76,7 @@ export const RPC_METHODS = {
     /** Deliver one queued message into the active Pi turn (native steer). */
     SteerQueuedMessage: 'steer-queued-message',
     ForkConversation: 'fork-conversation',
+    PreviewForkBoundary: 'preview-fork-boundary',
     ForkArchivedCodex: 'fork-archived-codex',
     RewindConversation: 'rewind-conversation',
     CompleteConversationRewind: 'complete-conversation-rewind',

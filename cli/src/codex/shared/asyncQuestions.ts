@@ -1,4 +1,5 @@
 import type { ApiSessionClient } from '@/api/apiSession';
+import type { AgentState } from '@/api/types';
 import { isIndeterminateError } from '../codexAppServerClient';
 import type { PermissionReply } from './permissions';
 import { record, string } from './gateway';
@@ -67,7 +68,7 @@ export function asyncQuestionsForItem(threadId: string, value: unknown): AsyncQu
 }
 
 type Pending = { question: AsyncQuestion; submitted: boolean };
-type Resolution = { status: 'resolved'; answer: string } | { status: 'canceled' };
+type Resolution = { status: 'resolved'; answer: string } | { status: 'canceled'; decision?: 'denied' };
 
 /** Reuses the existing question UI; replies are native user input, never RPC responses. */
 export class SharedCodexAsyncQuestions {
@@ -80,7 +81,8 @@ export class SharedCodexAsyncQuestions {
     private closed = false;
 
     constructor(private readonly session: ApiSessionClient,
-        private readonly submit: (threadId: string, text: string, clientUserMessageId: string) => Promise<void>) {}
+        private readonly submit: (threadId: string, text: string, clientUserMessageId: string) => Promise<void>,
+        private readonly completedAtBootstrap: AgentState['completedRequests']) {}
 
     observeItem(threadId: string, value: unknown, emitResults = true): void {
         if (this.closed) return;
@@ -113,6 +115,8 @@ export class SharedCodexAsyncQuestions {
                 continue;
             }
             if (this.pending.has(question.id)) continue;
+            // Shutdown also cancels controls. Only an explicit user decision survives replay.
+            if (this.completedAtBootstrap?.[question.id]?.decision === 'denied') continue;
             this.pending.set(question.id, { question, submitted: false });
             this.session.updateAgentState(state => {
                 const completedRequests = { ...state.completedRequests };
@@ -222,8 +226,9 @@ export class SharedCodexAsyncQuestions {
         const question = pending.question;
         if (!reply.approved) {
             // Dismissing an optional follow-up must not interrupt the running turn.
-            this.completed.set(question.id, { status: 'canceled' });
-            this.resolve(question, { status: 'canceled' });
+            const resolution = { status: 'canceled', decision: 'denied' } as const;
+            this.completed.set(question.id, resolution);
+            this.resolve(question, resolution);
             return true;
         }
         const raw = reply.answers?.[question.questionItemId];
@@ -268,7 +273,7 @@ export class SharedCodexAsyncQuestions {
             return { ...state, requests, completedRequests: { ...state.completedRequests, [question.id]: {
                 tool: 'request_user_input', toolCallId: question.id, arguments: question.input,
                 createdAt: prior?.createdAt, completedAt: state.completedRequests?.[question.id]?.completedAt ?? Date.now(),
-                status: resolution.status, ...(answers ? { answers } : {})
+                status: resolution.status, ...(answers ? { answers } : {}), decision: resolution.status === 'canceled' ? resolution.decision : undefined
             } } };
         });
     }

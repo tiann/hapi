@@ -67,10 +67,15 @@ function createApp(session: Session, opts?: {
     archiveSession?: (sessionId: string) => Promise<void>
     acknowledgeModelError?: (sessionId: string, eventId: string) => Promise<void>
     getCursorChatStoreStatus?: SyncEngine['getCursorChatStoreStatus']
+    setSessionExternalRefs?: SyncEngine['setSessionExternalRefs']
+    mutateSessionExternalRefs?: SyncEngine['mutateSessionExternalRefs']
+    githubPrAwarenessEnabled?: boolean
     listCodexModelsForSession?: SyncEngine['listCodexModelsForSession']
+    branchConversation?: SyncEngine['branchConversation']
     listDshModelsForSession?: SyncEngine['listDshModelsForSession']
     listPiModelsForSession?: SyncEngine['listPiModelsForSession']
     forkConversation?: SyncEngine['forkConversation']
+    forkPreview?: SyncEngine['forkPreview']
     clearConversation?: SyncEngine['clearConversation']
     implementCodexPlan?: SyncEngine['implementCodexPlan']
     rewindConversation?: SyncEngine['rewindConversation']
@@ -178,6 +183,8 @@ function createApp(session: Session, opts?: {
             status: { onDisk: true, store: 'acp' as const }
         })),
         archiveSession: archiveSessionMock,
+        setSessionExternalRefs: opts?.setSessionExternalRefs ?? (async () => {}),
+        mutateSessionExternalRefs: opts?.mutateSessionExternalRefs ?? (async (_sessionId, mutate) => mutate([])),
         setSessionPinned: opts?.setSessionPinned ?? (() => {}),
         setSessionPinMode: opts?.setSessionPinMode ?? (() => {}),
         acknowledgeModelError: acknowledgeModelErrorMock,
@@ -195,7 +202,18 @@ function createApp(session: Session, opts?: {
             success: true,
             commands: []
         })),
+        branchConversation: opts?.branchConversation,
         forkConversation: opts?.forkConversation ?? (async () => ({ type: 'success', sessionId: 'child-1' })),
+        forkPreview: opts?.forkPreview ?? (async () => ({
+            type: 'success' as const,
+            preview: {
+                mode: 'current' as const,
+                boundary: { v: 1 as const, mode: 'current' as const, epoch: 3, tailSeq: 7 },
+                keptTail: [],
+                excluded: [],
+                counts: { kept: 0, excluded: 0 }
+            }
+        })),
         clearConversation: opts?.clearConversation,
         implementCodexPlan: opts?.implementCodexPlan,
         rewindConversation: opts?.rewindConversation ?? (async () => ({ type: 'success' })),
@@ -211,12 +229,170 @@ function createApp(session: Session, opts?: {
         c.set('namespace', opts?.namespace ?? 'default')
         await next()
     })
-    app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
+    app.route('/api', createSessionsRoutes(() => engine as SyncEngine, {
+        isGithubPrAwarenessEnabled: () => opts?.githubPrAwarenessEnabled ?? true
+    }))
 
     return { app, applySessionConfigCalls }
 }
 
 describe('sessions routes', () => {
+    it('returns structured externalRefs for a session', async () => {
+        const externalRefs = [{
+            kind: 'github_pr' as const,
+            repo: 'tiann/hapi',
+            number: 1160,
+            url: 'https://github.com/tiann/hapi/pull/1160',
+            role: 'primary' as const
+        }]
+        const session = createSession({
+            metadata: {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'cursor',
+                externalRefs
+            }
+        })
+        const { app } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/external-refs')
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ externalRefs })
+    })
+
+    it('returns an empty externalRefs array when metadata has none', async () => {
+        const { app } = createApp(createSession())
+
+        const response = await app.request('/api/sessions/session-1/external-refs')
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ externalRefs: [] })
+    })
+
+    it('rejects PUT external-refs when github PR awareness is disabled', async () => {
+        const { app } = createApp(createSession(), { githubPrAwarenessEnabled: false })
+        const response = await app.request('/api/sessions/session-1/external-refs', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                externalRefs: [{
+                    kind: 'github_pr',
+                    repo: 'tiann/hapi',
+                    number: 1162,
+                    url: 'https://github.com/tiann/hapi/pull/1162',
+                    role: 'primary'
+                }]
+            })
+        })
+        expect(response.status).toBe(403)
+        expect(await response.json()).toMatchObject({ code: 'github_pr_awareness_disabled' })
+    })
+
+    it('puts external-refs when awareness is enabled', async () => {
+        const calls: unknown[] = []
+        const externalRefs = [{
+            kind: 'github_pr' as const,
+            repo: 'tiann/hapi',
+            number: 1162,
+            url: 'https://github.com/tiann/hapi/pull/1162',
+            role: 'primary' as const,
+            source: 'user' as const,
+            linkedAt: 1_700_000_000_000
+        }]
+        const { app } = createApp(createSession(), {
+            githubPrAwarenessEnabled: true,
+            setSessionExternalRefs: async (_sessionId, refs) => {
+                calls.push(refs)
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/external-refs', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ externalRefs })
+        })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ ok: true, externalRefs })
+        expect(calls).toEqual([externalRefs])
+    })
+
+    it('rejects PUT external-refs with two primary GitHub PRs', async () => {
+        const { app } = createApp(createSession(), {
+            githubPrAwarenessEnabled: true
+        })
+
+        const response = await app.request('/api/sessions/session-1/external-refs', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                externalRefs: [
+                    {
+                        kind: 'github_pr',
+                        repo: 'tiann/hapi',
+                        number: 1,
+                        url: 'https://github.com/tiann/hapi/pull/1',
+                        role: 'primary'
+                    },
+                    {
+                        kind: 'github_pr',
+                        repo: 'tiann/hapi',
+                        number: 2,
+                        url: 'https://github.com/tiann/hapi/pull/2',
+                        role: 'primary'
+                    }
+                ]
+            })
+        })
+
+        expect(response.status).toBe(400)
+    })
+
+    it('returns 400 when upsert exceeds MAX_EXTERNAL_REFS', async () => {
+        const { InvalidExternalRefsError } = await import('../../sync/externalRefErrors')
+        const { app } = createApp(createSession(), {
+            mutateSessionExternalRefs: async () => {
+                throw new InvalidExternalRefsError('at most 32 external refs are allowed')
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/external-refs/upsert', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                ref: {
+                    kind: 'github_pr',
+                    repo: 'tiann/hapi',
+                    number: 99,
+                    url: 'https://github.com/tiann/hapi/pull/99',
+                    role: 'secondary'
+                }
+            })
+        })
+
+        expect(response.status).toBe(400)
+        expect(await response.json()).toMatchObject({ error: 'at most 32 external refs are allowed' })
+    })
+
+    it('allows PUT empty externalRefs to unlink', async () => {
+        const calls: unknown[] = []
+        const { app } = createApp(createSession(), {
+            setSessionExternalRefs: async (_sessionId, refs) => {
+                calls.push(refs)
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/external-refs', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ externalRefs: [] })
+        })
+
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([[]])
+    })
+
     it('dispatches plan implementation using the authenticated namespace and returns stale/unknown outcomes', async () => {
         const session = createSession({ metadata: { path: '/tmp', host: 'test', flavor: 'codex', capabilities: { concurrentClients: true } } })
         const calls: unknown[] = []
@@ -380,7 +556,6 @@ describe('sessions routes', () => {
 
         expect(response.status).toBe(400)
     })
-
     it('updates the persisted pin mode', async () => {
         const calls: Array<[string, 'none' | 'project' | 'global']> = []
         const { app } = createApp(createSession(), {
@@ -1879,6 +2054,30 @@ describe('sessions routes', () => {
         expect(calls[0]?.[2]).toBe('boundary')
     })
 
+    it('validates portable branch options and passes the authenticated namespace', async () => {
+        let calls = 0
+        const { app } = createApp(createSession({ active: false }), {
+            branchConversation: async (id, namespace, options) => {
+                calls++
+                expect([id, namespace, options.agent, options.boundary]).toEqual(['session-1', 'default', 'codex', 'after'])
+                return { type: 'success', sessionId: 'branch-child', warning: 'Inspect uncertain launch' }
+            }
+        })
+        const options = { requestId: 'b428e5be-dc54-4edc-9903-59250c1b5c31', messageLocalId: 'turn-2',
+            agent: 'codex', boundary: 'after', instruction: 'Try again' }
+        const post = (body: unknown) => app.request('/api/sessions/session-1/branch', {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
+        })
+        expect((await post({ ...options, agent: 'arbitrary-executable' })).status).toBe(400)
+        expect((await post({ ...options, requestId: 'invalid' })).status).toBe(400)
+        expect((await post({ ...options, instruction: '  ' })).status).toBe(400)
+        expect((await post({ ...options, nativeSessionId: 'do-not-reuse' })).status).toBe(400)
+        const response = await post(options)
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ sessionId: 'branch-child', warning: 'Inspect uncertain launch' })
+        expect(calls).toBe(1)
+    })
+
     it('forks via POST /sessions/:id/fork and returns the child session id', async () => {
         const calls: Array<{ sessionId: string; namespace: string; messageLocalId?: string }> = []
         const session = createSession({
@@ -1905,6 +2104,165 @@ describe('sessions routes', () => {
         expect(response.status).toBe(200)
         expect(await response.json()).toEqual({ sessionId: 'forked-child' })
         expect(calls).toEqual([{ sessionId: 'session-1', namespace: 'default', messageLocalId: undefined }])
+    })
+
+    it('answers fork previews via POST /sessions/:id/fork-preview', async () => {
+        const calls: Array<{ sessionId: string; namespace: string; intent: string; messageLocalId?: string }> = []
+        const session = createSession({
+            metadata: {
+                path: '/tmp/project', host: 'localhost', flavor: 'codex',
+                capabilities: { conversationHistory: { forkCurrent: true } }
+            }
+        })
+        const preview = {
+            mode: 'current' as const,
+            boundary: { v: 1 as const, mode: 'current' as const, epoch: 3, tailSeq: 7 },
+            keptTail: [{ id: 'm1', seq: 7, localId: 'u2', content: {}, createdAt: 1, invokedAt: 1 }],
+            excluded: [],
+            counts: { kept: 1, excluded: 0 }
+        }
+        const { app } = createApp(session, {
+            forkPreview: async (sessionId, namespace, intent, messageLocalId) => {
+                calls.push({ sessionId, namespace, intent, messageLocalId })
+                return { type: 'success', preview }
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/fork-preview', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ intent: 'current' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual(preview)
+        expect(calls).toEqual([{ sessionId: 'session-1', namespace: 'default', intent: 'current', messageLocalId: undefined }])
+    })
+
+    it('returns 409 with the guard message when the preview is refused', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'codex', capabilities: {} }
+        })
+        const { app } = createApp(session, {
+            forkPreview: async () => ({ type: 'error', message: 'Session is busy' })
+        })
+        const response = await app.request('/api/sessions/session-1/fork-preview', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ intent: 'current' })
+        })
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({ error: 'Session is busy' })
+    })
+
+    it('rejects fork previews with an invalid body', async () => {
+        const { app } = createApp(createSession())
+        const response = await app.request('/api/sessions/session-1/fork-preview', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ intent: 'message' })
+        })
+        expect(response.status).toBe(400)
+    })
+
+    it('passes the confirm boundary to the engine and returns boundary_moved as a coded 409', async () => {
+        const calls: unknown[][] = []
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'codex', capabilities: { conversationHistory: { forkCurrent: true } } }
+        })
+        const boundary = { v: 1, mode: 'current', epoch: 3, tailSeq: 7 }
+        const { app } = createApp(session, {
+            forkConversation: async (...args) => {
+                calls.push(args)
+                return { type: 'error', message: 'New conversation rows appeared since the preview', code: 'boundary_moved' }
+            }
+        })
+        const response = await app.request('/api/sessions/session-1/fork', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ boundary })
+        })
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({
+            error: 'New conversation rows appeared since the preview',
+            code: 'boundary_moved'
+        })
+        expect(calls[0]?.[4]).toEqual(boundary)
+    })
+
+    it('passes the rewind boundary to the engine and returns boundary_moved as a coded 409', async () => {
+        const calls: unknown[][] = []
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'codex', capabilities: { conversationHistory: { rewindToMessage: true } } }
+        })
+        const boundary = { v: 1, mode: 'rewind', messageLocalId: 'u2', epoch: 3, tailSeq: 7, sourceActive: true }
+        const { app } = createApp(session, {
+            rewindConversation: async (...args) => {
+                calls.push(args)
+                return { type: 'error', message: 'New conversation rows appeared since the preview', code: 'boundary_moved' }
+            }
+        })
+        const response = await app.request('/api/sessions/session-1/rewind', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ messageLocalId: 'u2', boundary })
+        })
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({
+            error: 'New conversation rows appeared since the preview',
+            code: 'boundary_moved',
+            hydrateFailed: false
+        })
+        expect(calls[0]?.[3]).toEqual(boundary)
+    })
+
+    it('lets a rewind confirm with a boundary token reach the engine on an inactive source', async () => {
+        const calls: unknown[][] = []
+        const session = createSession({
+            active: false,
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'codex', capabilities: { conversationHistory: { rewindToMessage: true } } }
+        })
+        const boundary = { v: 1, mode: 'rewind', messageLocalId: 'u2', epoch: 3, tailSeq: 7, sourceActive: true }
+        const { app } = createApp(session, {
+            rewindConversation: async (...args) => {
+                calls.push(args)
+                return { type: 'error', message: 'The source session stopped running since the preview', code: 'boundary_moved' }
+            }
+        })
+        const response = await app.request('/api/sessions/session-1/rewind', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ messageLocalId: 'u2', boundary })
+        })
+        // Every rewind token is minted on an active source, so an inactive
+        // confirm is a moved boundary: the engine must re-check it instead of
+        // the route short-circuiting with session_inactive.
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({
+            error: 'The source session stopped running since the preview',
+            code: 'boundary_moved',
+            hydrateFailed: false
+        })
+        expect(calls[0]?.[3]).toEqual(boundary)
+    })
+
+    it('keeps the session_inactive 409 for a legacy rewind without a boundary token', async () => {
+        const calls: unknown[][] = []
+        const session = createSession({ active: false })
+        const { app } = createApp(session, {
+            rewindConversation: async (...args) => {
+                calls.push(args)
+                return { type: 'success' }
+            }
+        })
+        const response = await app.request('/api/sessions/session-1/rewind', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ messageLocalId: 'u2' })
+        })
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({ error: 'Session is inactive', code: 'session_inactive' })
+        expect(calls).toEqual([])
     })
 
     it('rewinds via POST /sessions/:id/rewind', async () => {

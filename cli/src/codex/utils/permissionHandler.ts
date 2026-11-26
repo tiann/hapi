@@ -7,7 +7,7 @@
 
 import { logger } from "@/ui/logger";
 import { ApiSessionClient } from "@/api/apiSession";
-import type { CodexPermissionMode } from "@hapi/protocol/types";
+import type { PermissionModeOf, Flavors } from "@hapi/protocol/types";
 import {
     BasePermissionHandler,
     type AutoApprovalDecision,
@@ -34,6 +34,10 @@ type UserInputResult = {
 
 type PermissionResult = ToolPermissionResult | UserInputResult;
 
+export type CodexToolCallOptions = {
+    trustedHapiMcp?: boolean;
+};
+
 type CodexPermissionHandlerOptions = {
     getCollaborationMode?: () => 'default' | 'plan' | undefined;
     onRequest?: (request: { id: string; toolName: string; input: unknown }) => void;
@@ -51,7 +55,7 @@ type CodexPermissionHandlerOptions = {
 export class CodexPermissionHandler extends BasePermissionHandler<PermissionResponse, PermissionResult> {
     constructor(
         session: ApiSessionClient,
-        private readonly getPermissionMode: () => CodexPermissionMode | undefined,
+        private readonly getPermissionMode: () => PermissionModeOf<typeof Flavors.codex> | undefined,
         private readonly options?: CodexPermissionHandlerOptions
     ) {
         super(session);
@@ -108,14 +112,21 @@ export class CodexPermissionHandler extends BasePermissionHandler<PermissionResp
     async handleToolCall(
         toolCallId: string,
         toolName: string,
-        input: unknown
+        input: unknown,
+        options?: CodexToolCallOptions
     ): Promise<ToolPermissionResult> {
         const mode = this.getPermissionMode() ?? 'default';
         const requiresPlanApproval = this.options?.getCollaborationMode?.() === 'plan'
             && (toolName === 'exit_plan_mode' || toolName === 'ExitPlanMode');
         const autoDecision = requiresPlanApproval
             ? null
-            : this.resolveAutoApprovalDecision(mode, toolName, toolCallId);
+            : this.resolveAutoApprovalDecision(
+                mode,
+                toolName,
+                toolCallId,
+                undefined,
+                options?.trustedHapiMcp ? { trustedHapiMcp: true } : undefined
+            );
         if (autoDecision) {
             return Promise.resolve(this.completeAutoApproval(toolCallId, toolName, input, autoDecision));
         }

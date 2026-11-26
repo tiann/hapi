@@ -37,6 +37,19 @@ describe('shared Codex rewind commit', () => {
             expect(completed).toBe(true)
         } finally { engine.stop() }
     })
+    it('retains rows inserted after the native rewind begins', async () => {
+        const { store, engine, session, gateway } = fixture()
+        try {
+            gateway.rewindConversation = async () => {
+                store.messages.addMessage(session.id, { role: 'user', content: 'late input' }, 'late')
+                return { success: true, truncateFromLocalId: 'two', rewindToken: 'transaction' }
+            }
+            gateway.completeConversationRewind = async () => {}
+            expect(await engine.rewindConversation(session.id, 'default', 'two')).toEqual({ type: 'success' })
+            expect(store.messages.getAllMessages(session.id).map(message => message.localId)).toEqual(['one', 'late'])
+        } finally { engine.stop(); store.close() }
+    })
+
     it('preserves persisted Hub transcript order across lazy resume, a new turn, and two successive rewinds', async () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)

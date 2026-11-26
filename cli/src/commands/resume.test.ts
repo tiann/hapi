@@ -15,7 +15,6 @@ const {
     runPiMock,
     runAgyMock,
     runDshMock,
-    assertCodexLocalSupportedMock,
     existsSyncMock
 } = vi.hoisted(() => ({
     initializeTokenMock: vi.fn(async () => {}),
@@ -32,7 +31,6 @@ const {
     runPiMock: vi.fn(async () => {}),
     runAgyMock: vi.fn(async () => {}),
     runDshMock: vi.fn(async () => {}),
-    assertCodexLocalSupportedMock: vi.fn(),
     existsSyncMock: vi.fn(() => true)
 }))
 
@@ -59,7 +57,6 @@ vi.mock('@/grok/runGrok', () => ({ runGrok: runGrokMock }))
 vi.mock('@/pi/runPi', () => ({ runPi: runPiMock }))
 vi.mock('@/agy/runAgy', () => ({ runAgy: runAgyMock }))
 vi.mock('@/dsh/runDsh', () => ({ runDsh: runDshMock }))
-vi.mock('@/codex/utils/codexVersion', () => ({ assertCodexLocalSupported: assertCodexLocalSupportedMock }))
 vi.mock('node:fs', () => ({ existsSync: existsSyncMock }))
 
 import { resumeCommand } from './resume'
@@ -92,7 +89,6 @@ describe('resumeCommand', () => {
         runPiMock.mockClear()
         runAgyMock.mockClear()
         runDshMock.mockClear()
-        assertCodexLocalSupportedMock.mockClear()
         existsSyncMock.mockReturnValue(true)
     })
 
@@ -115,7 +111,6 @@ describe('resumeCommand', () => {
         await resumeCommand.run(createContext(['hapi-session-1']))
 
         expect(handoffSessionToLocalMock).not.toHaveBeenCalled()
-        expect(assertCodexLocalSupportedMock).not.toHaveBeenCalled()
         expect(runCodexMock).toHaveBeenCalledWith({
             existingSessionId: 'hapi-session-1',
             workingDirectory: '/tmp/project',
@@ -490,14 +485,16 @@ describe('resumeCommand', () => {
                 thinking: false,
                 controlledByUser: false,
                 agentSessionId: 'claude-session-1',
-                updatedAt: 1
+                updatedAt: 1,
+                promptTitle: 'Fix a redirect',
+                firstUserMessage: 'Look at my browser'
             }
         ])
 
         try {
             await expect(resumeCommand.run(createContext([]))).rejects.toThrow('process.exit:1')
             expect(renderMock).not.toHaveBeenCalled()
-            expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('hapi-session-1'))
+            expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('Fix a redirect  /tmp/project  hapi-session-1'))
             expect(consoleErrorSpy).toHaveBeenCalledWith(expect.any(String), 'Run: hapi resume <session-id>')
         } finally {
             Object.defineProperty(process.stdin, 'isTTY', {
