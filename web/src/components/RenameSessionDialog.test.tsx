@@ -121,3 +121,93 @@ describe('RenameSessionDialog title-lock FUE', () => {
         expect(document.activeElement).toBe(gotIt)
     })
 })
+
+describe('RenameSessionDialog clear-to-auto naming', () => {
+    function renderCustom(overrides: Partial<Parameters<typeof RenameSessionDialog>[0]> = {}) {
+        const onRename = vi.fn(async () => {})
+        const onUpdateSummary = vi.fn(async () => {})
+        const view = render(
+            <I18nProvider>
+                <RenameSessionDialog
+                    isOpen
+                    onClose={vi.fn()}
+                    currentName="我的绘画"
+                    currentTitleLocked
+                    hasCustomName
+                    onRename={onRename}
+                    onUpdateSummary={onUpdateSummary}
+                    onSuggestTitle={vi.fn(async () => '自动生成的标题')}
+                    isPending={false}
+                    {...overrides}
+                />
+            </I18nProvider>
+        )
+        return { onRename, onUpdateSummary, view }
+    }
+
+    it('saving an empty input on a custom-named session clears the custom name and unlocks', async () => {
+        const { onRename, onUpdateSummary } = renderCustom()
+        const input = screen.getByPlaceholderText('Session name')
+        await act(async () => {
+            fireEvent.change(input, { target: { value: '' } })
+        })
+        const save = screen.getByRole('button', { name: 'Save' })
+        expect(save).not.toBeDisabled()
+        await act(async () => {
+            fireEvent.click(save)
+        })
+        expect(onRename).toHaveBeenCalledWith(null, false)
+        expect(onUpdateSummary).not.toHaveBeenCalled()
+    })
+
+    it('enables save when the input is cleared on a custom-named session', () => {
+        const { } = renderCustom()
+        const input = screen.getByPlaceholderText('Session name')
+        expect(screen.getByRole('button', { name: 'Save' })).not.toBeDisabled()
+        fireEvent.change(input, { target: { value: '' } })
+        // 清空态仍可保存(这是本次修复的核心:旧版此按钮被禁用)
+        expect(screen.getByRole('button', { name: 'Save' })).not.toBeDisabled()
+    })
+
+    it('shows the clear hint while the input is empty on a custom-named session', () => {
+        renderCustom()
+        const input = screen.getByPlaceholderText('Session name')
+        expect(screen.queryByText('Save empty to drop the custom name and restore the auto-generated title')).toBeNull()
+        fireEvent.change(input, { target: { value: '' } })
+        expect(screen.getByText('Save empty to drop the custom name and restore the auto-generated title')).toBeInTheDocument()
+    })
+
+    it('a generated title on a custom-named session lifts the pin and writes the summary', async () => {
+        const { onRename, onUpdateSummary } = renderCustom()
+        await act(async () => {
+            fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
+        })
+        await screen.findByDisplayValue('自动生成的标题')
+        await act(async () => {
+            fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+        })
+        expect(onRename).toHaveBeenCalledWith(null, false)
+        expect(onUpdateSummary).toHaveBeenCalledWith('自动生成的标题', true)
+    })
+
+    it('keeps Save disabled on an empty input for sessions without a custom name', () => {
+        const onRename = vi.fn(async () => {})
+        render(
+            <I18nProvider>
+                <RenameSessionDialog
+                    isOpen
+                    onClose={vi.fn()}
+                    currentName="Auto summary title"
+                    hasCustomName={false}
+                    onRename={onRename}
+                    isPending={false}
+                />
+            </I18nProvider>
+        )
+        const input = screen.getByPlaceholderText('Session name')
+        fireEvent.change(input, { target: { value: '' } })
+        // 无自定义名时清空无可清除对象,Save 保持禁用(与旧行为一致)。
+        expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+        expect(onRename).not.toHaveBeenCalled()
+    })
+})

@@ -498,6 +498,8 @@ export default {
   'dialog.uri.alwaysAllow': 'Always allow {scheme}:',
   'dialog.rename.title': 'Rename Session',
   'dialog.rename.placeholder': 'Session name',
+
+    'dialog.rename.clearHint': 'Save empty to drop the custom name and restore the auto-generated title',
   'dialog.rename.save': 'Save',
   'dialog.rename.saving': 'Saving…',
   'dialog.rename.error': 'Failed to rename. Please try again.',

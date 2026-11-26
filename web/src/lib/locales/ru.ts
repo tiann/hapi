@@ -397,6 +397,8 @@ export default {
   'dialog.uri.alwaysAllow': 'Всегда разрешать {scheme}:',
   'dialog.rename.title': 'Переименовать сессию',
   'dialog.rename.placeholder': 'Название сессии',
+
+    'dialog.rename.clearHint': 'Пустое имя и сохранение — вернуться к авто-названию диалога',
   'dialog.rename.save': 'Сохранить',
   'dialog.rename.saving': 'Сохранение…',
   'dialog.rename.error': 'Не удалось переименовать. Попробуйте ещё раз.',

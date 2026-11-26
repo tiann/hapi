@@ -1703,6 +1703,39 @@ describe('replaceSessionTodos: watermark ratchet (PR #897 rewind race)', () => {
     })
 })
 
+describe('updateSessionMetadata: explicit custom-name clear', () => {
+    it('drops the name and unlocks when the metadata arrives without a name', () => {
+        const store = makeStore()
+        const created = store.sessions.getOrCreateSession(
+            'clear-custom-name',
+            { path: '/tmp/a', host: 'h', name: '我的绘画', titleLocked: true },
+            null,
+            'default'
+        )
+
+        // sessionCache.renameSession(null) builds exactly this shape: the
+        // name key stripped, titleLocked=false forced.
+        const row = store.sessions.getSession(created.id)!
+        const cleared = { ...(row.metadata as Record<string, unknown>) }
+        delete cleared.name
+        cleared.titleLocked = false
+        const result = store.sessions.updateSessionMetadata(
+            created.id,
+            cleared,
+            row.metadataVersion,
+            'default',
+            { touchUpdatedAt: false, allowTitleUpdate: true, titleLocked: false }
+        )
+
+        expect(result.result).toBe('success')
+        const meta = getMetadata(store, created.id) as Record<string, unknown>
+        expect(meta).not.toHaveProperty('name')
+        // The store encodes "unlocked" as key-absence (never titleLocked:false).
+        expect(meta).not.toHaveProperty('titleLocked')
+
+        store.close()
+    })
+})
 describe('updateSessionAgentState: updated_at (#1855)', () => {
     it('only advances updated_at when a new permission request arrives', () => {
         const store = makeStore()

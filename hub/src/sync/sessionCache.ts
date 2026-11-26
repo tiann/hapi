@@ -1396,7 +1396,7 @@ export class SessionCache {
         throw new Error('Session was modified concurrently while archiving from hub')
     }
 
-    async renameSession(sessionId: string, name: string | undefined, titleLocked?: boolean): Promise<void> {
+    async renameSession(sessionId: string, name: string | null | undefined, titleLocked?: boolean): Promise<void> {
         // tiann/hapi#919: retry-with-refresh on version-mismatch instead of
         // throwing on the first contention. Mirrors the good pattern in
         // mergeSessions (~L780) and in syncEngine's metadata helpers. Without
@@ -1409,7 +1409,17 @@ export class SessionCache {
             }
 
             const currentMetadata = session.metadata ?? { path: '', host: '' }
-            const newMetadata = name === undefined ? { ...currentMetadata } : { ...currentMetadata, name }
+            // name === null clears the custom name: drop the `name` key and
+            // unlock, so per-turn agent/hub naming (the conversation's own
+            // generated title) flows through the title fallback chain again
+            // (metadata.name wins in the Web title helper while present).
+            const newMetadata: Record<string, unknown> = { ...currentMetadata }
+            if (name === null) {
+                delete newMetadata.name
+                titleLocked = false
+            } else if (name !== undefined) {
+                newMetadata.name = name
+            }
 
             const result = this.store.sessions.updateSessionMetadata(
                 sessionId,

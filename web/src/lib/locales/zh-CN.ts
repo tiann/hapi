@@ -498,6 +498,8 @@ export default {
   'dialog.uri.alwaysAllow': '始终允许 {scheme}:',
   'dialog.rename.title': '重命名会话',
   'dialog.rename.placeholder': '会话名称',
+
+    'dialog.rename.clearHint': '清空并保存 = 删除自定义命名,恢复对话自动生成的标题',
   'dialog.rename.save': '保存',
   'dialog.rename.saving': '保存中…',
   'dialog.rename.error': '重命名失败，请重试。',

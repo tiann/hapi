@@ -6,7 +6,7 @@ import { RenameSessionDialog } from './RenameSessionDialog'
 afterEach(cleanup)
 const label = 'Lock title against agent updates'
 function fixture(locked = false) {
-    const onRename = vi.fn(async (_name: string | undefined, _locked?: boolean) => {})
+    const onRename = vi.fn(async (_name: string | null | undefined, _locked?: boolean) => {})
     const onUpdateSummary = vi.fn(async (_text: string, _locked?: boolean) => {})
     const onClose = vi.fn()
     const props = { isOpen: true, currentName: 'Session', currentTitleLocked: locked, sessionId: 'first',
