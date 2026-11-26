@@ -538,76 +538,7 @@ async function sendMessage(
     deliveryMode: MessageDeliveryMode,
     autoSteerFallback = false,
     onProgress?: (message: string) => void
-): Promise<{ delivery: PingPeerResult['delivery']; steerNote?: string }
-
-/**
- * Attributed peer send: CLI token + path source id. Hub ignores any body
- * sourceSessionId and fills sourceName from the store. localId + deliveryMode
- * match the unattributed JWT path so steer confirmation stays available.
- */
-async function sendAttributedPeerMessage(
-    apiUrl: string,
-    cliToken: string,
-    sourceSessionId: string,
-    targetSessionId: string,
-    message: string,
-    localId: string,
-    http: AxiosInstance,
-    jwt: string,
-    deliveryMode: MessageDeliveryMode
-): Promise<PingPeerResult['delivery']> {
-    const response = await http.post(
-        `${apiUrl}/cli/sessions/${encodeURIComponent(sourceSessionId)}/peer-messages`,
-        // Omit deliveryMode: Pi hub-native-steers body deliveryMode=steer on
-        // emit, which races the follow-up /steer confirmation (false send_failed).
-        // Match unattributed JWT sends: queue row + optional /steer ACK.
-        { targetSessionId, text: message, localId },
-        {
-            headers: buildHubRequestHeaders({
-                Authorization: `Bearer ${cliToken}`,
-                'Content-Type': 'application/json'
-            }),
-            timeout: 30_000,
-            validateStatus: () => true
-        }
-    ).catch((error: unknown) => {
-        if (deliveryMode !== 'steer') throw error
-        const detail = error instanceof Error ? error.message : String(error)
-        throw unconfirmedSendError(localId, detail)
-    })
-    if (response.status >= 200 && response.status < 300 && response.data?.ok === true) {
-        if (deliveryMode === 'queue') return 'accepted'
-        try {
-            const steer = await http.post(
-                `${apiUrl}/api/sessions/${encodeURIComponent(targetSessionId)}/messages/${encodeURIComponent(localId)}/steer`,
-                {},
-                { headers: authHeaders(jwt), timeout: 30_000, validateStatus: () => true }
-            )
-            if (steer.status >= 200 && steer.status < 300) {
-                if (steer.data?.status === 'steered') return 'steered'
-                if (steer.data?.status === 'invoked') return 'invoked'
-            }
-            throw new Error(typeof steer.data?.error === 'string' ? steer.data.error : `HTTP ${steer.status}`)
-        } catch (error) {
-            const detail = error instanceof Error ? error.message : String(error)
-            throw new PingPeerError(
-                'send_failed',
-                `Message accepted (localId=${localId}), but steer was not confirmed: ${detail}. ` +
-                'It may remain queued or already be consumed; inspect the target before retrying. Do not resend automatically.'
-            )
-        }
-    }
-    const detail = typeof response.data?.error === 'string'
-        ? response.data.error
-        : typeof response.data?.code === 'string'
-            ? response.data.code
-            : `HTTP ${response.status}`
-    if (deliveryMode === 'steer') {
-        throw unconfirmedSendError(localId, detail)
-    }
-    throw new PingPeerError('send_failed', `send failed: ${detail}`)
-}
-> {
+): Promise<{ delivery: PingPeerResult['delivery']; steerNote?: string }> {
     // The existing queued-message steer action accepts localId as well as id.
     // Both modes retain the peer identity so only runtime ACKs prove delivery.
     const response = await http.post(
@@ -682,41 +613,71 @@ async function sendAttributedPeerMessage(
 }
 
 /**
- * Best-effort machineId → hostname map from GET /api/machines (online
- * machines only). Labels are decoration; failures leave rows unlabeled.
+ * Attributed peer send: CLI token + path source id. Hub ignores any body
+ * sourceSessionId and fills sourceName from the store. localId + deliveryMode
+ * match the unattributed JWT path so steer confirmation stays available.
  */
-async function fetchMachineLabels(
+async function sendAttributedPeerMessage(
     apiUrl: string,
+    cliToken: string,
+    sourceSessionId: string,
+    targetSessionId: string,
+    message: string,
+    localId: string,
+    http: AxiosInstance,
     jwt: string,
-    http: AxiosInstance
-): Promise<Map<string, string>> {
-    const labels = new Map<string, string>()
-    try {
-        const response = await http.get(`${apiUrl}/api/machines`, {
-            headers: authHeaders(jwt),
-            timeout: 10_000,
+    deliveryMode: MessageDeliveryMode
+): Promise<PingPeerResult['delivery']> {
+    const response = await http.post(
+        `${apiUrl}/cli/sessions/${encodeURIComponent(sourceSessionId)}/peer-messages`,
+        // Omit deliveryMode: Pi hub-native-steers body deliveryMode=steer on
+        // emit, which races the follow-up /steer confirmation (false send_failed).
+        // Match unattributed JWT sends: queue row + optional /steer ACK.
+        { targetSessionId, text: message, localId },
+        {
+            headers: buildHubRequestHeaders({
+                Authorization: `Bearer ${cliToken}`,
+                'Content-Type': 'application/json'
+            }),
+            timeout: 30_000,
             validateStatus: () => true
-        })
-        if (response.status < 200 || response.status >= 300) {
-            return labels
         }
-        const machines = Array.isArray(response.data?.machines) ? response.data.machines : []
-        for (const machine of machines) {
-            if (!isObject(machine) || typeof machine.id !== 'string') continue
-            const metadata = isObject(machine.metadata) ? machine.metadata : null
-            const label = typeof metadata?.displayName === 'string' && metadata.displayName.trim()
-                ? metadata.displayName.trim()
-                : typeof metadata?.host === 'string' && metadata.host.trim()
-                    ? metadata.host.trim()
-                    : null
-            if (label) {
-                labels.set(machine.id, label)
+    ).catch((error: unknown) => {
+        if (deliveryMode !== 'steer') throw error
+        const detail = error instanceof Error ? error.message : String(error)
+        throw unconfirmedSendError(localId, detail)
+    })
+    if (response.status >= 200 && response.status < 300 && response.data?.ok === true) {
+        if (deliveryMode === 'queue') return 'accepted'
+        try {
+            const steer = await http.post(
+                `${apiUrl}/api/sessions/${encodeURIComponent(targetSessionId)}/messages/${encodeURIComponent(localId)}/steer`,
+                {},
+                { headers: authHeaders(jwt), timeout: 30_000, validateStatus: () => true }
+            )
+            if (steer.status >= 200 && steer.status < 300) {
+                if (steer.data?.status === 'steered') return 'steered'
+                if (steer.data?.status === 'invoked') return 'invoked'
             }
+            throw new Error(typeof steer.data?.error === 'string' ? steer.data.error : `HTTP ${steer.status}`)
+        } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error)
+            throw new PingPeerError(
+                'send_failed',
+                `Message accepted (localId=${localId}), but steer was not confirmed: ${detail}. ` +
+                'It may remain queued or already be consumed; inspect the target before retrying. Do not resend automatically.'
+            )
         }
-    } catch {
-        // Unlabeled rows still carry the machine id prefix.
     }
-    return labels
+    const detail = typeof response.data?.error === 'string'
+        ? response.data.error
+        : typeof response.data?.code === 'string'
+            ? response.data.code
+            : `HTTP ${response.status}`
+    if (deliveryMode === 'steer') {
+        throw unconfirmedSendError(localId, detail)
+    }
+    throw new PingPeerError('send_failed', `send failed: ${detail}`)
 }
 
 function resolveMachineLabel(machineId: string | null | undefined, labels: Map<string, string>): string | undefined {
