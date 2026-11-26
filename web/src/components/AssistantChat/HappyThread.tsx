@@ -2617,6 +2617,9 @@ export function HappyThread(props: {
             if (frame !== null) return
             frame = requestAnimationFrame(() => {
                 frame = null
+                // Mid-drag, the width may already have changed again: leave the
+                // pre-reflow anchor for the observer to restore first.
+                if (content.getBoundingClientRect().width !== lastWidth) return
                 anchor = captureReadingAnchor()
             })
         }

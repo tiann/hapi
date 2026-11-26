@@ -678,6 +678,51 @@ describe('width reflow inside a long message', () => {
         expect(viewport.scrollTop).toBe(350)
         expect(first.getBoundingClientRect().bottom).toBeGreaterThan(0)
     })
+
+    it('keeps the pre-reflow anchor when a drag changes the width again before the scroll frame runs', () => {
+        searchTargetTestState.renderMessages = () => (
+            <>
+                <div id="hapi-message-session:a">a</div>
+                <div id="hapi-message-session:b">b</div>
+            </>
+        )
+        const { viewport, container } = renderThread()
+        act(() => {
+            vi.advanceTimersByTime(1_800)
+        })
+        const content = container.querySelector<HTMLElement>('.chat-scroll-content')!
+        const first = container.querySelector<HTMLElement>('[id="hapi-message-session:a"]')!
+        const second = container.querySelector<HTMLElement>('[id="hapi-message-session:b"]')!
+        let width = 800
+        const heights: Record<number, number> = { 800: 300, 650: 400, 500: 500 }
+        const rect = (top: number, height: number) => ({ top, bottom: top + height, height, left: 0, right: width, width, x: 0, y: top, toJSON: () => ({}) }) as DOMRect
+        viewport.getBoundingClientRect = () => rect(0, 530)
+        content.getBoundingClientRect = () => rect(-viewport.scrollTop, 1_232)
+        first.getBoundingClientRect = () => rect(-viewport.scrollTop, heights[width]!)
+        second.getBoundingClientRect = () => rect(heights[width]! - viewport.scrollTop, 400)
+
+        viewport.scrollTop = 350
+        fireEvent.scroll(viewport)
+        act(() => {
+            vi.advanceTimersByTime(20)
+            for (const callback of resizeCallbacks) callback()
+        })
+
+        // First drag step: the observer restores, and its scroll queues a frame.
+        width = 650
+        act(() => {
+            for (const callback of resizeCallbacks) callback()
+        })
+        fireEvent.scroll(viewport)
+        // Second step lands before that frame runs.
+        width = 500
+        act(() => {
+            vi.advanceTimersByTime(20)
+            for (const callback of resizeCallbacks) callback()
+        })
+
+        expect(second.getBoundingClientRect().top - viewport.getBoundingClientRect().top).toBe(-50)
+    })
 })
 
 describe('search target loading', () => {
