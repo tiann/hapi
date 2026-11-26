@@ -2955,6 +2955,49 @@ describe('MessageService.releaseMatureScheduledMessages', () => {
         expect(store.messages.lookupQueuedMessage(session.id, message.id).status).toBe('absent')
     })
 
+    it.each([false, true])('drains immediate sends before releasing the ordinary staging barrier (staging retry: %s)', async (failFirst) => {
+        const store = makeStore()
+        const session = makeSession(store, `ordinary-staging-${failFirst}`)
+        const emitted: string[] = []
+        const started = Promise.withResolvers<void>()
+        const staging = Promise.withResolvers<void>()
+        const io = {
+            of: () => ({
+                to: () => ({ emit: (_event: string, update: { body: { message: { localId: string } } }) => emitted.push(update.body.message.localId) }),
+                adapter: { rooms: { get: () => new Set(['cli']) } },
+            }),
+        } as unknown as Server
+        let uploads = 0
+        const service = new MessageService(store, io, makePublisher() as any, undefined, {
+            materializeScheduledAttachments: async (_sessionId, attachments) => {
+                if (++uploads === 1) {
+                    started.resolve()
+                    await staging.promise
+                    if (failFirst) throw new Error('temporary staging error')
+                }
+                return attachments.map(attachment => ({ ...attachment, path: '/tmp/staged-test.png' }))
+            },
+        })
+        store.messages.addMessage(session.id, { role: 'user', content: {
+            type: 'text', text: 'A', attachments: [makeHubScratchlistAttachment(session.id, 'ordinary-A')],
+        } }, 'scheduled-A', Date.now() - 1_000)
+        const release = service.releaseMatureScheduledMessages(Date.now())
+        await started.promise
+        await service.sendMessage(session.id, { text: 'B', localId: 'immediate-B' })
+        expect(emitted).toEqual([])
+        staging.resolve()
+        await release
+        if (failFirst) {
+            await service.sendMessage(session.id, { text: 'C', localId: 'immediate-C' })
+            expect(emitted).toEqual([])
+            await service.releaseMatureScheduledMessages(Date.now())
+        } else {
+            expect(emitted).toEqual(['scheduled-A', 'immediate-B'])
+            await service.sendMessage(session.id, { text: 'C', localId: 'immediate-C' })
+        }
+        expect(emitted).toEqual(['scheduled-A', 'immediate-B', 'immediate-C'])
+    })
+
     it('replays only the immediate prefix before an earlier mature attachment awaiting staging', async () => {
         const store = makeStore()
         const session = makeSession(store, 'ordered-replay-behind-staging')

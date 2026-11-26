@@ -8,7 +8,7 @@ import { createSessionsRoutes } from './sessions'
  * Tests for the scratchlist v2 (tiann/hapi#893) REST routes:
  *   GET    /api/sessions/:id/scratchlist
  *   POST   /api/sessions/:id/scratchlist
- *   PUT    /api/sessions/:id/scratchlist/reorder
+ *   PATCH  /api/sessions/:id/scratchlist
  *   PUT    /api/sessions/:id/scratchlist/:entryId
  *   DELETE /api/sessions/:id/scratchlist/:entryId
  *
@@ -497,7 +497,7 @@ describe('POST /api/sessions/:id/scratchlist', () => {
     })
 })
 
-describe('PUT /api/sessions/:id/scratchlist/reorder', () => {
+describe('PATCH /api/sessions/:id/scratchlist', () => {
     it('returns the canonical order from the engine', async () => {
         const session = createSession()
         const calls: string[][] = []
@@ -514,8 +514,8 @@ describe('PUT /api/sessions/:id/scratchlist/reorder', () => {
                 }))
             }
         })
-        const res = await app.request('/api/sessions/session-1/scratchlist/reorder', {
-            method: 'PUT',
+        const res = await app.request('/api/sessions/session-1/scratchlist', {
+            method: 'PATCH',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ entryIds: ['b', 'a'] })
         })
@@ -526,11 +526,28 @@ describe('PUT /api/sessions/:id/scratchlist/reorder', () => {
         expect(body.entries.map((entry) => entry.position)).toEqual([0, 1])
     })
 
+    it('accepts the full merged order above the creation cap', async () => {
+        const session = createSession()
+        const ids = Array.from({ length: 201 }, (_, index) => `draft-${index}`)
+        let received: string[] = []
+        const app = createApp(session, { reorderScratchlistEntries: (_sessionId, entryIds) => {
+            received = entryIds
+            return []
+        } })
+        const res = await app.request('/api/sessions/session-1/scratchlist', {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ entryIds: ids }),
+        })
+        expect(res.status).toBe(200)
+        expect(received).toEqual(ids)
+    })
+
     it('rejects a reorder payload with duplicate ids', async () => {
         const session = createSession()
         const app = createApp(session)
-        const res = await app.request('/api/sessions/session-1/scratchlist/reorder', {
-            method: 'PUT',
+        const res = await app.request('/api/sessions/session-1/scratchlist', {
+            method: 'PATCH',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ entryIds: ['a', 'a'] })
         })
@@ -539,11 +556,11 @@ describe('PUT /api/sessions/:id/scratchlist/reorder', () => {
 })
 
 describe('PUT /api/sessions/:id/scratchlist/:entryId', () => {
-    it('returns the updated entry on success', async () => {
+    it.each(['entry-1', 'reorder'])('updates the valid entry ID %s without matching the order route', async (entryId) => {
         const session = createSession()
         const app = createApp(session, {
             getScratchlistEntry: () => ({
-                entryId: 'entry-1',
+                entryId,
                 text: 'before',
                 createdAt: 1000,
                 updatedAt: 1000,
@@ -559,7 +576,7 @@ describe('PUT /api/sessions/:id/scratchlist/:entryId', () => {
                 attachments: patch.attachments ?? [],
             })
         })
-        const res = await app.request('/api/sessions/session-1/scratchlist/entry-1', {
+        const res = await app.request(`/api/sessions/session-1/scratchlist/${entryId}`, {
             method: 'PUT',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ text: 'edited' })
@@ -567,7 +584,7 @@ describe('PUT /api/sessions/:id/scratchlist/:entryId', () => {
         expect(res.status).toBe(200)
         const body = await res.json() as { entry: { text: string; entryId: string } }
         expect(body.entry.text).toBe('edited')
-        expect(body.entry.entryId).toBe('entry-1')
+        expect(body.entry.entryId).toBe(entryId)
     })
 
     it('returns 404 when the entry does not exist', async () => {

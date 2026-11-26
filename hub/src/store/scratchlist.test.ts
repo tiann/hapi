@@ -37,3 +37,22 @@ describe('ScratchlistStore deletion atomicity', () => {
         store.close()
     })
 })
+
+it('keeps a merged scratchlist reorderable above the creation cap', () => {
+    const store = new Store(':memory:')
+    try {
+        const createSession = (id: string) => store.sessions.getOrCreateSession(
+            id, { path: '/tmp', host: 'localhost', flavor: 'codex' }, null, 'default',
+        )
+        const target = createSession('scratchlist-target')
+        const source = createSession('scratchlist-source')
+        for (let index = 0; index < 200; index++) {
+            store.scratchlist.create(target.id, 'Draft', { entryId: `draft-${index}` })
+        }
+        store.scratchlist.create(source.id, 'Imported draft', { entryId: 'imported-draft' })
+        expect(store.scratchlist.transfer(source.id, target.id)).toEqual({ moved: 1, collided: 0 })
+        const order = store.scratchlist.list(target.id).map(entry => entry.entryId).reverse()
+        expect(order).toHaveLength(201)
+        expect(store.scratchlist.reorder(target.id, order)?.map(entry => entry.entryId)).toEqual(order)
+    } finally { store.close() }
+})

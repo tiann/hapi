@@ -1,4 +1,4 @@
-import type { CodexPermissionMode } from '@hapi/protocol/types';
+import type { PermissionModeOf, Flavors } from '@hapi/protocol/types';
 import type { ApprovalPolicyPreset, SandboxMode, SandboxPolicy } from '../appServerTypes';
 
 export type CodexPermissionModeConfig = {
@@ -7,7 +7,7 @@ export type CodexPermissionModeConfig = {
     sandboxPolicy: SandboxPolicy;
 };
 
-export function resolveCodexPermissionModeConfig(mode: CodexPermissionMode): CodexPermissionModeConfig {
+export function resolveCodexPermissionModeConfig(mode: PermissionModeOf<typeof Flavors.codex>): CodexPermissionModeConfig {
     switch (mode) {
         case 'default':
         case 'autoReview':
@@ -37,7 +37,7 @@ export function resolveCodexPermissionModeConfig(mode: CodexPermissionMode): Cod
     throw new Error(`Unknown permission mode: ${unexpectedMode}`);
 }
 
-export function buildCodexPermissionModeCliArgs(mode: Exclude<CodexPermissionMode, 'default'>): string[] {
+export function buildCodexPermissionModeCliArgs(mode: Exclude<PermissionModeOf<typeof Flavors.codex>, 'default'>): string[] {
     const config = resolveCodexPermissionModeConfig(mode);
     return ['--ask-for-approval', config.approvalPolicy, '--sandbox', config.sandbox];
 }

@@ -25,6 +25,7 @@ import type { Store, CancelQueuedMessageResult } from '../store'
 import { isScratchlistAttachmentPathForSession } from '../scratchlistAttachments/storage'
 import { EventPublisher } from './eventPublisher'
 import { JOB_WAKE_MESSAGE_LOCAL_ID_PREFIX } from './sessionJobWake'
+import type { InputTranslationService } from './inputTranslation'
 
 type StoredMessageForDelivery = ReturnType<Store['messages']['getMessages']>[number]
 type MessagePosition = { at: number; seq: number }
@@ -236,6 +237,8 @@ function replaceUserMessageAttachments(content: unknown, attachments: Attachment
 }
 
 type MessageServiceOptions = {
+    inputTranslation?: InputTranslationService
+    readTranslateInputDefault?: () => Promise<boolean>
     validateScheduledAttachments?: (
         sessionId: string,
         attachments: AttachmentMetadata[],
@@ -282,6 +285,8 @@ export class MessageService {
     private readonly cancellingScheduledMessageKeys = new Map<string, number>()
     /** Keep mature delivery FIFO per session without blocking unrelated sessions. */
     private readonly matureReleaseInFlightSessions = new Set<string>()
+    /** Immediate rows accepted while ordinary scheduled attachments are staging. */
+    private readonly deferredImmediateAfterStaging = new Map<string, Set<string>>()
     /** A clear-handoff drain failed after staging; retry the full deliverable sequence. */
     private readonly pendingOrderedDeliverableReleaseSessions = new Set<string>()
     /** Suppress restart reconstruction while the current process already drained this exact queue. */
@@ -336,6 +341,11 @@ export class MessageService {
         return targetSessionId === sessionId ? [sessionId] : [sessionId, targetSessionId]
     }
     private readonly activeIndeterminateRetries = new Set<string>()
+    /**
+     * Per-session send chain used while input translation is on, so a slow
+     * translation cannot let a later prompt overtake an earlier one.
+     */
+    private readonly translationSendChains = new Map<string, Promise<unknown>>()
 
     constructor(
         private readonly store: Store,
@@ -1343,6 +1353,72 @@ export class MessageService {
         ) {
             throw new Error('sendMessage: scheduled messages with attachments must use scratchlist attachments')
         }
+        const metadata = this.store.sessions.getSession(sessionId)?.metadata
+        // An explicit per-session choice wins; otherwise the hub-wide default
+        // decides (read inside the chain so it cannot reorder prompts).
+        const explicit = isObject(metadata) && typeof metadata.translateInput === 'boolean'
+            ? metadata.translateInput
+            : undefined
+        const mayTranslate = explicit
+            ?? (this.options.inputTranslation?.available === true && this.options.readTranslateInputDefault !== undefined)
+        if (!mayTranslate && !this.translationSendChains.has(sessionId)) {
+            return await this.sendMessageNow(sessionId, payload)
+        }
+
+        const previous = this.translationSendChains.get(sessionId) ?? Promise.resolve()
+        const run = previous.catch(() => undefined).then(async () => {
+            const translateInput = explicit ?? (mayTranslate && await this.resolveTranslateInputDefault())
+            const translation = translateInput && this.shouldTranslate(payload)
+                ? await this.options.inputTranslation!.translate(payload.text, payload.localId ? `${sessionId}:${payload.localId}` : null)
+                : null
+            return await this.sendMessageNow(
+                sessionId,
+                translation?.translated ? { ...payload, text: translation.text } : payload,
+                translation?.translated
+                    ? { translatedFrom: translation.original }
+                    : translation?.reason !== undefined ? { translationFailed: true } : undefined
+            )
+        })
+        this.translationSendChains.set(sessionId, run)
+        try {
+            return await run
+        } finally {
+            if (this.translationSendChains.get(sessionId) === run) {
+                this.translationSendChains.delete(sessionId)
+            }
+        }
+    }
+
+    private async resolveTranslateInputDefault(): Promise<boolean> {
+        try {
+            return (await this.options.readTranslateInputDefault?.()) === true
+        } catch {
+            return false
+        }
+    }
+
+    /** Only human-authored prompts are translated; peer pings and system rows pass through. */
+    private shouldTranslate(payload: { text: string; localId?: string | null; sentFrom?: string }): boolean {
+        if (!this.options.inputTranslation?.available) return false
+        const sentFrom = payload.sentFrom ?? 'webapp'
+        if (sentFrom !== 'webapp' && sentFrom !== 'telegram-bot') return false
+        if (payload.localId?.startsWith(PEER_MESSAGE_LOCAL_ID_PREFIX)) return false
+        return payload.text.trim().length > 0
+    }
+
+    private async sendMessageNow(
+        sessionId: string,
+        payload: {
+            text: string
+            localId?: string | null
+            attachments?: AttachmentMetadata[]
+            sentFrom?: 'telegram-bot' | 'webapp' | 'hapi-system'
+            scheduledAt?: number | null
+            deliveryMode?: MessageDeliveryMode
+        },
+        translation?: { translatedFrom: string } | { translationFailed: true }
+    ): Promise<{ actualSessionId: string; createdAt: number }> {
+        const attachments = payload.attachments ?? []
         const sentFrom = payload.sentFrom ?? 'webapp'
         const deliveryMode = getNormalizedDeliveryMode(
             this.store.sessions.getSession(sessionId)?.metadata,
@@ -1359,7 +1435,11 @@ export class MessageService {
             },
             meta: {
                 sentFrom,
-                deliveryMode
+                deliveryMode,
+                // `translatedFrom`: what the user typed; `content.text` holds the English
+                // sent to the agent. `translationFailed`: the provider failed, so the
+                // original text was sent as-is.
+                ...translation
             }
         }
 
@@ -1419,8 +1499,13 @@ export class MessageService {
         const isFutureScheduled = msg.scheduledAt !== null && msg.scheduledAt > Date.now()
         const hasScheduledAttachments = msg.scheduledAt !== null
             && getUserMessageAttachments(msg.content).length > 0
+        const deferredImmediate = msg.scheduledAt === null && shouldEmitToCli
+            ? this.deferredImmediateAfterStaging.get(actualSessionId)
+            : undefined
+        deferredImmediate?.add(msg.id)
         if (
             shouldEmitToCli
+            && !deferredImmediate
             && !isFutureScheduled
             && !hasScheduledAttachments
             && !this.store.isOpenCodeClearDeliveryGated(actualSessionId)
@@ -1517,6 +1602,7 @@ export class MessageService {
         const queued = this.store.messages.getImmediateQueuedLocalMessages(sessionId)
         if (queued.length === 0 || this.store.isOpenCodeClearDeliveryGated(sessionId)
             || this.matureReleaseInFlightSessions.has(sessionId)
+            || this.deferredImmediateAfterStaging.has(sessionId)
             || this.pendingOrderedDeliverableReleaseSessions.has(sessionId)) return 0
 
         // Keep reconnect replay behind any earlier mature scheduled row. During
@@ -1534,26 +1620,28 @@ export class MessageService {
             : queued.filter((message) => message.seq < earliestMatureScheduledSeq)
         if (replayable.length === 0) return 0
 
-        for (const msg of replayable) {
-            const update = {
-                id: msg.id,
-                seq: msg.seq,
-                createdAt: msg.createdAt,
-                body: {
-                    t: 'new-message' as const,
-                    sid: sessionId,
-                    message: {
-                        id: msg.id,
-                        seq: msg.seq,
-                        createdAt: msg.createdAt,
-                        localId: msg.localId,
-                        content: contentForDeferredDelivery(msg.content)
-                    }
+        for (const msg of replayable) this.emitImmediateReplay(sessionId, msg)
+        return replayable.length
+    }
+
+    private emitImmediateReplay(sessionId: string, msg: StoredMessageForDelivery): void {
+        const update = {
+            id: msg.id,
+            seq: msg.seq,
+            createdAt: msg.createdAt,
+            body: {
+                t: 'new-message' as const,
+                sid: sessionId,
+                message: {
+                    id: msg.id,
+                    seq: msg.seq,
+                    createdAt: msg.createdAt,
+                    localId: msg.localId,
+                    content: contentForDeferredDelivery(msg.content)
                 }
             }
-            this.io.of('/cli').to(`session:${sessionId}`).emit('update', update)
         }
-        return replayable.length
+        this.io.of('/cli').to(`session:${sessionId}`).emit('update', update)
     }
 
     /** Serialize the initial clear-handoff drain with periodic mature delivery. */
@@ -1736,7 +1824,10 @@ export class MessageService {
             bySession.set(message.sessionId, messages)
         }
 
-        const sessionIds = new Set([...bySession.keys(), ...this.pendingOrderedDeliverableReleaseSessions])
+        const sessionIds = new Set([
+            ...bySession.keys(), ...this.pendingOrderedDeliverableReleaseSessions,
+            ...this.deferredImmediateAfterStaging.keys(),
+        ])
         await Promise.all([...sessionIds].map(async (sessionId) => {
             const messages = bySession.get(sessionId) ?? []
             if (skipSessionIds?.has(sessionId)) {
@@ -1769,19 +1860,27 @@ export class MessageService {
                 }
                 return
             }
-            if (messages.length === 0) return
-            // A text-only session has no asynchronous materialization work.
-            // It still observes the session lock above so it cannot overtake an
-            // active A/B/C handoff whose attachment was just cancelled.
             const hasAttachments = messages.some((message) => getUserMessageAttachments(message.content).length > 0)
-            if (!hasAttachments) {
-                await this.releaseMatureScheduledMessagesForSession(messages)
+            const deferred = this.deferredImmediateAfterStaging.get(sessionId) ?? (hasAttachments ? new Set<string>() : undefined)
+            if (!deferred) {
+                if (messages.length > 0) await this.releaseMatureScheduledMessagesForSession(messages)
                 return
             }
+            this.deferredImmediateAfterStaging.set(sessionId, deferred)
             this.matureReleaseInFlightSessions.add(sessionId)
             try {
-                await this.releaseMatureScheduledMessagesForSession(messages)
+                const staged = messages.length === 0 || await this.releaseMatureScheduledMessagesForSession(messages)
+                if (staged && !this.store.isOpenCodeClearDeliveryGated(sessionId)
+                    && this.hasCliSessionConnection(sessionId)) {
+                    // This part is synchronous: no new send can overtake the
+                    // deferred prefix between the last emit and reopening.
+                    for (const msg of this.store.messages.getImmediateQueuedLocalMessages(sessionId)) {
+                        if (deferred.has(msg.id)) this.emitImmediateReplay(sessionId, msg)
+                    }
+                    this.deferredImmediateAfterStaging.delete(sessionId)
+                }
             } finally {
+                if (deferred.size === 0) this.deferredImmediateAfterStaging.delete(sessionId)
                 this.matureReleaseInFlightSessions.delete(sessionId)
             }
         }))
@@ -1789,22 +1888,23 @@ export class MessageService {
 
     private async releaseMatureScheduledMessagesForSession(
         messages: StoredMessageForDelivery[],
-    ): Promise<void> {
+    ): Promise<boolean> {
         const sessionId = messages[0]?.sessionId
-        if (!sessionId || this.store.isOpenCodeClearDeliveryGated(sessionId)) return
+        if (!sessionId || this.store.isOpenCodeClearDeliveryGated(sessionId)) return false
         if (messages.some((message) => getUserMessageAttachments(message.content).length > 0)
             && !this.hasCliSessionConnection(sessionId)) {
-            return
+            return false
         }
 
         let emitted = false
+        let completedStaging = true
         for (const msg of messages) {
             // A hub-resident attachment must be transferred to the CLI host
             // before emitting. Keep the materializing key until the await
             // completes so cancellation can delete the still-unemitted row.
             const attachments = getUserMessageAttachments(msg.content)
             const hasAttachments = attachments.length > 0
-            if (hasAttachments && !this.hasCliSessionConnection(sessionId)) continue
+            if (hasAttachments && !this.hasCliSessionConnection(sessionId)) { completedStaging = false; break }
 
             let deliveryContent: unknown = contentForDeferredDelivery(msg.content)
             if (hasAttachments) {
@@ -1818,14 +1918,16 @@ export class MessageService {
                         // the file or CLI connection becomes available. Do not
                         // overtake this row with a later scheduled message in
                         // the same session; mature delivery is FIFO.
+                        completedStaging = false
                         break
                     }
-                    if (deliveryContent === null) break
+                    if (deliveryContent === null) { completedStaging = false; break }
 
                     if (this.cancellingScheduledMessageKeys.has(materializingKey)) {
                         const staged = this.scheduledAttachmentDeliveryCache.get(materializingKey)
                         this.scheduledAttachmentDeliveryCache.delete(materializingKey)
                         if (staged) await this.cleanupMaterializedScheduledAttachments(sessionId, staged)
+                        completedStaging = false
                         break
                     }
 
@@ -1844,7 +1946,7 @@ export class MessageService {
                 }
             }
 
-            if (this.store.isOpenCodeClearDeliveryGated(sessionId)) break
+            if (this.store.isOpenCodeClearDeliveryGated(sessionId)) { completedStaging = false; break }
             if (this.store.messages.lookupQueuedMessage(sessionId, msg.id).status !== 'queued') continue
 
             const localId = msg.localId
@@ -1875,5 +1977,6 @@ export class MessageService {
         if (emitted) {
             this.publisher.emit({ type: 'scheduled-matured', sessionId })
         }
+        return completedStaging
     }
 }

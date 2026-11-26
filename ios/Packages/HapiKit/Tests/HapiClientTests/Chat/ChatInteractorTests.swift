@@ -1557,6 +1557,40 @@ struct ChatInteractorTests {
         #expect(await eventually { harness.events.contains(.notice("Failed to rename session")) })
     }
 
+    @Test func translateInputPatchesTheToggleOptimisticallyAndSurfacesTheHubError() async throws {
+        let harness = try await ChatInteractionHarness()
+        #expect(!harness.interactor.translateInputEnabled)
+
+        harness.interactor.setTranslateInput(true)
+        #expect(await eventually {
+            await harness.performer.bodies("PATCH", pathSuffix: "/api/sessions/sess-1") == [#"{"translateInput":true}"#]
+        })
+        #expect(harness.interactor.translateInputEnabled)
+        #expect(harness.store.detail(for: chatSessionID)?.metadata?.translateInput == true)
+
+        await harness.performer.script(
+            "PATCH", "/api/sessions/sess-1",
+            status: 400, json: #"{"error":"Input translation is not configured on this hub"}"#
+        )
+        harness.interactor.setTranslateInput(false)
+        #expect(await eventually {
+            harness.events.contains(.notice("Input translation is not configured on this hub"))
+        })
+    }
+
+    @Test func translateInputFollowsTheHubDefaultUntilTheSessionChooses() async throws {
+        let harness = try await ChatInteractionHarness()
+        #expect(harness.store.detail(for: chatSessionID)?.metadata?.translateInput == nil)
+        harness.interactor.translateInputByDefault = true
+        #expect(harness.interactor.translateInputEnabled)
+
+        harness.interactor.setTranslateInput(false)
+        #expect(await eventually {
+            await harness.performer.bodies("PATCH", pathSuffix: "/api/sessions/sess-1") == [#"{"translateInput":false}"#]
+        })
+        #expect(!harness.interactor.translateInputEnabled)
+    }
+
     @Test func deleteConflictReportsArchiveFirstAndSuccessFiresTheRemoval() async throws {
         let harness = try await ChatInteractionHarness(detail: chatDetail(active: false))
         var removals: [String] = []

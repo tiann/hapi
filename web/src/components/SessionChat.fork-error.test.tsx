@@ -98,6 +98,7 @@ describe('fork preview error display in the chat', () => {
                             hasMoreMessages={false}
                             isSyncingTail={false}
                             isCatchingUpFromCache={false}
+                            cachedTailFirstFrame={false}
                             isLoadingMoreMessages={false}
                             isSending={false}
                             sendSettlement={null}

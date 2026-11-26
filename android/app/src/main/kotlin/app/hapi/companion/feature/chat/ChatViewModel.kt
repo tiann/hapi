@@ -128,6 +128,8 @@ data class ChatHeaderUi(
     val name: String? = null,
     val active: Boolean,
     val thinking: Boolean,
+    /** Hub-owned `metadata.translateInput` from the detail (the list summary does not carry it). */
+    val translateInput: Boolean = false,
 )
 
 /** Optimistic-permission UI state layered over the reduced blocks (M3b). */
@@ -276,6 +278,7 @@ sealed interface ChatNotice {
     data class ModelsLoadFailed(val detail: String?) : ChatNotice
     data class ReadStateFailed(val detail: String?) : ChatNotice
     data class ConfigUpdateFailed(val detail: String?) : ChatNotice
+    data class TranslateInputFailed(val detail: String?) : ChatNotice
 }
 
 /** A permission decision the UI can request (bodies mirror `PermissionFooter.tsx`). */
@@ -557,6 +560,20 @@ class ChatViewModel(
 
     private val slashFetch = MutableStateFlow<SlashFetch>(SlashFetch.Idle)
     private val sessionOpPending = MutableStateFlow(false)
+    private val translateTogglePending = AtomicBoolean(false)
+    private var featuresRequested = false
+    private val mutableInputTranslationAvailable = MutableStateFlow(false)
+
+    /**
+     * `GET /api/features` `inputTranslation.available` — the hub has a
+     * translation provider. With [ChatHeaderUi.translateInput] it gates the
+     * menu toggle (web: `available || metadata.translateInput === true`, so a
+     * session left on can still be switched off).
+     */
+    val inputTranslationAvailable: StateFlow<Boolean> = mutableInputTranslationAvailable.asStateFlow()
+
+    /** Hub-wide `translateInputByDefault`; sessions without an explicit choice follow it. */
+    private val translateInputByDefault = MutableStateFlow(false)
 
     private val _events = MutableSharedFlow<ChatEvent>(extraBufferCapacity = 16)
 
@@ -578,6 +595,7 @@ class ChatViewModel(
         val machines: List<Machine>,
         val detailLoadFailed: Boolean,
         val permissionOverrides: Map<String, PermissionRowOverride>,
+        val translateInputByDefault: Boolean,
     )
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -591,6 +609,7 @@ class ChatViewModel(
                 machineStore.machines,
                 detailLoadFailed,
                 permissionOverrides,
+                translateInputByDefault,
             ) { values: Array<Any?> -> pipelineInputs(values) }
         }
         // The web samples pipeline runs through React batching; here: emit the
@@ -783,6 +802,10 @@ class ChatViewModel(
                 runCatching { store.reconcileQueuedState() }
             }
             launch(workerContext) { restoreDraft() }
+            if (!featuresRequested) {
+                featuresRequested = true
+                launch(workerContext) { loadFeatures() }
+            }
             withContext(workerContext) { loadDetail() }
         }
 
@@ -1509,6 +1532,56 @@ class ChatViewModel(
         }
     }
 
+    /** Explicit hub-owned `metadata.translateInput` wins; absent ⇒ the hub default (web parity). */
+    private fun effectiveTranslateInput(explicit: Boolean?, hubDefault: Boolean): Boolean = explicit ?: hubDefault
+
+    /** Best-effort feature discovery; a failure (or an older hub) leaves the toggle hidden. */
+    private suspend fun loadFeatures() {
+        try {
+            val available = api.getFeatures().inputTranslationAvailable
+            mutableInputTranslationAvailable.value = available
+            // Sessions without an explicit choice follow the hub default.
+            if (available) translateInputByDefault.value = api.getHubSettings().translateInputByDefault
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            // Hidden unless the session already has translation on.
+        }
+    }
+
+    /**
+     * Flips hub-owned `metadata.translateInput` (`PATCH /sessions/:id`). On
+     * success the cached detail is updated locally, then refetched (web
+     * invalidates the session query); the session-updated SSE carries the
+     * same truth. Failures (e.g. 400 without a provider) surface as
+     * [ChatNotice.TranslateInputFailed].
+     */
+    fun toggleTranslateInput() {
+        if (!translateTogglePending.compareAndSet(false, true)) return
+        val enabled = !effectiveTranslateInput(currentDetail()?.metadata?.translateInput, translateInputByDefault.value)
+        scope.launch {
+            try {
+                api.setSessionTranslateInput(sessionId, enabled)
+                sessionStore.updateDetailLocal(sessionId) { detail ->
+                    detail.metadata?.let { detail.copy(metadata = it.copy(translateInput = enabled)) } ?: detail
+                }
+                try {
+                    sessionStore.loadSessionDetail(sessionId)
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (_: Exception) {
+                    // The local update stands until SSE/next load brings server truth.
+                }
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                _events.tryEmit(ChatEvent.Notice(ChatNotice.TranslateInputFailed(error.message)))
+            } finally {
+                translateTogglePending.set(false)
+            }
+        }
+    }
+
     /** `DELETE /sessions/:id` — [ChatEvent.SessionDeleted] on success; 409 while active. */
     fun deleteSession() {
         if (!sessionOpPending.compareAndSet(expect = false, update = true)) return
@@ -2139,6 +2212,7 @@ class ChatViewModel(
             machines = values[3] as List<Machine>,
             detailLoadFailed = values[4] as Boolean,
             permissionOverrides = values[5] as Map<String, PermissionRowOverride>,
+            translateInputByDefault = values[6] as Boolean,
         )
     }
 
@@ -2309,6 +2383,7 @@ class ChatViewModel(
             name = detail?.metadata?.name ?: summary?.metadata?.name,
             active = detail?.active ?: summary?.active ?: false,
             thinking = detail?.thinking ?: summary?.thinking ?: false,
+            translateInput = effectiveTranslateInput(detail?.metadata?.translateInput, inputs.translateInputByDefault),
         )
     }
 

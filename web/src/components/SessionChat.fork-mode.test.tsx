@@ -98,6 +98,7 @@ describe('fork preview fed by the hub while the dialog stays open', () => {
                             hasMoreMessages={false}
                             isSyncingTail={false}
                             isCatchingUpFromCache={false}
+                            cachedTailFirstFrame={false}
                             isLoadingMoreMessages={false}
                             isSending={false}
                             sendSettlement={null}

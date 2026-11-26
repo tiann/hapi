@@ -11,7 +11,7 @@ import { SDKToLogConverter } from "./utils/sdkToLogConverter";
 import { PLAN_FAKE_REJECT } from "./sdk/prompts";
 import { claudeProcessModeKey, claudeBatchModeHash, EnhancedMode } from "./loop";
 import { OutgoingMessageQueue } from "./utils/OutgoingMessageQueue";
-import type { ClaudePermissionMode } from "@hapi/protocol/types";
+import type { PermissionModeOf, Flavors } from "@hapi/protocol/types";
 import { RPC_METHODS } from "@hapi/protocol/rpcMethods";
 import { getClaudeNativeSlashCommand, parseSpecialCommand } from "@/parsers/specialCommands";
 import { deriveSpawnArgs, isSessionMaterialized } from './conversationHistory';
@@ -26,7 +26,7 @@ import {
 interface PermissionsField {
     date: number;
     result: 'approved' | 'denied';
-    mode?: ClaudePermissionMode;
+    mode?: PermissionModeOf<typeof Flavors.claude>;
     allowedTools?: string[];
 }
 
@@ -778,6 +778,10 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         onThinkingChange: session.onThinkingChange,
                         claudeEnvVars: session.claudeEnvVars,
                         onMessage,
+                        onDroppedResult: (message) => sdkToLogConverter.consumeResultForAccounting(message),
+                        onSpawn: (fresh) => {
+                            if (fresh) sdkToLogConverter.startFreshProcessBaseline();
+                        },
                         onContextUsage: (usage) => sdkToLogConverter.applyContextUsage(usage.model, usage.maxTokens),
                         onAccountIdentity: (identity) => sdkToLogConverter.updateAccountIdentity?.(identity),
                         onFirstResult: (initialMessage) => {

@@ -4,6 +4,7 @@ import { stripPreviewUrls } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
 import { ApiError } from '@/api/client'
 import { queryKeys } from '@/lib/query-keys'
+import { randomId } from '@/lib/randomId'
 import { extractScratchlistAttachmentMetadata } from '@/lib/scratchlistAttachmentAdapter'
 import type { ScratchlistAttachmentWithPreview } from '@/lib/scratchlistAttachmentPreview'
 import {
@@ -141,9 +142,7 @@ function isScratchlistNotFound(error: unknown): boolean {
 }
 
 function makeOptimisticHubEntry(text: string, now: number): HubEntry {
-    const fallbackId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-        ? crypto.randomUUID()
-        : `scratch-${now}-${Math.random().toString(36).slice(2, 10)}`
+    const fallbackId = randomId()
     return {
         entryId: fallbackId,
         text,

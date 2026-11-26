@@ -42,7 +42,7 @@ import { useUnseenBlockCount } from '@/hooks/useUnseenBlockCount'
 import { useCodexExplorationCollapse } from '@/hooks/useCodexExplorationCollapse'
 import { isQueuedForInvocation } from '@/lib/messages'
 import { sendVoiceMessage } from '@/lib/dictationSend'
-import { inactiveSessionCanResume } from '@/lib/sessionResume'
+import { inactiveSessionBannerKey, inactiveSessionCanResume } from '@/lib/sessionResume'
 import {
     getCodexModelReasoningEfforts,
     supportsCodexReasoningEffort
@@ -111,6 +111,8 @@ import {
 import { useTranslation } from '@/lib/use-translation'
 import type { ScratchlistEntry } from '@/lib/scratchlist'
 import type { SendMessageAcceptance, SendMessageSettlement } from '@/hooks/mutations/useSendMessage'
+import { useOptionalAddToast } from '@/lib/toast-context'
+import { useSessionInputTranslation } from '@/hooks/useSessionInputTranslation'
 import { handoffComposerDraft, transferComposerDraftThenNavigate } from '@/lib/composer-draft-transfer'
 import { SessionHeader } from '@/components/SessionHeader'
 import { CursorMigrationBanner } from '@/components/CursorMigrationBanner'
@@ -660,6 +662,7 @@ type PendingRequestTarget = {
 }
 
 type SessionChatProps = {
+    checkingSession?: boolean
     readThroughRevision?: number
     api: ApiClient
     titleSuggestionAvailable?: boolean
@@ -674,6 +677,8 @@ type SessionChatProps = {
     isSyncingTail: boolean
     /** Cached re-entry: the authoritative latest-page fetch is still in flight. */
     isCatchingUpFromCache: boolean
+    /** Cached re-entry of a hydrated tail window: first frame can render at the bottom before the sync settles. */
+    cachedTailFirstFrame: boolean
     isLoadingMoreMessages: boolean
     isSending: boolean
     sendSettlement: SendMessageSettlement | null
@@ -953,6 +958,7 @@ function SessionChatInner(props: SessionChatProps) {
         props.messages.length,
         props.cursorChatOnDisk
     )
+    const inactiveBanner = inactiveSessionBannerKey(props.session, Boolean(props.checkingSession), inactiveCanResume)
     const terminalSupported = isRemoteTerminalSupported(props.session.metadata)
     // Offer the agent terminal only for an ACTIVE PTY session: a 'remote'/SDK
     // session has no agent PTY, and an archived/inactive one has no live PTY (and
@@ -1522,6 +1528,19 @@ function SessionChatInner(props: SessionChatProps) {
         enabled: agentFlavor === 'cursor' && props.session.active
     })
     const sessionMachineId = props.session.metadata?.machineId ?? null
+    const addToast = useOptionalAddToast()
+    const inputTranslation = useSessionInputTranslation(props.api, props.session)
+    const inputTranslationToggle = inputTranslation.toggle
+    const handleToggleInputTranslation = useCallback(() => {
+        void inputTranslationToggle().catch((error: unknown) => {
+            addToast?.({
+                title: t('dialog.error.default'),
+                body: error instanceof Error ? error.message : t('dialog.error.default'),
+                sessionId: props.session.id,
+                url: `/sessions/${props.session.id}`
+            })
+        })
+    }, [addToast, inputTranslationToggle, props.session.id, t])
     // A running session discovers its models over its own connection (kimi
     // provider list --json), so this works without a background runner;
     // switching itself still goes through the existing ACP setModel path.
@@ -2555,11 +2574,9 @@ function SessionChatInner(props: SessionChatProps) {
                 <TeamPanel teamState={props.session.teamState} />
             )}
 
-            {sessionInactive ? (
+            {inactiveBanner ? (
                 <div className="mx-auto w-full max-w-content bg-[var(--app-subtle-bg)] p-3 text-center text-sm text-[var(--app-hint)]">
-                    {inactiveCanResume
-                        ? t('session.inactive.autoResume')
-                        : t('session.inactive.cannotResume')}
+                    {t(inactiveBanner)}
                 </div>
             ) : null}
 
@@ -2688,6 +2705,7 @@ function SessionChatInner(props: SessionChatProps) {
                         readThroughRevision={!terminalVisible && props.viewMode === 'tail' ? props.readThroughRevision : undefined}
                         isSyncingTail={props.isSyncingTail}
                         isCatchingUpFromCache={props.isCatchingUpFromCache}
+                        cachedTailFirstFrame={props.cachedTailFirstFrame}
                         messagesWarning={props.messagesWarning}
                         hasMoreMessages={props.hasMoreMessages}
                         hasMoreNewerMessages={props.hasMoreNewerMessages}
@@ -2822,6 +2840,12 @@ function SessionChatInner(props: SessionChatProps) {
                         effort={agentFlavor === 'agy' ? agyCurrentEffort : props.session.effort}
                         agentFlavor={agentFlavor}
                         machineId={sessionMachineId}
+                        inputTranslation={inputTranslation.visible ? {
+                            enabled: inputTranslation.enabled,
+                            fromDefault: inputTranslation.fromDefault,
+                            pending: inputTranslation.pending,
+                            onToggle: handleToggleInputTranslation
+                        } : undefined}
                         availableModelOptions={
                             agentFlavor === 'codex'
                                 ? codexModelOptions

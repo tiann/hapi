@@ -296,11 +296,11 @@ export function reorderScratchlistEntries(
     sessionId: string,
     entryIds: string[]
 ): StoredScratchlistEntry[] | null {
-    const existing = listScratchlistEntries(db, sessionId)
+    const existing = new Set(listScratchlistEntries(db, sessionId).map(entry => entry.entryId))
     if (
-        entryIds.length !== existing.length
+        entryIds.length !== existing.size
         || new Set(entryIds).size !== entryIds.length
-        || entryIds.some((entryId) => !existing.some((entry) => entry.entryId === entryId))
+        || entryIds.some((entryId) => !existing.has(entryId))
     ) {
         return null
     }

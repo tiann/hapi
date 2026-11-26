@@ -44,7 +44,7 @@ Source: `hub/src/web/routes/sessions.ts`; shapes `SessionSchema` (`shared/src/sc
 
 | Method & path | Request | Response |
 |---|---|---|
-| `GET /api/sessions` | Query: `limit?` (1–500), `order?=updatedAt` | `{sessions: (SessionSummary & {futureScheduledMessageCount, nextScheduledAt})[]}` |
+| `GET /api/sessions` | Query: `limit?` (1–500), `order?=updatedAt` | `{sessions: (SessionSummary & {futureScheduledMessageCount, nextScheduledAt})[], serverTime: number}` — Hub epoch milliseconds at response time; use this clock to age job heartbeats. |
 | `GET /api/sessions/content-search` | Query: `query`, `limit?` (1–100, default 50), repeated `sessionId?` to scope | `SessionContentSearchResponse` `{results: [{session: SessionSummary, match}], hasPotentiallyIncompleteResults}` — message-text search across sessions |
 | `POST /api/sessions/content-search` | `{query, limit?, sessionIds?: string[]}` | Same as `GET`; use for long `sessionIds` scopes (`413` above the body limit) |
 | `GET /api/sessions/:id/content-search` | Query: `query`, `limit?` (1–1000) | `SessionContentMatchesResponse` `{matches, total, hasPotentiallyIncompleteResults}` — matches inside one session; empty `query` returns no matches |
@@ -297,7 +297,7 @@ Source: `hub/src/web/routes/sessions.ts` (scratchlist section); schemas `Scratch
 |---|---|---|
 | `GET /api/sessions/:id/scratchlist` | — | `{entries: ScratchlistEntry[]}` in persisted `position` order (`{entryId, text, createdAt, updatedAt, position, attachments[]}`) |
 | `POST /api/sessions/:id/scratchlist` | `{text, entryId?, createdAt?, position?, attachments?}` (text ≤ 10 000; text or attachments required) | `201 {entry}`; `200 {entry}` when `entryId` already exists (idempotent retry); `409 code: 'scratchlist_at_cap'` at 200 entries |
-| `PUT /api/sessions/:id/scratchlist/reorder` | `{entryIds}` — every current entry id exactly once | `{entries}` in the new persisted order; `400` when ids do not exactly match the session scratchlist |
+| `PATCH /api/sessions/:id/scratchlist` | `{entryIds}` — every current entry id exactly once | `{entries}` in the new persisted order; `400` when ids do not exactly match the session scratchlist |
 | `PUT /api/sessions/:id/scratchlist/:entryId` | `{text?, attachments?}` (at least one) | `{entry}` |
 | `DELETE /api/sessions/:id/scratchlist/:entryId` | Optional query `expectedUpdatedAt` | `{ok: true}`; with `expectedUpdatedAt`, returns `{deleted, reason?}` and refuses to delete a row changed since the caller read it |
 | `GET /api/sessions/:id/scratchlist/limits` | — | `{limits}` (attachment size/count/byte budgets) |
@@ -390,7 +390,7 @@ internal and must never be used by clients.
 | Work graph | `/api/work-graph/*` (`hub/src/web/routes/workGraph.ts`) | Web-only feature |
 | Web Push | `/api/push/*` (`hub/src/web/routes/push.ts`) | Browser Push API; natives use `/api/devices/register` (Android/iOS push contract) |
 | Hub settings write | `PUT /api/hub-settings` | Owner-only hub administration |
-| Session jobs | `GET /api/sessions/:id/jobs`, `PUT`/`PATCH`/`DELETE /api/sessions/:id/jobs/:jobKey` | Web job meters and controls; see [Session jobs](../../guide/session-jobs.md) |
+| Session jobs | `GET /api/sessions/:id/jobs`, `PUT`/`PATCH`/`DELETE /api/sessions/:id/jobs/:jobKey`, `POST /api/sessions/:id/jobs/:jobKey/clear-stale` (requires the observed `startedAt`, `heartbeatAt` and, when present, `runId`; returns 409 if changed or still fresh) | Web job meters and controls; see [Session jobs](../../guide/session-jobs.md) |
 | Telegram | `POST /api/bind` | Telegram Mini App binding only |
 | Web voice | `/api/voice/token`, `/voices`, `/backend`, `/gemini-token`, `/qwen-token`, `/qwen-ws`, `/gemini-ws`, `/transcription/realtime-token`, `/telemetry`, credentials endpoints | Realtime assistant/dictation and provider administration; native apps use standard dictation |
 | Cursor maintenance | `/api/sessions/:id/migrate-to-acp`, `/cursor-chat-store` | Desktop store migration |

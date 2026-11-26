@@ -6,6 +6,7 @@ import { SidebarShowButton } from '../src/components/SidebarToggle'
 import { I18nProvider } from '../src/lib/i18n-context'
 
 function Harness() {
+    const showReopen = new URLSearchParams(window.location.search).has('reopenHint')
     const [sidebarVisible, setSidebarVisible] = useState(
         new URLSearchParams(window.location.search).get('sidebar') !== 'hidden'
     )
@@ -33,7 +34,9 @@ function Harness() {
                         onClose={() => {}}
                         sessionId="session-123"
                         sessionTitle="Fixture session"
-                        sessionActive={true}
+                        sessionActive={!showReopen}
+                        onReopen={showReopen ? () => {} : undefined}
+                        reopenHint={showReopen ? 'Could not verify Cursor chat data. Upgrade the CLI on that machine if reopening fails.' : undefined}
                         onRename={() => {}}
                         onArchive={() => {}}
                         onDelete={() => {}}

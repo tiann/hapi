@@ -1238,6 +1238,31 @@ public final class ChatInteractor {
         }
     }
 
+    /// Hub-wide `translateInputByDefault` (`GET /api/hub-settings`), set by
+    /// the chat shell once the hub reports a translation provider.
+    public var translateInputByDefault = false
+
+    /// Effective input translation: the session's explicit hub-owned
+    /// `metadata.translateInput` wins; absent ⇒ the hub default (web
+    /// `resolveInputTranslationEnabled`).
+    public var translateInputEnabled: Bool {
+        sessionStore.detail(for: sessionId)?.metadata?.translateInput ?? translateInputByDefault
+    }
+
+    /// `PATCH /sessions/:id {translateInput}` (web `SessionHeader`
+    /// toggle). Optimistic on the detail; a failure (e.g. 400 when the hub
+    /// has no translation provider) surfaces the hub's error as a notice.
+    public func setTranslateInput(_ enabled: Bool) {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.sessionStore.setTranslateInput(sessionId: self.sessionId, enabled: enabled)
+            } catch {
+                self.emit(.notice(hubErrorMessage(error) ?? "Failed to update session"))
+            }
+        }
+    }
+
     /// `DELETE /sessions/:id` for an inactive session. Success removes the
     /// row and fires the store's removal callback, which closes this chat;
     /// a 409 means the session became active again.
