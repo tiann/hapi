@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ApiSessionClient } from '@/api/apiSession';
+import { SESSION_KEEP_ALIVE_INTERVAL_MS } from '@/api/keepAlive';
 import type { AgentState, Metadata } from '@/api/types';
 import type { SessionBootstrapResult } from '@/agent/sessionFactory';
 import { SharedCodexRoot, latestCompletedForkCutoff, type RootHost } from './root';
@@ -578,6 +579,42 @@ it('publishes terminal fork title readiness only after a replay flush succeeds',
     f.reconnect();
     await vi.waitFor(() => expect(f.sessionReady).toHaveBeenCalledTimes(3));
     expect(f.sessionReady.mock.calls.filter(([options]) => options?.nativeForkTitleReady === true)).toHaveLength(1);
+});
+
+it('announces REST fork publication on reconnect only after the replay flush succeeds', async () => {
+    const f = await fixture();
+    f.session.updateMetadata(metadata => ({ ...metadata, forkedFrom: 'parent' }));
+    await f.root.activate();
+    f.sessionReady.mockClear();
+    const flush = vi.spyOn(f.root.session, 'flush').mockResolvedValueOnce(false).mockResolvedValue(true);
+    await f.root.publishForkBindingReady();
+    expect(f.sessionReady).not.toHaveBeenCalled();
+
+    f.reconnect();
+    await vi.waitFor(() => expect(f.sessionReady).toHaveBeenCalledWith({
+        nativeForkTitleReady: false,
+        nativeForkHistoryPublished: { parentId: 'parent', nativeSessionId: 'thread' }
+    }));
+    expect(flush).toHaveBeenCalledTimes(2);
+});
+
+it('retries REST fork publication on a heartbeat if a stalled socket stays connected', async () => {
+    const f = await fixture();
+    f.session.updateMetadata(metadata => ({ ...metadata, forkedFrom: 'parent' }));
+    vi.useFakeTimers();
+    try {
+        await f.root.activate();
+        f.sessionReady.mockClear();
+        const flush = vi.spyOn(f.root.session, 'flush').mockResolvedValueOnce(false).mockResolvedValue(true);
+        await f.root.publishForkBindingReady();
+        expect(f.sessionReady).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(2 * SESSION_KEEP_ALIVE_INTERVAL_MS);
+        expect(flush).toHaveBeenCalledTimes(2);
+        expect(f.sessionReady).toHaveBeenCalledTimes(1);
+        expect(f.sessionReady).toHaveBeenCalledWith(expect.objectContaining({
+            nativeForkHistoryPublished: { parentId: 'parent', nativeSessionId: 'thread' }
+        }));
+    } finally { f.root.stopAccepting(); vi.useRealTimers(); }
 });
 
 it('keeps the active round measurable when only the hub reconnects', async () => {

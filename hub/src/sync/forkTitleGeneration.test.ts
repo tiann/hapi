@@ -7,7 +7,7 @@ import type { Metadata } from '@hapi/protocol/types'
 
 const flush = () => new Promise(resolve => setTimeout(resolve, 0))
 
-function fixture(shared = true, childMetadata: Partial<Metadata> = {}, flavor = 'codex') {
+function fixture(shared = true, childMetadata: Partial<Metadata> = {}, flavor = 'codex', alreadyPublished = true) {
     const store = new Store(':memory:')
     const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
     const source = engine.getOrCreateSession('parent', {
@@ -27,6 +27,8 @@ function fixture(shared = true, childMetadata: Partial<Metadata> = {}, flavor = 
         ;(engine as any).sessionCache.refreshSession(child.id)
     }
     if (child) engine.handleSessionAlive({ sid: child.id, time: Date.now() })
+    const publication = { parentId: source.id, nativeSessionId: 'native-child' }
+    if (child && alreadyPublished) engine.handleSessionReady({ sid: child.id, time: Date.now(), nativeForkHistoryPublished: publication })
     const internal = engine as any
     internal.rpcGateway.forkConversation = async () => ({ nativeSessionId: 'native-child',
         ...(child ? { sessionId: child.id } : {}) })
@@ -41,25 +43,53 @@ function fixture(shared = true, childMetadata: Partial<Metadata> = {}, flavor = 
         store.messages.addMessage(id, { role: 'user', content: text }, localId)
         store.messages.markMessagesInvoked(id, [localId], Date.now())
     }
-    return { store, engine, source, child, internal, setMetadata, message,
+    return { store, engine, source, child, internal, setMetadata, message, publication,
         close() { engine.stop(); store.close() } }
 }
 
 describe('fork title generation', () => {
     it('never submits unverified RPC fork history even if its child emits normal readiness', async () => {
-        const f = fixture()
+        const f = fixture(true, {}, 'codex', false)
         try {
             f.message(f.child!.id, 'EXCLUDED LATER TOPIC', 'unverified-turn')
             let submitted = 0
             f.internal.titleSuggestionService.suggestTitle = async () => { submitted++; return 'unsafe' }
             f.internal.rpcGateway.forkConversation = async () => {
-                f.engine.handleSessionReady({ sid: f.child!.id, time: Date.now() })
+                f.engine.handleSessionReady({ sid: f.child!.id, time: Date.now(), nativeForkHistoryPublished: f.publication })
                 await flush()
                 return { error: 'Native fork history does not match the completed-turn cutoff' }
             }
             expect(await f.engine.forkConversation(f.source.id, 'default')).toMatchObject({ type: 'error' })
             await flush()
             expect(submitted).toBe(0)
+        } finally { f.close() }
+    })
+
+    it('defers title generation for a verified REST fork until its history is published', async () => {
+        const f = fixture(true, {}, 'codex', false)
+        try {
+            const sid = f.child!.id
+            const requests: string[] = []
+            f.internal.titleSuggestionService.suggestTitle = async (id: string) => {
+                requests.push(id)
+                return 'Published title'
+            }
+            f.message(sid, 'First inherited prompt', 'partial')
+            f.engine.handleSessionReady({ sid, time: Date.now() })
+            expect(await f.engine.forkConversation(f.source.id, 'default')).toEqual({ type: 'success', sessionId: sid })
+            await flush()
+            expect(requests).toEqual([])
+            expect(f.engine.getSession(sid)?.metadata?.forkTitleGenerationAttemptedAt).toBeUndefined()
+            f.engine.handleSessionReady({ sid, time: Date.now(),
+                nativeForkHistoryPublished: { ...f.publication, nativeSessionId: 'old-native-child' } })
+            await flush()
+            expect(requests).toEqual([])
+            f.message(sid, 'Last inherited prompt', 'remaining')
+            f.engine.handleSessionReady({ sid, time: Date.now(), nativeForkHistoryPublished: f.publication })
+            f.engine.handleSessionReady({ sid, time: Date.now(), nativeForkHistoryPublished: f.publication })
+            await flush()
+            expect(requests).toEqual([sid])
+            expect(f.engine.getSession(sid)?.metadata?.summary?.text).toBe('Published title')
         } finally { f.close() }
     })
 
@@ -292,6 +322,8 @@ describe('fork title generation', () => {
                 forkedFrom: source.id, capabilities: { concurrentClients: true }
             }, null, 'default')
             engine.handleSessionAlive({ sid: child.id, time: Date.now() })
+            engine.handleSessionReady({ sid: child.id, time: Date.now(),
+                nativeForkHistoryPublished: { parentId: source.id, nativeSessionId: 'native-child' } })
             store.messages.addMessage(child.id, { role: 'user', content: 'Latest payment topic' }, 'prompt')
             store.messages.markMessagesInvoked(child.id, ['prompt'], Date.now())
             const internal = engine as any

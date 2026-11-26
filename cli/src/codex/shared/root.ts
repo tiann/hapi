@@ -79,6 +79,10 @@ export class SharedCodexRoot {
     private readonly controls = new Set<Promise<unknown>>();
     private reconnecting = false;
     private terminalForkTitlePending = false;
+    private forkHistoryPublicationPending = false;
+    private forkBindingFlushing = false;
+    private hubReplayGeneration = 0;
+    private hubReplayPending = false;
     private settings: RuntimeSettings = {};
     private settingsNative: Record<string, unknown> = {};
     private settingsNotification?: Record<string, unknown>;
@@ -181,6 +185,8 @@ export class SharedCodexRoot {
             // Replay final native history with stable IDs after every reconnect.
             // The native turn keeps running across a hub-only reconnect, so the
             // active generation ledger must survive it.
+            const generation = ++this.hubReplayGeneration;
+            this.hubReplayPending = true;
             this.projection?.resetAfterHubReconnect();
             this.steeringActive = undefined;
             this.publishedPlanId = undefined;
@@ -189,9 +195,13 @@ export class SharedCodexRoot {
                 .then(async () => {
                     // Hub restart loses its ephemeral readiness fence. Replay
                     // it only after native revalidation and completed activation.
+                    if (generation !== this.hubReplayGeneration) return;
+                    this.hubReplayPending = false;
                     if (!wasActivated || !this.heartbeat || this.closed || this.stopping || !this.client.isInitialized()) return;
                     this.session.emitSessionReady();
-                    if (this.terminalForkTitlePending) await this.publishForkBindingReady();
+                    if (this.terminalForkTitlePending || this.session.getMetadata()?.forkedFrom) {
+                        await this.publishForkBindingReady();
+                    }
                 })
                 .catch(error => { logger.debug('[Codex shared] hub resync', error); this.failAttached(); });
         });
@@ -199,10 +209,25 @@ export class SharedCodexRoot {
 
     async publishForkBindingReady(terminalFork = false): Promise<void> {
         if (terminalFork) this.terminalForkTitlePending = true;
-        if (!await this.session.flush() || this.closed || this.stopping) return;
-        const titleReady = this.terminalForkTitlePending;
-        this.terminalForkTitlePending = false;
-        this.session.emitSessionReady({ nativeForkTitleReady: titleReady });
+        const parentId = this.session.getMetadata()?.forkedFrom;
+        const nativeSessionId = this.threadId;
+        // For REST forks this only confirms publication, not the requested cutoff.
+        if (!this.host.attached && !this.terminalForkTitlePending && parentId && nativeSessionId) {
+            this.forkHistoryPublicationPending = true;
+        }
+        if (this.forkBindingFlushing || this.hubReplayPending || this.closed || this.stopping) return;
+        this.forkBindingFlushing = true;
+        const generation = this.hubReplayGeneration;
+        try {
+            if (!await this.session.flush() || this.closed || this.stopping || generation !== this.hubReplayGeneration) return;
+            const titleReady = this.terminalForkTitlePending;
+            this.terminalForkTitlePending = false;
+            const published = this.forkHistoryPublicationPending && parentId && nativeSessionId
+                && this.threadId === nativeSessionId && this.session.getMetadata()?.forkedFrom === parentId;
+            this.forkHistoryPublicationPending = false;
+            this.session.emitSessionReady({ nativeForkTitleReady: titleReady,
+                ...(published ? { nativeForkHistoryPublished: { parentId, nativeSessionId } } : {}) });
+        } finally { this.forkBindingFlushing = false; }
     }
 
     /** The host's approval hooks: a wait for the user is not generation time. */
@@ -328,7 +353,13 @@ export class SharedCodexRoot {
         if (!this.host.attached) await this.initialSettings(options);
         if (this.stopping) throw new Error('Codex execution is stopping');
         this.registerControls(); this.ready();
-        this.heartbeat = setInterval(() => this.alive(), SESSION_KEEP_ALIVE_INTERVAL_MS); this.alive(); this.session.emitSessionReady();
+        this.heartbeat = setInterval(() => {
+            this.alive();
+            // A flush can time out on a socket that never disconnects.
+            if (this.forkHistoryPublicationPending || this.terminalForkTitlePending) {
+                void this.publishForkBindingReady().catch(error => logger.debug('[Codex shared] fork publication', error));
+            }
+        }, SESSION_KEEP_ALIVE_INTERVAL_MS); this.alive(); this.session.emitSessionReady();
     }
     private publishSteering(): void {
         this.publishCompaction();

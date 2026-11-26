@@ -41,6 +41,23 @@ function fixture() {
 }
 
 describe('archived Codex fork coordination', () => {
+    it('returns the archived fork before publication without requesting a title from partial history', async () => {
+        const f = fixture()
+        try {
+            const service = (f.engine as unknown as { titleSuggestionService: { suggestTitle: (id: string) => Promise<string> } }).titleSuggestionService
+            const suggest = vi.spyOn(service, 'suggestTitle').mockResolvedValue('Published archived title')
+            const result = await f.engine.forkConversation(f.source.id, 'ns', 'boundary')
+            expect(result.type).toBe('success')
+            if (result.type !== 'success') return
+            const sid = result.sessionId
+            expect(suggest).not.toHaveBeenCalled()
+            expect(f.engine.getSession(sid)?.metadata?.forkTitleGenerationAttemptedAt).toBeUndefined()
+            f.engine.handleSessionReady({ sid, time: Date.now(),
+                nativeForkHistoryPublished: { parentId: f.source.id, nativeSessionId: 'native-child' } })
+            expect(suggest).toHaveBeenCalledWith(sid)
+        } finally { f.engine.stop(); f.store.close() }
+    })
+
     it('refuses local resume discovery of a CLI-archived source while its fork child is starting', async () => {
         const f = fixture()
         let entered!: () => void
@@ -131,7 +148,10 @@ describe('archived Codex fork coordination', () => {
             f.rpc.spawnSession = async (...args) => {
                 const childId = args[12]!
                 seedAtSpawn = f.engine.getSession(childId)?.metadata?.forkTitleSeed
-                return spawn(...args)
+                const result = await spawn(...args)
+                f.engine.handleSessionReady({ sid: childId, time: Date.now(),
+                    nativeForkHistoryPublished: { parentId: f.source.id, nativeSessionId: 'native-child' } })
+                return result
             }
             const suggestion = vi.spyOn((f.engine as unknown as { titleSuggestionService: { suggestTitle(id: string): Promise<string> } }).titleSuggestionService,
                 'suggestTitle').mockResolvedValue('Generated child title')
@@ -405,6 +425,9 @@ describe('archived Codex fork coordination', () => {
             expect(f.engine.getSession(f.source.id)?.metadata?.codexArchivedFork).toBeDefined()
             f.engine.handleSessionReady({ sid: child, time: Date.now() })
             expect(await retry).toEqual({ type: 'success', sessionId: child })
+            expect(suggestion).not.toHaveBeenCalled()
+            f.engine.handleSessionReady({ sid: child, time: Date.now(),
+                nativeForkHistoryPublished: { parentId: f.source.id, nativeSessionId: 'native-child' } })
             expect(suggestion).toHaveBeenCalledTimes(1)
             expect(suggestion).toHaveBeenCalledWith(child)
             expect(f.engine.getSession(f.source.id)?.metadata?.codexArchivedFork).toBeUndefined()

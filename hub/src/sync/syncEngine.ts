@@ -17,6 +17,7 @@ import { FORK_PREVIEW_TAIL_ROWS, type ForkBoundary, type ForkBoundaryErrorCode, 
 import type { UsageQueryAgent, UsageQueryAgentSettings, UsageQueryResult, UsageQuerySettingsResponse, UsageQueryTemplate } from '@hapi/protocol/usageQuery'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
+import type { ClientToServerEvents } from '@hapi/protocol'
 import type { ListLocalSessionsRpcResponse, LocalSessionFlavor } from '@hapi/protocol/localTranscript'
 import type { CopilotReasoningEffortResponse, ImplementCodexPlanResult, KimiReasoningEffortResponse } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor, BackgroundTask, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, ExternalRef, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
@@ -245,6 +246,9 @@ export class SyncEngine {
     private stopped = false
     /** Sessions that emitted `session-ready` (Cursor ACP or validated Pi get_state). */
     private readonly sessionReadyIds = new Set<string>()
+    private readonly sharedForkTitleEvidence = new Map<string, {
+        parentId: string; nativeSessionId: string; verified?: true; published?: true
+    }>()
     /** Same-ID PTY rows with a resume currently in flight. */
     private readonly ptyResumeInFlightIds = new Set<string>()
     /** PTY rows kept fail-closed after a metadata write/clear failure. */
@@ -870,13 +874,36 @@ export class SyncEngine {
         }
     }
 
-    handleSessionReady(payload: { sid: string; time: number; nativeForkTitleReady?: boolean }): void {
+    private noteSharedForkTitleEvidence(sessionId: string, parentId: string, nativeSessionId: string,
+        kind: 'verified' | 'published'): void {
+        const metadata = this.sessionCache.getSession(sessionId)?.metadata
+        if (metadata?.flavor !== 'codex' || metadata.capabilities?.concurrentClients !== true
+            || metadata.forkedFrom !== parentId || metadata.codexSessionId !== nativeSessionId
+            || metadata.forkTitleGenerationAttemptedAt !== undefined) return
+        const previous = this.sharedForkTitleEvidence.get(sessionId)
+        const evidence = previous?.parentId === parentId && previous.nativeSessionId === nativeSessionId
+            ? previous : { parentId, nativeSessionId }
+        evidence[kind] = true
+        // The two signals may arrive in either order. Neither validates the other.
+        if (evidence.verified && evidence.published) {
+            this.sharedForkTitleEvidence.delete(sessionId)
+            void this.generateForkTitle(sessionId)
+        } else {
+            this.sharedForkTitleEvidence.set(sessionId, evidence)
+        }
+    }
+
+    handleSessionReady(payload: Parameters<ClientToServerEvents['session-ready']>[0]): void {
         const session = this.sessionCache.getSession(payload.sid)
         // Generic shared-root readiness can precede verification of an RPC fork's
         // history cutoff. It must not send any inherited text to the title provider.
         if (payload.nativeForkTitleReady === true && session?.metadata?.flavor === 'codex'
             && session.metadata.forkedFrom && session.metadata.capabilities?.concurrentClients) {
             void this.generateForkTitle(payload.sid)
+        }
+        const publication = payload.nativeForkHistoryPublished
+        if (typeof publication?.parentId === 'string' && typeof publication.nativeSessionId === 'string') {
+            this.noteSharedForkTitleEvidence(payload.sid, publication.parentId, publication.nativeSessionId, 'published')
         }
         if (session?.metadata?.flavor === 'opencode' && session.metadata.opencodeForkPending) {
             if (session.metadata.conversationHistoryDiverged
@@ -1082,6 +1109,7 @@ export class SyncEngine {
             this.triggerDedupIfNeeded(payload.sid)
         }
         this.sessionReadyIds.delete(payload.sid)
+        this.sharedForkTitleEvidence.delete(payload.sid)
         this.piResumeQuarantinedIds.delete(payload.sid)
         this.piUnexpectedTempOriginalIds.delete(payload.sid)
         if (ownsPiAttempt || isPiAttemptChild) {
@@ -2523,7 +2551,7 @@ export class SyncEngine {
                 if (!await this.waitForExactNativeForkBound(childId, attempt.nativeSessionId, 'codexSessionId', true, 90_000)
                     || !this.sessionCache.getSession(childId)?.active) throw new Error('Archived fork child native startup is not confirmed')
                 this.setArchivedForkAttempt(source.id, namespace, undefined)
-                void this.generateForkTitle(childId)
+                this.noteSharedForkTitleEvidence(childId, source.id, attempt.nativeSessionId, 'verified')
                 return { type: 'success', sessionId: childId }
             }
             if (!child) {
@@ -2555,16 +2583,18 @@ export class SyncEngine {
                 attempt = { ...attempt, nativeSessionId: result.nativeSessionId }
                 this.setArchivedForkAttempt(source.id, namespace, attempt)
             }
+            const nativeSessionId = attempt.nativeSessionId
+            if (!nativeSessionId) throw new Error('Missing native archived fork identity')
             child = this.sessionCache.refreshSession(childId)!
             const updated = this.store.sessions.updateSessionMetadata(childId,
-                { ...child.metadata!, codexSessionId: attempt.nativeSessionId }, child.metadataVersion, namespace, { touchUpdatedAt: false })
+                { ...child.metadata!, codexSessionId: nativeSessionId }, child.metadataVersion, namespace, { touchUpdatedAt: false })
             if (updated.result !== 'success') throw new Error('Failed to bind native fork to its child')
             this.sessionCache.refreshSession(childId)
             attempt = { ...attempt, spawnAttempted: true }
             this.setArchivedForkAttempt(source.id, namespace, attempt)
             const spawn = await this.rpcGateway.spawnSession(machineId, path, 'codex',
                 source.model ?? undefined, source.modelReasoningEffort ?? undefined, undefined, 'simple', undefined,
-                attempt.nativeSessionId, source.effort ?? undefined, source.permissionMode, source.serviceTier ?? undefined,
+                nativeSessionId, source.effort ?? undefined, source.permissionMode, source.serviceTier ?? undefined,
                 childId, source.collaborationMode)
             if (spawn.type === 'success' && spawn.sessionId !== childId) throw new Error('Fork launcher returned a different session')
             if (spawn.type === 'error' && spawn.childStarted === false) throw new Error(spawn.message)
@@ -2575,13 +2605,13 @@ export class SyncEngine {
             let bound = false
             do {
                 const ready = this.sessionCache.refreshSession(childId)
-                if (!ready || ready.metadata?.codexSessionId !== attempt.nativeSessionId) throw new Error('Fork child native binding changed')
+                if (!ready || ready.metadata?.codexSessionId !== nativeSessionId) throw new Error('Fork child native binding changed')
                 bound = ready.active && this.sessionReadyIds.has(childId)
                 if (!bound) await new Promise(resolve => setTimeout(resolve, 250))
             } while (!bound && Date.now() < deadline)
             if (!bound) throw new Error(spawn.type === 'error' ? spawn.message : 'Archived fork child did not become ready')
             this.setArchivedForkAttempt(source.id, namespace, undefined)
-            void this.generateForkTitle(childId)
+            this.noteSharedForkTitleEvidence(childId, source.id, nativeSessionId, 'verified')
             return { type: 'success', sessionId: childId }
         } catch (error) {
             return { type: 'error', message: `${error instanceof Error ? error.message : String(error)}. The source was not reopened; retry the same fork to reconcile a pending operation.` }
@@ -3103,7 +3133,11 @@ export class SyncEngine {
             const currentSource = this.sessionCache.refreshSession(sessionId)
             const forkSummary = buildForkSessionSummary(currentSource?.metadata ?? source.metadata)
             await this.sessionCache.seedForkTitle(child.id, forkSummary)
-            void this.generateForkTitle(child.id)
+            if (child.metadata?.flavor === 'codex' && child.metadata.capabilities?.concurrentClients === true) {
+                this.noteSharedForkTitleEvidence(child.id, sessionId, rpcResult.nativeSessionId, 'verified')
+            } else {
+                void this.generateForkTitle(child.id)
+            }
             return { type: 'success', sessionId: child.id }
         }
 
