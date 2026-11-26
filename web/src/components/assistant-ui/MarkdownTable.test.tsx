@@ -924,7 +924,7 @@ describe('MarkdownTable', () => {
     })
 
     it('round-trips literal Markdown metacharacters in plain table text', () => {
-        const source = '| Value |\n| --- |\n| \\*literal\\* \\_literal\\_ &#91;brackets&#93; \\`ticks\\` \\~\\~tilde\\~\\~ \\<angle\\> \\!literal\\! &amp;copy; |'
+        const source = '| Value |\n| --- |\n| \\*literal\\* \\_literal\\_ &#91;brackets&#93; \\`ticks\\` \\~\\~tilde\\~\\~ \\<angle\\> \\!literal\\! &amp;copy; \\$\\$x\\$\\$ |'
         const firstRender = render(
             <I18nProvider>
                 <MarkdownRenderer standalone content={source} />
@@ -932,7 +932,7 @@ describe('MarkdownTable', () => {
         )
 
         const copied = serializeTableToMarkdown(screen.getByRole<HTMLTableElement>('table'))
-        expect(copied).toContain('\\&copy;')
+        expect(copied).toContain('\\&copy; \\$\\$x\\$\\$')
         firstRender.unmount()
 
         render(
@@ -940,7 +940,7 @@ describe('MarkdownTable', () => {
                 <MarkdownRenderer standalone content={copied} />
             </I18nProvider>,
         )
-        expect(screen.getByRole<HTMLTableElement>('table').tBodies[0]?.rows[0]?.cells[0]).toHaveTextContent('*literal* _literal_ [brackets] `ticks` ~~tilde~~ <angle> !literal! &copy;')
+        expect(screen.getByRole<HTMLTableElement>('table').tBodies[0]?.rows[0]?.cells[0]).toHaveTextContent('*literal* _literal_ [brackets] `ticks` ~~tilde~~ <angle> !literal! &copy; $$x$$')
     })
 
     it('encodes Markdown link and image destinations with spaces and parentheses', () => {

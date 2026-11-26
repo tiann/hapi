@@ -1,4 +1,5 @@
 import type { PermissionMode } from '@hapi/protocol/types'
+import { Flavors } from '@hapi/protocol/modes'
 
 export type RemoteAgentCommandOptions<
     TPermissionMode extends PermissionMode,
@@ -62,7 +63,7 @@ export function parseRemoteAgentCommandOptions<
             // differently (opencode/gemini: 'yolo', agy: 'always-proceed'). Pick
             // whichever auto-approve mode this flavor actually allows instead of
             // hardcoding 'yolo' — otherwise agy gets a mode that isn't in its set
-            // (AGY_PERMISSION_MODES) and downstream flavor validation rejects it.
+            // (Flavors.agy.permissionModes) and downstream flavor validation rejects it.
             const yoloEquivalent = (['yolo', 'always-proceed', 'bypassPermissions'] as const)
                 .find((m) => (allowedPermissionModes as readonly string[]).includes(m))
             if (yoloEquivalent) {

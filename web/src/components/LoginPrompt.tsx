@@ -10,7 +10,9 @@ import { isPasskeyCancelled, isPasskeySupported, signInWithPasskey } from '@/lib
 import type { ServerUrlResult } from '@/hooks/useServerUrl'
 
 type LoginPromptProps = {
-    mode?: 'login' | 'bind'
+    mode?: 'login' | 'bind' | 'reconnect'
+    onReconnect?: () => void
+    onChooseHub?: () => void
     onLogin?: (token: string) => void
     onBind?: (token: string) => Promise<void>
     onPasskeyLogin?: (passkeySession: string) => void
@@ -25,6 +27,7 @@ type LoginPromptProps = {
 export function LoginPrompt(props: LoginPromptProps) {
     const { t } = useTranslation()
     const isBindMode = props.mode === 'bind'
+    const isReconnecting = props.mode === 'reconnect'
     const [accessToken, setAccessToken] = useState('')
     const [isLoading, setIsLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
@@ -141,8 +144,8 @@ export function LoginPrompt(props: LoginPromptProps) {
     const redirected = displayError === AUTH_PROXY_REDIRECT_MESSAGE
     const hubOrigin = new URL(props.baseUrl || window.location.origin, window.location.href).origin
     const serverSummary = props.serverUrl ?? `${props.baseUrl} ${t('login.server.default')}`
-    const title = isBindMode ? t('login.bind.title') : t('login.title')
-    const subtitle = t('login.subtitle')
+    const title = isReconnecting ? 'Reconnecting to hub' : isBindMode ? t('login.bind.title') : t('login.title')
+    const subtitle = isReconnecting ? 'Your saved sign-in will be retried automatically.' : t('login.subtitle')
     const submitLabel = isBindMode ? t('login.bind.submit') : t('login.submit')
 
     return (
@@ -162,7 +165,13 @@ export function LoginPrompt(props: LoginPromptProps) {
                 </div>
 
                 {/* Form */}
-                <form onSubmit={handleSubmit} className="space-y-4">
+                {isReconnecting ? (
+                    <div className="space-y-4">
+                        <p role="status" className="text-sm text-[var(--app-hint)] text-center">{props.error}</p>
+                        <Button type="button" className="w-full" onClick={props.onReconnect}>Retry now</Button>
+                        {props.onChooseHub ? <Button type="button" variant="secondary" className="w-full" onClick={props.onChooseHub}>Sign out and choose hub</Button> : null}
+                    </div>
+                ) : <form onSubmit={handleSubmit} className="space-y-4">
                     <div>
                         <input
                             type="password"
@@ -228,7 +237,7 @@ export function LoginPrompt(props: LoginPromptProps) {
                             </Button>
                         </>
                     )}
-                </form>
+                </form>}
 
                 {/* Help links */}
                 {!isBindMode && (
@@ -236,7 +245,7 @@ export function LoginPrompt(props: LoginPromptProps) {
                         <a href="https://hapi.run/docs" target="_blank" rel="noopener noreferrer" className="underline hover:text-[var(--app-fg)]">
                             {t('login.help')}
                         </a>
-                        <Dialog open={isServerDialogOpen} onOpenChange={handleServerDialogOpenChange}>
+                        {!isReconnecting && <Dialog open={isServerDialogOpen} onOpenChange={handleServerDialogOpenChange}>
                             <DialogTrigger asChild>
                                 <button type="button" className="underline hover:text-[var(--app-fg)]">
                                     Hub {props.serverUrl ? `${t('login.server.custom')}` : `${t('login.server.default')}`}
@@ -288,7 +297,7 @@ export function LoginPrompt(props: LoginPromptProps) {
                                     </div>
                                 </form>
                             </DialogContent>
-                        </Dialog>
+                        </Dialog>}
                     </div>
                 )}
             </div>

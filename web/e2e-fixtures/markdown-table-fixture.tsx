@@ -44,6 +44,7 @@ function MarkdownTableFixture() {
     return (
         <HappyChatProvider value={{ sessionTitle: 'Table filename fixture' } as HappyChatContextValue}>
             <main data-testid="markdown-table-fixture">
+                {query.has('focus-test') ? <input aria-label="Fixture composer" placeholder="Write a message" /> : null}
                 <MarkdownRenderer standalone content={content} />
             </main>
         </HappyChatProvider>

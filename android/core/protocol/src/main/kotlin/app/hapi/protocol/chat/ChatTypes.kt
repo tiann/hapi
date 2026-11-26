@@ -477,6 +477,14 @@ class UserTextBlock(
     override val kind: String get() = "user-text"
 }
 
+/**
+ * What the user typed when the hub translated the prompt (`meta.translatedFrom`,
+ * string only — web `toThreadMessageLike`); [UserTextBlock.text] is then the
+ * English actually sent to the agent. Null when no translation happened.
+ */
+val UserTextBlock.translatedFrom: String?
+    get() = asString(asObject(meta)?.get("translatedFrom"))
+
 class AgentTextBlock(
     override val id: String,
     val localId: String?,

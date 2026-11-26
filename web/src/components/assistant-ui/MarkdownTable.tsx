@@ -6,6 +6,7 @@ import {
     useState,
     type ComponentPropsWithoutRef,
     type RefObject,
+    type MouseEvent,
     type ReactNode,
 } from 'react'
 import * as DialogPrimitive from '@radix-ui/react-dialog'
@@ -171,7 +172,7 @@ function useTableActionSurfaces(
 
 function TableActionButton(props: {
     label: string
-    onClick: () => void
+    onClick: (event: MouseEvent<HTMLButtonElement>) => void
     children: ReactNode
     variant?: 'surface' | 'ghost'
     openFullscreen?: boolean
@@ -241,6 +242,7 @@ function TableActionMenu(props: {
     }, [])
 
     const scheduleClose = useCallback(() => {
+        if (!hoverOpenedRef.current) return
         clearCloseTimer()
         closeTimerRef.current = window.setTimeout(() => {
             closeTimerRef.current = null
@@ -270,8 +272,9 @@ function TableActionMenu(props: {
                         aria-haspopup="menu"
                         aria-expanded={open}
                         onMouseEnter={() => {
-                            hoverOpenedRef.current = true
                             clearCloseTimer()
+                            if (open) return
+                            hoverOpenedRef.current = true
                             setOpen(true)
                         }}
                         onPointerDown={(event) => {
@@ -321,6 +324,13 @@ function TableActionMenu(props: {
                         align="end"
                         sideOffset={4}
                         collisionPadding={8}
+                        onOpenAutoFocus={(event) => {
+                            if (hoverOpenedRef.current) event.preventDefault()
+                        }}
+                        onCloseAutoFocus={(event) => {
+                            if (hoverOpenedRef.current) event.preventDefault()
+                            hoverOpenedRef.current = false
+                        }}
                         onMouseEnter={clearCloseTimer}
                         onMouseLeave={scheduleClose}
                         className="z-[60] w-max min-w-0 rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] p-1 shadow-lg"
@@ -384,7 +394,7 @@ function serializeMarkdownText(value: string, encodeBrackets = true): string {
     const escaped = value
         .replace(/\s+/g, ' ')
         .replace(/\\/g, '\\\\')
-        .replace(/([&`*_<>~!])/g, '\\$1')
+        .replace(/([&`*_<>~!$])/g, '\\$1')
     if (!encodeBrackets) return escaped.replace(/([\[\]])/g, '\\$1')
     // A literal `\[...\]` in copied Markdown would be parsed as TeX bracket
     // math. HTML entities preserve the visible brackets without colliding
@@ -961,6 +971,7 @@ function TableViewer(props: {
     tableRef: RefObject<HTMLTableElement | null>
     imageTitle: string
     tableWrapPreferenceKey?: string
+    openerRef?: RefObject<HTMLButtonElement | null>
 }) {
     const { t } = useTranslation()
     const { className, children, ...rest } = props.tableProps
@@ -1145,6 +1156,12 @@ function TableViewer(props: {
                 <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-[var(--app-bg)]" />
                 <DialogPrimitive.Content
                     aria-label={viewerTitle}
+                    onCloseAutoFocus={(event) => {
+                        const opener = props.openerRef?.current
+                        if (!opener?.isConnected) return
+                        event.preventDefault()
+                        opener.focus({ preventScroll: true })
+                    }}
                     className="fixed inset-0 z-50 flex h-[100dvh] w-screen flex-col bg-[var(--app-bg)] p-0 outline-none"
                 >
                     {imageAction ? (
@@ -1291,6 +1308,7 @@ export function TableViewerFromElement(props: {
     onClose: () => void
     table: HTMLTableElement
     imageTitle: string
+    openerRef?: RefObject<HTMLButtonElement | null>
 }) {
     const tableRef = useRef<HTMLTableElement | null>(null)
     const tableProps: TableProps = {
@@ -1306,6 +1324,7 @@ export function TableViewerFromElement(props: {
             tableRef={tableRef}
             imageTitle={props.imageTitle}
             tableWrapPreferenceKey={getTableWrapPreferenceKey(props.table, props.imageTitle)}
+            openerRef={props.openerRef}
         />
     )
 }
@@ -1314,7 +1333,7 @@ function InlineTableActions(props: {
     tableRef: RefObject<HTMLTableElement | null>
     imageTitle: string
     isMobile: boolean
-    onOpenViewer: () => void
+    onOpenViewer: (event: MouseEvent<HTMLButtonElement>) => void
 }) {
     const { t } = useTranslation()
     const { copied, copy, markCopied } = useCopyToClipboard()
@@ -1368,6 +1387,7 @@ function InlineTableActions(props: {
         <>
             {imageAction ? (
                 <div
+                    data-hapi-table-image-feedback="true"
                     role="status"
                     aria-live="polite"
                     className="pointer-events-none absolute bottom-full right-0 z-10 mb-1 flex items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-bg)]/95 px-2 py-1 text-xs text-[var(--app-hint)] shadow-sm"
@@ -1378,6 +1398,7 @@ function InlineTableActions(props: {
             ) : null}
             {imageError ? (
                 <div
+                    data-hapi-table-image-feedback="true"
                     role="alert"
                     aria-live="assertive"
                     className="pointer-events-none absolute bottom-full right-0 z-10 mb-1 rounded-full border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-2 py-1 text-xs text-[var(--app-fg)] shadow-sm"
@@ -1472,7 +1493,9 @@ export function MarkdownTable(props: TableProps) {
         }
     }, [])
 
-    const openViewer = useCallback(() => {
+    const openerRef = useRef<HTMLButtonElement | null>(null)
+    const openViewer = useCallback((event: MouseEvent<HTMLButtonElement>) => {
+        openerRef.current = event.currentTarget
         openRef.current = true
         const table = inlineTableRef.current
         tableWrapPreferenceKeyRef.current = table
@@ -1561,6 +1584,7 @@ export function MarkdownTable(props: TableProps) {
                 tableRef={viewerTableRef}
                 imageTitle={imageTitle}
                 tableWrapPreferenceKey={tableWrapPreferenceKeyRef.current}
+                openerRef={openerRef}
             />
         </>
     )

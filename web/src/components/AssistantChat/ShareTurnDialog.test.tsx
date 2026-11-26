@@ -23,6 +23,8 @@ describe('ShareTurnDialog preview cleanup', () => {
                     <thead><tr><th>Configuration</th></tr></thead>
                     <tbody><tr><td>apiUrl</td></tr></tbody>
                 </table>
+                <div role="status" data-hapi-table-image-feedback="true">Saving image</div>
+                <div role="alert" data-hapi-table-image-feedback="true">Image error</div>
                 <div class="aui-md-table-actions">
                                     <button type="button" data-hapi-table-open-fullscreen="true">Open table full screen</button>
                 </div>
@@ -34,6 +36,7 @@ describe('ShareTurnDialog preview cleanup', () => {
         expect(root.querySelector('.aui-md-table-actions')).not.toBeNull()
         expect(root.querySelector('table')).not.toBeNull()
         expect(root).toHaveTextContent('apiUrl')
+        expect(root.querySelector('[data-hapi-table-image-feedback]')).toBeNull()
 
         stripExportControls(root)
         expect(root.querySelector('.aui-md-table-actions')).toBeNull()

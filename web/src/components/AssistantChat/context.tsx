@@ -14,6 +14,8 @@ export type HappyChatContextValue = {
     terminalToolDisplayMode: TerminalToolDisplayMode
     /** Hub-wide AGENT_NOTIFY_SUMMARY chat display; polled once at chat shell. */
     showSessionSummaryInChat: boolean
+    /** Effective hub input translation for this session; labels in-flight sends "Translating…". */
+    inputTranslationEnabled?: boolean
     disabled: boolean
     allowInactiveFork?: boolean
     onRefresh: () => void

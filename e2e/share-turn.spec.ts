@@ -156,6 +156,51 @@ test('keeps long inline code aligned when exporting a wrapped message', async ({
     })
 })
 
+test('keeps composer focus on table menu hover and restores the fullscreen opener', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 })
+    await page.goto('/e2e-fixtures/markdown-table-fixture.html?focus-test')
+    const input = page.getByRole('textbox', { name: 'Fixture composer' })
+    const actions = page.locator('.aui-md-table-actions')
+    await input.fill('Typing must continue')
+    await page.locator('.aui-md-table-frame').hover()
+    await actions.getByRole('button', { name: 'Copy table', exact: true }).hover()
+    await expect(page.getByRole('menu', { name: 'Copy table', exact: true })).toBeVisible()
+    await expect(input).toBeFocused()
+    await page.keyboard.type(' here')
+    await expect(input).toHaveValue('Typing must continue here')
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/table-hover-keeps-composer.png` })
+    const opener = actions.getByRole('button', { name: 'Open table full screen' })
+    await opener.focus()
+    await page.keyboard.press('Enter')
+    await expect(page.getByRole('button', { name: 'Close table full screen' })).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(opener).toBeFocused()
+})
+
+test('strips transient table feedback and restores the shared table opener on Escape', async ({ page }) => {
+    await page.goto('/e2e-fixtures/share-turn-fixture.html')
+    await page.getByTestId('source-turn').locator('.aui-md-table-frame').first().evaluate(frame => {
+        for (const label of ['Waiting for image', 'Image failed']) {
+            const badge = document.createElement('span')
+            badge.dataset.hapiTableImageFeedback = 'true'
+            badge.textContent = label
+            frame.append(badge)
+        }
+    })
+    await page.getByRole('button', { name: 'Open share preview' }).click()
+    const preview = page.locator('.hapi-share-preview-root')
+    const opener = preview.getByRole('button', { name: 'Open table full screen' }).first()
+    await expect(opener).toBeVisible()
+    await expect(preview.getByText('Waiting for image')).toHaveCount(0)
+    await expect(preview.getByText('Image failed')).toHaveCount(0)
+    await opener.focus()
+    await page.keyboard.press('Enter')
+    await expect(page.getByRole('button', { name: 'Close table full screen' })).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(opener).toBeFocused()
+})
+
 test('hides markdown table scrollbars in the shared image export', async ({ page }, testInfo) => {
     await page.goto('/e2e-fixtures/share-turn-fixture.html')
 

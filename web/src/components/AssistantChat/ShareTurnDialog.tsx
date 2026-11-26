@@ -62,7 +62,7 @@ export function stripCaptureOnlyControls(root: HTMLElement): void {
             element.remove()
         }
     }
-    for (const element of Array.from(root.querySelectorAll('.happy-message-actions, .happy-message-actions-first-line, [data-hapi-share-action="true"], button[aria-expanded], input, textarea, select'))) {
+    for (const element of Array.from(root.querySelectorAll('.happy-message-actions, .happy-message-actions-first-line, [data-hapi-share-action="true"], [data-hapi-table-image-feedback="true"], button[aria-expanded], input, textarea, select'))) {
         element.remove()
     }
     for (const anchor of Array.from(root.querySelectorAll('a'))) {
@@ -91,7 +91,7 @@ export function stripCaptureOnlyControls(root: HTMLElement): void {
 }
 
 export function stripExportControls(root: HTMLElement): void {
-    for (const element of Array.from(root.querySelectorAll('[data-hapi-share-export-exclude="true"], .aui-md-table-actions'))) {
+    for (const element of Array.from(root.querySelectorAll('[data-hapi-share-export-exclude="true"], [data-hapi-table-image-feedback="true"], .aui-md-table-actions'))) {
         element.remove()
     }
     for (const imageButton of Array.from(root.querySelectorAll('button:has(img)'))) {
@@ -726,6 +726,7 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
     } | null>(null)
     const [previewTable, setPreviewTable] = useState<HTMLTableElement | null>(null)
     const previewTableRef = useRef<HTMLTableElement | null>(null)
+    const previewTableOpenerRef = useRef<HTMLButtonElement | null>(null)
     const previewTableOpenRef = useRef(false)
     const previewTableMobileRef = useRef(false)
     const previewTableFullscreenRef = useRef(false)
@@ -752,7 +753,8 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
         if (wasMobile) leaveMobileTableViewer(enteredFullscreen)
     }, [])
 
-    const openTablePreview = useCallback((table: HTMLTableElement) => {
+    const openTablePreview = useCallback((table: HTMLTableElement, opener: HTMLButtonElement) => {
+        previewTableOpenerRef.current = opener
         previewTableRef.current = table
         previewTableOpenRef.current = true
         const isMobile = isMobileTableViewerViewport()
@@ -875,7 +877,7 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
             event.preventDefault()
             event.stopPropagation()
             const table = tableAction.closest<HTMLElement>('.aui-md-table-frame')?.querySelector<HTMLTableElement>('table')
-            if (table) openTablePreview(table)
+            if (table) openTablePreview(table, tableAction)
             return
         }
 
@@ -1169,6 +1171,7 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
                     open
                     onClose={closeTablePreview}
                     table={previewTable}
+                    openerRef={previewTableOpenerRef}
                     imageTitle={props.title}
                 />
             ) : null}
