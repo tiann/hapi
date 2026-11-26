@@ -29,6 +29,7 @@ import { createPortal } from 'react-dom'
 import type { ApiClient } from '@/api/client'
 import type { ScratchlistAttachmentMetadata } from '@hapi/protocol'
 import { safeCopyToClipboard } from '@/lib/clipboard'
+import { randomId } from '@/lib/randomId'
 import { useTranslation } from '@/lib/use-translation'
 import { HoverTooltip } from '@/components/HoverTooltip'
 import { CheckIcon, CopyIcon, PaperclipIcon, ScheduleIcon } from '@/components/icons'
@@ -559,7 +560,7 @@ function ScratchlistInventory({
         const temporaryRetains: Array<() => void> = []
         try {
             uploaded = await prepareScratchlistParkAttachments(api, sessionId, files.map((file) => ({
-                id: crypto.randomUUID(), name: file.name, contentType: file.type, file,
+                id: randomId(), name: file.name, contentType: file.type, file,
             })))
             uploaded.forEach((attachment, index) => {
                 const file = files[index]
