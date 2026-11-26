@@ -767,6 +767,8 @@ export default {
   'files.directories.upload.failedNamed': '{name} 上传失败',
   'files.directories.upload.done': '已上传 {count} 个文件到 {dir}',
   'files.directories.upload.error.title': '上传失败',
+  'files.directories.upload.skippedTitle': '上传已中止',
+  'files.directories.upload.skipped': '离开文件视图前未能上传：{names}',
   'files.directories.overwrite.title': '替换已有文件？',
   'files.directories.overwrite.description': '{dir} 中已存在「{name}」。要在 runner 所在电脑上替换它吗？',
   'files.directories.overwrite.confirm': '替换',

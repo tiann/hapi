@@ -769,6 +769,8 @@ export default {
   'files.directories.upload.failedNamed': 'Failed to upload {name}',
   'files.directories.upload.done': 'Uploaded {count} file(s) to {dir}',
   'files.directories.upload.error.title': 'Upload failed',
+  'files.directories.upload.skippedTitle': 'Upload stopped',
+  'files.directories.upload.skipped': 'Left the files view before {names} could be uploaded',
   'files.directories.overwrite.title': 'Replace existing file?',
   'files.directories.overwrite.description': "\"{name}\" already exists in {dir}. Replace it on the runner machine?",
   'files.directories.overwrite.confirm': 'Replace',

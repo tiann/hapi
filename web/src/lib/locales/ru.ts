@@ -643,6 +643,8 @@ export default {
   'files.directories.upload.failedNamed': 'Не удалось загрузить {name}',
   'files.directories.upload.done': 'Загружено файлов: {count} в {dir}',
   'files.directories.upload.error.title': 'Ошибка загрузки',
+  'files.directories.upload.skippedTitle': 'Загрузка прервана',
+  'files.directories.upload.skipped': 'Вы покинули просмотр файлов до загрузки: {names}',
   'files.directories.overwrite.title': 'Заменить существующий файл?',
   'files.directories.overwrite.description': '«{name}» уже есть в {dir}. Заменить его на машине раннера?',
   'files.directories.overwrite.confirm': 'Заменить',

@@ -203,18 +203,14 @@ describe('workspace write/delete RPC handlers', () => {
         expect((await readFile(join(root, 'overlap'))).byteLength).toBe(5)
     })
 
-    it('copies exclusively from the open stage when hard links are unavailable', async () => {
+    it('refuses to publish without hard links instead of exposing a partial copy', async () => {
         const noLinks = Object.assign(new Error('Unsupported'), { code: 'ENOTSUP' })
         vi.mocked(link).mockRejectedValueOnce(noLinks)
-        expect(await writeChunk('fallback', 0, 'copied', { final: true })).toMatchObject({ success: true })
-        expect(await readFile(join(root, 'fallback'), 'utf8')).toBe('copied')
-
-        expect(await writeChunk('late', 0, 'other')).toMatchObject({ success: true })
-        await writeFile(join(root, 'late'), 'winner')
-        vi.mocked(link).mockRejectedValueOnce(noLinks)
-        expect(await writeChunk('late', 5, '', { final: true })).toMatchObject({ success: false, code: 'exists' })
-        expect(await readFile(join(root, 'late'), 'utf8')).toBe('winner')
-        expect((await readdir(root)).sort()).toEqual(['fallback', 'late', 'src'])
+        expect(await writeChunk('fallback', 0, 'copied', { final: true })).toMatchObject({
+            success: false,
+            error: expect.stringMatching(/hard links/),
+        })
+        expect((await readdir(root)).sort()).toEqual(['src'])
     })
 
     it('enforces the configured limit across chunks and removes an oversized part', async () => {

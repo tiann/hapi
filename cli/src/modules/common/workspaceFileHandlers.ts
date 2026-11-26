@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { constants, createReadStream } from 'node:fs'
+import { constants } from 'node:fs'
 import { link, lstat, open, readdir, rename, rm, stat, unlink, type FileHandle } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type {
@@ -237,26 +237,21 @@ async function discardUploadPart(part: string, handle: FileHandle): Promise<void
     }
 }
 
-async function publishNewFile(part: string, target: string, upload: WorkspaceUpload): Promise<void> {
+class UnsupportedPublishError extends Error {}
+
+/**
+ * Publish a new file without ever replacing one: link(2) fails with EEXIST
+ * instead. A filesystem without hard links (FAT/exFAT, some network mounts)
+ * has no atomic no-replace publish, and copying into a freshly created target
+ * would expose a partial file, so such folders refuse new uploads instead.
+ */
+async function publishNewFile(part: string, target: string): Promise<void> {
     try {
         await link(part, target)
-        return
     } catch (error) {
         const code = (error as NodeJS.ErrnoException).code
-        if (!code || !UNSUPPORTED_LINK_ERRORS.has(code)) throw error
-    }
-
-    const destination = await open(target, UPLOAD_OPEN_FLAGS, 0o600)
-    try {
-        if (upload.size > 0) {
-            const source = createReadStream(part, { fd: upload.handle.fd, start: 0, end: upload.size - 1, autoClose: false })
-            await destination.writeFile(source)
-        }
-    } catch (error) {
-        if (await ownedFileStats(target, destination)) await unlink(target)
+        if (code && UNSUPPORTED_LINK_ERRORS.has(code)) throw new UnsupportedPublishError()
         throw error
-    } finally {
-        await destination.close()
     }
 }
 
@@ -344,9 +339,12 @@ async function handleWorkspaceWriteFile(
             await rename(part, target)
         } else {
             try {
-                await publishNewFile(part, target, upload)
+                await publishNewFile(part, target)
             } catch (error) {
                 if ((error as NodeJS.ErrnoException).code === 'EEXIST') return exists
+                if (error instanceof UnsupportedPublishError) {
+                    return rpcError('This folder is on a filesystem that cannot publish uploads safely (no hard links)')
+                }
                 throw error
             }
         }

@@ -190,6 +190,44 @@ describe('DirectoryTree upload and delete serialization', () => {
     })
 })
 
+describe('DirectoryTree upload after leaving the tree', () => {
+    it('settles a pending replace prompt and reports the skipped files when the tree unmounts', async () => {
+        const uploadWorkspaceFileChunk = vi.fn().mockResolvedValue({ success: false, code: 'exists', error: 'exists' })
+        const queryClient = new QueryClient()
+        const view = (showTree: boolean) => (
+            <QueryClientProvider client={queryClient}>
+            <I18nProvider>
+                <ToastProvider>
+                    {showTree ? (
+                        <DirectoryTree
+                            api={{ uploadWorkspaceFileChunk } as never}
+                            sessionId="session-1"
+                            rootLabel="project"
+                            onOpenFile={vi.fn()}
+                            sort={DEFAULT_DIRECTORY_SORT}
+                        />
+                    ) : null}
+                    <ToastContainer />
+                </ToastProvider>
+            </I18nProvider>
+            </QueryClientProvider>
+        )
+        const { rerender } = render(view(true))
+
+        fireEvent.click(screen.getByRole('button', { name: 'Upload files to src' }))
+        fireEvent.change(screen.getByTestId('workspace-upload-input'), {
+            target: { files: [new File(['a'], 'a.txt'), new File(['b'], 'b.txt')] },
+        })
+        expect(await screen.findByText('Replace existing file?')).toBeTruthy()
+
+        rerender(view(false))
+
+        expect(await screen.findByText('Upload stopped')).toBeTruthy()
+        expect(screen.getByText(/a\.txt, b\.txt/)).toBeTruthy()
+        expect(uploadWorkspaceFileChunk).toHaveBeenCalledTimes(1)
+    })
+})
+
 describe('DirectoryTree add to composer', () => {
     it('adds files by path and folders with a trailing slash, but not the root', () => {
         const onAddToComposer = vi.fn()

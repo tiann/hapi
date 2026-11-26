@@ -173,6 +173,18 @@ function useWorkspaceFileActions(props: {
     // prompt raised mid-batch must never overwrite (or be closed by) a delete
     // prompt, so deletes wait for the batch and uploads wait for the dialog.
     const uploadingRef = useRef(false)
+    // Switching tabs, searching or returning to chat unmounts the tree; the
+    // replace prompt's callbacks would then be unreachable, so settle it as
+    // "skip" and stop the batch with a notice instead of waiting forever.
+    const mountedRef = useRef(true)
+    const settleReplaceRef = useRef<((value: boolean) => void) | null>(null)
+    useEffect(() => {
+        mountedRef.current = true
+        return () => {
+            mountedRef.current = false
+            settleReplaceRef.current?.(false)
+        }
+    }, [])
     const confirmOpenRef = useRef(false)
     confirmOpenRef.current = confirm !== null
 
@@ -195,12 +207,18 @@ function useWorkspaceFileActions(props: {
     }, [toast])
 
     const askToReplace = useCallback((name: string, dirLabel: string) => new Promise<boolean>((resolve) => {
+        if (!mountedRef.current) {
+            resolve(false)
+            return
+        }
         let settled = false
         const settle = (value: boolean) => {
             if (settled) return
             settled = true
+            if (settleReplaceRef.current === settle) settleReplaceRef.current = null
             resolve(value)
         }
+        settleReplaceRef.current = settle
         setConfirm({
             title: t('files.directories.overwrite.title'),
             description: t('files.directories.overwrite.description', { name, dir: dirLabel }),
@@ -261,14 +279,20 @@ function useWorkspaceFileActions(props: {
         setPendingUploads((prev) => [...prev, ...queued.map((item) => item.pending)])
 
         const uploaded: string[] = []
+        const skipped: string[] = []
         try {
-            for (const { file, pending } of queued) {
+            for (const [index, { file, pending }] of queued.entries()) {
+                if (!mountedRef.current) {
+                    skipped.push(...queued.slice(index).map((item) => item.file.name))
+                    break
+                }
                 const onProgress = (loaded: number) => updatePending(pending.id, loaded)
                 try {
                     let outcome = await uploadOne(file, target.dir, false, onProgress)
                     if (outcome === 'exists') {
                         if (!await askToReplace(file.name, target.label)) {
                             removePending(pending.id)
+                            if (!mountedRef.current) skipped.push(file.name)
                             continue
                         }
                         outcome = await uploadOne(file, target.dir, true, onProgress)
@@ -292,6 +316,12 @@ function useWorkspaceFileActions(props: {
             setUploadingDir(null)
         }
 
+        if (skipped.length > 0) {
+            notify(
+                t('files.directories.upload.skippedTitle'),
+                t('files.directories.upload.skipped', { names: skipped.join(', ') }),
+            )
+        }
         if (uploaded.length > 0) {
             notify(
                 t('files.directories.upload.successTitle'),

@@ -723,6 +723,8 @@ export default {
   'files.directories.upload.failedNamed': '{name} のアップロードに失敗しました',
   'files.directories.upload.done': '{dir} に {count} 件のファイルをアップロードしました',
   'files.directories.upload.error.title': 'アップロードに失敗しました',
+  'files.directories.upload.skippedTitle': 'アップロードを中止しました',
+  'files.directories.upload.skipped': 'ファイル表示を離れたため、{names} はアップロードされませんでした',
   'files.directories.overwrite.title': '既存のファイルを置き換えますか？',
   'files.directories.overwrite.description': '{dir} に「{name}」が既に存在します。ランナーのマシン上で置き換えますか？',
   'files.directories.overwrite.confirm': '置き換え',
