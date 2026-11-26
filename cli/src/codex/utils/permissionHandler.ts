@@ -7,7 +7,7 @@
 
 import { logger } from "@/ui/logger";
 import { ApiSessionClient } from "@/api/apiSession";
-import type { CodexPermissionMode } from "@hapi/protocol/types";
+import type { PermissionModeOf, Flavors } from "@hapi/protocol/types";
 import {
     BasePermissionHandler,
     type AutoApprovalDecision,
@@ -55,7 +55,7 @@ type CodexPermissionHandlerOptions = {
 export class CodexPermissionHandler extends BasePermissionHandler<PermissionResponse, PermissionResult> {
     constructor(
         session: ApiSessionClient,
-        private readonly getPermissionMode: () => CodexPermissionMode | undefined,
+        private readonly getPermissionMode: () => PermissionModeOf<typeof Flavors.codex> | undefined,
         private readonly options?: CodexPermissionHandlerOptions
     ) {
         super(session);

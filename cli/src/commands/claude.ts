@@ -2,7 +2,7 @@ import chalk from 'chalk'
 import { z } from 'zod'
 import { PROTOCOL_VERSION } from '@hapi/protocol'
 import type { StartOptions } from '@/claude/runClaude'
-import { CLAUDE_PERMISSION_MODES } from '@hapi/protocol/modes'
+import { Flavors } from '@hapi/protocol/modes'
 import { configuration } from '@/configuration'
 import { isRunnerRunningCurrentlyInstalledHappyVersion } from '@/runner/controlClient'
 import { authAndSetupMachineIfNeeded } from '@/ui/auth'
@@ -12,7 +12,7 @@ import { spawnHappyCLI } from '@/utils/spawnHappyCLI'
 import { maybeAutoStartServer } from '@/utils/autoStartServer'
 import { extractErrorInfo } from '@/utils/errorUtils'
 import type { CommandDefinition } from './types'
-import type { ClaudePermissionMode } from '@hapi/protocol/types'
+import type { PermissionModeOf } from '@hapi/protocol/types'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 import { parseClaudeResumeArgs, resolveClaudeResume } from '@/claude/resumeIdentity'
 import { claudeCheckSession } from '@/claude/utils/claudeCheckSession'
@@ -66,7 +66,7 @@ async function applyClaudeResumeIdentity(options: StartOptions, machineId: strin
     options.startingMode = 'local'
     options.claudeArgs = parsed.remainingArgs.length > 0 ? parsed.remainingArgs : undefined
     // Explicit CLI flags win; otherwise keep the session's own settings.
-    options.permissionMode ??= target.permissionMode as ClaudePermissionMode | undefined
+    options.permissionMode ??= target.permissionMode as PermissionModeOf<typeof Flavors.claude> | undefined
     options.model ??= target.model ?? undefined
     if (options.effort === undefined && target.effort) {
         options.effort = target.effort
@@ -132,7 +132,7 @@ export const claudeCommand: CommandDefinition = {
                 options.startingMode = z.enum(['local', 'remote']).parse(args[++i])
             } else if (arg === '--permission-mode') {
                 const mode = args[++i]
-                if (!mode || !(CLAUDE_PERMISSION_MODES as readonly string[]).includes(mode)) {
+                if (!mode || !Flavors.claude.allowsPermissionMode(mode)) {
                     throw new Error(`Invalid --permission-mode value: ${mode ?? '(missing)'}`)
                 }
                 options.permissionMode = mode as StartOptions['permissionMode']

@@ -39,7 +39,7 @@ import {
 } from './utils/opencodeCompactBridge';
 import { OpencodeNativeTranscript } from './utils/opencodeNativeTranscript';
 import { opencodeCompactionEventId } from './utils/opencodeCompactionProjector';
-import { formatOpencodePromptError } from './utils/opencodeErrorText';
+import { formatOpencodePromptError, truncateOpencodeProviderText } from './utils/opencodeErrorText';
 import {
     formatOpencodeRetryStatus,
     subscribeToOpencodeEvents,
@@ -179,6 +179,13 @@ export function selectAbortStatusMessage(opts: {
         };
     }
     return { message: 'Turn aborted', shouldClearThinking: true };
+}
+
+// A JSON-RPC error settles the native writer even if the failed turn left
+// partial history. Transport loss leaves that writer unresolved.
+function isDefiniteAcpError(error: unknown): boolean {
+    return typeof (error as { code?: unknown } | null)?.code === 'number'
+        && !isAcpIndeterminateError(error);
 }
 
 class OpencodeRemoteLauncher extends RemoteLauncherBase {
@@ -1606,6 +1613,11 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                         await backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
                             this.handleAgentMessage(message);
                         });
+                    } catch (error) {
+                        if (isDefiniteAcpError(error)) {
+                            this.completeNativeInput(nativeInput);
+                        }
+                        throw error;
                     } finally {
                         promptDurationMs = performance.now() - promptStartedAt;
                         this.roundSummaryPhase = 'settle';
@@ -1645,7 +1657,15 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                         await this.conversationHistory.invalidateHistory().catch((writeError) => logger.warn('[opencode-remote] History divergence persistence deferred', writeError));
                     }
                     this.invalidateNativeReceiptCorrelation();
-                    logger.warn('[opencode-remote] prompt failed', error);
+                    const details = error as { code?: unknown; data?: { errorName?: unknown } } | null;
+                    const providerErrorName = details?.data?.errorName;
+                    logger.warn('[opencode-remote] prompt failed', {
+                        errorName: typeof providerErrorName === 'string'
+                            ? providerErrorName
+                            : error instanceof Error ? error.name : undefined,
+                        message: truncateOpencodeProviderText(error instanceof Error ? error.message : String(error)),
+                        code: details?.code
+                    });
                     this.reportPromptFailure(error);
                 } finally {
                     this.promptInFlight = false;
@@ -1936,7 +1956,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     void steer.completed.then(() => {
                         this.completeNativeInput(nativeInput);
                         this.settleSteerTransport(operation, softSteerOwnership);
-                    }, () => {
+                    }, (error) => {
+                        if (isDefiniteAcpError(error)) this.completeNativeInput(nativeInput);
                         this.invalidateNativeReceiptCorrelation();
                         this.settleSteerTransport(operation, softSteerOwnership);
                     });

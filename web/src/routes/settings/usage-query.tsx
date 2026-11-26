@@ -151,8 +151,10 @@ export default function SettingsUsageQueryPage() {
             templateId: input.template.id,
             template: input.template
         }),
-        onSuccess: (data, input) => {
-            queryClient.setQueryData(queryKeys.machineUsageQuery(input.machineId, input.agent), data)
+        onSuccess: async (data, input) => {
+            const settingsKey = queryKeys.machineUsageQuery(input.machineId, input.agent)
+            await queryClient.cancelQueries({ queryKey: settingsKey, exact: true })
+            queryClient.setQueryData(settingsKey, data)
             queryClient.removeQueries({ queryKey: queryKeys.machineUsageQueryResult(input.machineId, input.agent) })
         }
     })
@@ -279,7 +281,11 @@ export default function SettingsUsageQueryPage() {
                             <textarea
                                 aria-label={t('settings.usageQuery.templateEditor')}
                                 value={templateText}
-                                onChange={(event) => { setTemplateText(event.target.value); setEditorError(null) }}
+                                onChange={(event) => {
+                                    setTemplateText(event.target.value)
+                                    setEditorError(null)
+                                    testMutation.reset()
+                                }}
                                 spellCheck={false}
                                 rows={18}
                                 disabled={savePending}

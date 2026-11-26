@@ -3,10 +3,10 @@ import {
     getPermissionModeLabel,
     getPermissionModesForFlavor,
     resolveHapiYoloPermissionMode,
+    usesNativePermissionSelect,
     type PermissionMode
 } from '@hapi/protocol'
 import { useTranslation } from '@/lib/use-translation'
-import { usesNativePermissionSelect } from '@/lib/codexFamilyPermissionAgents'
 import type { AgentType } from './types'
 import { SelectControl } from '@/components/ui/select-control'
 import { YoloToggle } from './YoloToggle'

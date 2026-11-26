@@ -31,6 +31,23 @@ jobs:
                   composer-attachment-controls.spec.ts
                   image-preview-back.spec.ts
                   opencode-fork-buttons.spec.ts
+                  auth-network-recovery.spec.ts
+                  usage-query-tab-order.spec.ts
+            # playwright.config.ts already sets `trace: 'retain-on-failure'` and
+            # the html reporter on CI, but nothing collected the output, so every
+            # trace died with the runner — leaving CI-only Playwright failures
+            # undebuggable after the fact. Runs only on failure, so a green job
+            # costs nothing.
+            - name: Upload Playwright report and traces
+              if: failure()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: playwright-artifacts
+                  path: |
+                      playwright-report/
+                      test-results/
+                  retention-days: 7
+                  if-no-files-found: ignore
 
     unit-cli:
         runs-on: ubuntu-latest

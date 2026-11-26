@@ -257,7 +257,10 @@ function UsageQueryDetails(props: {
     if (settingsQuery.isLoading) return <div className="border-t border-[var(--app-divider)] pt-1 text-[var(--app-hint)]">{props.t('settings.usageQuery.loadingQuota')}</div>
     if (settingsQuery.error) return <div className="border-t border-[var(--app-divider)] pt-1 text-[var(--app-hint)]">{props.t('settings.usageQuery.quotaUnavailable')}</div>
     if (!settingsQuery.data?.enabled) return null
-    if (usageQuery.isLoading) return <div className="border-t border-[var(--app-divider)] pt-1 text-[var(--app-hint)]">{props.t('settings.usageQuery.loadingWindows')}</div>
+    if (usageQuery.isPaused) return <div className="border-t border-[var(--app-divider)] pt-1 text-[var(--app-hint)]">{props.t('settings.usageQuery.quotaUnavailable')}</div>
+    // Do not display a cached result from a prior opening. The Runner owns
+    // validation of its cache against the currently configured account.
+    if (!usageQuery.isFetchedAfterMount || usageQuery.isFetching) return <div className="border-t border-[var(--app-divider)] pt-1 text-[var(--app-hint)]">{props.t('settings.usageQuery.loadingWindows')}</div>
     if (usageQuery.error) return <div className="border-t border-[var(--app-divider)] pt-1 text-red-500">{props.t('settings.usageQuery.quotaFailed')}</div>
 
     const result = usageQuery.data
@@ -283,7 +286,55 @@ function UsageQueryDetails(props: {
     )
 }
 
+export type StatusBarInputTranslation = {
+    enabled: boolean
+    /** State comes from the hub-wide default, not a per-session choice. */
+    fromDefault: boolean
+    pending: boolean
+    onToggle: () => void
+}
+
+function TranslateGlyph() {
+    return (
+        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24"
+            fill="none" stroke="currentColor" strokeWidth="2.2"
+            strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="m5 8 6 6" />
+            <path d="m4 14 6-6 2-3" />
+            <path d="M2 5h12" />
+            <path d="M7 2h1" />
+            <path d="m22 22-5-10-5 10" />
+            <path d="M14 18h6" />
+        </svg>
+    )
+}
+
+function InputTranslationChip(props: StatusBarInputTranslation) {
+    const { t } = useTranslation()
+    const title = props.enabled
+        ? t(props.fromDefault ? 'composer.translate.onDefaultTitle' : 'composer.translate.onTitle')
+        : t('composer.translate.offTitle')
+    return (
+        <button
+            type="button"
+            data-testid="composer-translate-toggle"
+            aria-pressed={props.enabled}
+            aria-label={title}
+            title={title}
+            disabled={props.pending}
+            onClick={props.onToggle}
+            className={`relative top-0.5 inline-flex shrink-0 cursor-pointer items-center gap-0.5 self-center rounded-sm bg-transparent p-0 text-xs leading-none outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-link)] disabled:cursor-default disabled:opacity-60 ${
+                props.enabled ? 'text-[var(--app-link)]' : 'text-[var(--app-hint)] opacity-70 hover:opacity-100'
+            }`}
+        >
+            <TranslateGlyph />
+            <span>EN</span>
+        </button>
+    )
+}
+
 export function StatusBar(props: {
+    inputTranslation?: StatusBarInputTranslation
     active: boolean
     /** Session machine; enables the plan-quota readout next to the context meter. */
     machineId?: string | null
@@ -563,6 +614,7 @@ export function StatusBar(props: {
                                     {props.usageQueryApi && props.usageQueryMachineId
                                         && (props.agentFlavor === 'claude' || props.agentFlavor === 'codex' || props.agentFlavor === 'kimi') ? (
                                             <UsageQueryDetails
+                                                key={`${props.usageQueryMachineId}:${props.agentFlavor}`}
                                                 api={props.usageQueryApi}
                                                 machineId={props.usageQueryMachineId}
                                                 agentFlavor={props.agentFlavor}
@@ -582,6 +634,7 @@ export function StatusBar(props: {
             </div>
 
             <div className="flex min-w-0 shrink-0 items-baseline gap-2">
+                {props.inputTranslation ? <InputTranslationChip {...props.inputTranslation} /> : null}
                 {reasoningLabel ? (
                     <span className="whitespace-nowrap text-xs text-[var(--app-hint)]">
                         <span className="sm:hidden">{compactReasoningLabel}</span>

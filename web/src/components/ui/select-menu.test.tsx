@@ -39,8 +39,9 @@ describe('SelectMenu', () => {
 
         fireEvent.click(trigger)
         const selected = screen.getByRole('option', { name: 'Kimi Coding Plan' })
-        fireEvent.keyDown(selected, { key: 'ArrowDown' })
-        fireEvent.keyDown(screen.getByRole('option', { name: 'Generic rate-limit windows' }), { key: 'Enter' })
+        expect(trigger).toHaveAttribute('aria-activedescendant', selected.id)
+        fireEvent.keyDown(trigger, { key: 'ArrowDown' })
+        fireEvent.keyDown(trigger, { key: 'Enter' })
         expect(onChange).toHaveBeenLastCalledWith('generic')
     })
 
@@ -49,12 +50,12 @@ describe('SelectMenu', () => {
 
         const trigger = screen.getByRole('combobox', { name: 'Template' })
         fireEvent.keyDown(trigger, { key: 'Home' })
-        expect(screen.getByRole('option', { name: 'Kimi Coding Plan' })).toHaveAttribute('tabindex', '0')
+        expect(trigger).toHaveAttribute('aria-activedescendant', screen.getByRole('option', { name: 'Kimi Coding Plan' }).id)
         expect(screen.getByRole('option', { name: 'Custom JSON paths' })).toHaveAttribute('tabindex', '-1')
 
         fireEvent.keyDown(trigger, { key: 'End' })
         expect(screen.getByRole('option', { name: 'Kimi Coding Plan' })).toHaveAttribute('tabindex', '-1')
-        expect(screen.getByRole('option', { name: 'Custom JSON paths' })).toHaveAttribute('tabindex', '0')
+        expect(trigger).toHaveAttribute('aria-activedescendant', screen.getByRole('option', { name: 'Custom JSON paths' }).id)
     })
 
     it('does not steal focus when the menu is dismissed outside', () => {

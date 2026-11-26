@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_USAGE_QUERY_TEMPLATE, DEFAULT_USAGE_QUERY_TEMPLATES } from '@hapi/protocol/usageQuery'
@@ -8,6 +8,7 @@ import SettingsUsageQueryPage from './usage-query'
 
 const testUsageQuery = vi.fn()
 const saveUsageQuery = vi.fn()
+const getUsageSettings = vi.fn()
 const useMachinesMock = vi.hoisted(() => vi.fn())
 
 const defaultMachines = [{
@@ -15,29 +16,27 @@ const defaultMachines = [{
     metadata: { host: 'workstation.local', platform: 'win32' }
 }]
 
+const originalSettings = {
+    agent: 'claude',
+    enabled: false,
+    templateId: DEFAULT_USAGE_QUERY_TEMPLATE.id,
+    template: DEFAULT_USAGE_QUERY_TEMPLATE,
+    credentials: {
+        baseUrl: { configured: true, source: 'config' },
+        apiKey: { configured: true, source: 'config' }
+    }
+}
+
 beforeEach(() => {
     testUsageQuery.mockReset()
     saveUsageQuery.mockReset()
-    useMachinesMock.mockReturnValue({
-        machines: defaultMachines,
-        isLoading: false,
-        error: null,
-        refetch: vi.fn()
-    })
+    getUsageSettings.mockReset().mockResolvedValue(originalSettings)
+    useMachinesMock.mockReturnValue({ machines: defaultMachines, isLoading: false, error: null, refetch: vi.fn() })
 })
 
 vi.mock('@/lib/app-context', () => ({
     useAppContext: () => ({ api: {
-        getMachineUsageQuerySettings: vi.fn().mockResolvedValue({
-            agent: 'claude',
-            enabled: false,
-            templateId: DEFAULT_USAGE_QUERY_TEMPLATE.id,
-            template: DEFAULT_USAGE_QUERY_TEMPLATE,
-            credentials: {
-                baseUrl: { configured: true, source: 'config' },
-                apiKey: { configured: true, source: 'config' }
-            }
-        }),
+        getMachineUsageQuerySettings: getUsageSettings,
         getMachineAgentAvailability: vi.fn().mockResolvedValue({
             agents: [
                 { agent: 'claude', available: true },
@@ -212,5 +211,46 @@ describe('SettingsUsageQueryPage', () => {
         fireEvent.click(screen.getByRole('checkbox', { name: 'Enable quota query' }))
         expect(testUsageQuery).not.toHaveBeenCalled()
         expect(saveUsageQuery).not.toHaveBeenCalled()
+    })
+
+    it('ignores an older in-flight settings read after Save succeeds', async () => {
+        let finishRead!: (value: typeof originalSettings) => void
+        getUsageSettings.mockImplementationOnce(() => new Promise(resolve => { finishRead = resolve }))
+        const saved = { ...originalSettings, enabled: true, template: { ...originalSettings.template, name: 'Saved configuration' } }
+        saveUsageQuery.mockResolvedValueOnce(saved)
+        const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+        const key = queryKeys.machineUsageQuery('machine-1', 'claude')
+        queryClient.setQueryData(key, originalSettings, { updatedAt: 1 })
+        render(<QueryClientProvider client={queryClient}><I18nProvider><SettingsUsageQueryPage /></I18nProvider></QueryClientProvider>)
+        const editor = await screen.findByRole('textbox', { name: 'Usage query template JSON' })
+        await waitFor(() => expect(getUsageSettings).toHaveBeenCalledWith('machine-1', 'claude'))
+        const edited = JSON.stringify(saved.template)
+        fireEvent.change(editor, { target: { value: edited } })
+        fireEvent.click(screen.getByRole('checkbox', { name: 'Enable quota query' }))
+        await waitFor(() => expect(queryClient.getQueryData(key)).toMatchObject(saved))
+        await act(async () => { finishRead(originalSettings) })
+        expect(queryClient.getQueryData(key)).toMatchObject(saved)
+        expect(editor).toHaveValue(JSON.stringify(saved.template, null, 2))
+        expect(screen.getByRole('checkbox', { name: 'Enable quota query' })).toBeChecked()
+    })
+
+    it('clears an old preview and ignores an in-flight preview when editing the JSON', async () => {
+        const result = {
+            status: 'success', fiveHour: { usedPercent: 42, resetsAt: null }, sevenDay: null, queriedAt: Date.now(), stale: false
+        }
+        let finishTest!: (value: typeof result) => void
+        testUsageQuery.mockResolvedValueOnce(result).mockImplementationOnce(() => new Promise(resolve => { finishTest = resolve }))
+        const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+        render(<QueryClientProvider client={queryClient}><I18nProvider><SettingsUsageQueryPage /></I18nProvider></QueryClientProvider>)
+        const editor = await screen.findByRole('textbox', { name: 'Usage query template JSON' }) as HTMLTextAreaElement
+        fireEvent.click(screen.getByRole('button', { name: 'Test' }))
+        expect(await screen.findByText('42%')).toBeInTheDocument()
+        fireEvent.change(editor, { target: { value: editor.value + ' ' } })
+        expect(screen.queryByText('42%')).not.toBeInTheDocument()
+        fireEvent.click(screen.getByRole('button', { name: 'Test' }))
+        await waitFor(() => expect(testUsageQuery).toHaveBeenCalledTimes(2))
+        fireEvent.change(editor, { target: { value: editor.value + ' ' } })
+        await act(async () => { finishTest(result) })
+        expect(screen.queryByText('42%')).not.toBeInTheDocument()
     })
 })

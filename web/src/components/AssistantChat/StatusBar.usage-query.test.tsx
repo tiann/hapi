@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
@@ -63,5 +63,38 @@ describe('StatusBar Runner quota details', () => {
         expect(screen.getByText('18%')).toBeInTheDocument()
         expect(getSettings).toHaveBeenCalledTimes(1)
         expect(queryUsage).toHaveBeenCalledTimes(1)
+    })
+
+    it('hides cached percentages until the reopened popover receives the Runner response', async () => {
+        const base = {
+            agent: 'claude', templateId: DEFAULT_USAGE_QUERY_TEMPLATE.id, status: 'success',
+            fiveHour: { usedPercent: 42, resetsAt: null }, sevenDay: null, queriedAt: Date.now(), stale: false
+        }
+        let finishSecondQuery!: (value: typeof base) => void
+        const queryUsage = vi.fn().mockResolvedValueOnce(base).mockImplementationOnce(
+            () => new Promise(resolve => { finishSecondQuery = resolve })
+        )
+        const api = {
+            getMachineUsageQuerySettings: vi.fn().mockResolvedValue({ enabled: true }),
+            queryMachineUsage: queryUsage
+        } as unknown as ApiClient
+        renderWithQueries(
+            <I18nProvider>
+                <StatusBar active thinking={false} agentState={null} agentFlavor="claude"
+                    contextSize={90_000} contextWindow={258_000} usageQueryApi={api} usageQueryMachineId="machine-1" />
+            </I18nProvider>
+        )
+        const trigger = screen.getByRole('button', { name: 'Context popover' })
+        fireEvent.click(trigger)
+        expect(await screen.findByText('42%')).toBeInTheDocument()
+        fireEvent.click(trigger)
+        await waitFor(() => expect(screen.queryByText('42%')).not.toBeInTheDocument())
+        fireEvent.click(trigger)
+        await waitFor(() => expect(queryUsage).toHaveBeenCalledTimes(2))
+        expect(screen.getByText(/Loading 5H\/7D quota/)).toBeInTheDocument()
+        expect(screen.queryByText('42%')).not.toBeInTheDocument()
+        // Stale data expressly returned by the Runner for this request is OK.
+        finishSecondQuery({ ...base, stale: true, fiveHour: { usedPercent: 19, resetsAt: null } })
+        expect(await screen.findByText('19%')).toBeInTheDocument()
     })
 })
