@@ -70,7 +70,7 @@ import type { ApiClient } from '@/api/client'
 import { useVoiceInputPreferences } from '@/hooks/useVoiceInputPreferences'
 import { useDictation } from '@/hooks/useDictation'
 import { resolveMessageDeliveryMode, type ComposerSendIntent } from '@/lib/messageDelivery'
-import type { MessageDeliveryMode } from '@hapi/protocol'
+import type { CreateSessionTaskRequest, MessageDeliveryMode } from '@hapi/protocol'
 import { moveAttachmentId, orderItemsById, reconcileAttachmentOrder, replaceAttachmentId, type AttachmentDropPosition } from '@/lib/attachmentOrder'
 import type { AttachmentRetryHandler } from './AttachmentItem'
 
@@ -382,6 +382,12 @@ export function HappyComposer(props: {
     pendingSchedule?: PendingSchedule | null
     onSchedule?: (pending: PendingSchedule) => void
     onClearSchedule?: () => void
+    /**
+     * Lets the clock panel create repeat / queue tasks. The composer's own
+     * text is offered as a repeat task's message and is cleared when it
+     * becomes one.
+     */
+    createSessionTask?: (request: CreateSessionTaskRequest) => Promise<void>
     // Scratchlist drawer props - SessionChat owns the state. Threaded
     // straight through to ComposerButtons. When undefined, the toggle
     // button doesn't render (back-compat for any other consumer).
@@ -2562,6 +2568,11 @@ export function HappyComposer(props: {
                                 pendingSchedule={pendingSchedule}
                                 onSchedule={handleUserSchedule}
                                 onClearSchedule={onUserClearSchedule}
+                                sessionTasks={props.createSessionTask ? {
+                                    createTask: props.createSessionTask,
+                                    composerDraft: composerText,
+                                    onComposerDraftConsumed: () => setComposerText('')
+                                } : undefined}
                                 hasAttachments={blocksScheduling}
                                 attachmentsEnabled={props.attachmentsEnabled}
                                 modelValueLabel={modelValueLabel}

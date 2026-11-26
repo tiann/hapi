@@ -1,5 +1,33 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
+import type { CreateSessionTaskRequest } from '@hapi/protocol'
 import { useTranslation } from '@/lib/use-translation'
+import {
+    EMPTY_QUEUE_DRAFT,
+    EMPTY_REPEAT_DRAFT,
+    type QueueTaskDraft,
+    type RepeatTaskDraft
+} from '@/lib/sessionTasks'
+import { QueueTaskForm, RepeatTaskForm } from './SessionTaskForms'
+
+/** Repeat / queue form text, owned outside the panel so closing it loses nothing. */
+export type SessionTaskDrafts = { repeat: RepeatTaskDraft; queue: QueueTaskDraft }
+
+export const EMPTY_SESSION_TASK_DRAFTS: SessionTaskDrafts = { repeat: EMPTY_REPEAT_DRAFT, queue: EMPTY_QUEUE_DRAFT }
+
+/**
+ * Lets the panel create repeat and queue tasks besides one-shot scheduled
+ * sends. Left out where tasks cannot be created, which keeps the panel to
+ * scheduled send only.
+ */
+export type SessionTaskPickerBridge = {
+    /** The composer's text: a repeat task's message until the user types their own. */
+    composerDraft: string
+    createTask: (request: CreateSessionTaskRequest) => Promise<void>
+    /** Empties the composer once its text became a task. */
+    consumeComposerDraft: () => void
+    drafts: SessionTaskDrafts
+    onDraftsChange: (next: SessionTaskDrafts) => void
+}
 
 // ---------------------------------------------------------------------------
 // PendingSchedule — discriminated union for "what the user chose"
@@ -134,6 +162,13 @@ export function computeSchedulePickerPlacement(params: {
 const PRESETS = ['+5m', '+30m', '+1h', '+4h'] as const
 type Preset = typeof PRESETS[number]
 
+const PICKER_MODES: readonly PickerMode[] = ['send', 'repeat', 'queue']
+const PICKER_MODE_LABEL: Record<PickerMode, string> = {
+    send: 'composer.scheduleModeSend',
+    repeat: 'composer.scheduleModeRepeat',
+    queue: 'composer.scheduleModeQueue'
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -150,10 +185,15 @@ interface ScheduleTimePickerProps {
     anchorRef: React.RefObject<HTMLButtonElement | null>
     /** Currently active pending schedule, used to highlight the selected preset. */
     pendingSchedule?: PendingSchedule | null
+    /** Adds Repeat and Queue modes to the panel. */
+    tasks?: SessionTaskPickerBridge
 }
 
-export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSchedule }: ScheduleTimePickerProps) {
+type PickerMode = 'send' | 'repeat' | 'queue'
+
+export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSchedule, tasks }: ScheduleTimePickerProps) {
     const { t } = useTranslation()
+    const [mode, setMode] = useState<PickerMode>('send')
     const [tab, setTab] = useState<'relative' | 'specific'>('relative')
     const [specificValue, setSpecificValue] = useState('')
     const [specificError, setSpecificError] = useState<string | null>(null)
@@ -171,7 +211,7 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
             if (!anchor) return
             const mobile = window.matchMedia('(max-width: 640px), (pointer: coarse)').matches
             setIsMobilePanel(mobile)
-            const fullHeight = (panel?.scrollHeight ?? (tab === 'specific' ? 260 : 180)) + 4
+            const fullHeight = (panel?.scrollHeight ?? (mode !== 'send' || tab === 'specific' ? 260 : 180)) + 4
             if (mobile) {
                 const viewportHeight = window.visualViewport?.height ?? window.innerHeight
                 setIsContentConstrained(fullHeight > Math.min(viewportHeight * 0.85, viewportHeight - 24))
@@ -199,14 +239,20 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
         window.addEventListener('scroll', measure, { passive: true, capture: true })
         window.visualViewport?.addEventListener('resize', measure, { passive: true })
         window.visualViewport?.addEventListener('scroll', measure, { passive: true })
+        // The task forms grow with their textareas; keep the panel anchored above the button.
+        const resizeObserver = typeof ResizeObserver !== 'undefined' && panelRef.current
+            ? new ResizeObserver(() => measure())
+            : null
+        resizeObserver?.observe(panelRef.current as Element)
         return () => {
             window.removeEventListener('resize', measure)
             window.removeEventListener('scroll', measure, true)
             window.visualViewport?.removeEventListener('resize', measure)
             window.visualViewport?.removeEventListener('scroll', measure)
+            resizeObserver?.disconnect()
         }
     // anchorRef is a useRef object — stable identity, so this effect runs once on mount.
-    }, [anchorRef, tab])
+    }, [anchorRef, tab, mode])
 
     // Click-outside closes the panel.
     //
@@ -300,10 +346,33 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
             {/* Header */}
             <div className="px-3 pt-3 pb-2">
                 <p className="text-xs font-semibold text-[var(--app-hint)]">
-                    {t('composer.scheduleSend')}
+                    {mode === 'repeat' ? t('composer.scheduleModeRepeat') : mode === 'queue' ? t('composer.scheduleModeQueue') : t('composer.scheduleSend')}
                 </p>
             </div>
 
+            {tasks ? (
+                /* Mode switch: scheduled send, or a task the hub keeps running. */
+                <div className="flex px-3 gap-1 mb-2">
+                    {PICKER_MODES.map((candidate) => (
+                        <button
+                            key={candidate}
+                            type="button"
+                            aria-pressed={mode === candidate}
+                            onClick={() => setMode(candidate)}
+                            className={`flex-1 rounded-md px-2 py-1 text-xs font-medium transition-colors ${
+                                mode === candidate
+                                    ? 'bg-[var(--app-secondary-bg)] text-[var(--app-fg)]'
+                                    : 'text-[var(--app-hint)] hover:text-[var(--app-fg)]'
+                            }`}
+                        >
+                            {t(PICKER_MODE_LABEL[candidate])}
+                        </button>
+                    ))}
+                </div>
+            ) : null}
+
+            {mode === 'send' ? (
+            <>
             {/* Tab buttons */}
             <div className="flex px-3 gap-1 mb-2">
                 <button
@@ -381,6 +450,34 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
                     </div>
                 )}
             </div>
+            </>
+            ) : (
+                <div className="px-3 pb-3">
+                    {mode === 'repeat' && tasks ? (
+                        <RepeatTaskForm
+                            draft={tasks.drafts.repeat}
+                            onDraftChange={(repeat) => tasks.onDraftsChange({ ...tasks.drafts, repeat })}
+                            composerDraft={tasks.composerDraft}
+                            createTask={tasks.createTask}
+                            onCreated={({ fromComposer }) => {
+                                tasks.onDraftsChange({ ...tasks.drafts, repeat: EMPTY_REPEAT_DRAFT })
+                                if (fromComposer) tasks.consumeComposerDraft()
+                                onClose()
+                            }}
+                        />
+                    ) : mode === 'queue' && tasks ? (
+                        <QueueTaskForm
+                            draft={tasks.drafts.queue}
+                            onDraftChange={(queue) => tasks.onDraftsChange({ ...tasks.drafts, queue })}
+                            createTask={tasks.createTask}
+                            onCreated={() => {
+                                tasks.onDraftsChange({ ...tasks.drafts, queue: EMPTY_QUEUE_DRAFT })
+                                onClose()
+                            }}
+                        />
+                    ) : null}
+                </div>
+            )}
         </div>
     )
 }

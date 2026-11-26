@@ -171,7 +171,9 @@ JSON; Android has no fork, rewind or export UI. Session history actions also
 depend on the agent's capabilities.
 Both apps display existing scheduled messages and can schedule new ones: the
 composer's clock schedules a text-only send up to 7 days ahead (relative
-presets or a specific time).
+presets or a specific time). Repeat and queue tasks are web-only for now: the
+apps cannot create them, and the prompts a task sends arrive like any other
+user message.
 Android's full-text file export is a reader action,
 separate from exporting an entire session.
 

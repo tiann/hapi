@@ -61,6 +61,28 @@ Limits:
 
 Scheduled send is available on web, iOS (clock menu with the same presets plus **Pick a Time…**), and Android (clock button with Relative and Specific tabs).
 
+## Repeat and queue tasks
+
+The same clock panel has two more modes on the web app. Both hand a schedule to the hub, which then sends the prompts into the conversation on its own, as if you had typed them.
+
+- **Repeat**: one message, sent on a fixed interval (at least one minute). It starts now or at a time you pick, and runs until you pause or delete it — or, if you set a number of runs, until it has run that many times.
+- **Queue**: a list of messages, one per line, sent in order. The first goes out at once (or at the time you pick); each following one goes out one interval after the agent took the previous one.
+
+A **Repeat** task uses what is already in the composer as its message until you type something else in the panel.
+
+Tasks are listed in the **Tasks** bar above the composer, with what runs next and a **Pause / Resume** and **Delete** button per task. The prompts themselves appear in the thread and in the queued-message bar like any message you send.
+
+How the hub runs them:
+
+- A task never has more than one prompt waiting. A **Repeat** task that comes due while its previous prompt is still queued skips that slot instead of stacking a second one on a busy agent.
+- A hub restart loses nothing: a run that was missed while the hub was down goes out once when it is back, and a **Repeat** task then returns to its original grid.
+- **Pause** stops new prompts. One already sent stays in the queue and still counts.
+- **Delete** also cancels a prompt the agent has not taken yet.
+- If the session's machine is offline, the task waits and shows **Sends once the machine is back online**. If the session cannot be resumed, the task pauses itself and says so.
+- A finished task removes itself from the list; its prompts stay in the conversation.
+
+Tasks are text-only and have no 7-day limit. The iOS and Android apps cannot create them yet; prompts a task sends show up in their threads like any other message.
+
 ## Model and effort
 
 Open the composer **Settings** button (or the model/effort buttons in the toolbar) to change the model, effort, and permission mode for the running session. Changes apply to the next turn.

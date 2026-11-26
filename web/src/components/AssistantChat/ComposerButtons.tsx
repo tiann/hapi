@@ -1,9 +1,10 @@
 import { ComposerPrimitive, useAui } from '@assistant-ui/react'
 import type { ConversationStatus } from '@/realtime/types'
+import type { CreateSessionTaskRequest } from '@hapi/protocol'
 import { useTranslation } from '@/lib/use-translation'
 import { ScheduleIcon } from '@/components/icons'
 import { AttachmentPicker } from './AttachmentPicker'
-import { ScheduleTimePicker } from './ScheduleTimePicker'
+import { EMPTY_SESSION_TASK_DRAFTS, ScheduleTimePicker } from './ScheduleTimePicker'
 import type { PendingSchedule } from './ScheduleTimePicker'
 import { useFue } from '@/lib/use-fue'
 import { FueCallout, FueDot } from '@/components/Fue'
@@ -812,6 +813,17 @@ export function ComposerButtons(props: {
     pendingSchedule?: PendingSchedule | null
     onSchedule?: (pending: PendingSchedule) => void
     onClearSchedule?: () => void
+    /**
+     * Adds Repeat and Queue to the clock panel. Omit it to keep the panel to
+     * scheduled send only.
+     */
+    sessionTasks?: {
+        createTask: (request: CreateSessionTaskRequest) => Promise<void>
+        /** The composer's text, offered as a repeat task's message. */
+        composerDraft: string
+        /** Empties the composer once its text became a task. */
+        onComposerDraftConsumed: () => void
+    }
     // The backend rejects scheduled-send + attachment combinations (the per-CLI
     // upload directory is torn down before a mature emit could read the files).
     // The composer must surface that constraint at UI time so the user never
@@ -863,6 +875,9 @@ export function ComposerButtons(props: {
         : layout
     const isVoiceConnected = props.voiceStatus === 'connected'
     const [showSchedulePicker, setShowSchedulePicker] = useState(false)
+    // Task form text lives here, not in the panel, so a mis-tap that closes
+    // the panel does not throw away a half-typed queue.
+    const [taskDrafts, setTaskDrafts] = useState(EMPTY_SESSION_TASK_DRAFTS)
     const scheduleButtonRef = useRef<HTMLButtonElement>(null)
 
     const hasSchedule = props.pendingSchedule != null
@@ -1102,6 +1117,13 @@ export function ComposerButtons(props: {
                                 }}
                                 onClose={() => setShowSchedulePicker(false)}
                                 pendingSchedule={props.pendingSchedule}
+                                tasks={props.sessionTasks ? {
+                                    composerDraft: props.sessionTasks.composerDraft,
+                                    createTask: props.sessionTasks.createTask,
+                                    consumeComposerDraft: props.sessionTasks.onComposerDraftConsumed,
+                                    drafts: taskDrafts,
+                                    onDraftsChange: setTaskDrafts
+                                } : undefined}
                             />
                         )}
                     </div>

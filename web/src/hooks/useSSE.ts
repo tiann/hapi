@@ -705,6 +705,11 @@ export function useSSE(options: {
                 return
             }
 
+            // The event names the session only; the tasks themselves are refetched.
+            if (event.type === 'session-tasks-changed') {
+                void queryClient.invalidateQueries({ queryKey: queryKeys.sessionTasks(event.sessionId) })
+            }
+
             if (shouldInvalidateSessionListForEvent(scope, event.type)) {
                 queueSessionListInvalidation()
             }
