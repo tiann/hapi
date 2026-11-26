@@ -33,6 +33,7 @@ import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { isTelegramApp } from '@/hooks/useTelegram'
 import { useSidebarResize } from '@/hooks/useSidebarResize'
 import {
+    SESSION_FILES_PANEL_QUERY,
     SESSION_FILES_PANEL_RESIZE,
     SessionFilesPanelProvider,
     useSessionFilesPanelAvailable,
@@ -715,7 +716,11 @@ function SessionPage() {
     // SessionPage unmounts.
     const router = useRouter()
     const handleVoiceSessionResolved = useCallback((resolvedSessionId: string) => {
-        if (!isOnSessionPage(router.state.location.pathname, sessionId)) return
+        // On wide viewports the files routes keep this chat visible beside them.
+        const chatBesideFiles = typeof window !== 'undefined'
+            && typeof window.matchMedia === 'function'
+            && window.matchMedia(SESSION_FILES_PANEL_QUERY).matches
+        if (!isOnSessionPage(router.state.location.pathname, sessionId, { chatBesideFiles })) return
         handleSessionResolved(resolvedSessionId)
     }, [handleSessionResolved, router, sessionId])
 

@@ -359,6 +359,15 @@ export function isSelectAllTargetBlocked(target: EventTarget | null): boolean {
     return contenteditable !== null && contenteditable !== 'false'
 }
 
+function findFilesPanelForSelectAll(target: EventTarget | null): HTMLElement | null {
+    const panelOf = (node: Node | null | undefined): HTMLElement | null => {
+        const element = node instanceof Element ? node : node?.parentElement
+        return element?.closest<HTMLElement>('[data-session-files-panel]') ?? null
+    }
+    return panelOf(target instanceof Node ? target : null)
+        ?? panelOf(window.getSelection()?.anchorNode)
+}
+
 /**
  * Chromium quirk: when a page contains a contenteditable element (the
  * rich composer), Ctrl/Cmd+A with focus OUTSIDE the editable collapses
@@ -381,13 +390,19 @@ export function applyGlobalSelectAll(e: KeyboardEvent): boolean {
     if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return false
     if (e.key !== 'a' && e.key !== 'A') return false
     if (isSelectAllTargetBlocked(e.target)) return false
+    // With the files panel open beside the chat, select the pane the user is
+    // working in: clicking file text can leave focus on <body>, so the
+    // current selection's anchor counts as well as the key target.
+    const filesPanel = findFilesPanelForSelectAll(e.target)
     // The thread container is rendered by HappyThread; its class is the
     // stable handle between the page-level shortcut and the message DOM.
-    const thread = document.querySelector<HTMLElement>('.happy-thread-messages')
-    if (!thread || !thread.textContent) return false
+    const scope = filesPanel
+        ? filesPanel.querySelector<HTMLElement>('[data-hapi-file-scroll]') ?? filesPanel
+        : document.querySelector<HTMLElement>('.happy-thread-messages')
+    if (!scope || !scope.textContent) return false
     e.preventDefault()
     const range = document.createRange()
-    range.selectNodeContents(thread)
+    range.selectNodeContents(scope)
     const selection = window.getSelection()
     selection?.removeAllRanges()
     selection?.addRange(range)
