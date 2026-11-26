@@ -97,6 +97,13 @@ describe('SessionTasksBar', () => {
         expect(list).toBeTruthy()
     })
 
+    it('shows the prompt that is out while it waits, then the next one', async () => {
+        setup({ tasks: [task({ kind: 'queue', items: [{ text: 'a' }, { text: 'b' }, { text: 'c' }], runCount: 1, totalRuns: 3, pending: true, nextRunAt: null })] })
+        const row = await screen.findByRole('listitem')
+        expect(row.textContent).toContain('Sent, waiting for the agent')
+        expect(row.querySelector('span.line-clamp-2')?.textContent).toBe('a')
+    })
+
     it('explains a task that is waiting for its machine', async () => {
         setup({ tasks: [task({ lastError: 'machine_offline', nextRunAt: Date.now() - MINUTE })] })
         const row = await screen.findByRole('listitem')

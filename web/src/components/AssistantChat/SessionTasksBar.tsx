@@ -48,9 +48,10 @@ function DeleteIcon() {
     )
 }
 
-/** The prompt the task sends next, or the last one once everything is out. */
-export function nextSessionTaskPrompt(task: SessionTask): string {
-    return task.items[Math.min(task.runCount, task.items.length - 1)]?.text ?? ''
+/** While a prompt is out, that one; otherwise the one the task sends next. */
+export function displayedSessionTaskPrompt(task: SessionTask): string {
+    const index = task.pending ? task.runCount - 1 : task.runCount
+    return task.items[Math.min(Math.max(index, 0), task.items.length - 1)]?.text ?? ''
 }
 
 /**
@@ -104,7 +105,7 @@ export function SessionTasksBar({ api, sessionId }: { api: ApiClient | null; ses
                                         <span>{t('tasks.every', { interval: formatTaskInterval(task.intervalMs, t) })}</span>
                                     </div>
                                     <span className="line-clamp-2 whitespace-pre-wrap break-words text-[var(--app-fg)]">
-                                        {nextSessionTaskPrompt(task)}
+                                        {displayedSessionTaskPrompt(task)}
                                     </span>
                                     <div className={`mt-1 text-xs ${status.tone === 'warning' ? 'text-[var(--app-warning-text)]' : 'text-[var(--app-hint)]'}`}>
                                         {status.text}

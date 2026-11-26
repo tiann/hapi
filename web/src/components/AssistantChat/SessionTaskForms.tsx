@@ -14,7 +14,7 @@ import {
     type TaskDraftError
 } from '@/lib/sessionTasks'
 
-const FIELD_CLASS = 'w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm text-[var(--app-fg)] focus:outline-none focus:ring-1 focus:ring-[var(--app-link)]'
+const FIELD_CLASS = 'rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm text-[var(--app-fg)] focus:outline-none focus:ring-1 focus:ring-[var(--app-link)]'
 const LABEL_CLASS = 'mb-1 block text-xs text-[var(--app-hint)]'
 const PRIMARY_BUTTON_CLASS = 'w-full rounded-lg bg-blue-500 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-40'
 
@@ -59,7 +59,7 @@ function IntervalField({ value, onChange, disabled }: {
                     value={value.unit}
                     disabled={disabled}
                     onChange={(e) => onChange({ ...value, unit: e.target.value as IntervalInput['unit'] })}
-                    className={`${FIELD_CLASS} flex-1`}
+                    className={`${FIELD_CLASS} min-w-0 flex-1`}
                 >
                     {SESSION_TASK_INTERVAL_UNITS.map((unit) => (
                         <option key={unit} value={unit}>{unitLabel[unit]}</option>
@@ -117,7 +117,7 @@ function FirstRunField({ value, onChange, disabled }: {
                     min={minDateTimeLocal()}
                     disabled={disabled}
                     onChange={(e) => onChange(e.target.value)}
-                    className={FIELD_CLASS}
+                    className={`${FIELD_CLASS} w-full`}
                 />
             ) : null}
         </div>
@@ -185,7 +185,7 @@ export function RepeatTaskForm({ draft, onDraftChange, composerDraft, createTask
                     placeholder={composerDraft.trim() ? composerDraft : t('composer.taskMessagePlaceholder')}
                     disabled={busy}
                     onChange={(e) => update({ text: e.target.value })}
-                    className={`${FIELD_CLASS} resize-y`}
+                    className={`${FIELD_CLASS} w-full resize-y`}
                 />
             </div>
             <IntervalField value={draft.interval} onChange={(interval) => update({ interval })} disabled={busy} />
@@ -264,7 +264,7 @@ export function QueueTaskForm({ draft, onDraftChange, createTask, onCreated }: {
                     placeholder={t('composer.taskQueuePlaceholder')}
                     disabled={busy}
                     onChange={(e) => update({ prompts: e.target.value })}
-                    className={`${FIELD_CLASS} resize-y`}
+                    className={`${FIELD_CLASS} w-full resize-y`}
                 />
                 <p className="mt-1 text-xs text-[var(--app-hint)]">
                     {count > 0 ? t('composer.taskQueueCount', { count }) : t('composer.taskQueueHint')}
