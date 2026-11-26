@@ -179,6 +179,24 @@ describe('runner stop confirmation after shared Codex tracking loss', () => {
         expect(mocks.kill).not.toHaveBeenCalled()
     })
 
+    it('reports an argv-matched runner generation adopted during discovery as still alive', async () => {
+        const pid = 4244
+        const sessionId = 'adopted-during-stop'
+        record.sessions[sessionId] = { ...record.sessions.target }
+        const { reapRunnerSpawnedOrphans } = await vi.importActual<typeof import('./orphanReap')>('./orphanReap')
+        const target = { pid, startMarker: 'generation', needsPublicationDrain: false } as const
+        mocks.findOrphanTargets.mockImplementationOnce(async (id, shouldSkip) => {
+            reportSession(id, { hostPid: pid, startedBy: 'runner', hostStartMarker: 'generation' } as Parameters<typeof reportSession>[1])
+            expect(getChildren()).toEqual(expect.arrayContaining([expect.objectContaining({ pid, happySessionId: id })]))
+            return shouldSkip(id, pid) ? [] : [target]
+        })
+        mocks.reapOrphans.mockImplementationOnce((id, options) => reapRunnerSpawnedOrphans(id, {
+            ...options, getStartMarker: () => 'generation', isAlive: () => true,
+        }))
+        await expect(stopSession(sessionId)).resolves.toBe('still_alive')
+        expect(mocks.kill).not.toHaveBeenCalled()
+    })
+
     it('still refuses when the orphan sweep cannot establish exit', async () => {
         mocks.reapOrphans.mockResolvedValue('still_alive')
         await expect(stopSession('target')).resolves.toBe('still_alive')

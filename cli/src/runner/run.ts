@@ -1383,6 +1383,14 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       const isNewTrackedBinding = captureNewProcessBindingGuard(pidToTrackedSession);
       const isNewPersistedBinding = captureNewProcessBindingGuard(persistedResumeProcesses);
       const isNewBinding = (pid: number) => isNewTrackedBinding(pid) || isNewPersistedBinding(pid);
+      const wasAdoptedDuringStop = (pid: number) => {
+        const tracked = pidToTrackedSession.get(pid);
+        // Runner launches have a ChildProcess; recovery webhooks adopt an
+        // already-running wrapper without one. A matching adoption must count
+        // toward the sweep's result but still veto preparation and signalling.
+        return isNewTrackedBinding(pid) && tracked?.startedBy === 'runner' && !tracked.childProcess
+          && (tracked.happySessionId === sessionId || Boolean(tracked.sharedSessions?.[sessionId]));
+      };
 
       const sweepUnclaimedOrphans = (
         liveRuntimes: NonNullable<Awaited<ReturnType<typeof readLiveRuntimesForStop>>>,
@@ -1399,7 +1407,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           : prepareSessionStop(sessionId, target.pid, target.startMarker ?? undefined),
         findTargets: (id) => findStopSessionOrphanTargets(
           id,
-          (sid, pid) => isNewBinding(pid) || shouldSkipOrphanPid(liveRuntimes, protectedTrackedPids, sid, pid),
+          (sid, pid) => (isNewBinding(pid) && !wasAdoptedDuringStop(pid))
+            || shouldSkipOrphanPid(liveRuntimes, protectedTrackedPids, sid, pid),
         ),
       });
 
