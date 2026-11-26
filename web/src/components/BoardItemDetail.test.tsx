@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { ApiError } from '@/api/client'
 import type { BoardItem } from '@/types/api'
 import { I18nProvider } from '@/lib/i18n-context'
 import { BoardItemDetail } from './BoardItemDetail'
@@ -46,7 +47,7 @@ function renderDetail(overrides: Partial<Parameters<typeof BoardItemDetail>[0]> 
         comments: [],
         isLoadingComments: false,
         commentsError: null,
-        onSetStatus: vi.fn(),
+        onSetStatus: vi.fn().mockResolvedValue(undefined),
         assignableUsers: [],
         isLoadingAssignableUsers: false,
         assignableUsersError: null,
@@ -129,6 +130,45 @@ describe('BoardItemDetail', () => {
         const confirmButton = within(dialog).getAllByRole('button', { name: 'Close' })[0]!
         fireEvent.click(confirmButton)
         expect(onClose).toHaveBeenCalledTimes(1)
+    })
+
+    // GitHub's 2026-11-23 native issue-statuses preview: the hub 409s a
+    // status write that would also close the real issue, naming the native
+    // status — this is the UI side of that guard (hub tests cover the 409
+    // itself). Confirming must resubmit with confirmCloses: true, not just
+    // retry the same request, or it would 409 forever.
+    it('shows a confirmation naming the native status when the write would also close the issue, then resubmits with confirmCloses: true', async () => {
+        const onSetStatus = vi.fn()
+            .mockRejectedValueOnce(new ApiError('HTTP 409', 409, undefined, JSON.stringify({
+                error: 'Setting status to "Done" will also close this issue on GitHub (native status "Done")',
+                requiresConfirmation: true,
+                nativeStatusName: 'Done'
+            })))
+            .mockResolvedValueOnce(undefined)
+        renderDetail({ onSetStatus })
+
+        const select = screen.getByLabelText(/Status/) as HTMLSelectElement
+        fireEvent.change(select, { target: { value: 'Done' } })
+
+        const dialog = await screen.findByRole('dialog')
+        expect(within(dialog).getByText(/also close the issue/i)).toBeInTheDocument()
+        expect(within(dialog).getByText(/"Done"/)).toBeInTheDocument()
+
+        fireEvent.click(within(dialog).getByRole('button', { name: 'Set status and close' }))
+
+        await waitFor(() => expect(onSetStatus).toHaveBeenCalledWith('Done', true))
+        expect(onSetStatus).toHaveBeenCalledTimes(2)
+    })
+
+    it('does not show a confirmation for a plain status-write failure unrelated to the native-status coupling', async () => {
+        const onSetStatus = vi.fn().mockRejectedValueOnce(new Error('network blip'))
+        renderDetail({ onSetStatus })
+
+        const select = screen.getByLabelText(/Status/) as HTMLSelectElement
+        fireEvent.change(select, { target: { value: 'Done' } })
+
+        await waitFor(() => expect(onSetStatus).toHaveBeenCalledWith('Done'))
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     })
 
     it('shows Reopen (no confirm) instead of Close when the item is already closed', () => {

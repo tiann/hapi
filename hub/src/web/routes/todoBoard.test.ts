@@ -87,7 +87,8 @@ async function createApp(
     runGraphqlMembership?: Parameters<typeof createBoardRoutes>[6],
     runGraphqlAssignableUsers?: Parameters<typeof createBoardRoutes>[7],
     runGraphqlIssueTemplateDir?: Parameters<typeof createBoardRoutes>[8],
-    runGraphqlComments?: Parameters<typeof createBoardRoutes>[9]
+    runGraphqlComments?: Parameters<typeof createBoardRoutes>[9],
+    runGraphqlPlanningStatuses?: Parameters<typeof createBoardRoutes>[10]
 ) {
     const dataDir = await mkdtemp(join(tmpdir(), 'hapi-todo-board-'))
     directories.push(dataDir)
@@ -109,7 +110,8 @@ async function createApp(
         runGraphqlMembership ?? ALWAYS_MEMBER,
         runGraphqlAssignableUsers ?? (() => ({ data: { repository: { assignableUsers: { nodes: [] } } } })),
         runGraphqlIssueTemplateDir ?? (() => ({ data: { repository: { isBlankIssuesEnabled: true, issueTemplateDir: null } } })),
-        runGraphqlComments ?? (() => ({ data: { resource: { comments: { nodes: [] } } } }))
+        runGraphqlComments ?? (() => ({ data: { resource: { comments: { nodes: [] } } } })),
+        runGraphqlPlanningStatuses ?? (() => ({ data: { repository: { planningStatuses: { nodes: [] } } } }))
     ))
     return app
 }
@@ -1410,6 +1412,146 @@ describe('POST /api/todo-boards/:id/items/status', () => {
             fieldName: 'Status',
             status: null
         }])
+    })
+
+    // GitHub's 2026-11-23 native issue-statuses preview: a Project status
+    // write whose value name matches a CLOSED-category native status closes
+    // the real issue as a GitHub-side effect — confirmed live against
+    // heavygee/hapi-demo-board (assessment session, 2026-11-26). These guard
+    // the 409-before-write behavior that stops that from happening silently.
+    it('409s instead of calling setStatus when the target status resolves to a CLOSED native status', async () => {
+        const calls: unknown[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            setStatus: async (target) => { calls.push(target) }
+        }, undefined, undefined, undefined, undefined, () => ({
+            data: { repository: { planningStatuses: { nodes: [
+                { name: 'Todo', category: { state: 'OPEN' } },
+                { name: 'Done', category: { state: 'CLOSED' } }
+            ] } } }
+        }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/status`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, status: 'Done' })
+        })
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({
+            error: 'Setting status to "Done" will also close this issue on GitHub (native status "Done")',
+            requiresConfirmation: true,
+            nativeStatusName: 'Done'
+        })
+        expect(calls).toEqual([])
+    })
+
+    it('matches a closing native status case-insensitively (confirmed live: "In Progress" synced to native "In progress")', async () => {
+        const calls: unknown[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            setStatus: async (target) => { calls.push(target) }
+        }, undefined, undefined, undefined, undefined, () => ({
+            data: { repository: { planningStatuses: { nodes: [
+                { name: 'Not planned', category: { state: 'CLOSED' } }
+            ] } } }
+        }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/status`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, status: 'NOT PLANNED' })
+        })
+        expect(response.status).toBe(409)
+        expect(calls).toEqual([])
+    })
+
+    it('proceeds with setStatus once the caller resubmits with confirmCloses: true', async () => {
+        const calls: unknown[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            setStatus: async (target) => { calls.push(target) }
+        }, undefined, undefined, undefined, undefined, () => ({
+            data: { repository: { planningStatuses: { nodes: [
+                { name: 'Done', category: { state: 'CLOSED' } }
+            ] } } }
+        }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/status`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, status: 'Done', confirmCloses: true })
+        })
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([{
+            host: 'github.com',
+            ownerLogin: 'heavygee',
+            projectNumber: 6,
+            url: VALID_ITEM_URL,
+            fieldName: 'Status',
+            status: 'Done'
+        }])
+    })
+
+    it('proceeds with setStatus when the target status does not match any CLOSED native status', async () => {
+        const calls: unknown[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            setStatus: async (target) => { calls.push(target) }
+        }, undefined, undefined, undefined, undefined, () => ({
+            data: { repository: { planningStatuses: { nodes: [
+                { name: 'Todo', category: { state: 'OPEN' } },
+                { name: 'Done', category: { state: 'CLOSED' } }
+            ] } } }
+        }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/status`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, status: 'Todo' })
+        })
+        expect(response.status).toBe(200)
+        expect(calls.length).toBe(1)
+    })
+
+    it('fails open (proceeds with setStatus) when the native-status lookup errors, same as the gh-version probe above', async () => {
+        const calls: unknown[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            setStatus: async (target) => { calls.push(target) }
+        }, undefined, undefined, undefined, undefined, () => {
+            throw new Error('network blip')
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/status`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, status: 'Done' })
+        })
+        expect(response.status).toBe(200)
+        expect(calls.length).toBe(1)
+    })
+
+    it('fails open when the lookup returns a GraphQL-level error', async () => {
+        const calls: unknown[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            setStatus: async (target) => { calls.push(target) }
+        }, undefined, undefined, undefined, undefined, () => ({
+            errors: [{ message: 'Field \'planningStatuses\' doesn\'t exist on type \'Repository\'' }]
+        }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/status`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, status: 'Done' })
+        })
+        expect(response.status).toBe(200)
+        expect(calls.length).toBe(1)
+    })
+
+    it('never checks native status at all when clearing (status: null) — nothing to match against', async () => {
+        const planningStatusCalls: unknown[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            setStatus: async () => {}
+        }, undefined, undefined, undefined, undefined, (target) => {
+            planningStatusCalls.push(target)
+            return { data: { repository: { planningStatuses: { nodes: [] } } } }
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/status`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, status: null })
+        })
+        expect(response.status).toBe(200)
+        expect(planningStatusCalls).toEqual([])
     })
 })
 

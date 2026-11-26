@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ApiError } from '@/api/client'
-import { getApiErrorCode, getApiErrorMessage, getApiErrorRecoveryToken, getApiErrorUrl } from './apiErrorMessage'
+import { getApiErrorCode, getApiErrorMessage, getApiErrorNativeStatusName, getApiErrorRecoveryToken, getApiErrorUrl } from './apiErrorMessage'
 
 describe('getApiErrorMessage', () => {
     it('extracts the hub\'s { error } message from an ApiError body', () => {
@@ -54,6 +54,31 @@ describe('getApiErrorRecoveryToken', () => {
 
     it('returns null for a non-ApiError value', () => {
         expect(getApiErrorRecoveryToken(new Error('boom'))).toBeNull()
+    })
+})
+
+describe('getApiErrorNativeStatusName', () => {
+    it('extracts the native status name from a status-change 409 requiring confirmation', () => {
+        const err = new ApiError('HTTP 409', 409, undefined, JSON.stringify({
+            error: 'Setting status to "Done" will also close this issue on GitHub (native status "Done")',
+            requiresConfirmation: true,
+            nativeStatusName: 'Done'
+        }))
+        expect(getApiErrorNativeStatusName(err)).toBe('Done')
+    })
+
+    it('returns null when requiresConfirmation is not true, even if nativeStatusName is present', () => {
+        const err = new ApiError('HTTP 502', 502, undefined, JSON.stringify({ error: 'boom', nativeStatusName: 'Done' }))
+        expect(getApiErrorNativeStatusName(err)).toBeNull()
+    })
+
+    it('returns null when the error body carries no nativeStatusName', () => {
+        const err = new ApiError('HTTP 502', 502, undefined, JSON.stringify({ error: 'rate limited' }))
+        expect(getApiErrorNativeStatusName(err)).toBeNull()
+    })
+
+    it('returns null for a non-ApiError value', () => {
+        expect(getApiErrorNativeStatusName(new Error('boom'))).toBeNull()
     })
 })
 

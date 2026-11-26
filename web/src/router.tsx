@@ -60,7 +60,7 @@ import { useIssueTemplates } from '@/hooks/queries/useIssueTemplates'
 import { useBoardSelection } from '@/hooks/useBoardSelection'
 import { useBoardActions } from '@/hooks/mutations/useBoardActions'
 import { useBoardItemActions } from '@/hooks/mutations/useBoardItemActions'
-import { getApiErrorMessage } from '@/lib/apiErrorMessage'
+import { getApiErrorMessage, getApiErrorNativeStatusName } from '@/lib/apiErrorMessage'
 import { useMentionInactiveCollapsed } from '@/hooks/useMentionInactiveCollapsed'
 import { useSession } from '@/hooks/queries/useSession'
 import { useCursorChatStoreStatus } from '@/hooks/queries/useCursorChatStoreStatus'
@@ -867,13 +867,25 @@ function SessionsPage() {
                             comments={boardItemComments}
                             isLoadingComments={boardItemCommentsLoading}
                             commentsError={boardItemCommentsError}
-                            onSetStatus={(status) => {
-                                setBoardItemStatus(selectedBoardItem, status).catch((err) => addToast({
-                                    title: t('boards.detail.statusChangeFailed'),
-                                    body: getApiErrorMessage(err, t('dialog.error.default')),
-                                    sessionId: '',
-                                    url: ''
-                                }))
+                            onSetStatus={async (status, confirmCloses) => {
+                                try {
+                                    await setBoardItemStatus(selectedBoardItem, status, confirmCloses)
+                                } catch (err) {
+                                    // A 409 naming a native status the write would
+                                    // also close isn't a failure to report — it's
+                                    // BoardItemDetail's own cue to show a
+                                    // confirmation and retry with confirmCloses:
+                                    // true, so it's rethrown rather than toasted.
+                                    if (getApiErrorNativeStatusName(err)) {
+                                        throw err
+                                    }
+                                    addToast({
+                                        title: t('boards.detail.statusChangeFailed'),
+                                        body: getApiErrorMessage(err, t('dialog.error.default')),
+                                        sessionId: '',
+                                        url: ''
+                                    })
+                                }
                             }}
                             assignableUsers={boardItemAssignableUsers}
                             isLoadingAssignableUsers={boardItemAssignableUsersLoading}

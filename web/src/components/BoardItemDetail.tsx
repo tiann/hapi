@@ -9,7 +9,7 @@ import { SessionLinkedBadge } from '@/components/SessionLinkedBadge'
 import { Spinner } from '@/components/Spinner'
 import { CheckIcon, CloseIcon, EditIcon, ExternalLinkIcon, PlusCircleIcon, PlusIcon, RefreshIcon } from '@/components/icons'
 import { chipBaseClass, chipIdleClass } from '@/components/filterChipStyles'
-import { getApiErrorMessage } from '@/lib/apiErrorMessage'
+import { getApiErrorMessage, getApiErrorNativeStatusName } from '@/lib/apiErrorMessage'
 import { formatAbsoluteDateTime, formatRelativeTime } from '@/lib/relativeTime'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/use-translation'
@@ -283,7 +283,7 @@ export function BoardItemDetail(props: {
     comments: BoardItemComment[]
     isLoadingComments: boolean
     commentsError: string | null
-    onSetStatus: (status: string | null) => void
+    onSetStatus: (status: string | null, confirmCloses?: boolean) => Promise<void>
     assignableUsers: BoardAssignableUser[]
     isLoadingAssignableUsers: boolean
     assignableUsersError: string | null
@@ -303,6 +303,13 @@ export function BoardItemDetail(props: {
     const updatedLabel = item.updatedAt ? formatRelativeTime(new Date(item.updatedAt).getTime(), t) : null
     const chipClass = cn(chipBaseClass, chipIdleClass, 'pointer-events-none h-6 px-2')
     const [closeConfirmOpen, setCloseConfirmOpen] = useState(false)
+    // Set only when the hub 409s a status write because the value would
+    // also close the real GitHub issue (native issue-statuses coupling,
+    // 2026-11-23 preview) — `status` is what's resubmitted with
+    // confirmCloses: true on confirm, `nativeStatusName` is what's shown
+    // (the actual native status, which can differ in wording/case from the
+    // Project column value the user picked).
+    const [statusCloseConfirm, setStatusCloseConfirm] = useState<{ status: string; nativeStatusName: string } | null>(null)
     const [commentDraft, setCommentDraft] = useState('')
     const canWrite = item.url !== null
     const bodyMarkdownComponents = useGithubRelativeMarkdownComponents(item.url)
@@ -329,6 +336,21 @@ export function BoardItemDetail(props: {
             // Failure is already surfaced as a toast by the caller — keep the
             // draft intact so the user's typed comment isn't lost.
         }
+    }
+
+    // The router-level onSetStatus rethrows specifically the
+    // requires-confirmation case (everything else is already toasted
+    // there) — catching it here, rather than threading the raw ApiError
+    // body up through props, keeps the native-issue-statuses detail local
+    // to the one component that renders the confirmation.
+    const requestSetStatus = (status: string | null) => {
+        props.onSetStatus(status).catch((err) => {
+            if (status === null) return
+            const nativeStatusName = getApiErrorNativeStatusName(err)
+            if (nativeStatusName) {
+                setStatusCloseConfirm({ status, nativeStatusName })
+            }
+        })
     }
 
     const startTitleEdit = () => {
@@ -543,7 +565,7 @@ export function BoardItemDetail(props: {
                                     // for an already-unassigned item, so that transition
                                     // could never be performed from HAPI once a status was
                                     // set (Codex review, hapi#238).
-                                    props.onSetStatus(next || null)
+                                    requestSetStatus(next || null)
                                 }}
                                 className="rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-xs text-[var(--app-fg)]"
                             >
@@ -732,6 +754,26 @@ export function BoardItemDetail(props: {
                     }
                 }}
                 isPending={props.isClosing}
+                destructive
+            />
+
+            <ConfirmDialog
+                isOpen={statusCloseConfirm !== null}
+                onClose={() => setStatusCloseConfirm(null)}
+                title={t('boards.detail.statusClosesIssueTitle')}
+                description={t('boards.detail.statusClosesIssueDescription', { nativeStatus: statusCloseConfirm?.nativeStatusName ?? '' })}
+                confirmLabel={t('boards.detail.statusClosesIssueConfirm')}
+                confirmingLabel={t('boards.detail.statusChanging')}
+                onConfirm={async () => {
+                    if (!statusCloseConfirm) return
+                    try {
+                        await props.onSetStatus(statusCloseConfirm.status, true)
+                        setStatusCloseConfirm(null)
+                    } catch (err) {
+                        throw new Error(getApiErrorMessage(err, t('dialog.error.default')))
+                    }
+                }}
+                isPending={props.isSettingStatus}
                 destructive
             />
         </div>

@@ -153,7 +153,18 @@ describe('useBoardItemActions', () => {
         const { result } = renderHook(() => useBoardItemActions(api, 'board-1'), { wrapper: wrapper(queryClient) })
         await result.current.setItemStatus({ url: 'https://github.com/a/b/issues/1' }, 'Done')
 
-        expect(setBoardItemStatus).toHaveBeenCalledWith('board-1', 'https://github.com/a/b/issues/1', 'Done')
+        expect(setBoardItemStatus).toHaveBeenCalledWith('board-1', 'https://github.com/a/b/issues/1', 'Done', undefined)
+    })
+
+    it('forwards confirmCloses through to the API when the caller is resubmitting after a native-status confirmation', async () => {
+        const queryClient = new QueryClient()
+        const setBoardItemStatus = vi.fn().mockResolvedValue(undefined)
+        const api = { setBoardItemStatus } as unknown as ApiClient
+
+        const { result } = renderHook(() => useBoardItemActions(api, 'board-1'), { wrapper: wrapper(queryClient) })
+        await result.current.setItemStatus({ url: 'https://github.com/a/b/issues/1' }, 'Done', true)
+
+        expect(setBoardItemStatus).toHaveBeenCalledWith('board-1', 'https://github.com/a/b/issues/1', 'Done', true)
     })
 
     it('edits an item\'s title and body via the API, resolving the board id and item url', async () => {

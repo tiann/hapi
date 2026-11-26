@@ -1659,9 +1659,17 @@ export type BoardItemEditRequest = z.infer<typeof BoardItemEditRequestSchema>
 // project can legitimately move a card back to the unassigned/no-status
 // bucket, and the picker previously had no way to express that once an item
 // already had a status (Codex review, hapi#238).
+//
+// `confirmCloses` acknowledges GitHub's native issue-statuses coupling
+// (2026-11-23 public preview): a Project status write whose value name
+// matches a CLOSED-category native status closes the real issue as a
+// GitHub-side effect. The hub 409s the first attempt instead of writing
+// blind; the client resubmits with `confirmCloses: true` once the user has
+// confirmed. Omitted/false is the default "haven't confirmed yet" state.
 export const BoardItemStatusRequestSchema = z.object({
     url: z.string().min(1),
-    status: z.string().min(1).nullable()
+    status: z.string().min(1).nullable(),
+    confirmCloses: z.boolean().optional()
 })
 export type BoardItemStatusRequest = z.infer<typeof BoardItemStatusRequestSchema>
 

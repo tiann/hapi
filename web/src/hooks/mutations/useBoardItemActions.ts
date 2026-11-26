@@ -44,7 +44,7 @@ export function useBoardItemActions(api: ApiClient | null, boardId: string | nul
     reopenItem: (item: Pick<BoardItem, 'url'>) => Promise<void>
     commentOnItem: (item: Pick<BoardItem, 'url'>, body: string) => Promise<void>
     editItem: (item: Pick<BoardItem, 'url'>, fields: { title?: string; body?: string }) => Promise<void>
-    setItemStatus: (item: Pick<BoardItem, 'url'>, status: string | null) => Promise<void>
+    setItemStatus: (item: Pick<BoardItem, 'url'>, status: string | null, confirmCloses?: boolean) => Promise<void>
     setItemAssignees: (item: Pick<BoardItem, 'url'>, addLogins: string[], removeLogins: string[]) => Promise<void>
     closingUrls: ReadonlySet<string>
     reopeningUrls: ReadonlySet<string>
@@ -122,11 +122,11 @@ export function useBoardItemActions(api: ApiClient | null, boardId: string | nul
         }
     }, [requireTarget, invalidate])
 
-    const setItemStatus = useCallback(async (item: Pick<BoardItem, 'url'>, status: string | null) => {
+    const setItemStatus = useCallback(async (item: Pick<BoardItem, 'url'>, status: string | null, confirmCloses?: boolean) => {
         const { api: client, boardId: id, url } = requireTarget(item.url)
         setSettingStatusUrls(current => addUrl(current, url))
         try {
-            await client.setBoardItemStatus(id, url, status)
+            await client.setBoardItemStatus(id, url, status, confirmCloses)
             await invalidate()
         } finally {
             setSettingStatusUrls(current => removeUrl(current, url))

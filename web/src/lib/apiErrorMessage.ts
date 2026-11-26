@@ -57,6 +57,28 @@ export function getApiErrorRecoveryToken(err: unknown): string | null {
 }
 
 /**
+ * Extracts the native-status name from a board status-change 409 — the hub
+ * sends this when the requested value would also close the real GitHub
+ * issue (native issue-statuses coupling, 2026-11-23 preview), so the caller
+ * can show a confirmation naming the actual native status rather than just
+ * the Project column value the user picked, then resubmit with
+ * `confirmCloses: true` if the user agrees.
+ */
+export function getApiErrorNativeStatusName(err: unknown): string | null {
+    if (err instanceof ApiError && err.body) {
+        try {
+            const parsed = JSON.parse(err.body) as { requiresConfirmation?: unknown; nativeStatusName?: unknown }
+            if (parsed.requiresConfirmation === true && typeof parsed.nativeStatusName === 'string' && parsed.nativeStatusName.trim()) {
+                return parsed.nativeStatusName
+            }
+        } catch {
+            // fall through
+        }
+    }
+    return null
+}
+
+/**
  * Extracts an optional machine-readable `code` the hub attached to an error
  * body — distinct from the human-readable `error` message, which can vary
  * in wording across the several conditions that share one code (review

@@ -536,6 +536,82 @@ function toAssignableUsers(response: GhAssignableUsersResponse): BoardAssignable
         .map(node => ({ login: node.login, avatarUrl: node.avatarUrl, name: node.name ?? null }))
 }
 
+// GitHub's 2026-11-23 native issue-statuses public preview: "if a GitHub
+// Project has a status value that matches an issue status, changing either
+// status updates the other." `category.state` (OPEN/CLOSED) is read
+// directly rather than hardcoding which category names are terminal — a
+// repo can rename "Done" to anything it likes, but GitHub still reports the
+// resulting category's own open/closed state, so matching on `state` stays
+// correct across renames without a name allowlist to maintain.
+const PLANNING_STATUSES_QUERY = `
+query($owner: String!, $repo: String!) {
+  repository(owner: $owner, name: $repo) {
+    planningStatuses(first: 20) {
+      nodes { name category { state } }
+    }
+  }
+}`
+
+type GhPlanningStatusesResponse = {
+    data?: {
+        repository?: {
+            planningStatuses?: {
+                nodes?: Array<{ name: string; category: { state: 'OPEN' | 'CLOSED' } } | null> | null
+            } | null
+        } | null
+    }
+    errors?: Array<{ message: string }>
+}
+
+type PlanningStatusesTarget = { host: string; owner: string; repo: string }
+
+async function runGhGraphqlPlanningStatuses(target: PlanningStatusesTarget): Promise<GhPlanningStatusesResponse> {
+    const stdout = await execGhGraphql(target.host, PLANNING_STATUSES_QUERY, { owner: target.owner, repo: target.repo })
+    try {
+        return JSON.parse(stdout) as GhPlanningStatusesResponse
+    } catch {
+        throw new Error('gh api graphql returned non-JSON output')
+    }
+}
+
+// Confirmed live against heavygee/hapi-demo-board (2026-11-26): running the
+// exact `gh project item-edit --field Status --value Done` setStatus already
+// emits, against a project using GitHub's own default column names, closed
+// the real OPEN issue immediately as a GitHub-side effect — no further HAPI
+// action. The match is case-insensitive (confirmed live too: "In Progress"
+// synced to native "In progress"), so this checks the same way rather than
+// requiring exact-string agreement, which would miss the common case.
+//
+// Fails open on any lookup trouble (network, non-JSON, GraphQL error, a host
+// too old to have this field) — same philosophy as
+// checkGhVersionForStatusEdit above: an inability to check must not newly
+// block a status write a working setup could already perform. The hazard
+// this guards is new *information*, not a new permission model.
+async function findClosingNativeStatusMatch(
+    runGraphqlPlanningStatuses: (target: PlanningStatusesTarget) => GhPlanningStatusesResponse | Promise<GhPlanningStatusesResponse>,
+    target: PlanningStatusesTarget,
+    statusValue: string
+): Promise<string | null> {
+    let response: GhPlanningStatusesResponse
+    try {
+        response = await runGraphqlPlanningStatuses(target)
+    } catch {
+        return null
+    }
+    if (response.errors?.length) {
+        return null
+    }
+    const nodes = response.data?.repository?.planningStatuses?.nodes
+    if (!nodes) {
+        return null
+    }
+    const match = nodes.find(node => node !== null && node.name.toLowerCase() === statusValue.toLowerCase())
+    if (match && match.category.state === 'CLOSED') {
+        return match.name
+    }
+    return null
+}
+
 // Same `resource(url:)` + Issue/PullRequest inline-fragment shape as
 // RESOURCE_PROJECT_MEMBERSHIP_QUERY above, not a number-keyed
 // `repository.issue(number:)`/`pullRequest(number:)` pair — verified by hand
@@ -1483,7 +1559,8 @@ export function createBoardRoutes(
     runGraphqlMembership: (target: ProjectMembershipTarget) => GhResourceProjectMembershipResponse | Promise<GhResourceProjectMembershipResponse> = runGhGraphqlProjectMembership,
     runGraphqlAssignableUsers: (target: AssignableUsersTarget) => GhAssignableUsersResponse | Promise<GhAssignableUsersResponse> = runGhGraphqlAssignableUsers,
     runGraphqlIssueTemplateDir: (target: IssueTemplateDirTarget) => GhIssueTemplateDirResponse | Promise<GhIssueTemplateDirResponse> = runGhGraphqlIssueTemplateDir,
-    runGraphqlComments: (target: ItemCommentsTarget) => GhItemCommentsResponse | Promise<GhItemCommentsResponse> = runGhGraphqlItemComments
+    runGraphqlComments: (target: ItemCommentsTarget) => GhItemCommentsResponse | Promise<GhItemCommentsResponse> = runGhGraphqlItemComments,
+    runGraphqlPlanningStatuses: (target: PlanningStatusesTarget) => GhPlanningStatusesResponse | Promise<GhPlanningStatusesResponse> = runGhGraphqlPlanningStatuses
 ): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
 
@@ -1895,6 +1972,27 @@ export function createBoardRoutes(
         const resolved = await requireBoardAndValidUrl(c.req.param('id'), parsed.data.url)
         if (!resolved.ok) {
             return c.json({ error: resolved.error }, resolved.status)
+        }
+        // GitHub's native issue-statuses coupling (see
+        // findClosingNativeStatusMatch) means this write can silently close
+        // the real issue — 409 once for confirmation rather than writing
+        // blind. `status: null` clears the field and can't resolve to any
+        // native status, so it's exempt; an already-confirmed retry
+        // (`confirmCloses: true`) skips the lookup and writes straight
+        // through.
+        if (parsed.data.status !== null && !parsed.data.confirmCloses) {
+            const nativeStatusName = await findClosingNativeStatusMatch(
+                runGraphqlPlanningStatuses,
+                { host: resolved.board.host, owner: resolved.owner, repo: resolved.repo },
+                parsed.data.status
+            )
+            if (nativeStatusName) {
+                return c.json({
+                    error: `Setting status to "${parsed.data.status}" will also close this issue on GitHub (native status "${nativeStatusName}")`,
+                    requiresConfirmation: true,
+                    nativeStatusName
+                }, 409)
+            }
         }
         try {
             await actions.setStatus({
