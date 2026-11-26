@@ -2601,8 +2601,16 @@ export function HappyThread(props: {
             || (autoScrollEnabledRef.current && atBottomRef.current)
         // While the tail is followed the other observer pins the bottom, so
         // skip the per-message scan.
-        const captureReadingAnchor = () => (followingTail() ? null : captureScrollAnchor(viewport))
-        let anchor: ScrollAnchor | null = captureReadingAnchor()
+        // Besides the pixel offset, keep how far into the anchored message the
+        // viewport top sits: the message itself rewraps too, so a reader deep
+        // inside a long reply must land at the same relative spot in it.
+        const captureReadingAnchor = (): (ScrollAnchor & { height: number }) | null => {
+            if (followingTail()) return null
+            const captured = captureScrollAnchor(viewport)
+            const element = captured ? document.getElementById(captured.id) : null
+            return captured && element ? { ...captured, height: element.getBoundingClientRect().height } : null
+        }
+        let anchor = captureReadingAnchor()
         let lastWidth = content.getBoundingClientRect().width
         let frame: number | null = null
         const handleScroll = () => {
@@ -2621,7 +2629,12 @@ export function HappyThread(props: {
             // A settled search result keeps its history lock, and its row is
             // the visible anchor, so it stays in view through the reflow too.
             if (widthChanged && anchor && !followingTail() && !hasBlockingScrollRestore()) {
-                restoreScrollAnchor(viewport, anchor)
+                const element = document.getElementById(anchor.id)
+                const height = element?.getBoundingClientRect().height ?? 0
+                const topOffset = anchor.topOffset < 0 && anchor.height > 0 && height > 0
+                    ? anchor.topOffset * (height / anchor.height)
+                    : anchor.topOffset
+                restoreScrollAnchor(viewport, { id: anchor.id, topOffset })
             }
             anchor = captureReadingAnchor()
         })
