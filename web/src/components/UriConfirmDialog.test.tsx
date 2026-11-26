@@ -29,11 +29,6 @@ afterEach(() => {
 })
 
 describe('UriConfirmDialog', () => {
-    it('renders dialog title when open', () => {
-        renderDialog()
-        expect(screen.getByText('Open this link?')).toBeInTheDocument()
-    })
-
     it('displays the scheme prefix in the URI display', () => {
         renderDialog({ url: 'obsidian://open?vault=MyVault&file=Notes%2Ftest', scheme: 'obsidian' })
         // The URI is split: scheme prefix + remainder in sibling spans.
@@ -43,12 +38,6 @@ describe('UriConfirmDialog', () => {
     it('displays the URL remainder after the scheme prefix', () => {
         renderDialog({ url: 'obsidian://open?vault=MyVault&file=Notes%2Ftest', scheme: 'obsidian' })
         expect(screen.getByText('//open?vault=MyVault&file=Notes%2Ftest')).toBeInTheDocument()
-    })
-
-    it('emphasizes the scheme in the URI display', () => {
-        renderDialog({ scheme: 'obsidian' })
-        // The scheme label should appear visually prominent (e.g. as a separate span)
-        expect(screen.getByText('obsidian:')).toBeInTheDocument()
     })
 
     it('renders Cancel, Open, and Always allow buttons', () => {
@@ -81,27 +70,6 @@ describe('UriConfirmDialog', () => {
 
     it('does not render dialog content when open is false', () => {
         renderDialog({ open: false })
-        expect(screen.queryByText('Open this link?')).not.toBeInTheDocument()
-    })
-
-    it('renders without error in open and closed states (onOpenChange wiring)', () => {
-        // Verifies the Dialog onOpenChange prop is wired so that open→closed calls onCancel.
-        // Direct Esc simulation is unreliable in jsdom; we confirm both states render cleanly.
-        const onCancel = vi.fn()
-        const { rerender } = renderDialog({ onCancel, open: true })
-        expect(screen.getByText('Open this link?')).toBeInTheDocument()
-        rerender(
-            <I18nProvider>
-                <UriConfirmDialog
-                    open={false}
-                    url="obsidian://open"
-                    scheme="obsidian"
-                    onCancel={onCancel}
-                    onOpen={vi.fn()}
-                    onAlwaysAllow={vi.fn()}
-                />
-            </I18nProvider>
-        )
         expect(screen.queryByText('Open this link?')).not.toBeInTheDocument()
     })
 

@@ -11,8 +11,9 @@ type LocalLaunchFailure = {
 };
 
 /**
- * The remote launchers acknowledge a queued message once agy accepts it, so
- * the queue does not acknowledge on dequeue.
+ * The remote launchers acknowledge a queued message once delivery is confirmed
+ * (or once `session/prompt` is dispatched over ACP), so the queue does not
+ * acknowledge on dequeue.
  */
 export class AgySession extends AgentSessionBase<AgyMode> {
     readonly startedBy: 'runner' | 'terminal';

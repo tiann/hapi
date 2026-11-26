@@ -271,6 +271,68 @@ describe('cli session handlers', () => {
         expect(store.messages.getAllMessages(session.id).map(reasoningTextOf)).toEqual(['thinking', 'more'])
     })
 
+    it('collapses a live text stream into its settled boundary message', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('text-stream-session', {}, null, 'default')
+        const socket = new FakeSocket()
+
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+            emitAccessError: () => {
+                throw new Error('unexpected access error')
+            }
+        })
+
+        // Idle flushes: the CLI re-sends the growing buffer under one id,
+        // marked live; the boundary flush re-sends the full text with only
+        // the snapshot marker. Only the settled row may survive.
+        const textContent = (streamId: string, text: string, live: boolean) => ({
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'message',
+                    message: text,
+                    id: streamId,
+                    streamSnapshot: true,
+                    ...(live ? { live: true } : {})
+                }
+            }
+        })
+        for (const text of ['He', 'Hello', 'Hello wor', 'Hello world, the ans']) {
+            socket.trigger('message', { sid: session.id, message: textContent('text-1', text, true) })
+        }
+        socket.trigger('message', { sid: session.id, message: textContent('text-1', 'Hello world, the answer.', false) })
+
+        const bodies = store.messages.getAllMessages(session.id)
+            .map((message) => (message.content as { content: { data: { message: string } } }).content.data.message)
+        expect(bodies).toEqual(['Hello world, the answer.'])
+    })
+
+    it('keeps plain text messages without a stream id untouched', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('plain-text-session', {}, null, 'default')
+        const socket = new FakeSocket()
+
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+            emitAccessError: () => {
+                throw new Error('unexpected access error')
+            }
+        })
+
+        for (const text of ['one', 'two']) {
+            socket.trigger('message', {
+                sid: session.id,
+                message: { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'message', message: text } } }
+            })
+        }
+
+        expect(store.messages.getAllMessages(session.id)).toHaveLength(2)
+    })
+
     it('keeps every reasoning snapshot that carries no stream id', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('reasoning-idless-session', {}, null, 'default')
@@ -579,12 +641,14 @@ describe('cli session handlers', () => {
     })
 
 it.each([
+        ['codexImportedAt', 1234],
         ['supersededBySessionId', 'foreign-session'],
         ['opencodeClearOperation', { replacementSessionId: 'foreign-session', state: 'reserved', updatedAt: Date.now() }],
         ['opencodeForkPending', true],
         ['titleSuggestionAutoAttemptedAt', 1234],
         ['titleSuggestionTurn', { first: false, completed: true }],
         ['promptTitle', 'Forged title'],
+        ['translateInput', true],
         ['jobsAcceptedFromSessionIds', ['foreign-session']],
         ['jobsTransferredToSessionId', 'foreign-session'],
         ['jobKeyRedirects', { 'foreign-session/beets': 'beets.foreign' }],
@@ -610,6 +674,50 @@ it.each([
             expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).not.toHaveProperty(field)
         }
     )
+
+    it('preserves the hub-owned translateInput toggle across CLI metadata replacements', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('preserve-translate', {
+            path: '/tmp/project', translateInput: true
+        }, null, 'default')
+        const socket = new FakeSocket()
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+            emitAccessError: () => { throw new Error('unexpected access error') }
+        })
+        socket.trigger('update-metadata', {
+            sid: session.id,
+            expectedVersion: session.metadataVersion,
+            metadata: { path: '/tmp/project', translateInput: false }
+        }, () => {})
+        expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata)
+            .toMatchObject({ translateInput: true })
+    })
+
+    it.each([1234, null])('preserves Codex import state %s across CLI bootstrap replacements', (codexImportedAt) => {
+        const store = new Store(':memory:')
+        try {
+            const session = store.sessions.getOrCreateSession('preserve-import-state', {
+                path: '/tmp/project', codexImportedAt
+            }, null, 'default')
+            const socket = new FakeSocket()
+            registerSessionHandlers(socket as unknown as CliSocketWithData, {
+                store,
+                resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+                emitAccessError: () => { throw new Error('unexpected access error') }
+            })
+            socket.trigger('update-metadata', {
+                sid: session.id,
+                expectedVersion: session.metadataVersion,
+                metadata: { path: '/tmp/project' }
+            }, () => {})
+            expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata)
+                .toHaveProperty('codexImportedAt', codexImportedAt)
+        } finally {
+            store.close()
+        }
+    })
 
     it('preserves existing hub-owned clear and job-redirect metadata across CLI metadata updates', () => {
         const store = new Store(':memory:')

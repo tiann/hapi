@@ -3,15 +3,15 @@ import { authAndSetupMachineIfNeeded } from '@/ui/auth'
 import { initializeToken } from '@/ui/tokenInit'
 import { maybeAutoStartServer } from '@/utils/autoStartServer'
 import type { CommandDefinition } from './types'
-import { CURSOR_PERMISSION_MODES } from '@hapi/protocol/modes'
-import type { CursorPermissionMode } from '@hapi/protocol/types'
+import { Flavors } from '@hapi/protocol/modes'
+import type { PermissionModeOf } from '@hapi/protocol/types'
 
 export type ParsedCursorCommandOptions = {
     startedBy?: 'runner' | 'terminal'
     cursorArgs?: string[]
     cursorWorktree?: boolean | string
     cursorAddDirs?: string[]
-    permissionMode?: CursorPermissionMode
+    permissionMode?: PermissionModeOf<typeof Flavors.cursor>
     resumeSessionId?: string
     existingSessionId?: string
     /** Fresh-spawn reserved hub id (`--hapi-session-id`); not reopen. */
@@ -40,10 +40,10 @@ export function parseCursorCommandArgs(commandArgs: string[]): ParsedCursorComma
             options.startedBy = commandArgs[++i] as 'runner' | 'terminal'
         } else if (arg === '--permission-mode') {
             const mode = commandArgs[++i]
-            if (!mode || !(CURSOR_PERMISSION_MODES as readonly string[]).includes(mode)) {
+            if (!mode || !Flavors.cursor.allowsPermissionMode(mode)) {
                 throw new Error(`Invalid --permission-mode value: ${mode ?? '(missing)'}`)
             }
-            options.permissionMode = mode as CursorPermissionMode
+            options.permissionMode = mode
             hasExplicitPermissionMode = true
         } else if ((arg === '--yolo' || arg === '--force') && !hasExplicitPermissionMode) {
             options.permissionMode = 'yolo'
@@ -51,10 +51,10 @@ export function parseCursorCommandArgs(commandArgs: string[]): ParsedCursorComma
             options.permissionMode = 'autoReview'
         } else if (arg === '--mode') {
             const mode = commandArgs[++i]
-            if (!mode || !(CURSOR_PERMISSION_MODES as readonly string[]).includes(mode)) {
+            if (!mode || !Flavors.cursor.allowsPermissionMode(mode)) {
                 throw new Error(`Invalid --mode value: ${mode ?? '(missing)'}`)
             }
-            options.permissionMode = mode as CursorPermissionMode
+            options.permissionMode = mode
             hasExplicitPermissionMode = true
         } else if (arg === '--plan') {
             options.permissionMode = 'plan'

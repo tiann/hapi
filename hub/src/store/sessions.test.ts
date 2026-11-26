@@ -296,6 +296,70 @@ describe('getOrCreateSession: requested identity', () => {
         store.close()
     })
 
+    it('preserves machine-spawn stub tag when preservePreallocation is set', () => {
+        const store = makeStore()
+        const allocatedId = randomUUID()
+        const created = store.sessions.getOrCreateSession(
+            `machine-spawn:${allocatedId}`,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                machineId: 'm1',
+                startedBy: 'runner',
+                startedFromRunner: true,
+            },
+            null,
+            'default',
+            undefined,
+            undefined,
+            undefined,
+            allocatedId
+        )
+        expect(created.tag).toBe(`machine-spawn:${allocatedId}`)
+
+        const updated = store.sessions.updateSessionMetadata(
+            allocatedId,
+            {
+                ...(created.metadata as object),
+                externalRefs: [{
+                    kind: 'github_pr',
+                    repo: 'tiann/hapi',
+                    number: 1163,
+                    url: 'https://github.com/tiann/hapi/pull/1163',
+                    role: 'primary',
+                    source: 'user',
+                    linkedAt: 1,
+                }],
+            },
+            created.metadataVersion,
+            'default',
+            { touchUpdatedAt: false, preservePreallocation: true }
+        )
+        expect(updated.result).toBe('success')
+        const row = store.sessions.getSession(allocatedId)
+        expect(row?.tag).toBe(`machine-spawn:${allocatedId}`)
+
+        const cliTag = randomUUID()
+        const adopted = store.sessions.adoptPreallocatedSession(
+            allocatedId,
+            cliTag,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                machineId: 'm1',
+                startedBy: 'runner',
+                startedFromRunner: true,
+                hostPid: 4242,
+            },
+            { controlledByUser: false },
+            'default'
+        )
+        expect(adopted.tag).toBe(cliTag)
+        store.close()
+    })
+
     it('rejects adopt of an archived preallocated stub', () => {
         const store = makeStore()
         const allocatedId = randomUUID()
@@ -466,11 +530,107 @@ describe('updateSessionMetadata: refuse un-archive (#1911 M1)', () => {
 })
 
 describe('updateSessionMetadata: protocol resume token preservation', () => {
-    it('preserves a generated fork summary across sparse child startup metadata', () => {
+    it('preserves externalRefs when a sparse replacement omits them', () => {
+        const store = makeStore()
+        const externalRefs = [{
+            kind: 'github_pr',
+            repo: 'tiann/hapi',
+            number: 1160,
+            url: 'https://github.com/tiann/hapi/pull/1160',
+            role: 'primary'
+        }]
+        const session = store.sessions.getOrCreateSession(
+            'external-refs-preserve',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                externalRefs
+            },
+            null,
+            'default'
+        )
+
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                lifecycleState: 'running'
+            },
+            session.metadataVersion,
+            'default'
+        )
+        expect(result.result).toBe('success')
+        expect(getMetadata(store, session.id)?.externalRefs).toEqual(externalRefs)
+        store.close()
+    })
+
+    it('lets an explicit externalRefs write win, including clearing with []', () => {
         const store = makeStore()
         const session = store.sessions.getOrCreateSession(
-            'fork-summary-preserve',
-            { path: '/tmp/project', host: 'example', summary: { text: 'Fork: Source title', updatedAt: 1234 } },
+            'external-refs-explicit',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                externalRefs: [{
+                    kind: 'github_pr',
+                    repo: 'tiann/hapi',
+                    number: 1160,
+                    url: 'https://github.com/tiann/hapi/pull/1160',
+                    role: 'primary'
+                }]
+            },
+            null,
+            'default'
+        )
+
+        const replacement = [{
+            kind: 'github_pr',
+            repo: 'owner/other',
+            number: 42,
+            url: 'https://github.com/owner/other/pull/42',
+            role: 'secondary'
+        }]
+        let version = session.metadataVersion
+        let result = store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                externalRefs: replacement
+            },
+            version,
+            'default'
+        )
+        expect(result.result).toBe('success')
+        if (result.result === 'success') version = result.version
+        expect(getMetadata(store, session.id)?.externalRefs).toEqual(replacement)
+
+        result = store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                externalRefs: []
+            },
+            version,
+            'default'
+        )
+        expect(result.result).toBe('success')
+        expect(getMetadata(store, session.id)?.externalRefs).toEqual([])
+        store.close()
+    })
+
+    it.each(['Fork: Source title', 'Branch: Source title'])('preserves a generated %s summary across sparse child startup metadata', (text) => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            `generated-summary-preserve:${text}`,
+            { path: '/tmp/project', host: 'example', summary: { text, updatedAt: 1234 } },
             null,
             'default'
         )
@@ -481,7 +641,7 @@ describe('updateSessionMetadata: protocol resume token preservation', () => {
             'default'
         )
         expect(result.result).toBe('success')
-        expect(getMetadata(store, session.id)?.summary).toEqual({ text: 'Fork: Source title', updatedAt: 1234 })
+        expect(getMetadata(store, session.id)?.summary).toEqual({ text, updatedAt: 1234 })
         store.close()
     })
 
@@ -645,6 +805,44 @@ describe('updateSessionMetadata: protocol resume token preservation', () => {
 
         const metadata = getMetadata(store, session.id)
         expect(metadata?.[field]).toBe(value)
+    })
+
+    it('preserves agySessionId across a sparse metadata write and clears it on explicit null', () => {
+        const store = makeStore()
+        const agyId = '7f3c1e9a-2b4d-4c6e-8a1f-5d9b0e3c7a21'
+        const session = store.sessions.getOrCreateSession(
+            'agy-carry-forward',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'agy',
+                agySessionId: agyId
+            },
+            null,
+            'default'
+        )
+
+        const sparse = store.sessions.updateSessionMetadata(
+            session.id,
+            { path: '/tmp/project', host: 'example' },
+            session.metadataVersion,
+            'default'
+        )
+        expect(sparse.result).toBe('success')
+        const afterSparse = getMetadata(store, session.id)
+        expect(afterSparse?.agySessionId).toBe(agyId)
+        expect(afterSparse?.flavor).toBe('agy')
+
+        const refreshed = store.sessions.getSession(session.id)
+        const cleared = store.sessions.updateSessionMetadata(
+            session.id,
+            { path: '/tmp/project', host: 'example', agySessionId: null },
+            refreshed?.metadataVersion ?? session.metadataVersion + 1,
+            'default'
+        )
+        expect(cleared.result).toBe('success')
+        const afterClear = getMetadata(store, session.id) as Record<string, unknown> | null
+        expect('agySessionId' in (afterClear ?? {})).toBe(false)
     })
 
     it('preserves cursorSessionProtocol independently of cursorSessionId', () => {

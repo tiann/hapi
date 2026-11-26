@@ -105,10 +105,15 @@ export async function runCopilot(opts: {
     let resolvedModel = sessionModel ?? runtimeConfig.model ?? null;
     let sessionEffort: string | null = opts.effort ?? null;
 
+    let shuttingDown = false;
     const lifecycle = createRunnerLifecycle({
         session,
         logTag: 'copilot',
-        stopKeepAlive: () => sessionWrapperRef.current?.stopKeepAlive()
+        stopKeepAlive: () => sessionWrapperRef.current?.stopKeepAlive(),
+        onBeforeClose: () => {
+            shuttingDown = true;
+            return sessionWrapperRef.current?.kill().catch((error) => logger.debug('[copilot] Launcher kill failed', error));
+        }
     });
 
     lifecycle.registerProcessHandlers();
@@ -367,7 +372,7 @@ export async function runCopilot(opts: {
             lifecycle.setExitCode(1);
             lifecycle.setArchiveReason(`Local launch failed: ${localFailure.message.slice(0, 200)}`);
             lifecycle.setSessionEndReason('error');
-        } else if (!crashed) {
+        } else if (!crashed && !shuttingDown) {
             lifecycle.setSessionEndReason('completed');
         }
         await lifecycle.cleanupAndExit();

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { windowsProcessTreeCimCommand } from './process'
+import { windowsSystemTool } from './windowsSystemTools'
 
 // Execute the actual generated WinPS query against an in-memory CIM fixture.
 // No process is signalled by this test.
@@ -26,7 +27,7 @@ function Get-CimInstance {
     return $script:rows
 }
 `
-        const output = execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command',
+        const output = execFileSync(windowsSystemTool('powershell'), ['-NoProfile', '-NonInteractive', '-Command',
             setup + windowsProcessTreeCimCommand(100) + '\n"COUNT:$script:calls"'],
         { encoding: 'utf8', windowsHide: true, timeout: 10_000 })
         expect(output).toContain('OK:3000000000,300,200,100')
@@ -37,7 +38,7 @@ function Get-CimInstance {
         const script = "function Get-CimInstance { throw 'fixture CIM failure' }\n" + windowsProcessTreeCimCommand(100)
         let failure: { status?: number; stdout?: string } | undefined
         try {
-            execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script],
+            execFileSync(windowsSystemTool('powershell'), ['-NoProfile', '-NonInteractive', '-Command', script],
                 { encoding: 'utf8', windowsHide: true, timeout: 10_000, stdio: 'pipe' })
         } catch (error) { failure = error as typeof failure }
         expect(failure).toBeDefined()
@@ -50,7 +51,7 @@ function Get-CimInstance {
             const script = `function Get-CimInstance { ${rows} }\n` + windowsProcessTreeCimCommand(100)
             let failure: { status?: number; stdout?: string } | undefined
             try {
-                execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script],
+                execFileSync(windowsSystemTool('powershell'), ['-NoProfile', '-NonInteractive', '-Command', script],
                     { encoding: 'utf8', windowsHide: true, timeout: 10_000, stdio: 'pipe' })
             } catch (error) { failure = error as typeof failure }
             expect(failure).toBeDefined()

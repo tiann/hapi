@@ -1,3 +1,7 @@
+---
+description: "How native HAPI clients decode session messages into chat blocks, mirroring the web chat pipeline."
+---
+
 # Message decode tree
 
 **Audience:** Implementers of native HAPI clients (iOS / Android). This page specifies how to decode `DecryptedMessage.content` into renderable chat structure. This is the largest porting surface — the reference pipeline is `web/src/chat/` (~4600 lines); this page is its wire-level contract. Companion pages: [pagination](./pagination.md) (how messages arrive), [sse](./sse.md) (live delivery).

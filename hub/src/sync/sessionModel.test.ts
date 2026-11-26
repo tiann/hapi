@@ -366,6 +366,289 @@ describe('session model', () => {
         expect(cache.getSession(newSession.id)?.pinned).toBe(true)
     })
 
+    it('preserves target externalRefs updated during merge metadata retry', async () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const oldRefs = [{
+            kind: 'github_pr' as const,
+            repo: 'tiann/hapi',
+            number: 1,
+            url: 'https://github.com/tiann/hapi/pull/1',
+            role: 'primary' as const,
+            source: 'user' as const,
+            linkedAt: 1
+        }]
+        const healthRefs = [{
+            kind: 'github_pr' as const,
+            repo: 'tiann/hapi',
+            number: 1,
+            url: 'https://github.com/tiann/hapi/pull/1',
+            role: 'primary' as const,
+            source: 'agent' as const,
+            linkedAt: 1,
+            openState: 'open' as const,
+            checks: 'success' as const,
+            merge: 'clean' as const,
+            estateCode: 'babysit.green'
+        }]
+
+        const oldSession = cache.getOrCreateSession(
+            'session-merge-refs-old',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex', externalRefs: oldRefs },
+            null,
+            'default'
+        )
+        const newSession = cache.getOrCreateSession(
+            'session-merge-refs-new',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+
+        const originalUpdate = store.sessions.updateSessionMetadata.bind(store.sessions)
+        let metadataAttempts = 0
+        store.sessions.updateSessionMetadata = (...args) => {
+            metadataAttempts += 1
+            if (metadataAttempts === 1 && args[0] === newSession.id) {
+                const row = store.sessions.getSessionByNamespace(newSession.id, 'default')
+                if (row) {
+                    originalUpdate(
+                        newSession.id,
+                        { path: '/tmp/project', host: 'localhost', flavor: 'codex', externalRefs: healthRefs },
+                        row.metadataVersion,
+                        'default',
+                        { touchUpdatedAt: false }
+                    )
+                }
+                return {
+                    result: 'version-mismatch',
+                    version: row?.metadataVersion ?? 1,
+                    value: healthRefs
+                }
+            }
+            return originalUpdate(...args)
+        }
+
+        await cache.mergeSessions(oldSession.id, newSession.id, 'default')
+
+        const merged = store.sessions.getSessionByNamespace(newSession.id, 'default')
+        const refs = (merged?.metadata as { externalRefs?: unknown })?.externalRefs
+        expect(refs).toEqual(healthRefs)
+    })
+
+    it('retains source session when metadata merge exhausts version retries', async () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const oldRefs = [{
+            kind: 'github_pr' as const,
+            repo: 'tiann/hapi',
+            number: 2,
+            url: 'https://github.com/tiann/hapi/pull/2',
+            role: 'primary' as const,
+            source: 'user' as const,
+            linkedAt: 1
+        }]
+
+        const oldSession = cache.getOrCreateSession(
+            'session-merge-retry-old',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex', externalRefs: oldRefs },
+            null,
+            'default'
+        )
+        const newSession = cache.getOrCreateSession(
+            'session-merge-retry-new',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+
+        store.scratchlist.create(oldSession.id, 'keep on source', { entryId: 'merge-note', createdAt: 100 })
+        store.messages.addMessage(oldSession.id, { role: 'user', content: { type: 'text', text: 'keep me' } })
+
+        const originalUpdate = store.sessions.updateSessionMetadata.bind(store.sessions)
+        store.sessions.updateSessionMetadata = (...args) => {
+            if (args[0] === newSession.id) {
+                return { result: 'version-mismatch', version: 1, value: args[1] }
+            }
+            return originalUpdate(...args)
+        }
+
+        await expect(
+            cache.mergeSessions(oldSession.id, newSession.id, 'default')
+        ).rejects.toThrow('Failed to preserve session metadata during merge')
+
+        expect(store.sessions.getSessionByNamespace(oldSession.id, 'default')).not.toBeNull()
+        expect(store.messages.getMessages(oldSession.id).length).toBe(1)
+        expect(store.messages.getMessages(newSession.id).length).toBe(0)
+        expect(store.scratchlist.list(oldSession.id).length).toBe(1)
+        expect(store.scratchlist.list(newSession.id).length).toBe(0)
+    })
+
+    it('retains source data when metadata merge hits a store error', async () => {
+        const store = new Store(':memory:')
+        const cache = new SessionCache(store, createPublisher([]))
+
+        const oldSession = cache.getOrCreateSession(
+            'session-merge-store-err-old',
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'codex',
+                externalRefs: [{
+                    kind: 'github_pr' as const,
+                    repo: 'tiann/hapi',
+                    number: 3,
+                    url: 'https://github.com/tiann/hapi/pull/3',
+                    role: 'primary' as const,
+                    source: 'user' as const,
+                    linkedAt: 1
+                }]
+            },
+            null,
+            'default'
+        )
+        const newSession = cache.getOrCreateSession(
+            'session-merge-store-err-new',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+        store.messages.addMessage(oldSession.id, { role: 'user', content: { type: 'text', text: 'still here' } })
+
+        const originalUpdate = store.sessions.updateSessionMetadata.bind(store.sessions)
+        store.sessions.updateSessionMetadata = (...args) => {
+            if (args[0] === newSession.id) {
+                return { result: 'error' }
+            }
+            return originalUpdate(...args)
+        }
+
+        await expect(
+            cache.mergeSessions(oldSession.id, newSession.id, 'default')
+        ).rejects.toThrow('Failed to preserve session metadata during merge')
+
+        expect(store.sessions.getSessionByNamespace(oldSession.id, 'default')).not.toBeNull()
+        expect(store.messages.getMessages(oldSession.id).length).toBe(1)
+        expect(store.messages.getMessages(newSession.id).length).toBe(0)
+    })
+
+    it('preserves unparsed stored metadata fields when linking a PR', async () => {
+        const store = new Store(':memory:')
+        const cache = new SessionCache(store, createPublisher([]))
+
+        const session = cache.getOrCreateSession(
+            'session-unparsed-meta',
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'codex',
+                name: 'Keep Me'
+            },
+            null,
+            'default'
+        )
+        const row = store.sessions.getSessionByNamespace(session.id, 'default')
+        if (!row) throw new Error('expected session row')
+
+        // Poison path's runtime type so MetadataSchema fails while other fields remain.
+        const poisoned = store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: 123 as unknown as string,
+                host: 'localhost',
+                name: 'Keep Me',
+                summary: { text: 'saved', updatedAt: 1 }
+            },
+            row.metadataVersion,
+            'default',
+            { touchUpdatedAt: false }
+        )
+        expect(poisoned.result).toBe('success')
+        expect(cache.refreshSession(session.id)?.metadata).toBeNull()
+
+        const refs = await cache.mutateSessionExternalRefs(session.id, () => [{
+            kind: 'github_pr' as const,
+            repo: 'tiann/hapi',
+            number: 1163,
+            url: 'https://github.com/tiann/hapi/pull/1163',
+            role: 'primary' as const,
+            source: 'user' as const,
+            linkedAt: 1
+        }])
+        expect(refs).toHaveLength(1)
+
+        const after = store.sessions.getSessionByNamespace(session.id, 'default')
+        const meta = after?.metadata as Record<string, unknown>
+        expect(meta.name).toBe('Keep Me')
+        expect(meta.summary).toEqual({ text: 'saved', updatedAt: 1 })
+        expect(meta.externalRefs).toEqual(refs)
+    })
+
+    it('keeps machine-spawn stub adoptable after attaching a PR', async () => {
+        const store = new Store(':memory:')
+        const cache = new SessionCache(store, createPublisher([]))
+        const allocatedId = crypto.randomUUID()
+
+        const stub = store.sessions.getOrCreateSession(
+            `machine-spawn:${allocatedId}`,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                machineId: 'machine-1',
+                startedBy: 'runner',
+                startedFromRunner: true,
+            },
+            null,
+            'default',
+            undefined,
+            undefined,
+            undefined,
+            allocatedId
+        )
+        expect(stub.tag).toBe(`machine-spawn:${allocatedId}`)
+        cache.refreshSession(allocatedId)
+
+        await cache.setSessionExternalRefs(allocatedId, [{
+            kind: 'github_pr',
+            repo: 'tiann/hapi',
+            number: 1163,
+            url: 'https://github.com/tiann/hapi/pull/1163',
+            role: 'primary',
+            source: 'user',
+            linkedAt: 1,
+        }])
+
+        const afterLink = store.sessions.getSessionByNamespace(allocatedId, 'default')
+        expect(afterLink?.tag).toBe(`machine-spawn:${allocatedId}`)
+
+        const cliTag = crypto.randomUUID()
+        const adopted = store.sessions.adoptPreallocatedSession(
+            allocatedId,
+            cliTag,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                machineId: 'machine-1',
+                startedBy: 'runner',
+                startedFromRunner: true,
+                hostPid: 4242,
+            },
+            { controlledByUser: false },
+            'default'
+        )
+        expect(adopted.tag).toBe(cliTag)
+        const meta = adopted.metadata as { externalRefs?: unknown[]; hostPid?: number }
+        expect(meta.hostPid).toBe(4242)
+        expect(Array.isArray(meta.externalRefs)).toBe(true)
+        expect(meta.externalRefs).toHaveLength(1)
+    })
+
     it('preserves global pin from old session when merging into resumed session', async () => {
         const store = new Store(':memory:')
         const events: SyncEvent[] = []
@@ -3961,7 +4244,7 @@ describe('session model', () => {
         }
     })
 
-    it('includes first user message in local resumable sessions', () => {
+    it('includes title metadata and the first user message in local resumable sessions', () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(
             store,
@@ -3979,7 +4262,8 @@ describe('session model', () => {
                     machineId: 'machine-1',
                     flavor: 'codex',
                     codexSessionId: 'codex-thread-1',
-                    name: 'Generated title'
+                    name: 'Generated title',
+                    promptTitle: 'Build the picker'
                 },
                 null,
                 'default'
@@ -3997,6 +4281,7 @@ describe('session model', () => {
 
             expect(sessions.find((item) => item.sessionId === session.id)).toMatchObject({
                 name: 'Generated title',
+                promptTitle: 'Build the picker',
                 firstUserMessage: 'Build the picker with search'
             })
         } finally {
@@ -4247,6 +4532,81 @@ describe('session model', () => {
             expect(cache.getSession(s2.id)).toBeDefined()
             store.close()
         })
+
+        for (const [flavor, field] of [['codex', 'codexSessionId'], ['claude', 'claudeSessionId']] as const) {
+            it(`does not merge the same ${flavor} session id across different machines`, async () => {
+                const store = new Store(':memory:')
+                const events: SyncEvent[] = []
+                const cache = new SessionCache(store, createPublisher(events))
+                const s1 = cache.getOrCreateSession(
+                    `${flavor}-tag-1`,
+                    { path: '/tmp/project', host: 'one', machineId: 'machine-1', flavor, [field]: 'native-id' },
+                    null,
+                    'default'
+                )
+                const s2 = cache.getOrCreateSession(
+                    `${flavor}-tag-2`,
+                    { path: '/tmp/project', host: 'two', machineId: 'machine-2', flavor, [field]: 'native-id' },
+                    null,
+                    'default'
+                )
+
+                await cache.deduplicateByAgentSessionId(s2.id)
+
+                expect(cache.getSession(s1.id)).toBeDefined()
+                expect(cache.getSession(s2.id)).toBeDefined()
+                store.close()
+            })
+
+            it(`still merges the same ${flavor} session id when one side has no machine`, async () => {
+                const store = new Store(':memory:')
+                const events: SyncEvent[] = []
+                const cache = new SessionCache(store, createPublisher(events))
+                const s1 = cache.getOrCreateSession(
+                    `${flavor}-tag-1`,
+                    { path: '/tmp/project', host: 'one', flavor, [field]: 'native-id' },
+                    null,
+                    'default'
+                )
+                const s2 = cache.getOrCreateSession(
+                    `${flavor}-tag-2`,
+                    { path: '/tmp/project', host: 'two', machineId: 'machine-2', flavor, [field]: 'native-id' },
+                    null,
+                    'default'
+                )
+
+                await cache.deduplicateByAgentSessionId(s2.id)
+
+                expect([cache.getSession(s1.id), cache.getSession(s2.id)].filter(Boolean)).toHaveLength(1)
+                store.close()
+            })
+
+            it(`runs a ${flavor} dedup triggered on another machine while one pass is in flight`, async () => {
+                const store = new Store(':memory:')
+                const events: SyncEvent[] = []
+                const cache = new SessionCache(store, createPublisher(events))
+                const create = (tag: string, machineId: string) => cache.getOrCreateSession(
+                    tag,
+                    { path: '/tmp/project', host: machineId, machineId, flavor, [field]: 'native-id' },
+                    null,
+                    'default'
+                )
+                const a1 = create(`${flavor}-a1`, 'machine-a')
+                const a2 = create(`${flavor}-a2`, 'machine-a')
+                const b1 = create(`${flavor}-b1`, 'machine-b')
+                const b2 = create(`${flavor}-b2`, 'machine-b')
+
+                // Machine A's pass is still merging when machine B's trigger
+                // arrives; the follow-up pass must cover machine B's pair.
+                const first = cache.deduplicateByAgentSessionId(a2.id)
+                const second = cache.deduplicateByAgentSessionId(b2.id)
+                await Promise.all([first, second])
+
+                expect([cache.getSession(a1.id), cache.getSession(a2.id)].filter(Boolean)).toHaveLength(1)
+                expect([cache.getSession(b1.id), cache.getSession(b2.id)].filter(Boolean)).toHaveLength(1)
+                store.close()
+            })
+        }
 
         it('does not merge across namespaces', async () => {
             const store = new Store(':memory:')

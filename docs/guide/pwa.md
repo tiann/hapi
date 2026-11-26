@@ -1,3 +1,7 @@
+---
+description: "Install the free HAPI web app as a Progressive Web App on your phone or desktop, enable push notifications, and sign in with a passkey."
+---
+
 # Progressive Web App (PWA)
 
 HAPI's web interface is a fully-featured PWA that can be installed on your phone for a native app-like experience.
@@ -98,6 +102,16 @@ Companions that cannot use Web Share Target (for example a native app on a heads
 - Deep links cannot embed binaries in the fragment; a companion may hand off one file with `fileUrl`. Use Web Share Target POST for direct or multi-file payloads.
 
 See [Web Share Target](https://developer.chrome.com/docs/capabilities/web-apis/web-share-target) for the POST vs GET distinction.
+
+### Passkey sign-in
+
+After you sign in with the access token once, open **Settings → Passkeys → Add passkey** to register Face ID, Touch ID, Windows Hello, or a security key. Next time, choose **Sign in with a passkey** on the login screen. The browser then no longer keeps your access token.
+
+- Configure the Hub's `HAPI_PUBLIC_URL` as its canonical HTTPS origin and open the web app over HTTPS. Allow the authentication popup.
+- Registration and sign-in open the isolated static page at `auth.hapi.run`. Passkeys created from the web and the official apps work in both, for the same Hub.
+- A separately hosted web app must have its exact origin in the Hub's `CORS_ORIGINS`; a wildcard is not enough for authentication callbacks.
+- Rotating `CLI_API_TOKEN` disables all passkeys. Sign in with the new token and add them again.
+- Credentials from the previous domain-specific/`hapi.run` RP design must be registered again.
 
 ## Caching Strategy
 

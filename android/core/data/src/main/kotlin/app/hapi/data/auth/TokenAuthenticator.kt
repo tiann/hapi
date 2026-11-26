@@ -1,6 +1,5 @@
 package app.hapi.data.auth
 
-import app.hapi.protocol.wire.AuthRequest
 import app.hapi.protocol.wire.AuthResponse
 import app.hapi.protocol.wire.HapiJson
 import java.io.IOException
@@ -24,7 +23,7 @@ import okhttp3.Route
  *
  * The JWT expires every 4 hours, so 401s are routine. As an OkHttp
  * [Authenticator] this reacts to any middleware 401 by re-exchanging the
- * stored access token (`POST /api/auth`) and retrying the request **exactly
+ * stored credential (`POST /api/auth`) and retrying the request **exactly
  * once**. The refresh is single-flighted through a [Mutex]:
  *
  * - If, once inside the lock, the current JWT already differs from the one the
@@ -34,10 +33,15 @@ import okhttp3.Route
  *   persist the new JWT into the [CredentialStore], and retry.
  * - A response that already has a [Response.priorResponse] is the retry
  *   itself failing again → give up and emit [AuthTerminalReason.RETRY_EXHAUSTED].
- * - A 401 from `POST /api/auth` means the access token was rotated/revoked →
- *   emit [AuthTerminalReason.ACCESS_TOKEN_REJECTED]; the rejected token is
- *   remembered so concurrent/subsequent failures don't storm the endpoint
- *   (a re-pair storing a *different* token clears the block).
+ * - The exchange body carries whichever durable secret the entry has — the
+ *   access token or, for passkey sign-ins, the passkey session — so the same
+ *   loop serves both sign-in paths.
+ * - A 401 from `POST /api/auth` means that secret was rotated/revoked →
+ *   emit [AuthTerminalReason.ACCESS_TOKEN_REJECTED] (access token) or
+ *   [AuthTerminalReason.PASSKEY_SESSION_INVALID] (`passkey_session_invalid`),
+ *   both asking the user to sign in again; the rejected secret is remembered
+ *   so concurrent/subsequent failures don't storm the endpoint (a new pairing
+ *   or passkey sign-in storing a *different* secret clears the block).
  * - Transient exchange failures (I/O, 5xx) fail the call without a terminal
  *   event: the original 401 surfaces and the caller may retry later.
  *
@@ -63,8 +67,9 @@ class TokenAuthenticator(
     @Volatile
     private var cachedJwt: String? = null
 
+    /** Durable secret (access token or passkey session) the hub already refused. */
     @Volatile
-    private var rejectedAccessToken: String? = null
+    private var rejectedSecret: String? = null
 
     /** The JWT requests should carry right now (memory first, then store). */
     fun currentJwt(): String? {
@@ -125,10 +130,13 @@ class TokenAuthenticator(
             authEvents?.onAuthTerminal(hubUrl, AuthTerminalReason.MISSING_CREDENTIALS)
             return null
         }
-        if (credentials.accessToken == rejectedAccessToken) return null
+        val authRequest = credentials.authRequest ?: run {
+            authEvents?.onAuthTerminal(hubUrl, AuthTerminalReason.MISSING_CREDENTIALS)
+            return null
+        }
+        if (credentials.secret == rejectedSecret) return null
 
-        val body = HapiJson.encodeToString(AuthRequest(credentials.accessToken))
-            .toRequestBody(JSON_MEDIA_TYPE)
+        val body = HapiJson.encodeToString(authRequest).toRequestBody(JSON_MEDIA_TYPE)
         val response = try {
             authClient.newCall(Request.Builder().url(authUrl).post(body).build()).execute()
         } catch (_: IOException) {
@@ -137,8 +145,8 @@ class TokenAuthenticator(
         response.use {
             val text = it.body?.string().orEmpty()
             if (it.code == 401) {
-                rejectedAccessToken = credentials.accessToken
-                authEvents?.onAuthTerminal(hubUrl, AuthTerminalReason.ACCESS_TOKEN_REJECTED)
+                rejectedSecret = credentials.secret
+                authEvents?.onAuthTerminal(hubUrl, terminalReason(credentials))
                 return null
             }
             if (!it.isSuccessful) return null // transient (5xx): no terminal event
@@ -147,12 +155,25 @@ class TokenAuthenticator(
             } catch (_: Exception) {
                 return null
             }
-            rejectedAccessToken = null
+            rejectedSecret = null
             credentialStore.set(credentials.copy(jwt = auth.token, jwtObtainedAtMs = nowMs()))
             cachedJwt = auth.token
             return auth.token
         }
     }
+
+    /**
+     * `passkey_session_invalid` (or any `/api/auth` 401 on a passkey-only
+     * entry) means the passkey was deleted, its `CLI_API_TOKEN` rotated, or
+     * the session expired → sign in again; the access-token path keeps its
+     * historical reason (re-pair).
+     */
+    private fun terminalReason(credentials: HubCredentials): AuthTerminalReason =
+        if (credentials.passkeyOnly) {
+            AuthTerminalReason.PASSKEY_SESSION_INVALID
+        } else {
+            AuthTerminalReason.ACCESS_TOKEN_REJECTED
+        }
 
     companion object {
         /** Refresh proactively when less than this much lifetime remains. */

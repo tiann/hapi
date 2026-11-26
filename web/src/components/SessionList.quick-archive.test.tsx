@@ -1,13 +1,18 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { ApiClient } from '@/api/client'
+import { ApiError, type ApiClient } from '@/api/client'
 import type { SessionSummary } from '@/types/api'
 import { I18nProvider } from '@/lib/i18n-context'
 import { ToastProvider, useToast, type Toast } from '@/lib/toast-context'
+import * as sessionActions from '@/hooks/mutations/useSessionActions'
 import { SessionList } from './SessionList'
 
-afterEach(cleanup)
+afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+})
 
 function makeSession(overrides: Partial<SessionSummary> & { id: string }): SessionSummary {
     return {
@@ -41,6 +46,97 @@ function renderList(sessions: SessionSummary[], api: Partial<ApiClient>) {
         </QueryClientProvider>
     )
 }
+
+function renderUpdatableRow(session: SessionSummary) {
+    const client = new QueryClient()
+    const callbacks = { onSelect: vi.fn(), onNewSession: vi.fn(), onRefresh: vi.fn() }
+    let updateRow!: (row: SessionSummary) => void
+    function List() {
+        const [row, setRow] = useState(session)
+        updateRow = setRow
+        return <SessionList sessions={[row]} selectedSessionId={null} {...callbacks}
+            isLoading={false} renderHeader={false} api={null} />
+    }
+    render(
+        <QueryClientProvider client={client}>
+            <ToastProvider>
+                <I18nProvider>
+                    <List />
+                </I18nProvider>
+            </ToastProvider>
+        </QueryClientProvider>
+    )
+    return (row: SessionSummary) => act(() => updateRow(row))
+}
+
+describe('session row render isolation', () => {
+    it('keeps a row memoized when only the attached job watermark changes', () => {
+        const actions = vi.spyOn(sessionActions, 'useSessionActions')
+        const session = makeSession({ id: 'idle', attachedJobUpdatedAt: 10 })
+        const updateRow = renderUpdatableRow(session)
+        expect(actions).toHaveBeenCalled()
+        actions.mockClear()
+
+        updateRow({ ...session, attachedJobUpdatedAt: 20 })
+        expect(actions).not.toHaveBeenCalled()
+        updateRow({ ...session, attachedJobUpdatedAt: 5 })
+        expect(actions).not.toHaveBeenCalled()
+    })
+
+    it('repaints the title, unread indicator, and pin control on row updates', () => {
+        const session = makeSession({ id: 'idle', contentRevision: 0 })
+        const updateRow = renderUpdatableRow(session)
+        const row = screen.getByText('Title idle').closest<HTMLElement>('[data-session-row-id]')!
+        const inRow = within(row)
+        expect(inRow.queryByTestId('session-unread')).toBeNull()
+        expect(inRow.queryByRole('button', { name: 'Unpin' })).toBeNull()
+
+        const renamed = { ...session, metadata: { path: '/work/app', name: 'Renamed session' } }
+        updateRow(renamed)
+        expect(inRow.getByText('Renamed session')).toBeInTheDocument()
+        expect(inRow.queryByText('Title idle')).toBeNull()
+
+        const unread = { ...renamed, contentRevision: 1 }
+        updateRow(unread)
+        expect(inRow.getByTestId('session-unread')).toBeInTheDocument()
+
+        updateRow({ ...unread, pinned: true })
+        expect(inRow.getByRole('button', { name: 'Unpin' })).toBeInTheDocument()
+    })
+
+    it('repaints the attached job when its value changes at the same watermark', () => {
+        const session = makeSession({ id: 'idle' })
+        const updateRow = renderUpdatableRow(session)
+        const now = Date.now()
+        updateRow({
+            ...session,
+            attachedJob: {
+                key: 'import',
+                label: 'Import progress',
+                status: 'running',
+                remaining: 1,
+                total: 2,
+                unit: 'items',
+                heartbeatAt: now,
+                startedAt: now,
+                updatedAt: now,
+            },
+        })
+        expect(screen.getByText('Import progress')).toBeInTheDocument()
+    })
+
+    it('leaves another row memoized when archive shows its toast', async () => {
+        const actions = vi.spyOn(sessionActions, 'useSessionActions')
+        const archiveSession = vi.fn(async () => {})
+        renderList([makeSession({ id: 'target' }), makeSession({ id: 'other' })], { archiveSession })
+        actions.mockClear()
+
+        const targetRow = screen.getByText('Title target').closest<HTMLElement>('[data-session-row-id]')!
+        fireEvent.click(within(targetRow).getByRole('button', { name: 'Archive' }))
+        await waitFor(() => expect(toasts.map(toast => toast.title)).toEqual(['Session archived']))
+        expect(actions.mock.calls.some(([, id]) => id === 'other')).toBe(false)
+    })
+})
 
 describe('session row hover archive', () => {
     it('archives an idle session in one click and offers Reopen in the toast', async () => {
@@ -85,6 +181,34 @@ describe('session row hover archive', () => {
         renderList([makeSession({ id: 'closed', active: false })], {})
         expect(screen.queryByRole('button', { name: 'Archive' })).toBeNull()
     })
+})
+
+it('keeps delete confirmation after clearing the meter removes its row from Active', async () => {
+    localStorage.setItem('hapi-session-list-status', 'active')
+    try {
+        const job = { key: 'batch', label: 'Batch', runId: 'original', status: 'running' as const,
+            startedAt: 1, updatedAt: 1, heartbeatAt: 1 }
+        const initial = makeSession({ id: 'stale', active: false, attachedJob: job })
+        const remove = vi.fn(async () => {}).mockRejectedValueOnce(new ApiError('conflict', 409,
+            'attached_job_running', JSON.stringify({ job, canClearStale: true })))
+        function List() {
+            const [row, setRow] = useState(initial)
+            const api = { deleteSession: remove, clearStaleSessionJob: async () => setRow({ ...row, attachedJob: null }) } as unknown as ApiClient
+            return <SessionList sessions={[row]} selectedSessionId={null} onSelect={vi.fn()} onNewSession={vi.fn()}
+                onRefresh={vi.fn()} isLoading={false} api={api} />
+        }
+        render(<QueryClientProvider client={new QueryClient()}><ToastProvider><I18nProvider><List /></I18nProvider></ToastProvider></QueryClientProvider>)
+        fireEvent.click(screen.getByTitle('/work/app'))
+        fireEvent.contextMenu(screen.getByRole('button', { name: /Title stale/ }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Delete' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+        fireEvent.click(await screen.findByRole('button', { name: 'Remove stale job record' }))
+        const confirm = await screen.findByRole('button', { name: 'Delete' })
+        expect(screen.queryByRole('button', { name: /Title stale/ })).toBeNull()
+        expect(remove).toHaveBeenCalledTimes(1)
+        fireEvent.click(confirm)
+        await waitFor(() => expect(remove).toHaveBeenCalledTimes(2))
+    } finally { localStorage.removeItem('hapi-session-list-status') }
 })
 
 describe('session row hover archive progress', () => {

@@ -1,5 +1,5 @@
 import { describe, expect, test, afterEach } from 'bun:test'
-import { mkdtempSync, writeFileSync, existsSync, readFileSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, existsSync, readFileSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -76,5 +76,24 @@ describe('withSettingsFileLock', () => {
         ])
         expect(results).toEqual(['ok', 'ok', 'ok'])
         expect(maxInCritical).toBe(1)
+    })
+
+    test('creates the lock parent when the settings home does not exist yet', async () => {
+        // proper-lockfile mkdirs the lockfile path non-recursively, so a missing
+        // parent used to surface as `ENOENT ... mkdir '<dir>/settings.json.hapi.lock'`
+        // — an error naming the lock instead of the absent home. Hit in production
+        // on first run into a fresh HAPI_HOME, and in hub/src/web/routes/cli.test.ts
+        // beforeAll against a temp home it had not created.
+        const fresh = join(tmpdir(), `hapi-lock-fresh-${Math.random().toString(36).slice(2)}`)
+        const settingsFile = join(fresh, 'settings.json')
+        expect(existsSync(fresh)).toBe(false)
+        await expect(withSettingsFileLock(settingsFile, async () => 'ok')).resolves.toBe('ok')
+        expect(existsSync(fresh)).toBe(true)
+        // Owner-only from creation (matches hub settings writer); resists umask 0002.
+        // Bun ignores mkdir mode on Windows, so only assert POSIX modes off win32.
+        if (process.platform !== 'win32') {
+            expect(statSync(fresh).mode & 0o777).toBe(0o700)
+        }
+        rmSync(fresh, { recursive: true, force: true })
     })
 })

@@ -1,3 +1,5 @@
+import { completePasskeyCallback } from '@/lib/passkey'
+import { PASSKEY_CALLBACK_PATH } from '@hapi/protocol/passkey'
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { QueryClientProvider } from '@tanstack/react-query'
@@ -68,4 +70,8 @@ async function bootstrap() {
     )
 }
 
-bootstrap()
+if (window.location.pathname === PASSKEY_CALLBACK_PATH) {
+    completePasskeyCallback()
+} else {
+    bootstrap()
+}

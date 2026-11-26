@@ -1,3 +1,7 @@
+---
+description: "Message pagination, windowing and optimistic sends for native HAPI clients."
+---
+
 # Message pagination, windowing, and optimistic sends
 
 **Audience:** Implementers of native HAPI clients (iOS / Android). This page specifies the message paging protocol (`GET /api/sessions/:id/messages`), the epoch reset contract, the tail-sync loop, recommended client windowing, and the optimistic-send / cancel lifecycle. Companion pages: [sse](./sse.md), [messages](./messages.md), [rest](./rest.md).

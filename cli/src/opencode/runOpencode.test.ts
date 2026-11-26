@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildCliArgs } from '@/runner/run';
 import { parseRemoteAgentCommandOptions } from '@/commands/agentCommandOptions';
-import { OPENCODE_PERMISSION_MODES } from '@hapi/protocol/modes';
+import { Flavors } from '@hapi/protocol/modes';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { createLocalHistoryPublisher, type LocalHistoryPublisher } from './localHistory';
 import type { Metadata } from '@/api/types';
@@ -333,7 +333,7 @@ describe('runOpencode set-session-config handler', () => {
             directory: '/tmp/project',
             reservedSessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
         });
-        const parsed = parseRemoteAgentCommandOptions(runnerArgs.slice(1), OPENCODE_PERMISSION_MODES);
+        const parsed = parseRemoteAgentCommandOptions(runnerArgs.slice(1), Flavors.opencode.permissionModes);
 
         expect(parsed.reservedSessionId).toBe('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee');
         expect(parsed.existingSessionId).toBeUndefined();
@@ -354,7 +354,7 @@ describe('runOpencode set-session-config handler', () => {
             directory: '/tmp/project',
             existingSessionId: 'live-hub-row'
         });
-        const parsed = parseRemoteAgentCommandOptions(runnerArgs.slice(1), OPENCODE_PERMISSION_MODES);
+        const parsed = parseRemoteAgentCommandOptions(runnerArgs.slice(1), Flavors.opencode.permissionModes);
 
         await runOpencode({ ...parsed, workingDirectory: '/tmp/project' });
 
@@ -723,6 +723,23 @@ describe('runOpencode set-session-config handler', () => {
         expect(native).toHaveBeenCalledWith('native');
         bind(null);
         expect(cancel('missing')).toBe(false);
+    });
+
+    it('never answers in-flight after non-deferred dequeue so /compact ack-race cancellation still records localId', async () => {
+        await runOpencode({ startedBy: 'runner' });
+        const { messageQueue, isLocalIdCancelled } = harness.opencodeLoopArgs[0] as {
+            messageQueue: MessageQueue2<unknown>;
+            isLocalIdCancelled: (localId: string) => boolean;
+        };
+        const cancelHandler = harness.session.onCancelQueuedMessage.mock.calls[0]?.[0] as
+            ((localId: string) => boolean | string);
+
+        messageQueue.push('/compact', {}, 'local-compact');
+        const batch = await messageQueue.waitForMessagesAndGetAsString();
+        expect(batch?.items.map((item) => item.localId)).toEqual(['local-compact']);
+
+        expect(cancelHandler('local-compact')).toBe(false);
+        expect(isLocalIdCancelled('local-compact')).toBe(true);
     });
 
     it('releases the clear transition latch when the queued /clear is cancelled', async () => {

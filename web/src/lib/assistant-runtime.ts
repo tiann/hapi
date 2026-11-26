@@ -8,7 +8,7 @@ import {
     consumeComposerSendIntent,
     type ComposerSendIntent,
 } from '@/lib/messageDelivery'
-import { safeStringify } from '@hapi/protocol'
+import { isObject, safeStringify } from '@hapi/protocol'
 import { renderEventLabel } from '@/chat/presentation'
 import type { ChatBlock, CliOutputBlock, CodexReview, RoundSummary, UsageData } from '@/chat/types'
 import type { AgentEvent, ToolCallBlock } from '@/chat/types'
@@ -32,10 +32,16 @@ export type AggregatedAssistantMeta = {
 }
 
 export type HappyChatMessageMetadata = {
-    kind: 'user' | 'assistant' | 'tool' | 'event' | 'cli-output' | 'codex-review' | 'compact-summary'
+    kind: 'user' | 'assistant' | 'tool' | 'event' | 'cli-output' | 'codex-review' | 'compact-summary' | 'system-note'
     status?: HappyMessageStatus
     localId?: string | null
+    sourceMessageId?: string
+    isTranscriptEcho?: boolean
     originalText?: string
+    /** What the user typed when the hub translated the prompt; message text is the English sent. */
+    translatedFrom?: string
+    /** The hub's translation provider failed, so the original text reached the agent. */
+    translationFailed?: boolean
     toolCallId?: string
     event?: AgentEvent
     source?: CliOutputBlock['source']
@@ -606,6 +612,12 @@ function containsActiveAssistantOutput(
         ))
 }
 
+/** HAPI-injected notices (job wakes) must not render as operator input. */
+function isSystemNoteMeta(meta: unknown): boolean {
+    if (!meta || typeof meta !== 'object') return false
+    return (meta as { sentFrom?: unknown }).sentFrom === 'hapi-system'
+}
+
 function toThreadMessageLike(
     block: VisibleChatBlock,
     threadMessageId: string,
@@ -622,10 +634,19 @@ function toThreadMessageLike(
                     kind: 'user',
                     status: block.status,
                     localId: block.localId,
+                    sourceMessageId: block.id,
+                    isTranscriptEcho: isObject(block.meta) && block.meta.isTranscriptEcho === true,
                     originalText: block.originalText,
                     attachments: block.attachments,
                     invokedAt: block.invokedAt,
-                    steered: block.steered
+                    steered: block.steered,
+                    ...(isObject(block.meta) && typeof block.meta.translatedFrom === 'string'
+                        ? { translatedFrom: block.meta.translatedFrom }
+                        : {}),
+                    ...(isObject(block.meta) && block.meta.translationFailed === true
+                        ? { translationFailed: true }
+                        : {}),
+                    ...(isSystemNoteMeta(block.meta) ? { kind: 'system-note' as const } : {})
                 } satisfies HappyChatMessageMetadata
             }
         }
