@@ -17,8 +17,9 @@ import {
     isObject,
     isSteeringSupportedForSession,
     hasActiveSteeringTurn,
-    type MessageDeliveryMode,,
-    isSessionId} from '@hapi/protocol'
+    isSessionId,
+    type MessageDeliveryMode,
+} from '@hapi/protocol'
 import { normalizeSessionIdPrefix } from '@hapi/protocol/sessionCitation'
 import { configuration } from '@/configuration'
 import { isPeerToolsDisabled } from '@/modules/common/peerTools'
