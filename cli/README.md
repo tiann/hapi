@@ -402,11 +402,12 @@ reads history separately. The initial root subscription retains the existing
 response behavior so empty native threads can initialize their history source.
 This does not truncate the native rollout or reduce the context restored by Codex.
 
-For exceptionally large threads, set `HAPI_CODEX_LAZY_HISTORY_IDS` to a
-comma-separated list of native Codex thread IDs in the Runner environment before
-starting the Runner. Only these roots replay their newest turn when reading
-paginated history and skip child history replay. Other threads retain full replay;
-legacy native threads without paginated history still use the full-history path.
+Set `HAPI_CODEX_LAZY_HISTORY_IDS` in the Runner environment before starting the
+Runner. Use `HAPI_CODEX_LAZY_HISTORY_IDS=*` for all HAPI-managed Codex sessions, or
+a comma-separated list of native Codex thread IDs for selected sessions. An unset
+or empty value keeps full replay. Selected roots replay their newest turn when
+reading paginated history and skip child history replay. External desktop bridges
+and legacy native threads without paginated history retain their existing reads.
 Descendant discovery and subscriptions to loaded children are retained, including
 after reconnect, so pending questions and live child events can still reach HAPI.
 

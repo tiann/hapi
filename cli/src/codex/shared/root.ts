@@ -439,9 +439,9 @@ export class SharedCodexRoot {
         void this.host.end(this, false, 'unavailable').catch(error => logger.debug('[Codex attached] validation failed', error));
     }
     private lazyHistory(): boolean {
-        if (this.host.attached) return false;
-        return !!this.threadId && (process.env.HAPI_CODEX_LAZY_HISTORY_IDS ?? '')
-            .split(',').map(id => id.trim()).includes(this.threadId);
+        if (this.host.attached || !this.threadId) return false;
+        const configured = (process.env.HAPI_CODEX_LAZY_HISTORY_IDS ?? '').trim();
+        return configured === '*' || configured.split(',').some(id => id.trim() === this.threadId);
     }
     async readThread(threadId = this.threadId, fullHistory = false): Promise<Record<string, unknown>> {
         let thread = record(record(await this.client.request('thread/read', { threadId, includeTurns: false })).thread);
