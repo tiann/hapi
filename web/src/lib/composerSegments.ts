@@ -1,5 +1,6 @@
 import { buildSessionReferencePath, parseSessionPathHref } from '@/lib/sessionReference'
 import { truncateGraphemes } from '@/lib/graphemes'
+import { getSuggestionSpacing } from '@/utils/applySuggestion'
 import { findActiveWord } from '@/utils/findActiveWord'
 
 /** Object Replacement Character — one mirror slot per session atom. */
@@ -236,12 +237,11 @@ export function insertPlainTextInComposerSegments(
     const { before } = splitMirrorAt(segments, replaceStart)
     const { after } = splitMirrorAt(segments, replaceEnd)
     const afterMirror = mirrorComposerSegments(after)
-    const needsTrailingSpace =
-        addSpace && (afterMirror.length === 0 || afterMirror[0] !== ' ')
-    const insert = needsTrailingSpace ? `${text} ` : text
+    const { space, advanceCaret } = getSuggestionSpacing(afterMirror, active?.word.startsWith('$') ?? false, addSpace)
+    const insert = text + space
     const inserted: ComposerSegment[] = [...before, { type: 'text', text: insert }]
     const next = coalesceComposerSegments([...inserted, ...after])
-    const caret = mirrorComposerSegments(coalesceComposerSegments(inserted)).length
+    const caret = mirrorComposerSegments(coalesceComposerSegments(inserted)).length + advanceCaret
     return {
         segments: next,
         selection: { start: caret, end: caret },

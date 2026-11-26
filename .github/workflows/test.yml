@@ -20,6 +20,7 @@ jobs:
                   terminal-wrap-fidelity.spec.ts
                   session-list-fork-menu.spec.ts
                   composer-copy.spec.ts
+                  composer-skill-completion.spec.ts
                   session-list-scroll.spec.ts
                   session-activity.spec.ts
                   cold-initial-tail.spec.ts
