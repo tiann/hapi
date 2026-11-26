@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
     readRuntimes: vi.fn(),
     findRuntime: vi.fn(),
     reapOrphans: vi.fn<typeof import('./orphanReap')['reapRunnerSpawnedOrphans']>(),
+    findOrphanTargets: vi.fn<typeof import('./orphanReap')['findStopSessionOrphanTargets']>(),
     kill: vi.fn(),
     windows: vi.fn(() => false),
     startMarker: vi.fn(() => 'generation'),
@@ -37,7 +38,7 @@ vi.mock('@/codex/shared/registry', () => ({
 }))
 vi.mock('@/runner/orphanReap', () => ({
     reapRunnerSpawnedOrphans: mocks.reapOrphans,
-    findStopSessionOrphanTargets: vi.fn(),
+    findStopSessionOrphanTargets: mocks.findOrphanTargets,
 }))
 vi.mock('@/utils/process', async importOriginal => ({
     ...await importOriginal<typeof import('@/utils/process')>(),
@@ -153,6 +154,29 @@ describe('runner stop confirmation after shared Codex tracking loss', () => {
         expect(getChildren()).toEqual(expect.arrayContaining([expect.objectContaining({ pid: 4242, happySessionId: 'other' })]))
         await expect(stopSession('exited')).resolves.toBe('already_gone')
         await expect(stopSession('target')).resolves.toBe('unknown')
+    })
+
+    it('never signals a wrapper that registers during an orphan-only stop scan', async () => {
+        const sessionId = 'registers-during-scan'
+        const pid = 4243
+        record.sessions = {}
+        mocks.findOrphanTargets.mockImplementationOnce(async (id, shouldSkip) => {
+            reportSession(id, { hostPid: pid, startedBy: 'terminal' } as Parameters<typeof reportSession>[1])
+            expect(getChildren()).toEqual(expect.arrayContaining([expect.objectContaining({ pid, happySessionId: id })]))
+            expect(shouldSkip(id, pid)).toBe(true)
+            return []
+        })
+        mocks.reapOrphans.mockImplementationOnce(async (id, options) => {
+            const target = { pid, startMarker: 'generation', needsPublicationDrain: false } as const
+            expect(await options?.findTargets?.(id)).toEqual([])
+            // A registration during discovery must also veto a candidate that
+            // has already left discovery when preparation or signalling runs.
+            expect(await options?.prepare?.(target)).toBe(false)
+            expect(await options?.killTree?.(pid)).toBe(false)
+            return 'still_alive'
+        })
+        await expect(stopSession(sessionId)).resolves.toBe('still_alive')
+        expect(mocks.kill).not.toHaveBeenCalled()
     })
 
     it('still refuses when the orphan sweep cannot establish exit', async () => {

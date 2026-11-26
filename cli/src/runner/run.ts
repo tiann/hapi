@@ -1384,6 +1384,25 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       const isNewPersistedBinding = captureNewProcessBindingGuard(persistedResumeProcesses);
       const isNewBinding = (pid: number) => isNewTrackedBinding(pid) || isNewPersistedBinding(pid);
 
+      const sweepUnclaimedOrphans = (
+        liveRuntimes: NonNullable<Awaited<ReturnType<typeof readLiveRuntimesForStop>>>,
+        protectedTrackedPids: ReturnType<typeof trackedSharedWrapperPidsWithSiblings>
+      ) => reapRunnerSpawnedOrphans(sessionId, {
+        killTree: pid => {
+          if (isNewBinding(pid)) return Promise.resolve(false);
+          const guard = capturePidSignalGuard(pid, sessionId);
+          return killProcessTreeByPid(pid, false, undefined, signalDeadlines.get(pid), undefined,
+            phase => !isNewBinding(pid) && guard(phase));
+        },
+        prepare: (target) => isNewBinding(target.pid) ? Promise.resolve(false)
+          : target.needsPublicationDrain === false ? Promise.resolve(true)
+          : prepareSessionStop(sessionId, target.pid, target.startMarker ?? undefined),
+        findTargets: (id) => findStopSessionOrphanTargets(
+          id,
+          (sid, pid) => isNewBinding(pid) || shouldSkipOrphanPid(liveRuntimes, protectedTrackedPids, sid, pid),
+        ),
+      });
+
       const finishWithOrphanSweep = async (
         base: 'stopped' | 'already_gone' | 'unknown'
       ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
@@ -1393,21 +1412,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           pidToTrackedSession.entries(),
           sessionId
         );
-        const orphanStatus = await reapRunnerSpawnedOrphans(sessionId, {
-          killTree: pid => {
-            if (isNewBinding(pid)) return Promise.resolve(false);
-            const guard = capturePidSignalGuard(pid, sessionId);
-            return killProcessTreeByPid(pid, false, undefined, signalDeadlines.get(pid), undefined,
-              phase => !isNewBinding(pid) && guard(phase));
-          },
-          prepare: (target) => isNewBinding(target.pid) ? Promise.resolve(false)
-            : target.needsPublicationDrain === false ? Promise.resolve(true)
-            : prepareSessionStop(sessionId, target.pid, target.startMarker ?? undefined),
-          findTargets: (id) => findStopSessionOrphanTargets(
-            id,
-            (sid, pid) => isNewBinding(pid) || shouldSkipOrphanPid(liveRuntimes, protectedTrackedPids, sid, pid),
-          ),
-        });
+        const orphanStatus = await sweepUnclaimedOrphans(liveRuntimes, protectedTrackedPids);
         if (orphanStatus === 'still_alive') {
           logger.debug(`[RUNNER RUN] Orphan argv sweep left live PIDs for session ${sessionId}`);
           return 'still_alive';
@@ -1782,15 +1787,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           pidToTrackedSession.entries(),
           sessionId
         );
-        const orphanStatus = await reapRunnerSpawnedOrphans(sessionId, {
-          killTree: pid => killProcessTreeByPid(pid, false, undefined,
-            signalDeadlines.get(pid), undefined, capturePidSignalGuard(pid, sessionId)),
-          prepare: (target) => target.needsPublicationDrain === false ? Promise.resolve(true)
-            : prepareSessionStop(sessionId, target.pid, target.startMarker ?? undefined),          findTargets: (id) => findStopSessionOrphanTargets(
-            id,
-            (sid, pid) => shouldSkipOrphanPid(liveRuntimes, protectedTrackedPids, sid, pid)
-          ),
-        });
+        const orphanStatus = await sweepUnclaimedOrphans(liveRuntimes, protectedTrackedPids);
         if (orphanStatus === 'still_alive') {
           logger.debug(`[RUNNER RUN] Orphan argv reap still_alive for session ${sessionId} (scan_failed or kill left live PIDs)`);
           return 'still_alive';
