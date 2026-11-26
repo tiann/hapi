@@ -37,6 +37,7 @@ import { clearAgentTerminalBuffer } from '../socket/agentTerminalBuffer'
 import type { SSEManager } from '../sse/sseManager'
 import { CursorLegacyMigrator, type CursorLegacyMigratorOptions } from '../cursor/cursorLegacyMigrator'
 import { toAttachedJob } from '../store/sessionJobs'
+import { SessionWakeGate } from './sessionWakeGate'
 import {
     buildJobTerminalWakePrompt,
     buildJobWakeLocalId,
@@ -1342,6 +1343,32 @@ export class SyncEngine {
         return this.store.sessionJobs.getPrimaryRunningBySessionIds(sessionIds)
     }
 
+    // ---- Waking a session so the hub can deliver to it -----------------------
+
+    private wakeGate: SessionWakeGate | null = null
+
+    /** Lazily built: `resumeSession` and `sessionCache` are only wired after construction. */
+    private get deliveryWakeGate(): SessionWakeGate {
+        this.wakeGate ??= new SessionWakeGate({
+            getSession: (sessionId) => this.sessionCache.getSession(sessionId) ?? null,
+            resumeSession: (sessionId, namespace) => this.resumeSession(sessionId, namespace),
+            log: (message, detail) => console.warn(message, detail)
+        })
+        return this.wakeGate
+    }
+
+    /**
+     * Scheduled messages that came due while their session was inactive used
+     * to wait for the next client to open it. Resume the session instead so
+     * the message goes out at the time it was scheduled for. A machine that
+     * is offline makes this a no-op until it is back (see SessionWakeGate).
+     */
+    private wakeSessionsWithMatureMessages(sessionIds: readonly string[]): void {
+        for (const sessionId of sessionIds) {
+            void this.deliveryWakeGate.wake(sessionId).catch(() => undefined)
+        }
+    }
+
     /** Move outliving jobs + redirects onto another session (pre-delete). */
     transferAttachedJobs(fromSessionId: string, toSessionId: string, namespace: string): void {
         this.sessionCache.transferAttachedJobs(fromSessionId, toSessionId, namespace)
@@ -1890,7 +1917,8 @@ export class SyncEngine {
         // but shares its 5s cadence (avoids a second timer).
         const held = new Set(this.historyActionsInFlight)
         for (const session of this.sessionCache.getSessions()) if (this.openCodeRewindPending(session.id)) held.add(session.id)
-        this.messageService.releaseMatureScheduledMessages(Date.now(), held)
+        const maturedSessionIds = this.messageService.releaseMatureScheduledMessages(Date.now(), held)
+        this.wakeSessionsWithMatureMessages(maturedSessionIds ?? [])
         void this.reconcileOpenCodeClears()
         this.reconcileDerivedToolWork()
     }

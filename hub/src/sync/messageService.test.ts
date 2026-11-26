@@ -2104,6 +2104,36 @@ describe('MessageService.sweepImmediateQueuedOnSessionEnd — scheduled rows are
         expect(row?.createdAt).toBe(oldCreated)
     })
 
+    it('releaseMatureScheduledMessages reports the sessions it emitted to', () => {
+        const store = makeStore()
+        const released = makeSession(store, 'mature-released')
+        const held = makeSession(store, 'mature-held')
+        const future = makeSession(store, 'mature-future')
+        const now = Date.now()
+
+        for (const [session, localId, scheduledAt] of [
+            [released, 'mature-a', now - 60_000],
+            [released, 'mature-b', now - 1_000],
+            [held, 'mature-held', now - 1_000],
+            [future, 'mature-future', now + 60_000]
+        ] as const) {
+            store.messages.addMessage(
+                session.id,
+                { role: 'user', content: { type: 'text', text: localId } },
+                localId,
+                scheduledAt
+            )
+        }
+
+        const service = new MessageService(store, makeNoopIo(), makePublisher() as any)
+        expect(service.releaseMatureScheduledMessages(now, new Set([held.id]))).toEqual([released.id])
+        expect(service.releaseMatureScheduledMessages(now)).toEqual([released.id, held.id])
+        // Once the CLI acknowledged every mature row there is nothing left to report.
+        store.messages.markMessagesInvoked(released.id, ['mature-a', 'mature-b'], now)
+        store.messages.markMessagesInvoked(held.id, ['mature-held'], now)
+        expect(service.releaseMatureScheduledMessages(now)).toEqual([])
+    })
+
     it('an enveloped user prompt with a lost ack is still swept and replayed', () => {
         // Role detection must match the sibling delivery logic: some rows carry the
         // role inside an envelope ({message: …}, {data:{message}}, {payload:{message}})

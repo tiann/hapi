@@ -57,7 +57,7 @@ Limits:
 
 - Maximum 7 days ahead; the time must be in the future.
 - Scheduled messages cannot carry attachments. The attach button is disabled while a schedule is set.
-- The hub must be running at the scheduled time. If the CLI is offline then, it catches up the next time it connects.
+- The hub must be running at the scheduled time. If the session is not running then, the hub resumes it. If its machine is offline, the message goes out when the machine is back.
 
 Scheduled send is available on web, iOS (clock menu with the same presets plus **Pick a Time…**), and Android (clock button with Relative and Specific tabs).
 
