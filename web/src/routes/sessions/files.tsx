@@ -8,8 +8,7 @@ import { DirectoryTree } from '@/components/SessionFiles/DirectoryTree'
 import { FileActionMenu } from '@/components/FileActionMenu'
 import { useFileMenuTrigger } from '@/hooks/useFileMenuTrigger'
 import type { AnchoredMenuPoint } from '@/hooks/useAnchoredMenu'
-import { appendFileReferenceToComposerDraft, formatFileReference } from '@/lib/file-composer'
-import { insertIntoLiveComposer } from '@/lib/composerInsertBridge'
+import { appendFileReferenceToComposerDraft } from '@/lib/file-composer'
 import { resolveAbsoluteFilePath } from '@/lib/file-path'
 import { SessionHeader } from '@/components/SessionHeader'
 import { LoadingState } from '@/components/LoadingState'
@@ -450,11 +449,6 @@ export default function FilesPage() {
     }, [activeTab, navigate, searchQuery, sessionId])
 
     const handleAddFileToComposer = useCallback((path: string) => {
-        // Side panel: the chat is still mounted, so insert at its caret and
-        // stay on the files panel. Full-pane files page: stash in the draft.
-        if (insertIntoLiveComposer(sessionId, formatFileReference(path))) {
-            return
-        }
         appendFileReferenceToComposerDraft(sessionId, path)
         navigate({
             to: '/sessions/$sessionId',
