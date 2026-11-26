@@ -396,7 +396,7 @@ describe('session row hover unpin', () => {
         expect(document.activeElement).toBe(screen.getByRole('button', { name: /Title project-pin/ }))
     })
 
-    it('keeps focus on the unread preview after transitionend when keyboard-unpinning an unselected unread inactive project pin', async () => {
+    it('expands the destination to keep keyboard focus when keyboard-unpinning an unselected unread inactive project pin', async () => {
         let finishUnpin: () => void = () => {}
         const setSessionPinMode = vi.fn(() => new Promise<void>((resolve) => {
             finishUnpin = resolve
@@ -433,10 +433,7 @@ describe('session row hover unpin', () => {
         ])
 
         await waitFor(() => expect(screen.queryByRole('button', { name: 'Unpin' })).toBeNull())
-        expect(screen.getByTitle('/work/quiet')).toHaveAttribute('aria-expanded', 'false')
-
-        // A collapsed group keeps its unread row mounted in its own open
-        // panel; there is no separate peek list to look in.
+        expect(screen.getByTitle('/work/quiet')).toHaveAttribute('aria-expanded', 'true')
         const unreadRow = document.querySelector<HTMLElement>('[data-session-row-id="unread-project-pin"]')
         expect(unreadRow).not.toBeNull()
         const unreadPreviewButton = unreadRow!.querySelector<HTMLButtonElement>('button[data-session-scroll-anchor]')

@@ -1,5 +1,5 @@
-import { OPENCODE_PERMISSION_MODES } from '@hapi/protocol/modes';
-import type { OpencodePermissionMode } from '@hapi/protocol/types';
+import { Flavors } from '@hapi/protocol/modes';
+import type { PermissionModeOf } from '@hapi/protocol/types';
 import type { SlashCommand } from '@/modules/common/slashCommands';
 
 const OPENCODE_INIT_PROMPT = [
@@ -31,7 +31,7 @@ export type OpencodeSlashResolution =
         kind: 'handled';
         message: string;
         updates?: {
-            permissionMode?: OpencodePermissionMode;
+            permissionMode?: PermissionModeOf<typeof Flavors.opencode>;
             model?: string | null;
             modelReasoningEffort?: string | null;
         };
@@ -41,7 +41,7 @@ export type OpencodeSlashResolution =
         text: string;
         message?: string;
         updates?: {
-            permissionMode?: OpencodePermissionMode;
+            permissionMode?: PermissionModeOf<typeof Flavors.opencode>;
             model?: string | null;
             modelReasoningEffort?: string | null;
         };
@@ -51,7 +51,7 @@ export function resolveOpencodeSlashCommand(
     text: string,
     state: {
         commands?: readonly SlashCommand[];
-        permissionMode: OpencodePermissionMode;
+        permissionMode: PermissionModeOf<typeof Flavors.opencode>;
         model?: string | null;
         modelReasoningEffort?: string | null;
     }
@@ -159,16 +159,16 @@ export function resolveOpencodeSlashCommand(
                 message: `OpenCode permission mode: ${state.permissionMode}`
             };
         }
-        if (!(OPENCODE_PERMISSION_MODES as readonly string[]).includes(rest)) {
+        if (!Flavors.opencode.allowsPermissionMode(rest)) {
             return {
                 kind: 'handled',
-                message: `Unknown OpenCode permission mode: ${rest}. Supported: ${OPENCODE_PERMISSION_MODES.join(', ')}.`
+                message: `Unknown OpenCode permission mode: ${rest}. Supported: ${Flavors.opencode.permissionModes.join(', ')}.`
             };
         }
         return {
             kind: 'handled',
             message: `OpenCode permission mode set to ${rest}`,
-            updates: { permissionMode: rest as OpencodePermissionMode }
+            updates: { permissionMode: rest }
         };
     }
 

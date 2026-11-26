@@ -47,6 +47,25 @@ test.describe('session-list pin layout modes', () => {
         await expect(page.getByRole('button', { name: /Detached running job/ })).toBeVisible()
     })
 
+    test('keeps a rename draft when a session disconnects and moves to the archived group', async ({ page }) => {
+        const divider = page.getByRole('separator', { name: 'Archived project sessions', includeHidden: true })
+        const row = page.locator('[data-session-row-id="session-quiet"]')
+        expect((await row.boundingBox())!.y).toBeLessThan((await divider.boundingBox())!.y)
+        await row.getByRole('button', { name: /Quiet task/ }).click({ button: 'right' })
+        await page.getByRole('menuitem', { name: 'Rename', exact: true }).click()
+        const dialog = page.getByRole('dialog', { name: 'Rename Session' })
+        const title = dialog.getByPlaceholder('Session name')
+        await title.fill('Keep this draft')
+        await page.evaluate(() => window.dispatchEvent(new Event('fixture:disconnect-quiet-session')))
+        await expect.poll(async () => (await row.boundingBox())!.y).toBeGreaterThan((await divider.boundingBox())!.y)
+        await expect(dialog).toBeVisible()
+        await expect(title).toHaveValue('Keep this draft')
+        await expect(title).toBeFocused()
+        if (process.env.HAPI_REVIEW_SCREENSHOT_DIR) {
+            await page.screenshot({ path: `${process.env.HAPI_REVIEW_SCREENSHOT_DIR}/rename-draft-after-disconnect.png` })
+        }
+    })
+
     test('keeps working sessions pinned and quiet sessions in project folders in detailed mode', async ({ page }) => {
         await page.goto(`${fixtureUrl}?mode=detailed`)
 
@@ -58,3 +77,26 @@ test.describe('session-list pin layout modes', () => {
         await expect(page.getByRole('separator', { name: 'Archived project sessions' })).toHaveCount(0)
     })
 })
+
+for (const [locale, label, detailed, combined, archived] of [
+    ['zh-CN', '置顶进行中会话布局', '详细', '合并', '已归档项目会话'],
+    ['ja', '進行中のセッションの表示形式', '詳細', '統合', 'アーカイブ済みのプロジェクトセッション'],
+    ['ru', 'Расположение сессий в работе', 'Подробный', 'Объединённый', 'Архивные сессии проектов'],
+]) {
+    test(`localizes the layout controls and archived separator for ${locale}`, async ({ page }) => {
+        await page.addInitScript((language) => {
+            localStorage.setItem('hapi-lang', language)
+            localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
+            localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')
+        }, locale)
+        await page.goto(`${fixtureUrl}?view=settings`)
+        const choices = page.getByRole('radiogroup', { name: label })
+        await expect(choices.getByRole('radio', { name: detailed })).toBeVisible()
+        await expect(choices.getByRole('radio', { name: combined })).toBeChecked()
+        if (locale === 'zh-CN' && process.env.HAPI_REVIEW_SCREENSHOT_DIR) {
+            await page.getByTestId('pin-in-progress-settings').screenshot({ path: `${process.env.HAPI_REVIEW_SCREENSHOT_DIR}/session-layout-settings-zh.png` })
+        }
+        await page.goto(fixtureUrl)
+        await expect(page.getByRole('separator', { name: archived })).toBeVisible()
+    })
+}

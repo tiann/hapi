@@ -1,12 +1,15 @@
+import { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { SessionSummary } from '@/types/api'
 import { SessionList } from '@/components/SessionList'
 import { I18nProvider } from '@/lib/i18n-context'
+import SettingsDisplayPage from '@/routes/settings/display'
 import { ToastProvider } from '@/lib/toast-context'
 import '../src/index.css'
 
-if (new URLSearchParams(window.location.search).get('mode') === 'detailed') {
+const params = new URLSearchParams(window.location.search)
+if (params.get('mode') === 'detailed') {
     window.localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'detailed')
 }
 
@@ -77,21 +80,35 @@ const queryClient = new QueryClient({
     },
 })
 
+function SessionListFixture() {
+    const [rows, setRows] = useState(sessions)
+    useEffect(() => {
+        const disconnectQuietSession = () => setRows(current => current.map(session =>
+            session.id === 'session-quiet' ? { ...session, active: false } : session
+        ))
+        window.addEventListener('fixture:disconnect-quiet-session', disconnectQuietSession)
+        return () => window.removeEventListener('fixture:disconnect-quiet-session', disconnectQuietSession)
+    }, [])
+    return (
+        <SessionList
+            sessions={rows}
+            selectedSessionId={null}
+            onSelect={() => {}}
+            onNewSession={() => {}}
+            onRefresh={async () => {}}
+            isLoading={false}
+            renderHeader={false}
+            api={null}
+        />
+    )
+}
+
 createRoot(document.getElementById('root')!).render(
     <QueryClientProvider client={queryClient}>
         <ToastProvider>
             <I18nProvider>
                 <div className="h-screen w-full bg-[var(--app-bg)] text-[var(--app-fg)]">
-                    <SessionList
-                        sessions={sessions}
-                        selectedSessionId={null}
-                        onSelect={() => {}}
-                        onNewSession={() => {}}
-                        onRefresh={async () => {}}
-                        isLoading={false}
-                        renderHeader={false}
-                        api={null}
-                    />
+                    {params.get('view') === 'settings' ? <SettingsDisplayPage /> : <SessionListFixture />}
                 </div>
             </I18nProvider>
         </ToastProvider>

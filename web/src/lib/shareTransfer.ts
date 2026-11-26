@@ -1,3 +1,4 @@
+import { randomId } from './randomId'
 import { shareTargetPathname } from './sharePath'
 
 /** Bounded deep-link fetch limit (matches legacy single-request upload cap). */
@@ -283,9 +284,7 @@ function tx<T>(mode: IDBTransactionMode, run: (store: IDBObjectStore) => IDBRequ
 }
 
 export async function putShareTransfer(payload: ShareTransferPayload): Promise<string> {
-    const id = (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
-        ? crypto.randomUUID()
-        : `${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const id = randomId()
     const record: StoredRecord = { id, ...payload }
     await tx<IDBValidKey>('readwrite', (store) => store.put(record))
     return id

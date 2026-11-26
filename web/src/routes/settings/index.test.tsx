@@ -446,8 +446,9 @@ describe('responsive settings pages', () => {
         const pinSettings = screen.getByTestId('pin-in-progress-settings')
         expect(screen.getByRole('radio', { name: 'Detailed' })).toHaveAttribute('aria-checked', 'true')
         expect(screen.getByRole('radio', { name: 'Combined' })).toHaveAttribute('aria-checked', 'false')
-        expect(screen.getByText('Detailed keeps the In progress section and project folders; Combined groups connected sessions by project directory.')).toBeInTheDocument()
+        expect(screen.getByText('Detailed shows In progress, then project folders. Combined groups connected sessions and running jobs by project above archived previews.')).toBeInTheDocument()
         expect(choices).toBeInTheDocument()
+        expect(screen.getByText(/In Combined, both choices group all connected sessions and running jobs/)).toBeInTheDocument()
         expect(screen.getByRole('radiogroup', { name: 'Pin in-progress sessions' })).toBeInTheDocument()
         expect(within(pinSettings).getAllByRole('radio').map((radio) => radio.textContent?.trim())).toEqual(['Combined', 'Detailed'])
 

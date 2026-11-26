@@ -1,5 +1,5 @@
 import { EnhancedMode, PermissionMode } from "./loop";
-import { query, type QueryOptions as Options, type SDKAssistantMessage, type SDKMessage, type SDKSystemMessage, AbortError, SDKUserMessage } from '@/claude/sdk'
+import { query, type QueryOptions as Options, type SDKAssistantMessage, type SDKMessage, type SDKResultMessage, type SDKSystemMessage, AbortError, SDKUserMessage } from '@/claude/sdk'
 import { claudeCheckSession } from "./utils/claudeCheckSession";
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -121,6 +121,10 @@ export async function claudeRemote(opts: {
     onSessionFound: (id: string, extras?: { forkedFrom?: string }) => void,
     onThinkingChange?: (thinking: boolean) => void,
     onMessage: (message: SDKMessage) => void,
+    /** Called with a late result of a timed-out command that is dropped from the transcript. */
+    onDroppedResult?: (message: SDKResultMessage) => void,
+    /** Called once per spawn with whether the process starts fresh, before SDK messages arrive. */
+    onSpawn?: (fresh: boolean) => void,
     onContextUsage?: (usage: { model?: string, maxTokens?: number }) => void,
     onAccountIdentity?: (accountIdentity: string | null) => void,
     onFirstResult?: (initialMessage: string) => void,
@@ -494,6 +498,10 @@ export async function claudeRemote(opts: {
             : opts.allowedTools;
         sdkOptions.disallowedTools = first.mode.disallowedTools;
     }
+
+    // A fresh process starts its cumulative counters at zero, so the caller can
+    // seed a baseline before the first result is converted.
+    opts.onSpawn?.(!startFrom && !forkSession);
 
     // Start the loop
     let response: ReturnType<typeof query>;
@@ -875,13 +883,20 @@ export async function claudeRemote(opts: {
                 && (!timedOutCommand || message.user_message_uuid === clear.uuid || matchesClearSession);
             if (timedOutCommand && !isClearResult
                 && isCommandResult(message, timedOutCommand.uuid, timedOutCommand.command, false)) {
+                // Only the active session's counters belong to this process baseline.
+                if (message.type === 'result' && currentSessionId && message.session_id === currentSessionId) {
+                    opts.onDroppedResult?.(message as SDKResultMessage);
+                }
                 continue;
             }
             const initialClearSessionId = !clear && message.type === 'result' && resultSeq === 0
                 ? opts.getClearHookSessionId?.() : undefined;
+            let staleUsageSession = false;
             if (initialClearSessionId && initialClearSessionId !== currentSessionId) {
                 bindClearSession(initialClearSessionId);
                 waitingForClearFollowUp = !inputEnded;
+                // The result may still carry the previous session's counters.
+                staleUsageSession = message.session_id !== initialClearSessionId;
             }
             const compactMetadata =
                 message.type === 'system' && message.subtype === 'compact_boundary'
@@ -894,7 +909,11 @@ export async function claudeRemote(opts: {
             const isCompactTurnResult = compact !== null
                 && isCommandResult(message, compact.uuid, 'compact', compact.initial && compact.sawCompactSignal);
             if (!isClearResult && !isManualCompactBoundaryMessage(message) && !isCompactEchoMessage(message)) {
-                opts.onMessage(isCompactTurnResult ? { ...message, hapi_compact_turn: true } : message);
+                opts.onMessage(isCompactTurnResult || staleUsageSession ? {
+                    ...message,
+                    ...(isCompactTurnResult ? { hapi_compact_turn: true } : {}),
+                    ...(staleUsageSession ? { hapi_skip_usage: true } : {})
+                } : message);
             }
 
             // Handle special system messages
@@ -1038,7 +1057,15 @@ export async function claudeRemote(opts: {
                     updateThinking(false);
                     waitingForClearFollowUp = !inputEnded;
                     if (rotatedId) bindClearSession(rotatedId, clear.init);
-                    if (clear.nativeAlias) opts.onMessage(message);
+                    if (clear.nativeAlias) {
+                        // An alias result still carrying the previous session id must not rebase usage.
+                        const staleUsage = rotatedId && message.type === 'result' && message.session_id !== rotatedId;
+                        opts.onMessage(staleUsage ? { ...message, hapi_skip_usage: true } : message);
+                    }
+                    else if (rotatedId && message.type === 'result' && message.session_id === rotatedId) {
+                        // The suppressed /clear result rebases usage for the rotated session.
+                        opts.onDroppedResult?.(message as SDKResultMessage);
+                    }
                     const completion = clear.nativeAlias ? undefined : rotatedId ? 'Context was reset' : 'Could not reset context';
                     await opts.onReady(completion, undefined, rotatedId ? 0 : undefined);
                     scheduleNextMessage();

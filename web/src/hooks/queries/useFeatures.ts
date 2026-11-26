@@ -9,6 +9,8 @@ export type FeaturesResponse = {
         source: 'env' | 'file' | 'default'
     }
     prChipDisplay: PrChipDisplayProfile
+    /** Hub has a translation provider; gates the per-session "translate input" toggle. */
+    inputTranslation?: { available: boolean }
 }
 
 export function useFeatures(api: ApiClient | null): {
