@@ -151,8 +151,8 @@ Source: `hub/src/web/routes/sessions.ts`; flavor gates in `shared/src/modes.ts` 
 | Method & path | Request | Applies to |
 |---|---|---|
 | `POST /api/sessions/:id/permission-mode` | `{mode: PermissionMode}` | All flavors except `pi` and `dsh` (per-flavor allowed sets in `modes.ts`) |
-| `POST /api/sessions/:id/model` | `{model: string \| {provider, modelId} \| null, effort?: string \| null}` | Flavors with `supportsModelChange` (not `dsh`); remote-only for codex/cursor/grok. Only claude and agy accept `effort` with a model change. |
-| `POST /api/sessions/:id/effort` | `{effort: string \| null}` | agy, claude, copilot, grok, kimi, pi (`supportsEffort`) |
+| `POST /api/sessions/:id/model` | `{model: string \| {provider, modelId} \| null, effort?: string \| null}` | Flavors with `supportsModelChange` (not `dsh`); remote-only for claude, codex, copilot, cursor, grok, kimi and opencode. Only claude and agy accept `effort` with a model change. |
+| `POST /api/sessions/:id/effort` | `{effort: string \| null}` | agy, claude, copilot, grok, kimi, pi (`supportsEffort`); remote-only for claude, copilot, grok and kimi |
 | `POST /api/sessions/:id/model-reasoning-effort` | `{modelReasoningEffort: string \| null}` | codex, opencode (remote-only) |
 | `POST /api/sessions/:id/service-tier` | `{serviceTier: 'fast' \| 'standard'}` | codex (remote-only) |
 | `POST /api/sessions/:id/collaboration-mode` | `{mode: 'default' \| 'plan'}` | codex (remote-only) |
