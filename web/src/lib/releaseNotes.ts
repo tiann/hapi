@@ -76,16 +76,28 @@ function releaseNote(
  * guide and reusable authoring prompt.
  */
 export const RELEASE_NOTES = [
-    releaseNote('0.36.6', '2026-11-23',
-        'Translate session prompts into English, improve Web session filters and read state, and keep Claude running when compacting or clearing a conversation.',
-        '支持将会话输入翻译为英语，改进网页会话筛选和已读状态，并让 Claude 在压缩或清空会话时继续运行。',
+    releaseNote('0.36.7', '2026-11-24',
+        'Improve Web chat recovery and read receipts, add collapsible Android project folders, and make agent resume behavior more reliable.',
+        '改进网页聊天恢复和已读状态，支持折叠 Android 项目目录，并提升智能体恢复会话的稳定性。',
         [
-            group('Input translation', '输入翻译', [
-                change('feature', 'Optionally translate prompts into English for a session and view the translated text in chat on Web, iOS, and Android.', '可按会话选择将输入翻译为英语，并在网页、iOS 和 Android 的对话中查看译文。'),
+            group('Session navigation', '会话导航', [
+                change('feature', 'Collapse project folders in the Android session list and see consistent session titles in the CLI resume picker.', '在 Android 会话列表中折叠项目目录，并在 CLI 恢复菜单中看到与网页一致的会话标题。'),
+                change('fix', 'Restore the end of reopened chats immediately, keep read receipts as the transcript updates, and recover from network errors without asking for a new access token.', '重新打开对话时直接定位到末尾，在消息更新时保留已读状态，并在网络故障恢复后避免重新询问访问令牌。'),
             ]),
-            group('Session workflow and reliability', '会话流程与稳定性', [
-                change('feature', 'Combine Web session filters, including Active and Working, and show the open session on the scrollbar.', '支持组合网页会话筛选（包括活跃和工作中），并在滚动条上标出当前会话的位置。'),
-                change('fix', 'Persist Web read state and keep Claude alive through compact and clear.', '保存网页会话已读状态，并让 Claude 在压缩或清空会话时继续运行。'),
+            group('Agent reliability', '智能体稳定性', [
+                change('fix', 'Avoid redundant mode changes when resuming Codex and acknowledge AGY prompts when they are dispatched.', '恢复 Codex 时避免重复切换模式，并在发送 AGY 提示时确认提交。'),
+            ]),
+        ]),
+    releaseNote('0.36.6', '2026-11-23',
+        'Add Claude fork and rewind, improve Web session filters, and better handle background work and ACP shutdown.',
+        '新增 Claude 分叉和回退，改进网页会话筛选，并完善后台任务和 ACP 关闭处理。',
+        [
+            group('Conversation controls', '对话操作', [
+                change('feature', 'Fork or rewind Claude conversations from a message and combine Active and Working filters in the Web session list.', '从某条消息分叉或回退 Claude 对话，并在网页会话列表中组合活跃与工作中筛选。'),
+                change('feature', 'Show the open session position on the Web session list scrollbar.', '在网页会话列表的滚动条上标出当前会话的位置。'),
+            ]),
+            group('Runtime reliability', '运行稳定性', [
+                change('fix', 'Keep background-only work marked as running, and disconnect remote ACP agents when the Runner stops.', '仅有后台任务时仍显示为运行中，并在 Runner 停止时断开远程 ACP 智能体。'),
             ]),
         ]),
     releaseNote('0.36.5', '2026-11-18',

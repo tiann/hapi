@@ -2,7 +2,7 @@ import type { ApiSessionClient } from '@/api/apiSession';
 import type { AgentBackend, FormElicitationRequest, FormElicitationResponse, PermissionRequest, PermissionResponse } from '@/agent/types';
 import { randomUUID } from 'node:crypto';
 import { isObject } from '@hapi/protocol';
-import type { OpencodePermissionMode } from '@hapi/protocol/types';
+import type { PermissionModeOf, Flavors } from '@hapi/protocol/types';
 import { deriveToolInput, deriveToolName } from '@/agent/utils';
 import { logger } from '@/ui/logger';
 import { settleRequestsOfPreviousAgentProcess } from '@/modules/common/permission/settleStaleRequests';
@@ -98,7 +98,7 @@ export class OpencodePermissionHandler extends BasePermissionHandler<PermissionR
     constructor(
         session: ApiSessionClient,
         private readonly backend: AgentBackend,
-        private readonly getPermissionMode: () => OpencodePermissionMode | undefined
+        private readonly getPermissionMode: () => PermissionModeOf<typeof Flavors.opencode> | undefined
     ) {
         super(session);
         settleRequestsOfPreviousAgentProcess(this.backend, session);

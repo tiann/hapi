@@ -1,12 +1,12 @@
 import {
     CREATABLE_AGENT_FLAVORS,
-    GROK_PERMISSION_MODES,
+    Flavors,
     getYoloToggleMigrationMode,
     getPermissionModesForFlavor,
     normalizeCopilotAgentMode,
     type CodexCollaborationMode,
     type CopilotAgentMode,
-    type GrokPermissionMode,
+    type PermissionModeOf,
     type PermissionMode
 } from '@hapi/protocol'
 import type { AgentType, LaunchEffort, CodexReasoningEffort, NewSessionServiceTier, SessionType } from './types'
@@ -26,7 +26,7 @@ export type NewSessionFormDraft = {
     copilotAgentMode: CopilotAgentMode
     yoloMode: boolean
     nativePermissionMode: PermissionMode
-    grokPermissionMode: GrokPermissionMode
+    grokPermissionMode: PermissionModeOf<typeof Flavors.grok>
     sessionType: SessionType
     worktreeName: string
 }
@@ -87,8 +87,9 @@ export function loadNewSessionFormDraft(): NewSessionFormDraft | null {
                 return resolvePermissionModeForFlavor('default', restoredAgent)
             })(),
             grokPermissionMode: agentPreserved
-                && GROK_PERMISSION_MODES.includes(parsed.grokPermissionMode as GrokPermissionMode)
-                ? parsed.grokPermissionMode as GrokPermissionMode
+                && typeof parsed.grokPermissionMode === 'string'
+                && Flavors.grok.allowsPermissionMode(parsed.grokPermissionMode)
+                ? parsed.grokPermissionMode
                 : 'default',
             sessionType: (parsed.sessionType as SessionType | undefined) ?? 'simple',
             worktreeName: typeof parsed.worktreeName === 'string' ? parsed.worktreeName : ''
