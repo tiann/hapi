@@ -551,6 +551,28 @@ export function createGitRoutes(getSyncEngine: () => SyncEngine | null): Hono<We
         return c.json(result)
     })
 
+    // Mutations act on the workspace the user was looking at. A merged-session
+    // redirect may resolve to a survivor with a different workspace path, where
+    // a same-named entry would pass every check, so refuse to follow it: the
+    // client refreshes onto the survivor and the user acts there afresh.
+    const requireSessionForWorkspaceMutation = (
+        c: Parameters<typeof requireSessionFromParam>[0],
+        engine: SyncEngine,
+    ) => {
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+        if (sessionResult.sessionId !== c.req.param('id')) {
+            return c.json({
+                success: false,
+                code: 'session_moved',
+                error: 'This session was merged into another one. Refresh the files view and try again.',
+            }, 409)
+        }
+        return sessionResult
+    }
+
     // Files panel: upload into / delete from the session workspace on the
     // runner's machine. Logical failures come back as `{ success: false }`
     // (with `code: 'exists'` for a name clash) like the other file routes.
@@ -559,7 +581,7 @@ export function createGitRoutes(getSyncEngine: () => SyncEngine | null): Hono<We
         if (engine instanceof Response) {
             return engine
         }
-        const sessionResult = requireSessionFromParam(c, engine)
+        const sessionResult = requireSessionForWorkspaceMutation(c, engine)
         if (sessionResult instanceof Response) {
             return sessionResult
         }
@@ -603,7 +625,7 @@ export function createGitRoutes(getSyncEngine: () => SyncEngine | null): Hono<We
         if (engine instanceof Response) {
             return engine
         }
-        const sessionResult = requireSessionFromParam(c, engine)
+        const sessionResult = requireSessionForWorkspaceMutation(c, engine)
         if (sessionResult instanceof Response) {
             return sessionResult
         }
@@ -623,7 +645,7 @@ export function createGitRoutes(getSyncEngine: () => SyncEngine | null): Hono<We
         if (engine instanceof Response) {
             return engine
         }
-        const sessionResult = requireSessionFromParam(c, engine)
+        const sessionResult = requireSessionForWorkspaceMutation(c, engine)
         if (sessionResult instanceof Response) {
             return sessionResult
         }

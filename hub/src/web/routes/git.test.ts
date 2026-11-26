@@ -600,6 +600,35 @@ describe('workspace upload/delete routes', () => {
         expect(requests).toEqual([{ path: 'src/a.txt', kind: 'file' }, { path: '..', kind: 'directory' }])
     })
 
+    it('refuses uploads and deletes that a merged-session redirect would move to another session', async () => {
+        let calls = 0
+        const app = buildApp({
+            resolveSessionAccess: () => ({ ok: true as const, sessionId: 'survivor', session }),
+            deleteWorkspacePath: async () => {
+                calls++
+                return { success: true }
+            },
+            writeWorkspaceFile: async () => {
+                calls++
+                return { success: true }
+            },
+        })
+        const deleted = await app.request('/api/sessions/session-1/workspace/delete', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ path: 'src', kind: 'directory' }),
+        })
+        expect(deleted.status).toBe(409)
+        expect(await deleted.json()).toMatchObject({ success: false, code: 'session_moved' })
+
+        const uploaded = await app.request('/api/sessions/session-1/workspace/upload?dir=&name=a.txt&uploadId=abcdefgh12&offset=0&final=true', {
+            method: 'POST',
+            headers: { 'content-length': '0' },
+        })
+        expect(uploaded.status).toBe(409)
+        expect(calls).toBe(0)
+    })
+
     it('rejects missing and unknown delete kinds before routing', async () => {
         let calls = 0
         const app = buildApp({
