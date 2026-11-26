@@ -82,6 +82,7 @@ import { piLocalSessionSource } from '../modules/common/localSessions/sources/pi
 import { opencodeLocalSessionSource } from '../modules/common/localSessions/sources/opencode'
 import { claudeLocalSessionSource } from '../modules/common/localSessions/sources/claude'
 import { cursorLocalSessionSource } from '../modules/common/localSessions/sources/cursor'
+import { dshLocalSessionSource } from '../modules/common/localSessions/sources/dsh'
 import { buildSocketIoExtraHeaderOptions } from './hubExtraHeaders'
 import { collectMachineHealth } from '@/utils/machineHealth'
 import { inspectCursorChatStore } from '@/cursor/cursorChatStoreStatus'
@@ -559,7 +560,8 @@ export class ApiMachineClient {
             piLocalSessionSource,
             opencodeLocalSessionSource,
             claudeLocalSessionSource,
-            cursorLocalSessionSource
+            cursorLocalSessionSource,
+            dshLocalSessionSource
         ]) {
             registerLocalSessionSource(source)
         }

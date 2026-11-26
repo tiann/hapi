@@ -1,6 +1,8 @@
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import { MACHINE_CAPABILITIES } from '@hapi/protocol/runnerCapabilities'
 import type {
+    DshLocalSessionSummary,
+    DshLocalSessionWithMessages,
     OpencodeLocalSessionSummary,
     OpencodeLocalSessionWithMessages,
     PiLocalSessionSummary,
@@ -9,6 +11,8 @@ import type {
 import {
     codexToTranscript,
     codexToTranscriptSummary,
+    dshToTranscript,
+    dshToTranscriptSummary,
     opencodeToTranscript,
     opencodeToTranscriptSummary,
     piToTranscript,
@@ -39,6 +43,7 @@ export type LocalSessionNativeIdKey =
     | 'claudeSessionIdHistory'
     | 'codexSessionId'
     | 'codexSourceSessionId'
+    | 'dshSessionId'
 
 export type HubLocalSessionSource = {
     flavor: LocalSessionFlavor
@@ -69,6 +74,9 @@ export type HubLocalSessionSource = {
     localIdPrefix?: string
     /** Per-request import cap enforced by the route (400 above it). */
     importLimit?: number
+    /** Fetch transcripts one session per RPC. Every transcript otherwise
+     * travels in a single runner answer capped at one 48MB socket frame. */
+    chunkedTranscriptFetch?: boolean
     /**
      * Fallback for runners that do not advertise `local-session-import`:
      * fetch via the flavor's legacy RPC and convert raw rows to transcripts.
@@ -252,4 +260,28 @@ export const CODEX_LOCAL_SESSION_SOURCE: HubLocalSessionSource = {
             ? codexToTranscript(raw as CodexLocalSessionWithMessages)
             : codexToTranscriptSummary(raw as CodexLocalSessionSummary)
     }
+}
+
+/**
+ * DSH reads its durable logs straight off the runner's disk (~/.dsh) — there
+ * is no legacy wire path to fall back on (ACP session/list carries no title
+ * or timestamps), so the descriptor has no legacy fetch. The native id lands
+ * in metadata.dshSessionId, which runDsh resumes through session/resume;
+ * the session's original cwd (header.cwd) is what the importer persists as
+ * the row path, satisfying dsh's sameDirectory resume validation.
+ */
+export const DSH_LOCAL_SESSION_SOURCE: HubLocalSessionSource = {
+    flavor: 'dsh',
+    displayName: 'DSH',
+    routeBase: 'dsh',
+    nativeIdKeys: ['dshSessionId'],
+    match: { strategy: 'anchored' },
+    lifecycleOnCreate: 'archived',
+    batch: 'continue',
+    importLimit: 200,
+    // DSH transcripts fold whole tool-heavy logs (tens of thousands of rows
+    // for a long session); one RPC per session keeps a multi-select batch
+    // under the transport's frame limit.
+    chunkedTranscriptFetch: true,
+    requiredMachineCapability: MACHINE_CAPABILITIES.LocalSessionImport
 }

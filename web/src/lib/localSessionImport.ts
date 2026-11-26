@@ -7,7 +7,7 @@
 
 import type { PermissionMode } from '@/types/api'
 
-export type LocalSessionImportFlavor = 'codex' | 'pi' | 'opencode' | 'claude' | 'cursor'
+export type LocalSessionImportFlavor = 'codex' | 'pi' | 'opencode' | 'claude' | 'cursor' | 'dsh'
 
 export type LocalSessionListItem = {
     id: string

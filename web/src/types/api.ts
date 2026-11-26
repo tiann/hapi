@@ -431,6 +431,48 @@ export type OpencodeImportSessionsResponse = {
     error?: string
 }
 
+/** One DSH session as the hub LISTS it: display extras are flattened and
+ *  `launch` is stripped (hub createLocalSessionRoutes). */
+export type DshLocalSessionSummary = {
+    id: string
+    title: string
+    lastUserMessage?: string | null
+    cwd?: string | null
+    file: string
+    modifiedAt: number
+    /** Turns the native session ran. */
+    turns?: number | null
+    /** Readable model id (parsed from the opaque picker value). */
+    model?: string | null
+    hapiSessionId?: string
+}
+
+export type DshLocalSessionsResponse = {
+    success: true
+    sessions: DshLocalSessionSummary[]
+    machineId: string
+} | {
+    success: false
+    error: string
+    sessions: []
+    machineId?: string
+}
+
+export type DshImportResult = {
+    dshSessionId: string
+    hapiSessionId?: string
+    action?: 'created' | 'updated' | 'unchanged'
+    appended?: number
+    error?: { code: string; message: string }
+}
+
+export type DshImportSessionsResponse = {
+    success: boolean
+    results: DshImportResult[]
+    machineId?: string
+    error?: string
+}
+
 
 export type CodexArchiveSessionResponse = {
     success: true

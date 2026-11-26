@@ -385,7 +385,7 @@ internal and must never be used by clients.
 | Area | Paths | Current use or restriction |
 |------|-------|------------------|
 | Codex Desktop import | `/api/codex/*` (`hub/src/web/routes/codexDesktop.ts`) | Desktop-import tooling |
-| Local session import | `GET /api/{pi,opencode,claude}/sessions?machineId=&cwd=`, `POST /api/{pi,opencode,claude}/import-sessions` `{sessionIds, machineId?, cwd?}` (`hub/src/web/routes/localSessions/`) | Import registry for local agent histories; Codex uses `/api/codex/*` |
+| Local session import | `GET /api/{pi,opencode,claude,dsh}/sessions?machineId=&cwd=`, `POST /api/{pi,opencode,claude,dsh}/import-sessions` `{sessionIds, machineId?, cwd?}` (`hub/src/web/routes/localSessions/`) | Import registry for local agent histories; Codex uses `/api/codex/*` |
 | Work graph | `/api/work-graph/*` (`hub/src/web/routes/workGraph.ts`) | Web-only feature |
 | Web Push | `/api/push/*` (`hub/src/web/routes/push.ts`) | Browser Push API; natives use `/api/devices/register` (Android/iOS push contract) |
 | Hub settings write | `PUT /api/hub-settings` | Owner-only hub administration |

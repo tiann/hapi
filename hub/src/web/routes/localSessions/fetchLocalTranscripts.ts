@@ -75,7 +75,20 @@ export async function fetchLocalTranscriptSummaries(options: {
     }
 }
 
-/** Full transcripts for the ids an import is about to persist. */
+/**
+ * Full transcripts for the ids an import is about to persist.
+ *
+ * Every requested transcript travels in ONE runner RPC answer, and the runner
+ * answers through a single socket frame the hub caps at 48MB — so sources
+ * whose transcripts can be large (DSH folds whole tool-heavy logs) opt into
+ * `chunkedTranscriptFetch`: one RPC per session, so a batch never adds up past
+ * the frame limit.
+ *
+ * A listed session that cannot be handed over as a transcript comes back as a
+ * summary carrying `importError` (too large for one frame, log unreadable);
+ * those are kept so the route can report them per session instead of a
+ * misleading not_found.
+ */
 export async function fetchLocalTranscriptsByIds(options: {
     source: HubLocalSessionSource
     engine: SyncEngine
@@ -83,10 +96,24 @@ export async function fetchLocalTranscriptsByIds(options: {
     cwd?: string | null
     sessionIds: string[]
 }): Promise<FetchLocalSessionsResult> {
-    const result = await fetchLocalSessions({ ...options, sessionIds: options.sessionIds })
+    const { source } = options
+    if (source.chunkedTranscriptFetch) {
+        const sessions: Array<LocalTranscriptSummary | LocalTranscript> = []
+        for (const sessionId of options.sessionIds) {
+            const result = await fetchLocalSessions({ ...options, sessionIds: [sessionId] })
+            if (!result.success) return result
+            sessions.push(...keepTranscriptsAndRejections(result.sessions))
+        }
+        return { success: true, sessions, machineId: options.machine.id }
+    }
+    const result = await fetchLocalSessions({ ...options })
     if (!result.success) return result
     return {
         ...result,
-        sessions: result.sessions.filter((session): session is LocalTranscript => 'messages' in session)
+        sessions: keepTranscriptsAndRejections(result.sessions)
     }
+}
+
+function keepTranscriptsAndRejections(sessions: Array<LocalTranscriptSummary | LocalTranscript>): Array<LocalTranscriptSummary | LocalTranscript> {
+    return sessions.filter((session) => 'messages' in session || session.importError !== undefined)
 }

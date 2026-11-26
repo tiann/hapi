@@ -43,7 +43,7 @@ Steer, effort and history controls apply to sessions under remote control. The w
 | GitHub Copilot | — | ✓ | — | — | — |
 | Kimi | — | ✓ | — | — | — |
 | OpenCode | ✓ | ✓ (reasoning effort) | Probed (OpenCode v2) | — | ✓ |
-| DeepSeek Harness | — | ✓ (reasoning effort) | — | — | — |
+| DeepSeek Harness | — | ✓ (reasoning effort) | — | — | ✓ |
 | Antigravity | ✓ (ACP sessions) | ✓ | — | — | — |
 | Pi | ✓ | ✓ | Probed | — | ✓ |
 
@@ -386,6 +386,9 @@ export HAPI_DSH_ACP_COMMAND=pnpm
 export HAPI_DSH_ACP_ARGS_JSON='["--dir", "/path/to/deepseek-harness", "run", "demo:acp"]'
 hapi dsh
 ```
+
+Existing DSH sessions can be imported from `~/.dsh/sessions/` (see
+[Import local sessions](./import-local-sessions.md)).
 
 DSH sessions are remote-only. With a persistent DSH ACP profile, HAPI stores the
 native DSH session id and restores model context with `session/resume` after a

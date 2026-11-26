@@ -31,6 +31,8 @@ import type {
     CursorLocalSessionsResponse,
     OpencodeImportSessionsResponse,
     OpencodeLocalSessionsResponse,
+    DshImportSessionsResponse,
+    DshLocalSessionsResponse,
     PermissionMode,
     PiImportSessionsResponse,
     PiLocalSessionsResponse,
@@ -589,6 +591,21 @@ export class ApiClient {
 
     async importCursorSessions(payload: { sessionIds: string[]; cwd?: string | null; machineId?: string | null }): Promise<CursorImportSessionsResponse> {
         return await this.request<CursorImportSessionsResponse>('/api/cursor/import-sessions', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        })
+    }
+
+    async getDshSessions(cwd?: string | null, machineId?: string | null): Promise<DshLocalSessionsResponse> {
+        const params = new URLSearchParams()
+        if (cwd?.trim()) params.set('cwd', cwd.trim())
+        if (machineId?.trim()) params.set('machineId', machineId.trim())
+        const query = params.size ? `?${params.toString()}` : ''
+        return await this.request<DshLocalSessionsResponse>(`/api/dsh/sessions${query}`)
+    }
+
+    async importDshSessions(payload: { sessionIds: string[]; cwd?: string | null; machineId?: string | null; model?: string | null; modelReasoningEffort?: string | null; permissionMode?: PermissionMode }): Promise<DshImportSessionsResponse> {
+        return await this.request<DshImportSessionsResponse>('/api/dsh/import-sessions', {
             method: 'POST',
             body: JSON.stringify(payload)
         })
