@@ -1,5 +1,6 @@
 import { execSync } from 'node:child_process'
-import { readFileSync, statfsSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
+import { statfs } from 'node:fs/promises'
 import { availableParallelism, cpus, freemem, homedir, loadavg, platform, totalmem, uptime } from 'node:os'
 import type { MachineHealth } from '@hapi/protocol/types'
 import { MachineHealthSchema } from '@hapi/protocol/schemas'
@@ -191,22 +192,45 @@ export function diskUsageFromStatfs(stats: { bsize: number; blocks: number; bfre
     }
 }
 
+/** A disk reading older than this is dropped rather than reported as current. */
+const DISK_USAGE_MAX_AGE_MS = 10 * 60 * 1000
+
+let latestDiskUsage: { value: DiskUsage; at: number } | null = null
+let diskUsageRefresh: Promise<void> | null = null
+
 /**
- * Storage on the filesystem holding the runner user's home directory — where
- * workspaces and files uploaded from the files panel normally land.
+ * Re-read storage on the filesystem holding the runner user's home directory —
+ * where workspaces normally land. Asynchronous with at most one lookup in
+ * flight, so a hung (e.g. network) home mount never blocks the heartbeat.
  */
+export function refreshDiskUsage(): Promise<void> {
+    if (diskUsageRefresh) return diskUsageRefresh
+    diskUsageRefresh = (async () => {
+        try {
+            const stats = await statfs(homedir())
+            const value = diskUsageFromStatfs({
+                bsize: Number(stats.bsize),
+                blocks: Number(stats.blocks),
+                bfree: Number(stats.bfree),
+                bavail: Number(stats.bavail),
+            })
+            latestDiskUsage = value ? { value, at: Date.now() } : null
+        } catch {
+            latestDiskUsage = null
+        } finally {
+            diskUsageRefresh = null
+        }
+    })()
+    return diskUsageRefresh
+}
+
+/** Latest completed reading (omitted until one exists); kicks off the next one. */
 function computeDiskUsage(): DiskUsage | undefined {
-    try {
-        const stats = statfsSync(homedir())
-        return diskUsageFromStatfs({
-            bsize: Number(stats.bsize),
-            blocks: Number(stats.blocks),
-            bfree: Number(stats.bfree),
-            bavail: Number(stats.bavail),
-        })
-    } catch {
+    void refreshDiskUsage()
+    if (!latestDiskUsage || Date.now() - latestDiskUsage.at > DISK_USAGE_MAX_AGE_MS) {
         return undefined
     }
+    return latestDiskUsage.value
 }
 
 export function collectMachineHealth(now: number = Date.now()): MachineHealth {
@@ -245,4 +269,6 @@ export function collectMachineHealth(now: number = Date.now()): MachineHealth {
 /** Test helper */
 export function resetMachineHealthSamplerForTests(): void {
     previousCpuSnapshot = null
+    latestDiskUsage = null
+    diskUsageRefresh = null
 }

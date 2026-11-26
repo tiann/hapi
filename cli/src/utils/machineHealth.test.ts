@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
     collectMachineHealth,
     diskUsageFromStatfs,
+    refreshDiskUsage,
     readDarwinMemoryUsedPercent,
     readLinuxMemoryUsedPercent,
     resetMachineHealthSamplerForTests
@@ -160,7 +161,15 @@ describe('diskUsageFromStatfs', () => {
         expect(diskUsageFromStatfs({ bsize: 4096, blocks: Number.NaN, bfree: 1, bavail: 1 })).toBeUndefined()
     })
 
-    it('includes disk usage of the home filesystem in collected health', () => {
+    it('omits disk until the asynchronous lookup has completed', () => {
+        resetMachineHealthSamplerForTests()
+        const health = collectMachineHealth(1)
+        expect(health.diskTotalBytes).toBeUndefined()
+    })
+
+    it('includes disk usage of the home filesystem once a lookup has completed', async () => {
+        resetMachineHealthSamplerForTests()
+        await refreshDiskUsage()
         const health = collectMachineHealth(1)
         expect(health.diskTotalBytes).toBeGreaterThan(0)
         expect(health.diskUsedBytes).toBeGreaterThanOrEqual(0)
