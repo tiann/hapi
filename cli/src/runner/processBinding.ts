@@ -1,3 +1,5 @@
+import type { ProcessStopSignalPhase } from '../utils/windowsProcessStop';
+
 /** Capture all PID bindings before an asynchronous lifecycle operation. */
 export function captureProcessBinding(readBinding: () => readonly unknown[]): () => boolean {
     const original = readBinding();
@@ -37,13 +39,13 @@ export function captureNewProcessBindingGuard<T>(bindings: ReadonlyMap<number, T
     return pid => bindings.has(pid) && bindings.get(pid) !== original.get(pid);
 }
 
-/** Empty maps after a proven wrapper exit are expected, unlike replacement bindings. */
+/** Binding changes usually veto stop. Windows can independently prove a single original child. */
 export function captureStopSignalBinding(
     readBinding: () => readonly unknown[],
     hasOtherRoots: () => boolean,
-): (phase?: 'root' | 'descendant') => boolean {
+): (phase?: ProcessStopSignalPhase) => boolean {
     const unchanged = captureProcessBinding(readBinding);
-    return phase => !hasOtherRoots() && (unchanged()
+    return phase => !hasOtherRoots() && (unchanged() || phase === 'verified-rebound-descendant'
         || (phase === 'descendant' && readBinding().every(value => value === undefined)));
 }
 

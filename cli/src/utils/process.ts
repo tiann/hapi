@@ -2,7 +2,7 @@ import type { ChildProcess } from 'node:child_process';
 import spawn from 'cross-spawn';
 import { readFileSync } from 'node:fs';
 import { monotonicTimeMs } from '@/utils/time';
-import { stopWindowsProcessTree, type WindowsStopReport } from './windowsProcessStop';
+import { stopWindowsProcessTree, type WindowsStopReport, type ProcessStopSignalPhase } from './windowsProcessStop';
 import { windowsSystemTool } from './windowsSystemTools';
 
 export const isWindows = (): boolean => process.platform === 'win32';
@@ -440,7 +440,7 @@ function collectProcessTree(pid: number): number[] | 'scan_failed' {
  * then waits asynchronously for processes to die.
  */
 async function killProcessTree(pid: number, force: boolean, deadlineMs?: number,
-  signal: NodeJS.Signals = 'SIGTERM', canSignal?: (phase?: 'root' | 'descendant') => boolean): Promise<boolean> {
+  signal: NodeJS.Signals = 'SIGTERM', canSignal?: (phase?: ProcessStopSignalPhase) => boolean): Promise<boolean> {
   // Collect all PIDs first (sync) - returns in child-first order
   const pids = collectProcessTree(pid);
   if (pids === 'scan_failed') {
@@ -502,11 +502,11 @@ export async function killProcessTreeByPid(
   // report fallback used when the 3rd arg is a signal (#1911).
   deadlineOrFallbackReport?: number | ((report: WindowsStopReport) => void),
   fallbackReport?: (report: WindowsStopReport) => void,
-  canSignal?: (phase?: 'root' | 'descendant') => boolean
+  canSignal?: (phase?: ProcessStopSignalPhase) => boolean
 ): Promise<boolean> {
   const deadlineMs = typeof deadlineOrFallbackReport === 'number' ? deadlineOrFallbackReport : undefined;
   const legacyCanSignal = typeof deadlineOrFallbackReport === 'function' && deadlineOrFallbackReport.length === 0
-    ? deadlineOrFallbackReport as unknown as (phase?: 'root' | 'descendant') => boolean : undefined;
+    ? deadlineOrFallbackReport as unknown as (phase?: ProcessStopSignalPhase) => boolean : undefined;
   const effectiveCanSignal = canSignal ?? legacyCanSignal;
   const onReport = typeof signalOrReport === 'function' ? signalOrReport
     : typeof deadlineOrFallbackReport === 'function' && deadlineOrFallbackReport.length > 0 ? deadlineOrFallbackReport
@@ -581,7 +581,7 @@ export async function killProcessByChildProcess(
   signalOrReport: NodeJS.Signals | ((report: WindowsStopReport) => void) = 'SIGTERM',
   deadlineOrFallbackReport?: number | ((report: WindowsStopReport) => void),
   fallbackReport?: (report: WindowsStopReport) => void,
-  canSignal?: (phase?: 'root' | 'descendant') => boolean): Promise<boolean> {
+  canSignal?: (phase?: ProcessStopSignalPhase) => boolean): Promise<boolean> {
   const signal = typeof signalOrReport === 'string' ? signalOrReport : 'SIGTERM';
   const onReport = typeof signalOrReport === 'function' ? signalOrReport : undefined;
   const pid = child.pid;

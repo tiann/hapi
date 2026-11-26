@@ -6,8 +6,9 @@ vi.mock('node:child_process', () => ({ execFile: execFileMock }))
 vi.mock('cross-spawn', () => ({ default: { sync: syncMock } }))
 vi.mock('./time', () => ({ monotonicTimeMs: () => authority.now }))
 import { killProcessTreeByPid } from './process'
-import { readWindowsProcessTable, windowsGenerationMayBeAlive } from './windowsProcessStop'
+import { readWindowsProcessTable, windowsGenerationMayBeAlive, type ProcessStopSignalPhase } from './windowsProcessStop'
 import { windowsSystemTool } from './windowsSystemTools'
+import { captureStopSignalBinding } from '../runner/processBinding'
 
 const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!
 type Row = { ProcessId: number; ParentProcessId: number; CreationDate: string | null }
@@ -92,9 +93,9 @@ describe('Windows asynchronous tree stop', () => {
             })
             return { kill: vi.fn() }
         })
-        const canSignal = vi.fn((phase?: 'root' | 'descendant') => phase === 'descendant')
+        const canSignal = vi.fn((phase?: ProcessStopSignalPhase) => phase === 'descendant')
         expect(await killProcessTreeByPid(100, true, undefined, undefined, undefined, canSignal)).toBe(true)
-        expect(canSignal.mock.calls.flat()).toEqual(['root', 'descendant'])
+        expect(canSignal.mock.calls.flat()).toEqual(['root', 'descendant', 'descendant'])
         expect(kills.map(kill => kill.pid)).toEqual([200])
     })
 
@@ -110,7 +111,7 @@ describe('Windows asynchronous tree stop', () => {
                 callback(error, stdout, stderr)
             })
         })
-        const canSignal = (phase?: 'root' | 'descendant') => phase === 'descendant' || rows.some(entry => entry.ProcessId === 100)
+        const canSignal = (phase?: ProcessStopSignalPhase) => phase === 'descendant' || rows.some(entry => entry.ProcessId === 100)
         expect(await killProcessTreeByPid(100, false, undefined, undefined, undefined, canSignal)).toBe(true)
         expect(kills.map(kill => [kill.pid, kill.force])).toEqual([[100, false], [200, true]])
     })
@@ -250,6 +251,46 @@ describe('Windows asynchronous tree stop', () => {
         await vi.advanceTimersByTimeAsync(46_000)
         await expect(operation).resolves.toBe(false)
         expect(rows.some(p => p.ProcessId === 300)).toBe(true)
+    })
+
+    it.each(['early', 'late', 'unproven-order', 'sibling', 'reused-child'])('handles a rebound root (%s)', async scenario => {
+        const late = scenario === 'late'
+        const marker = (second: string) => `2026-11-26T00:00:${second}.0000000Z`
+        const oldRoot = row(100, 0, marker('01'))
+        const child = row(200, 100, marker('02'))
+        const replacement = row(100, 0, marker(scenario === 'unproven-order' ? '02' : '03'))
+        const newChild = row(300, 100, marker('04'))
+        let binding = 'old'
+        const guard = captureStopSignalBinding(() => [binding], () => scenario === 'sibling' && binding === 'replacement')
+        rows = [row(0, 0, null), oldRoot, child]
+        let scans = 0
+        execFileMock.mockImplementation((file, args, _options, callback) => {
+            queueMicrotask(() => {
+                if (file === windowsSystemTool('powershell')) {
+                    if (++scans === (late ? 5 : 2)) {
+                        rows = rows.filter(p => p.ProcessId !== 100).concat(replacement, newChild)
+                        binding = 'replacement'
+                    }
+                    if (scenario === 'reused-child' && scans === 4) {
+                        rows = rows.filter(p => p.ProcessId !== 200).concat(row(200, 100, marker('05')))
+                    }
+                    callback(null, JSON.stringify({ complete: true, processes: rows }), '')
+                } else {
+                    const pid = Number(args[args.indexOf('/PID') + 1])
+                    kills.push({ pid, force: args.includes('/F'), tree: args.includes('/T') })
+                    onKill(pid, args.includes('/F'))
+                    callback(null, '', '')
+                }
+            })
+            return { kill: vi.fn() }
+        })
+        const killChild = scenario === 'early' || scenario === 'late'
+        await expect(killProcessTreeByPid(100, true, undefined, undefined, undefined, guard))
+            .resolves.toBe(killChild || scenario === 'reused-child')
+        expect(kills.filter(kill => kill.pid !== 100)).toEqual(killChild ? [{ pid: 200, force: true, tree: false }] : [])
+        expect(kills.filter(kill => kill.pid === 100)).toHaveLength(late ? 1 : 0)
+        expect(rows).toContain(replacement)
+        expect(rows).toContain(newChild)
     })
 
     it('does not force a replacement root or its new children after soft termination', async () => {
