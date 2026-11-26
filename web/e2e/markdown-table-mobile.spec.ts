@@ -265,3 +265,25 @@ test('refreshes control backdrops when the table scrolls horizontally', async ({
     expect(snapshot.scrollLeft).toBeGreaterThan(0)
     expect(snapshot.state.every((item) => item.actual === item.expected)).toBe(true)
 })
+
+
+test('requests the mobile viewer on a coarse-pointer tablet above the phone breakpoint', async ({ page }) => {
+    await page.setViewportSize({ width: 800, height: 1080 })
+    await page.goto('/e2e-fixtures/markdown-table-fixture.html')
+    await page.evaluate(() => {
+        document.documentElement.requestFullscreen = async () => {
+            document.body.dataset.fixtureRequestedFullscreen = 'true'
+        }
+        Object.defineProperty(window.screen, 'orientation', { configurable: true, value: {
+            lock: async () => { document.body.dataset.fixtureLockedOrientation = 'true' },
+            unlock: () => {},
+        } })
+    })
+    const button = page.getByRole('button', { name: 'Open table full screen' })
+    await button.tap()
+    await expect(page.locator('body')).toHaveAttribute('data-fixture-requested-fullscreen', 'true')
+    await expect(page.locator('body')).toHaveAttribute('data-fixture-locked-orientation', 'true')
+    await expect(page.getByRole('button', { name: 'Copy table as Markdown' })).toBeVisible()
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/tablet-table-fullscreen.png` })
+})

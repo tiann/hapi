@@ -93,8 +93,11 @@ export function ImagePreview(props: {
         event.preventDefault()
         event.stopPropagation()
         const galleryId = props.galleryId ?? ''
-        const triggers = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-image-preview-trigger]'))
-            .filter((trigger) => !trigger.disabled && (trigger.dataset.imagePreviewGallery ?? '') === galleryId)
+        const viewerSelector = '[data-hapi-table-viewer="true"]'
+        const tableViewer = event.currentTarget.closest(viewerSelector)
+        const triggers = Array.from((tableViewer ?? document).querySelectorAll<HTMLButtonElement>('[data-image-preview-trigger]'))
+            .filter((trigger) => !trigger.disabled && (trigger.dataset.imagePreviewGallery ?? '') === galleryId
+                && trigger.closest(viewerSelector) === tableViewer)
         const images = triggers.flatMap((trigger): PreviewImage[] => {
             const image = trigger.querySelector('img')
             if (!image) return []

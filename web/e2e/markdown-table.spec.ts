@@ -74,6 +74,22 @@ test.describe('markdown table actions', () => {
         expect(matchingPixels).toBeGreaterThan(100)
     })
 
+    test('keeps a single inline image out of the fullscreen gallery duplicate', async ({ page }) => {
+        await page.route('https://fixture.test/chart.svg', route => route.fulfill({
+            contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="90"><rect width="200" height="90" fill="navy"/></svg>'
+        }))
+        await page.goto('/e2e-fixtures/markdown-table-fixture.html?single-image')
+        const table = page.locator('.aui-md-table-frame')
+        await table.hover()
+        await table.getByRole('button', { name: 'Open table full screen' }).click()
+        const viewer = page.locator('[data-hapi-table-viewer="true"]')
+        await viewer.locator('[data-image-preview-trigger]').click()
+        const imageDialog = page.getByRole('dialog', { name: 'Only table chart' })
+        await expect(imageDialog).toBeVisible()
+        await expect(imageDialog.getByRole('button', { name: 'Next image' })).toHaveCount(0)
+        await expect(imageDialog.getByRole('button', { name: 'Previous image' })).toHaveCount(0)
+    })
+
     test('opens a viewport-sized PC viewer and downloads the CSV', async ({ page }) => {
         await page.goto('/e2e-fixtures/markdown-table-fixture.html')
 
@@ -94,10 +110,7 @@ test.describe('markdown table actions', () => {
         expect(inlineButtonStyles.backgroundColor).toMatch(/rgba\(0, 0, 0, 0\)|transparent/)
         expect(inlineButtonStyles.borderWidth).toBe('0px')
         expect(inlineButtonStyles.backdropFilter).toBe('none')
-        await expect.poll(() => actions.evaluate((element) => {
-            const style = getComputedStyle(element)
-            return `${style.top}:${style.right}`
-        })).toBe('3px:3px')
+        await expect(actions).toHaveCSS('right', '3px')
         await expect.poll(() => actions.evaluate((element) => getComputedStyle(element).opacity)).toBe('0')
         await tableFrame.hover()
         await expect.poll(() => actions.evaluate((element) => getComputedStyle(element).opacity)).toBe('1')
@@ -302,7 +315,7 @@ test.describe('markdown table actions', () => {
                 paddingLeft: headerStyle.paddingLeft,
                 paddingRight: headerStyle.paddingRight,
                 lineHeight: headerStyle.lineHeight,
-                actionTopOffset: Math.round(actionRect.top - frameRect.top),
+                actionCenterOffset: Math.abs(actionRect.top + actionRect.height / 2 - (header.getBoundingClientRect().top + header.getBoundingClientRect().height / 2)),
                 actionRightOffset: Math.round(frameRect.right - actionRect.right),
             }
         })
@@ -312,11 +325,11 @@ test.describe('markdown table actions', () => {
         const filePreviewGeometry = await readGeometry()
 
         expect(filePreviewGeometry).toEqual(chatGeometry)
-        expect(filePreviewGeometry.actionTopOffset).toBe(3)
+        expect(filePreviewGeometry.actionCenterOffset).toBeLessThanOrEqual(1)
         expect(filePreviewGeometry.actionRightOffset).toBe(3)
     })
 
-    test('keeps the inline fullscreen action fixed at the table top-right when the header wraps', async ({ page }) => {
+    test('centers the inline fullscreen action on a wrapping header', async ({ page }) => {
         await page.setViewportSize({ width: 360, height: 900 })
         await page.goto('/e2e-fixtures/markdown-table-fixture.html')
 
@@ -334,15 +347,20 @@ test.describe('markdown table actions', () => {
                 headerHeight: Math.round(rowRect.height),
                 actionHeight: Math.round(actionRect.height),
                 layout: actions.dataset.hapiTableActionsLayout,
-                topOffset: Math.round(actionRect.top - frameRect.top),
+                centerOffset: Math.abs((actionRect.top + actionRect.height / 2) - (rowRect.top + rowRect.height / 2)),
                 rightOffset: Math.round(frameRect.right - actionRect.right),
             }
         })
 
         expect(geometry.layout).toBe('horizontal')
         expect(geometry.headerHeight).toBeGreaterThan(geometry.actionHeight)
-        expect(geometry.topOffset).toBe(3)
+        expect(geometry.centerOffset).toBeLessThanOrEqual(1)
         expect(geometry.rightOffset).toBe(3)
+        const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+        if (screenshots) {
+            await surface.locator('.aui-md-table-frame').hover()
+            await page.screenshot({ path: `${screenshots}/wrapped-header-centered-actions.png` })
+        }
     })
 
     test('defaults an overflowing table to wrapping and remembers an explicit choice', async ({ page }) => {

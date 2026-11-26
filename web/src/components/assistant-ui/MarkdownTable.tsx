@@ -14,6 +14,7 @@ import * as Popover from '@radix-ui/react-popover'
 import { CheckIcon, CloseIcon, CopyIcon, WrapIcon } from '@/components/icons'
 import { useOptionalHappyChatContext } from '@/components/AssistantChat/context'
 import { Spinner } from '@/components/Spinner'
+import { ZoomableLightbox } from '@/components/ZoomableLightbox'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { getShareImageFileName, getShareTableFileName } from '@/lib/share-image-filename'
 import { useTranslation } from '@/lib/use-translation'
@@ -125,6 +126,14 @@ function useTableActionSurfaces(
         if (!table) return undefined
 
         const measure = () => {
+            const frame = table.closest<HTMLElement>('.aui-md-table-frame')
+            const actions = frame?.querySelector<HTMLElement>(':scope > .aui-md-table-actions')
+            const header = table.tHead?.rows[0]
+            if (frame && actions && header) {
+                const bounds = header.getBoundingClientRect()
+                const center = bounds.top - frame.getBoundingClientRect().top + (bounds.height - actions.offsetHeight) / 2
+                actions.style.setProperty('--hapi-table-action-top', `${Math.max(0, center)}px`)
+            }
             const nextState = measureTableActionSurfaces(table, actionRefs)
             setSurfaceState((currentState) => TABLE_ACTION_NAMES.every((action) => currentState[action] === nextState[action])
                 ? currentState
@@ -361,6 +370,10 @@ function TableActionMenu(props: {
 }
 
 /** Exported for responsive behavior tests and future table viewers. */
+export function isMobileTableViewerDevice(): boolean {
+    return isCoarsePointerDevice()
+}
+
 export function isMobileTableViewerViewport(): boolean {
     if (typeof window === 'undefined') return false
     const shortSide = Math.min(window.innerWidth, window.innerHeight)
@@ -982,6 +995,7 @@ function TableViewer(props: {
     imageTitle: string
     tableWrapPreferenceKey?: string
     openerRef?: RefObject<HTMLButtonElement | null>
+    previewClonedImages?: boolean
 }) {
     const { t } = useTranslation()
     const { className, children, ...rest } = props.tableProps
@@ -996,7 +1010,22 @@ function TableViewer(props: {
     const reverseScrollDistanceRef = useRef(0)
     const toolbarVisibleRef = useRef(true)
     const explicitWrapRef = useRef(false)
-    const isMobileViewer = isMobileTableViewerViewport()
+    const isMobileViewer = isMobileTableViewerDevice()
+    const [imagePreview, setImagePreview] = useState<{ src: string; label: string; width: number; height: number } | null>(null)
+    const openClonedImage = (event: MouseEvent<HTMLDivElement>) => {
+        if (!(event.target instanceof Element)) return
+        const trigger = event.target.closest<HTMLButtonElement>('[data-image-preview-trigger]:not(:disabled)')
+        const image = trigger?.querySelector('img')
+        if (!image) return
+        event.preventDefault()
+        event.stopPropagation()
+        setImagePreview({
+            src: image.currentSrc || image.src,
+            label: image.alt || trigger?.dataset.imagePreviewLabel || 'Image preview',
+            width: image.naturalWidth || image.width,
+            height: image.naturalHeight || image.height
+        })
+    }
 
     const setToolbarState = useCallback((visible: boolean) => {
         if (toolbarVisibleRef.current === visible) return
@@ -1292,6 +1321,7 @@ function TableViewer(props: {
                     <div
                         ref={setViewerElement}
                         data-hapi-table-viewer="true"
+                        onClick={props.previewClonedImages ? openClonedImage : undefined}
                         className={cn(
                             'min-h-0 flex-1 overscroll-contain pb-0 pl-0 pr-0 pt-0',
                             wrapEnabled ? 'overflow-x-hidden overflow-y-auto' : 'overflow-auto',
@@ -1306,6 +1336,20 @@ function TableViewer(props: {
                             {children}
                         </table>
                     </div>
+                    {imagePreview ? (
+                        <ZoomableLightbox
+                            open
+                            onClose={() => setImagePreview(null)}
+                            title={imagePreview.label}
+                            ariaLabel={imagePreview.label}
+                            fitContentKey={imagePreview.src}
+                            fitContentSize={imagePreview.width > 0 && imagePreview.height > 0
+                                ? { width: imagePreview.width, height: imagePreview.height }
+                                : null}
+                        >
+                            <img src={imagePreview.src} alt={imagePreview.label} draggable={false} className="block max-w-none select-none object-contain" />
+                        </ZoomableLightbox>
+                    ) : null}
                 </DialogPrimitive.Content>
             </DialogPrimitive.Portal>
         </DialogPrimitive.Root>
@@ -1333,7 +1377,8 @@ export function TableViewerFromElement(props: {
             tableProps={tableProps}
             tableRef={tableRef}
             imageTitle={props.imageTitle}
-            tableWrapPreferenceKey={getTableWrapPreferenceKey(props.table, props.imageTitle)}
+            tableWrapPreferenceKey={getTableWrapPreferenceKey(props.table, props.table.dataset.hapiTableWrapScope ?? props.imageTitle)}
+            previewClonedImages
             openerRef={props.openerRef}
         />
     )
@@ -1488,7 +1533,7 @@ export function MarkdownTable(props: TableProps) {
     const mobileViewerRef = useRef(false)
     const enteredFullscreenRef = useRef(false)
     const imageTitle = chatContext?.sessionTitle?.trim() || t('table.viewerTitle')
-    const tableWrapScope = chatContext?.sessionId ?? imageTitle
+    const tableWrapScope = hashTableWrapIdentity(chatContext?.sessionId ?? imageTitle)
     const isMobileInlineTable = isMobileTableViewerViewport()
 
     const closeViewer = useCallback(() => {
@@ -1513,7 +1558,7 @@ export function MarkdownTable(props: TableProps) {
             : undefined
         setViewerOpen(true)
 
-        const isMobile = isMobileTableViewerViewport()
+        const isMobile = isMobileTableViewerDevice()
         mobileViewerRef.current = isMobile
         if (!isMobile) return
 
@@ -1565,6 +1610,7 @@ export function MarkdownTable(props: TableProps) {
                     <table
                         {...rest}
                         ref={inlineTableRef}
+                        data-hapi-table-wrap-scope={tableWrapScope}
                         onClick={(event) => {
                             if (!isMobileInlineTable) return
                             const target = event.target

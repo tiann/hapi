@@ -33,7 +33,9 @@ ${Array.from({ length: 14 }, (_, index) => `| Item ${index + 1} | Ready |`).join
 
 function MarkdownTableFixture() {
     const query = new URLSearchParams(window.location.search)
-    const content = query.has('empty-action-area')
+    const content = query.has('single-image')
+        ? '| Chart |\n| --- |\n| ![Only table chart](https://fixture.test/chart.svg) |'
+        : query.has('empty-action-area')
         ? EMPTY_ACTION_AREA_TABLE_MARKDOWN
         : query.has('multiline-header')
         ? MULTILINE_HEADER_TABLE_MARKDOWN

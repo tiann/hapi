@@ -741,8 +741,7 @@ mark.hapi-message-search-target {
     margin-top: max(0px, calc((var(--app-chat-line-height) - var(--app-message-action-size)) / 2));
 }
 
-/* Markdown tables keep their header as the first table row. Table actions sit
- * in the top-right corner of that row, so they do not create a blank shelf. */
+/* Center inline table actions on the first header row without adding a shelf. */
 .aui-md-table-frame {
     position: relative;
 }
@@ -753,7 +752,7 @@ mark.hapi-message-search-target {
 
 .aui-md-table-actions {
     position: absolute;
-    top: 3px;
+    top: var(--hapi-table-action-top, 3px);
     right: 3px;
     line-height: normal;
     align-items: center;

@@ -201,6 +201,42 @@ test('strips transient table feedback and restores the shared table opener on Es
     await expect(opener).toBeFocused()
 })
 
+test('reuses chat table wrapping and can zoom an image in the shared fullscreen table', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 })
+    await page.goto('/e2e-fixtures/share-turn-fixture.html')
+    const source = page.getByTestId('source-turn')
+    const table = source.locator('.aui-md-table-frame').first()
+    await table.evaluate(frame => {
+        const cell = frame.querySelector('tbody td')
+        const photo = frame.closest('[data-testid="source-turn"]')?.querySelector<HTMLButtonElement>('[data-image-preview-trigger]')
+        if (!cell || !photo) throw new Error('Missing share table fixture')
+        cell.append(photo.cloneNode(true))
+    })
+    await table.hover()
+    await table.getByRole('button', { name: 'Open table full screen' }).click()
+    const wrap = page.getByRole('button', { name: /table wrapping/ })
+    if ((await wrap.getAttribute('aria-pressed')) === 'true') await wrap.click()
+    await wrap.click()
+    await expect(page.getByRole('button', { name: 'Disable table wrapping' })).toBeVisible()
+    await page.getByRole('button', { name: 'Close table full screen' }).click()
+
+    await page.getByRole('button', { name: 'Open share preview' }).click()
+    const shareOpener = page.locator('.hapi-share-preview-root').getByRole('button', { name: 'Open table full screen' }).first()
+    await shareOpener.focus()
+    await page.keyboard.press('Enter')
+    await expect(page.getByRole('button', { name: 'Disable table wrapping' })).toBeVisible()
+    const viewer = page.locator('[data-hapi-table-viewer="true"]')
+    await viewer.locator('[data-image-preview-trigger]').first().click()
+    const image = page.getByRole('dialog', { name: 'HAPI landscape export fixture' })
+    await expect(image).toBeVisible()
+    await expect(image.getByRole('img', { name: 'HAPI landscape export fixture' })).toBeVisible()
+    const screenshots = process.env.HAPI_REVIEW_SCREENSHOT_DIR
+    if (screenshots) await page.screenshot({ path: `${screenshots}/shared-table-image-zoom.png` })
+    await page.keyboard.press('Escape')
+    await expect(image).toHaveCount(0)
+    await expect(viewer).toBeVisible()
+})
+
 test('hides markdown table scrollbars in the shared image export', async ({ page }, testInfo) => {
     await page.goto('/e2e-fixtures/share-turn-fixture.html')
 

@@ -5,7 +5,7 @@ import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
 import { ZoomableLightbox } from '@/components/ZoomableLightbox'
 import {
     enterMobileTableViewer,
-    isMobileTableViewerViewport,
+    isMobileTableViewerDevice,
     leaveMobileTableViewer,
     TableViewerFromElement,
 } from '@/components/assistant-ui/MarkdownTable'
@@ -757,7 +757,7 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
         previewTableOpenerRef.current = opener
         previewTableRef.current = table
         previewTableOpenRef.current = true
-        const isMobile = isMobileTableViewerViewport()
+        const isMobile = isMobileTableViewerDevice()
         previewTableMobileRef.current = isMobile
         previewTableFullscreenRef.current = false
         setPreviewTable(table)
