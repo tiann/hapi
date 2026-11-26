@@ -4,10 +4,10 @@ import { createElement, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionSummary } from '@/types/api'
 import type { Session } from '@/types/api'
+import { readSessionWithLiveUpdates } from '@/lib/sessionDetailRead'
 import { queryKeys } from '@/lib/query-keys'
 import {
     applySessionDetailPatch,
-    canApplyVersionedSummaryPatch,
     isGlobalScopedMessageStreamEvent,
     isNewerVersionedPatch,
     isRenderIrrelevantPatch,
@@ -177,6 +177,37 @@ describe('useSSE connection liveness (mobile suspend/resume)', () => {
     })
 })
 
+describe('useSSE scratchlist status invalidation', () => {
+    beforeEach(() => {
+        vi.useFakeTimers()
+        FakeEventSource.instances = []
+        vi.stubGlobal('EventSource', FakeEventSource)
+    })
+
+    afterEach(() => {
+        vi.unstubAllGlobals()
+        vi.useRealTimers()
+    })
+
+    it('invalidates both the session scratchlist and batch status queries', () => {
+        const { unmount, queryClient } = renderUseSSE()
+        const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries').mockResolvedValue(undefined)
+
+        act(() => {
+            FakeEventSource.instances[0]?.simulateMessage({
+                type: 'session-updated',
+                sessionId: 'session-1',
+                data: { scratchlistUpdatedAt: 1234 }
+            })
+            vi.advanceTimersByTime(20)
+        })
+
+        expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.scratchlist('session-1') })
+        expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.scratchlistSessionIds })
+        unmount()
+    })
+})
+
 function makeSummary(overrides: Partial<SessionSummary> = {}): SessionSummary {
     return {
         id: 'session-1',
@@ -202,58 +233,6 @@ function makeSummary(overrides: Partial<SessionSummary> = {}): SessionSummary {
         ...overrides
     } as SessionSummary
 }
-
-describe('canApplyVersionedSummaryPatch (PR #897 review, HAPI Bot 2026-07-23 Major)', () => {
-    it('allows non-versioned patches without a detail cache', () => {
-        expect(canApplyVersionedSummaryPatch({}, false)).toBe(true)
-        expect(canApplyVersionedSummaryPatch({ metadata: undefined, agentState: undefined }, false)).toBe(true)
-    })
-
-    it('refuses metadata/agentState/todos summary patches when detail version source is missing', () => {
-        expect(
-            canApplyVersionedSummaryPatch(
-                { metadata: { version: 1, value: null } },
-                false
-            )
-        ).toBe(false)
-        expect(
-            canApplyVersionedSummaryPatch(
-                { agentState: { version: 1, value: null } },
-                false
-            )
-        ).toBe(false)
-        expect(
-            canApplyVersionedSummaryPatch(
-                { todos: { version: 1, value: [] } },
-                false
-            )
-        ).toBe(false)
-    })
-
-    it('allows teamState-only patches without detail (summary no-op)', () => {
-        expect(
-            canApplyVersionedSummaryPatch(
-                { teamState: { version: 1, value: null } },
-                false
-            )
-        ).toBe(true)
-    })
-
-    it('allows versioned summary patches when detail is present', () => {
-        expect(
-            canApplyVersionedSummaryPatch(
-                { metadata: { version: 2, value: null } },
-                true
-            )
-        ).toBe(true)
-        expect(
-            canApplyVersionedSummaryPatch(
-                { todos: { version: 2, value: [] } },
-                true
-            )
-        ).toBe(true)
-    })
-})
 
 describe('isNewerVersionedPatch (PR #897 review, HAPI Bot 2026-06-16 Major)', () => {
     // Pin the version-monotonicity contract for structured metadata /
@@ -496,6 +475,19 @@ describe('useSSE user-activity ordering', () => {
         patch('old', { lastUserMessageAt: 4_000 })
         expect(read()[0]!.lastUserMessageAt).toBe(200_000)
         expect(read().map(s => s.id)).toEqual(['old', 'new'])
+        unmount()
+    })
+
+    it('observes an expiry even without a detail row to patch during a cold fetch', async () => {
+        const { queryClient, unmount } = renderUseSSE()
+        let resolve!: (value: { session: Session }) => void
+        const stopped = { active: false, activeAt: 10, thinking: false, activeTurnStartedAt: null } as Session
+        const fetch = vi.fn().mockImplementationOnce(() => new Promise(done => { resolve = done })).mockResolvedValue({ session: stopped })
+        const read = readSessionWithLiveUpdates(queryClient, 'cold', fetch)
+        act(() => FakeEventSource.instances[0]?.simulateMessage({ type: 'session-updated', sessionId: 'cold',
+            data: { active: false, activeAt: 10, thinking: false, activeTurnStartedAt: null } }))
+        resolve({ session: { active: true, activeAt: 10, thinking: true, activeTurnStartedAt: 5 } as Session })
+        expect((await read).session).toMatchObject({ active: false, activeAt: 10, thinking: false, activeTurnStartedAt: null })
         unmount()
     })
 

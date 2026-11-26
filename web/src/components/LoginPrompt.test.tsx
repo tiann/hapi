@@ -179,3 +179,56 @@ describe('LoginPrompt redirected hub requests', () => {
         expect(screen.queryByRole('button', { name: /^Open / })).not.toBeInTheDocument()
     })
 })
+
+describe('LoginPrompt passkey sign-in', () => {
+    beforeEach(() => {
+        vi.resetModules()
+    })
+    afterEach(() => {
+        vi.doUnmock('@/lib/passkey')
+    })
+
+    async function renderWithPasskey(signIn: () => Promise<string>) {
+        vi.doMock('@/lib/passkey', () => ({
+            isPasskeySupported: () => true,
+            isPasskeyCancelled: (e: unknown) => e instanceof Error && e.name === 'NotAllowedError',
+            signInWithPasskey: signIn
+        }))
+        const { LoginPrompt: Prompt } = await import('./LoginPrompt')
+        const { I18nProvider: Provider } = await import('@/lib/i18n-context')
+        const onPasskeyLogin = vi.fn()
+        render(
+            <Provider>
+                <Prompt
+                    baseUrl="https://hub.example.com"
+                    serverUrl={null}
+                    setServerUrl={vi.fn((value: string) => ({ ok: true as const, value }))}
+                    clearServerUrl={vi.fn()}
+                    onLogin={vi.fn()}
+                    onPasskeyLogin={onPasskeyLogin}
+                />
+            </Provider>
+        )
+        return { onPasskeyLogin }
+    }
+
+    it('hands the passkey session to the app on success', async () => {
+        const { onPasskeyLogin } = await renderWithPasskey(async () => 'pk-session')
+        fireEvent.click(screen.getByRole('button', { name: 'Sign in with a passkey' }))
+        await vi.waitFor(() => expect(onPasskeyLogin).toHaveBeenCalledWith('pk-session'))
+    })
+
+    it('explains a passkey revoked by token rotation and stays quiet on cancel', async () => {
+        const { ApiError } = await import('@/api/client')
+        let next: Error = new ApiError('Passkey sign-in failed: HTTP 401', 401, 'passkey_revoked')
+        const { onPasskeyLogin } = await renderWithPasskey(async () => { throw next })
+        fireEvent.click(screen.getByRole('button', { name: 'Sign in with a passkey' }))
+        expect(await screen.findByText(/access token was rotated/)).toBeInTheDocument()
+
+        next = Object.assign(new Error('cancelled'), { name: 'NotAllowedError' })
+        fireEvent.click(screen.getByRole('button', { name: 'Sign in with a passkey' }))
+        await vi.waitFor(() => expect(screen.queryByText(/access token was rotated/)).not.toBeInTheDocument())
+        expect(screen.queryByText(/Passkey sign-in failed/)).not.toBeInTheDocument()
+        expect(onPasskeyLogin).not.toHaveBeenCalled()
+    })
+})

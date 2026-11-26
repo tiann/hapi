@@ -44,7 +44,7 @@ async function fixture() {
     } as unknown as ApiSessionClient
     const queue = new SharedCodexQueue({ request: async () => ({ data: [] }) } as never,
         'thread', join(directory, 'queue.json'), ids => session.emitMessagesConsumed(ids), () => {})
-    const projection = new SharedCodexProjection(session, 'thread', id => queue.committed(id, false), undefined,
+    const projection = new SharedCodexProjection(session, 'thread', (id, content) => queue.committed(id, content, false), undefined,
         undefined, undefined, ids => queue.committedHistory(ids, false))
     return { store, engine, source, projection, packets, directory, async close() {
         engine.stop()
@@ -106,7 +106,9 @@ describe('shared Codex projection persisted consumption', () => {
             expect(f.packets.filter(packet => packet === 'ack')).toHaveLength(1)
             expect(f.packets.at(-1)).toBe('ack')
             const ledger = JSON.parse(await readFile(join(f.directory, 'queue.json'), 'utf8'))
-            expect(Object.values(ledger).every(value => (value as { state: string }).state === 'consumed')).toBe(true)
+            expect(ledger.version).toBe(2)
+            expect(Object.keys(ledger.entries)).toHaveLength(80)
+            expect(Object.values(ledger.entries).every(value => (value as { state: string }).state === 'consumed')).toBe(true)
             expect(f.engine.getMessagesPage(f.source.id, { limit: 20 }).messages.length).toBeLessThanOrEqual(20)
             const child = f.engine.getOrCreateSession('codex-fork', {
                 ...f.source.metadata!, codexSessionId: 'fork-native', forkedFrom: f.source.id

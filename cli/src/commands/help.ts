@@ -18,6 +18,9 @@ ${agents}
 Commands:
   hapi auth                  Manage authentication
   hapi resume [id]           Choose or resume an existing HAPI session
+  hapi attach …              Experimental bridge to an external Codex thread
+  hapi detach <id>           Detach HAPI without stopping the external engine
+  hapi codex-desktop setup   Automatically sync ChatGPT Codex sessions on macOS
   hapi hub [--relay]         Start the API + web hub
   hapi server                Alias for hapi hub
   hapi runner                Manage the background runner

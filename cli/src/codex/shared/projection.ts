@@ -19,6 +19,14 @@ export function inputText(input: unknown): string {
     }).filter(Boolean).join('\n');
 }
 
+/** Hub-visible text for a native userMessage item: the exact display text
+ *  `sendUserMessage` commits, so an empty result emits no hub row at all. */
+export function userMessageDisplayText(item: Record<string, unknown>): string {
+    const text = inputText(item.content);
+    const replies = asyncQuestionReplies(text);
+    return replies.length ? replies.map(reply => [reply.question, reply.answer].filter(Boolean).join('\n')).join('\n\n') : text;
+}
+
 function requestedTitle(item: Record<string, unknown>): string | undefined {
     if (item.type !== 'mcpToolCall' || item.server !== 'hapi' || item.tool !== 'change_title') return;
     return normalizeSessionDisplayTitle(string(record(item.arguments).title)) ?? undefined;
@@ -51,11 +59,12 @@ export class SharedCodexProjection {
     private readonly compactionSummaries: CodexCompactionSummaryLookup;
     private summaryThread: unknown;
     constructor(private readonly session: ApiSessionClient, readonly threadId: string,
-        private readonly committed: (id: string) => Promise<void>, private readonly parentThreadId?: string,
-        private readonly readSummaryThread?: () => Promise<unknown>,
+        private readonly committed: (id: string, content?: unknown) => Promise<void | Array<{ id: string; input: unknown }>>,
+        private readonly parentThreadId?: string, private readonly readSummaryThread?: () => Promise<unknown>,
         private readonly observeItem?: (threadId: string, item: unknown) => void,
-        private readonly committedHistory?: (ids: string[]) => Promise<void>) {
-        this.compactionSummaries = new CodexCompactionSummaryLookup(threadId);        if (!parentThreadId) for (const [id, turn] of Object.entries(session.getMetadata()?.conversationHistoryTurns ?? {})) this.turns.set(id, turn);
+        private readonly committedHistory?: (ids: string[]) => Promise<ReadonlySet<string> | void>) {
+        this.compactionSummaries = new CodexCompactionSummaryLookup(threadId);
+        if (!parentThreadId) for (const [id, turn] of Object.entries(session.getMetadata()?.conversationHistoryTurns ?? {})) this.turns.set(id, turn);
     }
 
     turnFor(id: string): string | undefined { return this.turns.get(id); }
@@ -128,7 +137,7 @@ export class SharedCodexProjection {
     }
 
     private async project(method: string, params: unknown, modelAtReceipt: string | undefined, fromHistory: boolean,
-        receivedAt = Date.now(), consumed = new Set<string>()): Promise<void> {
+        receivedAt = Date.now(), consumed = new Set<string>(), historyBatches?: ReadonlySet<string>): Promise<void> {
         if (method.startsWith('codex/event/')) return;
         const p = record(params);
         const item = record(p.item);
@@ -158,20 +167,25 @@ export class SharedCodexProjection {
         if (!this.parentThreadId && (method === 'item/started' || method === 'item/completed') && item.type === 'userMessage') {
             const id = string(item.clientId ?? item.clientUserMessageId) ?? (itemId ? `codex:${this.threadId}:user:${itemId}` : undefined);
             if (id) {
-                const previousTurn = this.turns.get(id);
-                const firstInTurn = turnId ? [...this.turns].find(([, value]) => value === turnId)?.[0] : undefined;
-                if (turnId) this.turns.set(id, turnId);
-                if (!fromHistory || !this.committedHistory) await this.committed(id);
-                const text = inputText(item.content);
-                const replies = asyncQuestionReplies(text);
-                const displayText = replies.length ? replies.map(reply => [reply.question, reply.answer].filter(Boolean).join('\n')).join('\n\n') : text;
-                if (displayText) this.session.sendUserMessage(displayText, undefined, id, { acknowledgeConsumption: false });
-                consumed.add(id);
-                const needsPoint = turnId && (!firstInTurn || firstInTurn === id)
-                    && !this.session.getMetadata()?.conversationHistoryPoints?.[id];
-                if (previousTurn !== turnId || needsPoint) this.session.updateMetadata(metadata => ({ ...metadata, conversationHistoryTurns: Object.fromEntries(this.turns),
-                    ...(turnId && (!firstInTurn || firstInTurn === id) ? { conversationHistoryPoints: { ...metadata.conversationHistoryPoints, [id]: true } } : {})
-                }));
+                const aliases = fromHistory && historyBatches && !historyBatches.has(id)
+                    ? undefined : await this.committed(id, item.content);
+                for (const member of aliases ?? [{ id, input: item.content }]) {
+                    const previousTurn = this.turns.get(member.id);
+                    const firstInTurn = turnId ? [...this.turns].find(([, value]) => value === turnId)?.[0] : undefined;
+                    if (turnId) this.turns.set(member.id, turnId);
+                    const text = inputText(member.input);
+                    const replies = asyncQuestionReplies(text);
+                    const displayText = replies.length ? replies.map(reply => [reply.question, reply.answer].filter(Boolean).join('\n')).join('\n\n') : text;
+                    if (displayText) this.session.sendUserMessage(displayText, undefined, member.id, { acknowledgeConsumption: false });
+                    consumed.add(member.id);
+                    const needsPoint = turnId && (!firstInTurn || firstInTurn === member.id)
+                        && !this.session.getMetadata()?.conversationHistoryPoints?.[member.id];
+                    if (previousTurn !== turnId || needsPoint) this.session.updateMetadata(metadata => ({ ...metadata, conversationHistoryTurns: Object.fromEntries(this.turns),
+                        ...(turnId && (!firstInTurn || firstInTurn === member.id) ? {
+                            conversationHistoryPoints: { ...metadata.conversationHistoryPoints, [member.id]: true }
+                        } : {})
+                    }));
+                }
             }
         }
         if (this.parentThreadId && (method === 'turn/started' || method === 'turn/completed')) {
@@ -331,6 +345,7 @@ export class SharedCodexProjection {
         const turns = record(thread).turns;
         if (!Array.isArray(turns)) return;
         const consumed = new Set<string>();
+        let historyBatches: ReadonlySet<string> | undefined;
         if (!this.parentThreadId && this.committedHistory) {
             const ids = turns.flatMap(value => {
                 const items = record(value).items;
@@ -344,7 +359,7 @@ export class SharedCodexProjection {
             });
             // Persist consumption first, but acknowledge only after transcript
             // packets: the Hub cannot mark an ID that has not been inserted yet.
-            await this.committedHistory(ids);
+            historyBatches = await this.committedHistory(ids) ?? new Set();
             // Collect ACK IDs below in transcript order, so separate bounded
             // packets cannot place every historical prompt ahead of its reply.
         }
@@ -360,7 +375,7 @@ export class SharedCodexProjection {
                 if (!this.parentThreadId && string(record(item).id) && pendingTitle && !this.completedTitles.has(titleKey)) {
                     this.pendingTitles.set(titleKey, pendingTitle);
                 }
-                await this.project('item/started', params, undefined, true, Date.now(), consumed);
+                await this.project('item/started', params, undefined, true, Date.now(), consumed, historyBatches);
                 // Active snapshots can contain partial assistant text. Do not
                 // settle it under the final stable id and suppress completion.
                 if (turn.status !== 'inProgress' || record(item).status === 'completed' || record(item).type === 'userMessage'
@@ -373,7 +388,7 @@ export class SharedCodexProjection {
                         }
                         this.pendingTitles.delete(titleKey);
                     }
-                    await this.project('item/completed', params, undefined, true, Date.now(), consumed);
+                    await this.project('item/completed', params, undefined, true, Date.now(), consumed, historyBatches);
                 }
             }
         }

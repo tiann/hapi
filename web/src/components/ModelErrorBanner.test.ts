@@ -3,7 +3,6 @@ import {
     canShowModelErrorBridge,
     getModelErrorUiState,
     hasActiveModelError,
-    hasRecoveredModelError,
     hasUrgentModelError,
     isBridgeSettling,
     shouldKeepPendingBridge,
@@ -30,7 +29,6 @@ describe('model error UI states', () => {
         const metadata = holder(base)
         expect(getModelErrorUiState(metadata)).toBe('unrecovered')
         expect(hasUrgentModelError(metadata)).toBe(true)
-        expect(hasRecoveredModelError(metadata)).toBe(false)
         expect(canShowModelErrorBridge(metadata)).toBe(true)
     })
 
@@ -38,7 +36,6 @@ describe('model error UI states', () => {
         const metadata = holder({ ...base, bridgedForEventId: 'evt-1000' })
         expect(getModelErrorUiState(metadata)).toBe('recovered')
         expect(hasUrgentModelError(metadata)).toBe(false)
-        expect(hasRecoveredModelError(metadata)).toBe(true)
         expect(hasActiveModelError(metadata)).toBe(true)
         expect(canShowModelErrorBridge(metadata)).toBe(false)
     })

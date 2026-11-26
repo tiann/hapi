@@ -93,23 +93,17 @@ export type AgyReactiveInspection =
 export const AGY_WAKEUP_CONTINUE_PROMPT =
     '[System note: background wakeup reattached — continue your in-progress response to the background notification above without mentioning this note.]';
 
-/** Tools executed internally by agy without ACP permission prompts. */
-const AGY_INTERNAL_TOOLS = new Set([
-    'manage_subagents',
-    'manage_task',
-    'send_message',
-    'schedule',
-    'invoke_subagent',
-    'define_subagent',
-    'swarm'
-]);
-
 /** Tools that commonly park in `SetPendingToolPermission` when no `session/prompt` is open. */
 const AGY_GATED_TOOLS = new Set([
     'run_command',
     'edit_file',
     'write_file',
     'call_mcp_tool'
+]);
+
+/** Tools that park the agent and end its turn immediately once their action step completes. */
+const AGY_TURN_TERMINATING_TOOLS = new Set([
+    'swarm_wait'
 ]);
 
 export function defaultAgyBrainDir(): string {
@@ -361,11 +355,25 @@ function requiredParkMsForToolCalls(
             }
             continue;
         }
-        if (!AGY_INTERNAL_TOOLS.has(name)) {
-            lowerBound(timings.slowToolParkMs);
-        }
+        // All other agy tools (swarm, swarm_wait, read_board, post_message,
+        // run_workflow, subagent/task/schedule management, web search, etc.)
+        // run internally without ACP permission prompts and never park in
+        // `SetPendingToolPermission`.
     }
     return waitMs;
+}
+
+/**
+ * `agy acp` streams reactive wakeup updates live from 1.5.10 on
+ * (google-antigravity/antigravity-cli#1461); an unknown or unparseable version
+ * keeps the transcript-rendered behavior.
+ */
+export function supportsAgyLiveIdleWakeups(version: string | null | undefined): boolean {
+    const match = /^(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/.exec(version ?? '');
+    if (!match) return false;
+    const [major, minor, patch] = [Number(match[1]), Number(match[2]), Number(match[3])];
+    // 1.5.10-beta sorts below 1.5.10.
+    return major !== 1 ? major > 1 : minor !== 5 ? minor > 5 : patch > 10 || (patch === 10 && !match[4]);
 }
 
 /**
@@ -434,6 +442,16 @@ export function inspectAgyReactiveSteps(
                     if (parkMs !== null && idleForMs >= parkMs) {
                         return { state: 'parked_on_tool', latestStepIndex: last.step_index };
                     }
+                } else if (
+                    toolCalls.some((call) => AGY_TURN_TERMINATING_TOOLS.has(call.name))
+                    && trailingActions.length === toolCalls.length
+                    && toolCalls.every((call, idx) => isCompletedOrBackgroundedBatchAction(call, trailingActions[idx]))
+                    && last === trailingActions[toolCalls.length - 1]
+                ) {
+                    if (idleForMs >= timings.settleMs) {
+                        return { state: 'completed', steps: reactiveSteps, latestStepIndex: last.step_index };
+                    }
+                    return { state: 'running', latestStepIndex: last.step_index };
                 }
             }
         }
@@ -454,6 +472,23 @@ export function extractAgyBackgroundTaskId(content: string | undefined): string 
     if (!content) return undefined;
     const match = content.match(/Tool is running as a background task with task id:\s*([^\s"'<>]+\/task-\d+)/);
     return match?.[1];
+}
+
+function isCompletedOrBackgroundedBatchAction(
+    call: AgyTranscriptToolCall,
+    action: AgyTranscriptStep | undefined
+): boolean {
+    if (!action || action.source !== 'MODEL' || action.type === 'PLANNER_RESPONSE') {
+        return false;
+    }
+    if (action.status === 'DONE' || action.status === 'ERROR') {
+        return true;
+    }
+    return (
+        call.name === 'run_command'
+        && action.status === 'RUNNING'
+        && Boolean(extractAgyBackgroundTaskId(action.content))
+    );
 }
 
 /**
@@ -555,6 +590,26 @@ export function advanceAgyTurnTranscriptCursor(
         && step.status === 'DONE'
         && (!Array.isArray(step.tool_calls) || step.tool_calls.length === 0);
 
+    const terminalTurnEndIndex = (plannerIdx: number): number | null => {
+        const step = stepsAfterStart[plannerIdx]!;
+        if (step.source !== 'MODEL' || step.type !== 'PLANNER_RESPONSE' || step.status !== 'DONE') {
+            return null;
+        }
+        const toolCalls = Array.isArray(step.tool_calls) ? step.tool_calls : [];
+        if (toolCalls.length === 0) return plannerIdx;
+        if (!toolCalls.some((call) => AGY_TURN_TERMINATING_TOOLS.has(call.name))) {
+            return null;
+        }
+        const endIdx = plannerIdx + toolCalls.length;
+        if (endIdx >= stepsAfterStart.length) return null;
+        for (let k = plannerIdx + 1; k <= endIdx; k += 1) {
+            const call = toolCalls[k - plannerIdx - 1]!;
+            const action = stepsAfterStart[k]!;
+            if (!isCompletedOrBackgroundedBatchAction(call, action)) return null;
+        }
+        return endIdx;
+    };
+
     let lastUserInputIdx = -1;
     for (let i = 0; i < stepsAfterStart.length; i += 1) {
         const step = stepsAfterStart[i]!;
@@ -580,6 +635,7 @@ export function advanceAgyTurnTranscriptCursor(
     }
 
     let sawTerminalPlanner = false;
+    let pendingTerminalActionIdx = -1;
     for (let i = startIdx; i < stepsAfterStart.length; i += 1) {
         const step = stepsAfterStart[i]!;
         if (step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE') {
@@ -604,8 +660,9 @@ export function advanceAgyTurnTranscriptCursor(
                         }
                         probeTexts.set(text, available - 1);
                     }
-                    if (isTerminalPlanner(ahead)) {
-                        terminalIdx = j;
+                    const endIdx = terminalTurnEndIndex(j);
+                    if (endIdx !== null) {
+                        terminalIdx = endIdx;
                         break;
                     }
                 }
@@ -626,7 +683,14 @@ export function advanceAgyTurnTranscriptCursor(
             }
             if (isTerminalPlanner(step)) {
                 sawTerminalPlanner = true;
+            } else {
+                const endIdx = terminalTurnEndIndex(i);
+                if (endIdx !== null) pendingTerminalActionIdx = endIdx;
             }
+        }
+
+        if (i === pendingTerminalActionIdx) {
+            sawTerminalPlanner = true;
         }
 
         if (step.step_index > cursor) {
@@ -797,7 +861,8 @@ export function inspectSyntheticBackgroundCommandMatch(
         (entry) => entry.taskId === undefined || !completedTasks.has(entry.taskId)
     );
 
-    const turnPlannedCompatibleCommand = recentSteps.some((step) => {
+    // A result-only update names no command, so any planned call would "match" it.
+    const turnPlannedCompatibleCommand = (liveCommandLine !== undefined || liveArgs !== undefined) && recentSteps.some((step) => {
         if (step.step_index <= turnStartStepIndex) return false;
         if (step.source !== 'MODEL' || step.type !== 'PLANNER_RESPONSE') return false;
         return (step.tool_calls ?? []).some((call) => {
@@ -1058,6 +1123,16 @@ export function convertAgyReactiveSteps(
             const resultInfo = action
                 ? buildGenericToolOutput(call.name, action)
                 : { output: '', status: 'completed' as const, backgrounded: false };
+            // agy task ids are unique per session. A backgrounded command whose
+            // task is already open was streamed by a live turn before this slice
+            // was replayed: a second card and a second entry would leave one of
+            // the two open after the task's single completion.
+            const backgroundTaskId = resultInfo.backgrounded && action
+                ? extractAgyBackgroundTaskId(action.content)
+                : undefined;
+            if (backgroundTaskId && openBackgroundCommands.some((entry) => entry.taskId === backgroundTaskId)) {
+                continue;
+            }
             messages.push({
                 type: 'tool_call',
                 id,
@@ -1076,7 +1151,6 @@ export function convertAgyReactiveSteps(
                     status: resultInfo.status
                 });
                 if (resultInfo.backgrounded) {
-                    const taskId = extractAgyBackgroundTaskId(action.content);
                     const commandLine = typeof decodedArgs.CommandLine === 'string'
                         ? decodedArgs.CommandLine
                         : undefined;
@@ -1086,7 +1160,7 @@ export function convertAgyReactiveSteps(
                         synthetic: true,
                         nativeArgs: decodedArgs,
                         ...(commandLine !== undefined ? { commandLine } : {}),
-                        ...(taskId ? { taskId } : {})
+                        ...(backgroundTaskId ? { taskId: backgroundTaskId } : {})
                     });
                 }
             }

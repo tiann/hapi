@@ -2,11 +2,13 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
-import type { ApiClient } from '@/api/client'
+import { ApiError, type ApiClient } from '@/api/client'
 import type { SessionSummary } from '@/types/api'
 import { I18nProvider } from '@/lib/i18n-context'
 import { ToastProvider } from '@/lib/toast-context'
-import { SessionList } from './SessionList'
+import { markSessionSeen, markSessionUnread } from '@/lib/sessionLastSeen'
+import { SessionList, SessionListSearch } from './SessionList'
+
 
 const SEARCH_LABEL = 'Search sessions (title, path, Agent, machine name, ID, and more)'
 const SEARCH_PLACEHOLDER = 'Search title/path/Agent/machine/ID…'
@@ -243,6 +245,215 @@ describe('SessionList directory action', () => {
     })
 })
 
+describe('SessionList time filter', () => {
+    beforeEach(() => {
+        vi.useFakeTimers()
+        vi.setSystemTime(new Date(2026, 6, 18, 12))
+    })
+
+    afterEach(() => {
+        vi.useRealTimers()
+    })
+
+    it('opens the date filter from the unified menu and filters without expanding search', () => {
+        const recent = makeSession({
+            id: 'recent',
+            updatedAt: Date.now(),
+            metadata: { path: '/work/recent', name: 'Recent session' }
+        })
+        const old = makeSession({
+            id: 'old',
+            updatedAt: new Date(2020, 0, 1).getTime(),
+            metadata: { path: '/work/old', name: 'Old session' }
+        })
+
+        renderWithProviders(
+            <SessionList
+                sessions={[recent, old]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={null}
+            />
+        )
+
+        // Inactive groups start collapsed and do not mount their rows.
+        fireEvent.click(screen.getByTitle('/work/recent'))
+        fireEvent.click(screen.getByTitle('/work/old'))
+        expect(screen.getByRole('button', { name: /Recent session/ })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /Old session/ })).toBeInTheDocument()
+
+        const searchButton = screen.getByRole('button', { name: SEARCH_LABEL })
+        const filterButton = screen.getByRole('button', { name: 'Sort and filter' })
+        const searchControl = searchButton.parentElement
+        // #2039: collapsed search must not shrink under neighbors (overlap);
+        // header wraps trailing actions instead.
+        expect(searchControl?.parentElement).toHaveClass('relative', 'gap-1', 'shrink-0', 'max-w-full')
+        expect(searchControl?.parentElement?.className.split(/\s+/)).not.toContain('min-w-0')
+        expect(screen.getByTestId('session-list-header-row')).toHaveClass('flex-nowrap', '@container')
+        expect(screen.getByTestId('session-list-header-actions')).toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: 'Filter sessions by update date' })).toBeNull()
+        expect(screen.queryByPlaceholderText(SEARCH_PLACEHOLDER)).toBeNull()
+
+        fireEvent.click(filterButton)
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Updated date' }))
+        const calendar = screen.getByRole('dialog', { name: 'Filter sessions by update date' })
+        const emptyDate = within(calendar).getByRole('button', { name: new Date(2026, 6, 17).toLocaleDateString() })
+        const activeDate = within(calendar).getByRole('button', { name: `${new Date(2026, 6, 18).toLocaleDateString()}, has session activity` })
+        expect(emptyDate).toHaveClass('text-[var(--app-hint)]')
+        expect(activeDate).toHaveClass('text-[var(--app-fg)]')
+        expect(activeDate).toHaveAttribute('title', `${new Date(2026, 6, 18).toLocaleDateString()}, has session activity`)
+        fireEvent.click(emptyDate)
+        fireEvent.click(activeDate)
+
+        expect(screen.getByRole('button', { name: /Recent session/ })).toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: /Old session/ })).toBeNull()
+        expect(screen.queryByPlaceholderText(SEARCH_PLACEHOLDER)).toBeNull()
+        expect(filterButton).toHaveAttribute('aria-expanded', 'true')
+        expect(screen.getByRole('menuitem', { name: /^Updated date/ })).toHaveAccessibleName('Updated date: 2026-07-17 – 2026-07-18')
+    })
+
+    it('keeps the selected session visible when the date range excludes it', () => {
+        const recent = makeSession({
+            id: 'recent-selected-time-filter',
+            updatedAt: Date.now(),
+            metadata: { path: '/work/recent-time', name: 'Recent selected-time row' }
+        })
+        const selected = makeSession({
+            id: 'selected-outside-time-filter',
+            updatedAt: new Date(2020, 0, 1).getTime(),
+            metadata: { path: '/work/selected-time', name: 'Selected outside range' }
+        })
+
+        renderWithProviders(
+            <SessionList
+                sessions={[recent, selected]}
+                selectedSessionId={selected.id}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={null}
+            />
+        )
+
+        expect(screen.getByRole('button', { name: /Selected outside range/ })).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('button', { name: 'Sort and filter' }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Updated date' }))
+        const calendar = screen.getByRole('dialog', { name: 'Filter sessions by update date' })
+        fireEvent.click(within(calendar).getByRole('button', { name: new Date(2026, 6, 17).toLocaleDateString() }))
+        fireEvent.click(within(calendar).getByRole('button', { name: `${new Date(2026, 6, 18).toLocaleDateString()}, has session activity` }))
+
+        expect(screen.getByRole('button', { name: /Selected outside range/ })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /Recent selected-time row/ })).toBeInTheDocument()
+    })
+
+    it('highlights today without requiring hover or session activity', () => {
+        const old = makeSession({
+            id: 'old',
+            updatedAt: new Date(2020, 0, 1).getTime(),
+            metadata: { path: '/work/old', name: 'Old session' }
+        })
+
+        renderWithProviders(
+            <SessionList
+                sessions={[old]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={null}
+            />
+        )
+
+        fireEvent.click(screen.getByRole('button', { name: 'Sort and filter' }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Updated date' }))
+        const calendar = screen.getByRole('dialog', { name: 'Filter sessions by update date' })
+        const today = within(calendar).getByRole('button', { name: new Date(2026, 6, 18).toLocaleDateString() })
+        const anotherDay = within(calendar).getByRole('button', { name: new Date(2026, 6, 17).toLocaleDateString() })
+
+        expect(today).toHaveClass('bg-[var(--app-subtle-bg)]')
+        expect(today).toHaveAttribute('aria-current', 'date')
+        expect(anotherDay).not.toHaveAttribute('aria-current')
+    })
+
+    it('uses the first calendar click as start and the second as end', () => {
+        const session = makeSession({
+            id: 'session-1',
+            updatedAt: Date.now(),
+            metadata: { path: '/work/hapi', name: 'Session' }
+        })
+
+        renderWithProviders(
+            <SessionList
+                sessions={[session]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={null}
+            />
+        )
+
+        const filterButton = screen.getByRole('button', { name: 'Sort and filter' })
+        fireEvent.click(filterButton)
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Updated date' }))
+        const calendar = screen.getByRole('dialog', { name: 'Filter sessions by update date' })
+        const startDate = within(calendar).getByRole('button', { name: new Date(2026, 6, 1).toLocaleDateString() })
+        fireEvent.click(startDate)
+        expect(startDate).toHaveClass('bg-[var(--app-button)]', 'text-[var(--app-button-text)]')
+        expect(startDate).not.toHaveClass('text-white')
+        expect(screen.getByText('Select end date')).toBeInTheDocument()
+        fireEvent.click(within(calendar).getByRole('button', { name: `${new Date(2026, 6, 18).toLocaleDateString()}, has session activity` }))
+
+        expect(filterButton).toHaveAttribute('aria-expanded', 'true')
+    })
+
+    it('returns focus to the date filter row after clearing the date range', () => {
+        const session = makeSession({
+            id: 'session-1',
+            updatedAt: Date.now(),
+            metadata: { path: '/work/hapi', name: 'Session' }
+        })
+
+        renderWithProviders(
+            <SessionList
+                sessions={[session]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={null}
+            />
+        )
+
+        const filterButton = screen.getByRole('button', { name: 'Sort and filter' })
+        fireEvent.click(filterButton)
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Updated date' }))
+        let calendar = screen.getByRole('dialog', { name: 'Filter sessions by update date' })
+        fireEvent.click(within(calendar).getByRole('button', { name: new Date(2026, 6, 1).toLocaleDateString() }))
+        fireEvent.click(within(calendar).getByRole('button', { name: `${new Date(2026, 6, 18).toLocaleDateString()}, has session activity` }))
+
+        // The footer Clear button unmounts with the range; focus must not drop to body.
+        fireEvent.click(screen.getByRole('menuitem', { name: /^Updated date/ }))
+        calendar = screen.getByRole('dialog', { name: 'Filter sessions by update date' })
+        fireEvent.click(within(calendar).getByRole('button', { name: 'Clear' }))
+
+        expect(screen.getByRole('menuitem', { name: 'Updated date' })).toHaveFocus()
+        expect(screen.getByRole('menuitem', { name: 'Updated date' })).not.toHaveAttribute('aria-checked')
+    })
+})
+
 describe('SessionList collapsed search', () => {
     it('keeps collapsed search compact beside the actions without expanding it', () => {
         renderWithProviders(
@@ -272,6 +483,7 @@ describe('SessionList collapsed search', () => {
         expect(screen.queryByPlaceholderText(SEARCH_PLACEHOLDER)).toBeNull()
     })
 })
+
 
 describe('SessionList action menu parity', () => {
     it.each([
@@ -315,8 +527,19 @@ describe('SessionList action menu parity', () => {
 })
 
 describe('SessionList fork session action', () => {
-    it('forks a supported active session from the menu and opens the child', async () => {
+    function previewResponse(mode: 'current' | 'latestCompleted' = 'current') {
+        return {
+            mode,
+            boundary: { v: 1 as const, mode, epoch: 3, tailSeq: 4 },
+            keptTail: [],
+            excluded: [],
+            counts: { kept: 4, excluded: 0 }
+        }
+    }
+
+    it('previews a supported active session from the menu and forks through the hub boundary', async () => {
         const forkConversation = vi.fn(async () => ({ sessionId: 'child-session' }))
+        const forkPreview = vi.fn(async () => previewResponse())
         const onSelect = vi.fn()
         const session = makeSession({
             id: 'source-session',
@@ -331,20 +554,23 @@ describe('SessionList fork session action', () => {
         })
         renderWithProviders(<SessionList sessions={[session]} selectedSessionId={session.id} onSelect={onSelect}
             onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false}
-            api={{ forkConversation } as unknown as ApiClient} />)
+            api={{ forkConversation, forkPreview } as unknown as ApiClient} />)
 
         fireEvent.contextMenu(screen.getByRole('button', { name: /Source session/ }))
         fireEvent.click(screen.getByRole('menuitem', { name: 'Fork session' }))
-        const dialog = screen.getByRole('dialog')
-        expect(within(dialog).getByRole('heading', { name: 'Fork session' })).toBeInTheDocument()
-        fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }))
+        const dialog = await screen.findByTestId('fork-preview-thread')
+        expect(dialog).toBeInTheDocument()
+        await waitFor(() => expect(forkPreview).toHaveBeenCalledWith('source-session', 'current', undefined))
 
-        await waitFor(() => expect(forkConversation).toHaveBeenCalledWith('source-session'))
+        fireEvent.click(screen.getByTestId('fork-preview-confirm'))
+        await waitFor(() => expect(forkConversation).toHaveBeenCalledWith('source-session', undefined, false,
+            { v: 1, mode: 'current', epoch: 3, tailSeq: 4 }))
         expect(onSelect).toHaveBeenCalledWith('child-session')
     })
 
-    it('forks a running capable session through the latest completed native turn', async () => {
+    it('forks a running capable session through the hub-resolved latest completed mode', async () => {
         const forkConversation = vi.fn(async () => ({ sessionId: 'child-session' }))
+        const forkPreview = vi.fn(async () => previewResponse('latestCompleted'))
         const onSelect = vi.fn()
         const session = makeSession({
             id: 'source-session',
@@ -360,15 +586,15 @@ describe('SessionList fork session action', () => {
         })
         renderWithProviders(<SessionList sessions={[session]} selectedSessionId={session.id} onSelect={onSelect}
             onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false}
-            api={{ forkConversation } as unknown as ApiClient} />)
+            api={{ forkConversation, forkPreview } as unknown as ApiClient} />)
 
         fireEvent.contextMenu(screen.getByRole('button', { name: /Source session/ }))
         fireEvent.click(screen.getByRole('menuitem', { name: 'Fork session' }))
-        const dialog = screen.getByRole('dialog')
-        expect(within(dialog).getByRole('heading', { name: 'Fork session' })).toBeInTheDocument()
-        fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }))
+        await screen.findByTestId('fork-preview-thread')
+        fireEvent.click(screen.getByTestId('fork-preview-confirm'))
 
-        await waitFor(() => expect(forkConversation).toHaveBeenCalledWith('source-session', undefined, true))
+        await waitFor(() => expect(forkConversation).toHaveBeenCalledWith('source-session', undefined, true,
+            { v: 1, mode: 'latestCompleted', epoch: 3, tailSeq: 4 }))
         expect(onSelect).toHaveBeenCalledWith('child-session')
     })
 
@@ -390,7 +616,7 @@ describe('SessionList fork session action', () => {
 
         fireEvent.contextMenu(screen.getByRole('button', { name: /Running source/ }))
         expect(screen.getByRole('menuitem', { name: 'Fork session' })).toHaveAttribute('aria-disabled', 'true')
-        expect(screen.queryByRole('dialog')).toBeNull()
+        expect(screen.queryByTestId('fork-preview-thread')).toBeNull()
     })
 
     it('hides Fork session for locally controlled sessions', () => {
@@ -429,8 +655,9 @@ describe('SessionList fork session action', () => {
         expect(screen.queryByRole('menuitem', { name: 'Fork session' })).toBeNull()
     })
 
-    it('forks an archived Codex session directly from the list menu', async () => {
+    it('previews an archived Codex session directly from the list menu', async () => {
         const forkConversation = vi.fn(async () => ({ sessionId: 'archived-child' }))
+        const forkPreview = vi.fn(async () => previewResponse())
         const onSelect = vi.fn()
         const session = makeSession({
             id: 'archived-source',
@@ -446,20 +673,21 @@ describe('SessionList fork session action', () => {
         })
         renderWithProviders(<SessionList sessions={[session]} selectedSessionId={null} onSelect={onSelect}
             onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false}
-            api={{ forkConversation } as unknown as ApiClient} />)
+            api={{ forkConversation, forkPreview } as unknown as ApiClient} />)
 
         fireEvent.click(screen.getByTitle('/work/archived'))
         fireEvent.contextMenu(screen.getByRole('button', { name: /Archived source/ }))
         fireEvent.click(screen.getByRole('menuitem', { name: 'Fork session' }))
-        const dialog = screen.getByRole('dialog')
-        fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }))
+        await screen.findByTestId('fork-preview-thread')
+        fireEvent.click(screen.getByTestId('fork-preview-confirm'))
 
-        await waitFor(() => expect(forkConversation).toHaveBeenCalledWith('archived-source'))
+        await waitFor(() => expect(forkConversation).toHaveBeenCalledWith('archived-source', undefined, false,
+            { v: 1, mode: 'current', epoch: 3, tailSeq: 4 }))
         expect(onSelect).toHaveBeenCalledWith('archived-child')
     })
 
-    it('keeps the dialog open and reports a fork failure without navigating', async () => {
-        const forkConversation = vi.fn(async () => { throw new Error('fork failed') })
+    it('reports a preview failure without navigating', async () => {
+        const forkPreview = vi.fn(async () => { throw new Error('Session is busy') })
         const onSelect = vi.fn()
         const session = makeSession({
             id: 'failing-source',
@@ -473,16 +701,72 @@ describe('SessionList fork session action', () => {
         })
         renderWithProviders(<SessionList sessions={[session]} selectedSessionId={null} onSelect={onSelect}
             onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false}
-            api={{ forkConversation } as unknown as ApiClient} />)
+            api={{ forkPreview } as unknown as ApiClient} />)
 
         fireEvent.contextMenu(screen.getByRole('button', { name: /Failing source/ }))
         fireEvent.click(screen.getByRole('menuitem', { name: 'Fork session' }))
-        const dialog = screen.getByRole('dialog')
+        const dialog = await screen.findByRole('dialog')
+        await waitFor(() => expect(within(dialog).getByText('Session is busy')).toBeInTheDocument())
+        expect(onSelect).not.toHaveBeenCalled()
+    })
+
+    it('falls back to the legacy confirm when the hub has no preview route', async () => {
+        const forkConversation = vi.fn(async () => ({ sessionId: 'child-session' }))
+        const forkPreview = vi.fn(async () => { throw new ApiError('HTTP 404 Not Found', 404) })
+        const onSelect = vi.fn()
+        const session = makeSession({
+            id: 'legacy-source',
+            active: true,
+            metadata: {
+                path: '/work/legacy',
+                name: 'Legacy source',
+                flavor: 'codex',
+                conversationHistory: { forkCurrent: true },
+            },
+        })
+        renderWithProviders(<SessionList sessions={[session]} selectedSessionId={session.id} onSelect={onSelect}
+            onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false}
+            api={{ forkConversation, forkPreview } as unknown as ApiClient} />)
+
+        fireEvent.contextMenu(screen.getByRole('button', { name: /Legacy source/ }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Fork session' }))
+        const dialog = await screen.findByRole('dialog')
+        expect(within(dialog).getByRole('heading', { name: 'Fork session' })).toBeInTheDocument()
         fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }))
 
-        await waitFor(() => expect(within(dialog).getByText('fork failed')).toBeInTheDocument())
-        expect(onSelect).not.toHaveBeenCalled()
-        expect(dialog).toBeInTheDocument()
+        await waitFor(() => expect(forkConversation).toHaveBeenCalledWith('legacy-source', undefined))
+        expect(onSelect).toHaveBeenCalledWith('child-session')
+    })
+
+    it('forks latest completed on the legacy fallback of a running capable session', async () => {
+        const forkConversation = vi.fn(async () => ({ sessionId: 'child-session' }))
+        const forkPreview = vi.fn(async () => { throw new ApiError('HTTP 404 Not Found', 404) })
+        const onSelect = vi.fn()
+        const session = makeSession({
+            id: 'legacy-source',
+            active: true,
+            thinking: true,
+            metadata: {
+                path: '/work/legacy',
+                name: 'Legacy source',
+                flavor: 'codex',
+                conversationHistory: { forkCurrent: true, forkLatestCompleted: true },
+            },
+        })
+        renderWithProviders(<SessionList sessions={[session]} selectedSessionId={session.id} onSelect={onSelect}
+            onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false}
+            api={{ forkConversation, forkPreview } as unknown as ApiClient} />)
+
+        fireEvent.contextMenu(screen.getByRole('button', { name: /Legacy source/ }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Fork session' }))
+        const dialog = await screen.findByRole('dialog')
+        expect(within(dialog).getByRole('heading', { name: 'Fork session' })).toBeInTheDocument()
+        fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }))
+
+        // The summary carries the capability flat on metadata (not under
+        // capabilities): a running session must still fork latest completed.
+        await waitFor(() => expect(forkConversation).toHaveBeenCalledWith('legacy-source', undefined, true))
+        expect(onSelect).toHaveBeenCalledWith('child-session')
     })
 })
 
@@ -949,7 +1233,7 @@ describe('SessionList collapse behavior', () => {
                     label: 'beets import',
                     status: 'running',
                     remaining: 12,
-                    heartbeatAt: 1,
+                    heartbeatAt: Date.now(),
                     startedAt: 1,
                     updatedAt: 1,
                 },
@@ -972,6 +1256,27 @@ describe('SessionList collapse behavior', () => {
         expect(screen.getByRole('button', { name: /Thinking agent/ })).toBeInTheDocument()
     })
 
+    it('moves a disconnected job back to its project when its heartbeat expires without an SSE event', () => {
+        vi.useFakeTimers()
+        try {
+            const now = Date.now()
+            localStorage.setItem('hapi-pin-in-progress-sessions', 'jobs')
+            const sessions = [makeSession({ id: 'stale', active: false, updatedAt: now,
+                metadata: { path: '/batch', name: 'History' }, attachedJob: {
+                    key: 'job', label: 'Batch', status: 'running', startedAt: now - 900_000,
+                    heartbeatAt: now - 899_999, updatedAt: now,
+                } })]
+            render(renderSessionList(sessions, null))
+            expect(screen.getByTitle('In progress')).toBeInTheDocument()
+            act(() => vi.advanceTimersByTime(60_000))
+            expect(screen.queryByTitle('In progress')).toBeNull()
+            fireEvent.click(screen.getByTitle('/batch'))
+            expect(screen.getByTestId('attached-job-status')).toHaveTextContent('no heartbeat')
+            expect(screen.getByTestId('attached-job-status')).not.toHaveTextContent('running')
+            expect(screen.queryByTestId('session-activity')).toBeNull()
+        } finally { vi.useRealTimers() }
+    })
+
     it('keeps a real agent turn in Running when a job is also attached (#1553)', () => {
         localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
         const sessions = [
@@ -986,7 +1291,7 @@ describe('SessionList collapse behavior', () => {
                     label: 'Animate stills',
                     status: 'running',
                     remaining: 16,
-                    heartbeatAt: 1,
+                    heartbeatAt: Date.now(),
                     startedAt: 1,
                     updatedAt: 1,
                 },
@@ -1016,7 +1321,7 @@ describe('SessionList collapse behavior', () => {
                     label: 'beets import',
                     status: 'running',
                     remaining: 8,
-                    heartbeatAt: 1,
+                    heartbeatAt: Date.now(),
                     startedAt: 1,
                     updatedAt: 1,
                 },
@@ -1118,6 +1423,20 @@ describe('SessionList collapse behavior', () => {
             machineId: 'machine-1',
             directory: '/work/hapi',
         })
+    })
+
+    it('keeps an explicit fold when a selected job expires and moves back into its project', async () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+        const idle = makeSession({ id: 'idle', active: true, metadata: { path: '/work/hapi', name: 'Idle' } })
+        const job = makeSession({ id: 'job', active: false, metadata: { path: '/work/hapi', name: 'Batch' },
+            attachedJob: { key: 'batch', label: 'Batch', status: 'running', startedAt: 1, updatedAt: 1, heartbeatAt: Date.now() } })
+        const { rerender } = render(renderSessionList([idle, job], null))
+        fireEvent.click(screen.getByTitle('/work/hapi'))
+        expect(getProjectPanel().getAttribute('data-open')).toBeNull()
+        rerender(renderSessionList([idle, job], 'job'))
+        rerender(renderSessionList([idle, { ...job, attachedJob: { ...job.attachedJob!, heartbeatAt: 1 } }], 'job'))
+        await waitFor(() => expect(screen.queryByTitle('In progress')).toBeNull())
+        expect(getProjectPanel().getAttribute('data-open')).toBeNull()
     })
 
     it('auto-expands the path again when the selected session changes', async () => {
@@ -1432,12 +1751,13 @@ describe('SessionList collapse behavior', () => {
 
         const header = screen.getByTitle('/work/hapi')
         fireEvent.click(header)
-        fireEvent.contextMenu(screen.getByRole('button', { name: /Closed task/ }))
+        const row = screen.getByRole('button', { name: /Closed task/ })
+        fireEvent.contextMenu(row)
         fireEvent.click(screen.getByRole('menuitem', { name: 'Rename' }))
         expect(screen.getByRole('dialog', { name: 'Rename Session' })).toBeInTheDocument()
 
         fireEvent.click(header)
-        const panel = document.querySelector('.collapsible-panel')!
+        const panel = row.closest('.collapsible-panel')!
         fireEvent.transitionEnd(panel)
         expect(screen.getByRole('dialog', { name: 'Rename Session' })).toBeInTheDocument()
 
@@ -1761,6 +2081,7 @@ describe('SessionList search toggle', () => {
         }
     })
 
+
     it('explains when no content result may be incomplete because long messages were truncated', async () => {
         vi.useFakeTimers()
         try {
@@ -1982,8 +2303,8 @@ describe('SessionList search toggle', () => {
         expect(screen.queryByRole('button', { name: 'Clear search' })).toBeNull()
         expect(screen.queryByPlaceholderText(SEARCH_PLACEHOLDER)).toBeNull()
         expect(screen.getByRole('button', { name: SEARCH_LABEL })).toHaveFocus()
-        expect(screen.getByRole('button', { name: /Matching task/ })).toBeInTheDocument()
-        expect(screen.getByRole('button', { name: /Other task/ })).toBeInTheDocument()
+        // The filter no longer narrows the (collapsed again) project group.
+        expect(within(screen.getByTitle('/work/hapi')).getByText('(2)')).toBeInTheDocument()
     })
 
     it('keeps collapsed search chrome from sharing a shrink row with header actions (tiann/hapi#2039)', () => {
@@ -2034,7 +2355,10 @@ describe('SessionList search toggle', () => {
         expect(headerRow.className.split(/\s+/)).not.toContain('flex-wrap')
         // Unmeasured query: keep the daily lens on the row. Do not collapse
         // to [chip][⋯] and waste the right half of a Quest sidebar.
+
+        expect(within(actions).getByTestId('session-toolbar-slot-view')).toBeInTheDocument()
         expect(within(actions).getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
+
         expect(within(actions).getByRole('button', { name: 'Settings' })).toBeInTheDocument()
         expect(screen.queryByTestId('session-list-header-overflow')).toBeNull()
     })
@@ -2141,12 +2465,13 @@ describe('SessionList search toggle', () => {
         )
 
         // Empty query + 320px still fits the daily controls. Do not collapse
-        // the row to [search][⋯]. Machine menu stays in the row (not shed).
+        // the row to [search][⋯]. Machine choices live in the unified view menu.
         const actions = screen.getByTestId('session-list-header-actions')
+
         expect(within(actions).getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
+
         expect(within(actions).getByRole('button', { name: 'New Session' })).toBeInTheDocument()
         expect(within(actions).getByRole('button', { name: 'Settings' })).toBeInTheDocument()
-        expect(within(actions).getByRole('button', { name: 'Filter sessions by machine' })).toBeInTheDocument()
         expect(screen.queryByTestId('session-list-header-overflow')).toBeNull()
 
         vi.unstubAllGlobals()
@@ -2158,7 +2483,7 @@ describe('SessionList search toggle', () => {
         // Phone row 320px; actions leftover crushed to ~80px (the bug geometry).
         // Search must cap itself so machine menu + More still fit in that row.
         stubHeaderWidth({ row: 320, actions: 80 })
-        const machineMenuPx = 47
+        const machineMenuPx = 0
         const morePx = 47
         const originalOffset = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetWidth')
         Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
@@ -2229,7 +2554,6 @@ describe('SessionList search toggle', () => {
         expect(maxWidth).toBeLessThanOrEqual(320 - machineMenuPx - morePx)
         expect(screen.getByTestId('session-list-header-overflow')).toBeInTheDocument()
         expect(within(actions).getByRole('button', { name: /more/i })).toBeInTheDocument()
-        expect(within(actions).getByTestId('session-list-header-machine-menu')).toBeInTheDocument()
 
         if (originalOffset) {
             Object.defineProperty(HTMLElement.prototype, 'offsetWidth', originalOffset)
@@ -2263,7 +2587,10 @@ describe('SessionList search toggle', () => {
 
         const actions = screen.getByTestId('session-list-header-actions')
         expect(actions).toHaveClass('flex-1')
+
+        expect(within(actions).getByTestId('session-toolbar-slot-view')).toBeInTheDocument()
         expect(within(actions).getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
+
         expect(within(actions).getByRole('button', { name: 'New Session' })).toBeInTheDocument()
         expect(within(actions).getByRole('button', { name: 'Settings' })).toBeInTheDocument()
         // Nothing shed — no More, and no ml-auto hole between + and ⋯.
@@ -2317,7 +2644,10 @@ describe('SessionList search toggle', () => {
 
         // Wide header + query: New stays inline (not folded into More-only).
         expect(screen.getByRole('button', { name: 'New Session' })).toBeInTheDocument()
+
+        expect(within(screen.getByTestId('session-list-header-actions')).getByTestId('session-toolbar-slot-view')).toBeInTheDocument()
         expect(within(screen.getByTestId('session-list-header-actions')).getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
+
 
         vi.unstubAllGlobals()
     })
@@ -2342,7 +2672,10 @@ describe('SessionList search toggle', () => {
         )
 
         expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument()
-        expect(screen.getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
+
+        expect(screen.getByTestId('session-toolbar-slot-view')).toBeInTheDocument()
+expect(screen.getByRole('button', { name: 'Sort and filter' })).toBeInTheDocument()
+
         expect(screen.queryByTestId('session-list-header-overflow')).toBeNull()
     })
 
@@ -2373,9 +2706,36 @@ describe('SessionList search toggle', () => {
         expect(clearButton.className).toMatch(/min-h-\[48px\]/)
         expect(clearButton.className).toMatch(/min-w-\[48px\]/)
 
+
+        expect(screen.queryByTestId('session-list-search-date-embedded')).toBeNull()
+    })
+
+    it('keeps the embedded calendar when expanded search enables date filtering', () => {
+        renderWithProviders(
+            <SessionListSearch
+                value="DJ"
+                onChange={vi.fn()}
+                customStart=""
+                customEnd=""
+                sessionActivityDates={new Set()}
+                onDateRangeChange={vi.fn()}
+                expanded={true}
+                onExpandedChange={vi.fn()}
+            />
+        )
+
+        const dateButton = screen.getByTestId('session-list-search-date-embedded')
+        expect(dateButton.className).toMatch(/min-h-\[48px\]/)
+        expect(dateButton.className).toMatch(/min-w-\[48px\]/)
+        const clearButton = screen.getByRole('button', { name: 'Clear search' })
+        expect(clearButton.parentElement?.contains(dateButton)).toBe(true)
+
+
         const fieldChildren = Array.from(clearButton.parentElement?.children ?? [])
-        expect(fieldChildren.at(-1)).toBe(clearButton)
-        expect(fieldChildren.at(-2)).toBe(input)
+        const dateIndex = fieldChildren.findIndex((node) => node === dateButton.parentElement || node.contains(dateButton))
+        const clearIndex = fieldChildren.indexOf(clearButton)
+        expect(dateIndex).toBeGreaterThanOrEqual(0)
+        expect(clearIndex).toBeGreaterThan(dateIndex)
     })
 
     it('stays expanded with focus on the input after clearing the query', () => {

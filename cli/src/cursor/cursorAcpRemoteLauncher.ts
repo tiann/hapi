@@ -1,4 +1,5 @@
 import React from 'react';
+import { settleAcpLauncherShutdown } from '@/modules/common/remote/settleAcpLauncherShutdown';
 import { randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import { logger } from '@/ui/logger';
@@ -15,6 +16,7 @@ import {
 import { isSessionSummaryContractEnabled } from '@/modules/common/sessionSummaryInstruction';
 import { OpencodeDisplay } from '@/ui/ink/OpencodeDisplay';
 import type { CursorSession } from './session';
+import type { CollectedQueueItem } from '@/utils/MessageQueue2';
 import type { EnhancedMode, PermissionMode } from './loop';
 import {
     createCursorAcpBackend,
@@ -82,13 +84,29 @@ import {
     MAX_LAST_USER_MESSAGE_CHARS
 } from './cursorModelErrorBridge';
 import { getAutoBridgeTransientModelErrors } from './cursorModelErrorBridgePrefs';
+import { formatUnexpectedStopBlockedFooter } from './unexpectedStopBlockedFooter';
+import {
+    CURSOR_POST_TOOL_INTERRUPT_AUTO_CONTINUE_STATUS,
+    CURSOR_POST_TOOL_INTERRUPT_CONTINUE,
+    CURSOR_POST_TOOL_INTERRUPT_GIVE_UP_MESSAGE,
+    CURSOR_POST_TOOL_INTERRUPT_STEER_TIMEOUT_MESSAGE
+} from './cursorPostToolInterruptContinue';
 
 const CURSOR_ABORT_DRAIN_TIMEOUT_MS = 5_000;
+const CURSOR_EXHAUSTED_RETRY_STEER_WAIT_TIMEOUT_MS = 5_000;
+
+export type CursorAcpRemoteLauncherOptions = {
+    exhaustedRetrySteerWaitTimeoutMs?: number;
+};
 
 class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private readonly session: CursorSession;
     private readonly titleSync: ReturnType<typeof createAcpSessionTitleSync>;
+    private readonly exhaustedRetrySteerWaitTimeoutMs: number;
     private backend: ReturnType<typeof createCursorAcpBackend> | null = null;
+    private shutdownRequested = false;
+    private replacementBackend: AcpSdkBackend | null = null;
+    private readonly backendDisconnects = new WeakMap<AcpSdkBackend, Promise<void>>();
     private acpSessionId: string | null = null;
     private permissionAdapter: PermissionAdapter | null = null;
     private extensionAdapter: CursorExtensionAdapter | null = null;
@@ -187,17 +205,43 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         bridgeable?: boolean;
     } | null = null;
 
-    constructor(session: CursorSession) {
+    constructor(session: CursorSession, options?: CursorAcpRemoteLauncherOptions) {
         super(process.env.DEBUG ? session.logPath : undefined);
         this.session = session;
         this.titleSync = createAcpSessionTitleSync(session.client);
+        this.exhaustedRetrySteerWaitTimeoutMs =
+            options?.exhaustedRetrySteerWaitTimeoutMs ?? CURSOR_EXHAUSTED_RETRY_STEER_WAIT_TIMEOUT_MS;
     }
 
     public async launch(): Promise<RemoteLauncherExitReason> {
-        return this.start({
+        let shutdown: Promise<void> | undefined;
+        const running = this.start({
             onExit: () => this.handleExitFromUi(),
             onSwitchToLocal: () => this.handleSwitchFromUi()
+        }).catch((error) => {
+            if (!this.shutdownRequested) throw error;
+            logger.debug('[cursor-acp] Launcher failed during shutdown', error);
+            return 'exit' as const;
         });
+        this.session.setKillHandler(() => shutdown ??= settleAcpLauncherShutdown({
+            logTag: 'cursor-acp',
+            cancel: () => {
+                this.shutdownRequested = true;
+                this.exitReason = 'exit';
+                return this.requestExit('exit', () => this.handleAbort(true));
+            },
+            disconnect: () => {
+                const backend = this.replacementBackend ?? this.backend;
+                return backend ? this.disconnectBackend(backend) : undefined;
+            },
+            running
+        }));
+        try {
+            const reason = await running;
+            return this.shutdownRequested ? 'exit' : reason;
+        } finally {
+            this.session.setKillHandler(() => {});
+        }
     }
 
     protected createDisplay(context: RemoteLauncherDisplayContext): React.ReactElement {
@@ -215,6 +259,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             skillLookup: { workingDirectory: session.path, flavor: 'cursor' }
         });
         this.happyServer = happyServer;
+        if (this.shouldExit) return;
 
         // Install the workspace session-summary rule before the backend spawns
         // cursor-agent, so the `.cursor/rules` file is on disk when it reads
@@ -289,6 +334,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
             try {
                 await backend.initialize();
+                if (this.shouldExit) return;
                 break;
             } catch (error) {
                 const errMsg = error instanceof Error ? error.message : String(error);
@@ -298,8 +344,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     errMsg,
                     recentStderrHint
                 );
-                await backend.disconnect();
+                await this.disconnectBackend(backend);
                 this.backend = null;
+                if (this.shouldExit) return;
 
                 if (remapped && connectAttempt === 0) {
                     logger.info(`[cursor-acp] Remapping stale spawn model ${spawnModel} → ${remapped}`);
@@ -380,7 +427,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                         spawnModel = remapped;
                         // Keep session.model as desiredModel; only the process --model remaps.
                         this.messageBuffer.addMessage(`[MODEL:${remapped}]`, 'system');
-                        await backend.disconnect();
+                        await this.disconnectBackend(backend);
+                        if (this.shouldExit) return;
                         backend = createCursorAcpBackend({
                             cwd: session.path,
                             model: spawnModel,
@@ -441,7 +489,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                         logger.info(`[cursor-acp] Remapping stale spawn model ${spawnModel} → ${remapped}`);
                         spawnModel = remapped;
                         this.messageBuffer.addMessage(`[MODEL:${remapped}]`, 'system');
-                        await backend.disconnect();
+                        await this.disconnectBackend(backend);
+                        if (this.shouldExit) return;
                         backend = createCursorAcpBackend({
                             cwd: session.path,
                             model: spawnModel,
@@ -482,6 +531,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 }
             }
         }
+        if (this.shouldExit) return;
         if (!acpSessionId) {
             throw new Error('Failed to establish Cursor ACP session');
         }
@@ -540,7 +590,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         this.setupAbortHandlers(session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbort(),
             onSwitch: () => this.handleSwitchRequest()
-        });
+        }, () => this.abortController.abort(),
+        // A rejected cancel must not leave the loop on the aborted signal.
+        () => { if (this.abortController.signal.aborted) this.abortController = new AbortController(); });
 
         session.client.rpcHandlerManager.registerHandler(
             RPC_METHODS.BridgeModelError,
@@ -596,6 +648,34 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     return { steered: false, error: 'Steer state is indeterminate' };
                 }
                 const restoreQueuedReservation = async (): Promise<boolean> => {
+                    if (this.shouldExit) {
+                        // Terminal switch/exit resets the shared queue without
+                        // waiting for this handler, so re-admitting would
+                        // bounce the terminal straight back into remote mode.
+                        // Leaving must still undo this steer's 'dispatching'
+                        // stamp: persist 'queued' so the hub row reads like any
+                        // other queued row the terminal reset dropped, and
+                        // release the held reservation so a later Cancel works
+                        // in local mode. An origin-indeterminate row cannot be
+                        // honestly reverted to 'queued': stamp 'indeterminate'
+                        // and keep its reservation for explicit Cancel/Retry
+                        // instead of deleting it with the stamp unreverted.
+                        if (!taken.originIndeterminate) {
+                            const persisted = await session.client.setSteerDeliveryState([localId], 'queued');
+                            if (!persisted) {
+                                session.queue.markReservationIndeterminate(taken);
+                                session.client.emitSteerIndeterminate([localId]);
+                                return false;
+                            }
+                        } else {
+                            session.queue.markReservationIndeterminate(taken);
+                            session.client.emitSteerIndeterminate([localId]);
+                            return false;
+                        }
+                        session.queue.markReservationIndeterminate(taken);
+                        session.queue.cancelByLocalId(localId);
+                        return false;
+                    }
                     if (!taken.originIndeterminate) {
                         const persisted = await session.client.setSteerDeliveryState([localId], 'queued');
                         if (!persisted) {
@@ -603,6 +683,18 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                             session.client.emitSteerIndeterminate([localId]);
                             return false;
                         }
+                    }
+                    if (this.shouldExit) {
+                        // Terminal switch/exit landed while the 'queued'
+                        // persist was in flight: the terminal reset already
+                        // ran, so restoring the reservation would push the
+                        // steer back into the queue and bounce the terminal
+                        // straight back into remote mode. 'queued' persisted
+                        // cleanly above, so release the held reservation the
+                        // same way the shouldExit path above does.
+                        session.queue.markReservationIndeterminate(taken);
+                        session.queue.cancelByLocalId(localId);
+                        return false;
                     }
                     if (taken.state !== 'dispatching' || !session.queue.restoreReservation(taken)) {
                         session.client.emitSteerIndeterminate([localId]);
@@ -615,6 +707,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     return { steered: false, error: 'Steer cancelled' };
                 }
                 if (!this.promptInFlight
+                    || this.shouldExit
                     || this.backend !== backend
                     || this.acpSessionId !== acpSessionId
                     || backend.getPromptGeneration() !== targetPromptGeneration) {
@@ -726,6 +819,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
         try {
         while (!this.shouldExit) {
+            await this.waitForAbortBarrier();
+            if (this.shouldExit) break;
             const waitSignal = this.abortController.signal;
             if (this.acpRelaunchPromise) {
                 await this.acpRelaunchPromise;
@@ -746,19 +841,26 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             }
 
             // Defer hub ack until we confirm a live backend can take the turn.
-            const acknowledgeBatch = this.session.queue.onBatchConsumed;
-            this.session.queue.onBatchConsumed = null;
-            let batch: Awaited<ReturnType<typeof session.queue.waitForMessagesAndGetAsString>>;
-            try {
-                batch = await session.queue.waitForMessagesAndGetAsString(waitSignal);
-            } finally {
-                this.session.queue.onBatchConsumed = acknowledgeBatch;
-            }
+            const batch = await session.queue.waitForDeferredBatch(waitSignal);
 
             if (!batch) {
                 if (waitSignal.aborted && !this.shouldExit) {
                     continue;
                 }
+                break;
+            }
+
+            let batchSettled = false;
+            const requeueAborted = () => {
+                this.requeueAbortedBatch(batch);
+                batchSettled = true;
+            };
+            try {
+            if (this.shouldExit) {
+                // Terminal teardown flipped while this batch sat in the wait:
+                // the queue was already reset and the batch was never
+                // hub-ACKed — drop it un-ACKed and end instead of running its
+                // mode/model setup against a closing backend.
                 break;
             }
 
@@ -792,19 +894,10 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     this.pendingBridgeEventId = null;
                     this.pendingBridgeSource = null;
                 }
-            } else if (
-                this.lastRecordedModelError
-                && !this.lastRecordedModelError.supersededByUserTurn
-                // Only a user-authored item supersedes. HAPI-enqueued control
-                // commands (e.g. the `/auto-review` toggle slash) carry queue-owned
-                // `internal` provenance and are not a newer task instruction —
-                // treating them as one durably kills Bridge & retry for an error
-                // the operator never replaced. Mirrors hasPendingNonBridgeTurn().
-                && batch.items.some((item) => item.internal === undefined)
-            ) {
-                // A newer normal turn owns the conversation — stale Bridge must not replay the failed prompt.
-                this.markModelErrorSupersededByUserTurn();
             }
+            // (A normal user batch's durable Bridge supersede is deferred to
+            // the dispatch commit point below: bailing before dispatch must
+            // not kill Bridge recovery for an error no user turn replaced.)
 
             const requestedModel = batch.mode.model === null
                 ? this.defaultBackendModel
@@ -825,23 +918,38 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             if (this.acpRelaunchPromise) {
                 await this.acpRelaunchPromise;
             }
-
-            this.lastUserMessage = batch.message;
+            if (this.shouldExit) {
+                // Terminal teardown already reset the queue; the batch was
+                // dequeued but never hub-ACKed (the ACK is deferred to the
+                // dispatch point below) — drop it and end.
+                break;
+            }
+            if (waitSignal.aborted || this.userAbortRequested) {
+                // A plain Stop preserves the queue and a permission-card
+                // abort never touched it: requeue the batch's user content
+                // so it drains once the Stop settles. A Stop-canceled
+                // Bridge item is dropped, not resurrected (handleAbort
+                // already canceled it via cancelPendingBridge).
+                this.bridgingForEventId = null;
+                this.bridgingSource = null;
+                if (!this.shouldExit) {
+                    requeueAborted();
+                }
+                continue;
+            }
 
             // Re-read after model apply / concurrent relaunch - do not prompt on a
             // backend captured before an in-place Auto respawn (#1908 bot Majors).
             const liveBackend = this.backend;
             const liveSessionId: string | null = this.acpSessionId;
             if (!liveBackend || !liveSessionId) {
-                // Never hub-acked — put the turn back for resume/recovery.
-                for (let i = batch.items.length - 1; i >= 0; i -= 1) {
-                    const item = batch.items[i]!;
-                    if (batch.isolate) {
-                        session.queue.unshiftIsolated(item.message, batch.mode, item.localId, {
-                            internal: item.internal
-                        });
-                    } else {
-                        session.queue.unshift(item.message, batch.mode, item.localId);
+                // Never hub-acked — put the turn back for resume/recovery. On
+                // switch/exit the terminal reset already cleared the queue;
+                // leave it cleared.
+                if (!this.shouldExit) {
+                    if (!session.queue.isClosed()) {
+                        session.queue.unshiftBatch(batch);
+                        batchSettled = true;
                     }
                 }
                 if (!this.shouldExit) {
@@ -865,19 +973,17 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 continue;
             }
 
-            const consumedLocalIds = batch.items
-                .map((item) => item.localId)
-                .filter((id): id is string => typeof id === 'string');
-            if (consumedLocalIds.length > 0) {
-                acknowledgeBatch?.(consumedLocalIds);
-            }
-
-            // Mode/model RPCs can finish after Abort. Discard the canceled batch.
-            // Must stay ahead of promptInFlight so bailing out is a plain
-            // `continue` with no half-armed dispatch state to unwind.
+            // Mode/model RPCs can finish after Abort — and a permission-card
+            // abort sets userAbortRequested without touching the signal. A
+            // plain Stop preserves the never-ACKed batch for the post-Stop
+            // drain; terminal cleanup resets the queue. Either way no
+            // half-armed bridge state may ride a dispatch that bailed.
             if (waitSignal.aborted || this.userAbortRequested || this.shouldExit) {
                 this.bridgingForEventId = null;
                 this.bridgingSource = null;
+                if (!this.shouldExit) {
+                    requeueAborted();
+                }
                 continue;
             }
 
@@ -891,23 +997,6 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 continue;
             }
 
-            // Consume the Bridge replay gate durably BEFORE session/prompt.
-            // SIGTERM / runnerLifecycle archive skips handleAbort, so an
-            // in-memory-only gate would reopen still-bridgeable after tools ran.
-            if (this.bridgingForEventId !== null) {
-                const consumed = await this.persistBridgeReplayGateBeforeDispatch(
-                    this.bridgingForEventId
-                );
-                if (!consumed) {
-                    this.bridgingForEventId = null;
-                    this.bridgingSource = null;
-                    continue;
-                }
-            }
-
-            // Hold promptInFlight before mode apply so a concurrent Auto relaunch
-            // cannot disconnect this backend mid-dispatch.
-            session.onThinkingChange(true);
             // #2267: discard suppressed harness-resume buffers while the gate
             // still applies. Keep the gate closed through applyCursorAcpMode and
             // prompt()'s pre-swap drain; reopen only after the handler swap
@@ -918,6 +1007,22 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             ) {
                 await liveBackend.discardPendingMessageBuffers();
             }
+            // The Bridge replay-gate persist and this turn's durable supersede
+            // are deferred to the dispatch commit point inside the try below —
+            // no durable Bridge mutation may happen before every pre-dispatch
+            // bail-out (Stop/switch/permission abort) has passed.
+            if (waitSignal.aborted || this.userAbortRequested || this.shouldExit) {
+                this.bridgingForEventId = null;
+                this.bridgingSource = null;
+                if (!this.shouldExit) {
+                    requeueAborted();
+                }
+                continue;
+            }
+
+            // Hold promptInFlight before mode apply so a concurrent Auto relaunch
+            // cannot disconnect this backend mid-dispatch.
+            session.onThinkingChange(true);
             this.turnHasModelError = false;
             this.lastAssistantText = null;
             this.pendingTextFailure = null;
@@ -925,7 +1030,6 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             this.promptInFlight = true;
             session.client.updateAgentState?.((state) => ({ ...state, steeringActive: true }));
             this.activePromptModeHash = batch.hash;
-            this.userAbortRequested = false;
 
             let requeueBatch = false;
             try {
@@ -945,122 +1049,329 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 } else {
                     await applyCursorAcpMode(liveBackend, liveSessionId, batch.mode.permissionMode as PermissionMode);
                     this.applyDisplayMode(batch.mode.permissionMode as PermissionMode);
-
-                    // Mode RPCs can finish after Abort (cold-review Major
-                    // 2026-09-12): userAbortRequested is reset before setup
-                    // above, so re-check it here. Without this, an Abort that
-                    // lands while applyCursorAcpMode is in flight is erased and
-                    // the canceled batch — a queued Bridge included — dispatches.
-                    if (waitSignal.aborted || this.userAbortRequested || this.shouldExit) {
+                    if (this.shouldExit) {
+                        // Terminal teardown ran while mode-apply awaited: end
+                        // without dispatching (the queue was reset and the
+                        // batch was never hub-ACKed).
+                        break;
+                    }
+                    if (waitSignal.aborted) {
+                        // A plain Stop preserves the queue: the batch was
+                        // dequeued but never hub-ACKed — put its user content
+                        // back so it drains once the Stop settles (a
+                        // Stop-canceled Bridge item is dropped, not
+                        // resurrected).
+                        requeueAborted();
+                        continue;
+                    }
+                    if (this.userAbortRequested) {
+                        // A permission-card abort landed while mode-apply
+                        // awaited (it never aborts the dequeue signal): bail
+                        // before the hub ACK or any durable Bridge mutation.
                         this.bridgingForEventId = null;
                         this.bridgingSource = null;
-                    } else {
-                        const specialCommand = parseCursorSpecialCommand(batch.message);
-                        if (specialCommand.type === 'pass-through') {
-                            messageBuffer.addMessage(cursorPassThroughStatusMessage(specialCommand.command), 'status');
+                        requeueAborted();
+                        continue;
+                    }
+
+                    // Dispatch commit point — reached only after every
+                    // pre-dispatch bail-out has passed. The hub ack, the
+                    // durable Bridge-gate mutations and the user-turn echo all
+                    // land here, so an aborted batch is never stamped
+                    // `invoked` nor re-dispatched after its operator canceled.
+
+                    if (this.bridgingForEventId !== null) {
+                        // Consume the Bridge replay gate durably BEFORE
+                        // session/prompt. SIGTERM / runnerLifecycle archive
+                        // skips handleAbort, so an in-memory-only gate would
+                        // reopen still-bridgeable after tools ran.
+                        const gateConsumed = await this.persistBridgeReplayGateBeforeDispatch(
+                            this.bridgingForEventId
+                        );
+                        if (!gateConsumed) {
+                            this.bridgingForEventId = null;
+                            this.bridgingSource = null;
+                            continue;
                         }
-                        messageBuffer.addMessage(batch.message, 'user');
-
-                        // skill_lookup discovery lives on the MCP tool description — do not
-                        // prepend instructions onto user turns (prompt-injection false positive).
-                        const promptContent: PromptContent[] = [{
-                            type: 'text',
-                            text: batch.message
-                        }];
-
-                        for (let retryAttempt = 0; retryAttempt <= CURSOR_AUTO_RETRY_LIMIT; retryAttempt += 1) {
-                            this.pendingRetryableError = null;
-                            this.pendingRetryableFromStderr = false;
-                            this.pendingInlineRetryableError = false;
-                            this.attemptProducedToolActivity = false;
-                            // Deferred stream failures are per-attempt. A prior try's
-                            // strong stderr must not poison a later successful retry
-                            // (record modelError / suppress ready / auto-Bridge).
-                            this.pendingStderrFailure = null;
-                            this.pendingTextFailure = null;
-                            let turnCompleted = false;
-                            try {
-                                // Capture before prompt(): pre-swap drain still uses this
-                                // generation; after handler swap generation bumps and we
-                                // reopen speech once. Do not clear again on later harness
-                                // resumes that reuse this onUpdate (#2267 bot Minor).
-                                const generationAtPromptStart = liveBackend.getPromptGeneration();
-                                // Lets handleAgentMessage tell this turn's output
-                                // apart from the previous handler's drain, which
-                                // runs against the same shared failure state.
-                                this.activePromptGenerationAtStart = generationAtPromptStart;
-                                let reopenedSpeechForThisPrompt = false;
-                                const sent = await liveBackend.prompt(liveSessionId, promptContent, (message) => {
-                                    if (
-                                        !reopenedSpeechForThisPrompt
-                                        && liveBackend.getPromptGeneration() !== generationAtPromptStart
-                                    ) {
-                                        clearPostCloseGateForNewUserPrompt(this.postCloseHarnessGate);
-                                        reopenedSpeechForThisPrompt = true;
-                                    }
-                                    if (message.type === 'turn_complete') turnCompleted = true;
-                                    this.handleAgentMessage(message);
-                                }, {
-                                    shouldSend: () => !this.userAbortRequested
-                                        && !this.shouldExit
-                                        && !(this.bridgingForEventId !== null
-                                            && this.session.queue.hasPendingNonBridgeTurn())
-                                });
-                                if (sent === false) {
-                                    this.bridgingForEventId = null;
-                                    this.bridgingSource = null;
-                                    this.markModelErrorSupersededByUserTurn();
-                                    break;
-                                }
-                                if (this.userAbortRequested) break;
-                                if (turnCompleted && this.pendingRetryableFromStderr && !this.pendingInlineRetryableError) {
-                                    this.pendingRetryableError = null;
-                                }
-                                if (!this.pendingRetryableError) {
-                                    const settled = this.pendingStderrFailure ?? this.pendingTextFailure;
-                                    if (settled && !this.turnHasModelError) {
-                                        this.recordModelError(settled);
-                                    }
-                                    this.pendingStderrFailure = null;
-                                    this.pendingTextFailure = null;
-                                    void liveBackend.refreshSessionInfo(liveSessionId, session.path);
-                                    break;
-                                }
-                            } catch (error) {
-                                logger.warn('[cursor-acp] prompt failed', error);
-                                if (this.userAbortRequested) break;
-                                if (!isRetryableCursorError(error)) {
-                                    this.surfacePromptFailure(error instanceof Error ? error.message : String(error));
-                                    const failure = settleFailure(error);
-                                    this.pendingStderrFailure = null;
-                                    this.pendingTextFailure = null;
-                                    if (failure) this.recordModelError(failure);
-                                    break;
-                                }
-                                this.pendingRetryableError = error instanceof Error ? error.message : String(error);
+                        if (this.shouldExit) {
+                            // Terminal teardown ran while the gate flush
+                            // awaited: the queue was reset and the batch was
+                            // never hub-ACKed — drop it and end.
+                            break;
+                        }
+                        if (waitSignal.aborted || this.userAbortRequested) {
+                            // Stop/permission abort landed inside the gate
+                            // flush: the gate is persisted, but the canceled
+                            // Bridge must not dispatch and its item must not
+                            // ride the post-persist window.
+                            this.bridgingForEventId = null;
+                            this.bridgingSource = null;
+                            if (!this.shouldExit) {
+                                requeueAborted();
                             }
+                            continue;
+                        }
+                    } else if (
+                        this.lastRecordedModelError
+                        && !this.lastRecordedModelError.supersededByUserTurn
+                        // Only a user-authored item supersedes. HAPI-enqueued control
+                        // commands (e.g. the `/auto-review` toggle slash) carry queue-owned
+                        // `internal` provenance and are not a newer task instruction —
+                        // treating them as one durably kills Bridge & retry for an error
+                        // the operator never replaced. Mirrors hasPendingNonBridgeTurn().
+                        && batch.items.some((item) => item.internal === undefined)
+                    ) {
+                        // A newer normal turn owns the conversation — stale
+                        // Bridge must not replay the failed prompt. Deferred
+                        // from the dequeue path so an aborted batch never
+                        // durably revokes Bridge recovery.
+                        this.markModelErrorSupersededByUserTurn();
+                    }
 
-                            if (this.attemptProducedToolActivity) {
-                                this.surfacePromptFailure('Cursor connection interrupted after tool activity; the prompt was not retried.');
-                                const failure = settleFailure(
-                                    this.pendingRetryableError ?? 'Cursor connection interrupted after tool activity'
-                                );
-                                this.pendingStderrFailure = null;
-                                this.pendingTextFailure = null;
-                                if (failure) this.recordModelError(failure);
+                    // Hub ack: every pre-dispatch bail-out above requeued the
+                    // never-ACKed batch instead of losing it.
+                    batchSettled = true;
+                    this.session.queue.commitBatch(batch);
+                    this.lastUserMessage = batch.message;
+
+                    const specialCommand = parseCursorSpecialCommand(batch.message);
+                    if (specialCommand.type === 'pass-through') {
+                        messageBuffer.addMessage(cursorPassThroughStatusMessage(specialCommand.command), 'status');
+                    }
+                    messageBuffer.addMessage(batch.message, 'user');
+
+                    // skill_lookup discovery lives on the MCP tool description — do not
+                    // prepend instructions onto user turns (prompt-injection false positive).
+                    let promptContent: PromptContent[] = [{
+                        type: 'text',
+                        text: batch.message
+                    }];
+
+                    // One auto-Continue after post-tool interrupt (#1724) — not a full
+                    // prompt replay (duplicate tool risk). Matches operator "Continue".
+                    let postToolAutoContinueUsed = false;
+                    for (let retryAttempt = 0; retryAttempt <= CURSOR_AUTO_RETRY_LIMIT; retryAttempt += 1) {
+                        this.pendingRetryableError = null;
+                        this.pendingRetryableFromStderr = false;
+                        this.pendingInlineRetryableError = false;
+                        this.attemptProducedToolActivity = false;
+                        // Deferred stream failures are per-attempt. A prior try's
+                        // strong stderr must not poison a later successful retry
+                        // (record modelError / suppress ready / auto-Bridge).
+                        this.pendingStderrFailure = null;
+                        this.pendingTextFailure = null;
+                        let caughtRetryableError: unknown = null;
+                        let turnCompleted = false;
+                        try {
+                            // Capture before prompt(): pre-swap drain still uses this
+                            // generation; after handler swap generation bumps and we
+                            // reopen speech once. Do not clear again on later harness
+                            // resumes that reuse this onUpdate (#2267 bot Minor).
+                            const generationAtPromptStart = liveBackend.getPromptGeneration();
+                            // Lets handleAgentMessage tell this turn's output
+                            // apart from the previous handler's drain, which
+                            // runs against the same shared failure state.
+                            this.activePromptGenerationAtStart = generationAtPromptStart;
+                            let reopenedSpeechForThisPrompt = false;
+                            const sent = await liveBackend.prompt(liveSessionId, promptContent, (message) => {
+                                if (
+                                    !reopenedSpeechForThisPrompt
+                                    && liveBackend.getPromptGeneration() !== generationAtPromptStart
+                                ) {
+                                    clearPostCloseGateForNewUserPrompt(this.postCloseHarnessGate);
+                                    reopenedSpeechForThisPrompt = true;
+                                }
+                                if (message.type === 'turn_complete') turnCompleted = true;
+                                this.handleAgentMessage(message);
+                            }, {
+                                shouldSend: () => !this.userAbortRequested
+                                    && !this.shouldExit
+                                    && !(this.bridgingForEventId !== null
+                                        && this.session.queue.hasPendingNonBridgeTurn())
+                            });
+                            if (sent === false) {
+                                this.bridgingForEventId = null;
+                                this.bridgingSource = null;
+                                this.markModelErrorSupersededByUserTurn();
                                 break;
                             }
-                            if (retryAttempt < CURSOR_AUTO_RETRY_LIMIT) {
-                                this.surfaceRetry(retryAttempt + 1);
+                            if (this.userAbortRequested) break;
+                            if (turnCompleted && this.pendingRetryableFromStderr && !this.pendingInlineRetryableError) {
+                                this.pendingRetryableError = null;
+                            }
+                            if (!this.pendingRetryableError) {
+                                // `as` defeats a TS control-flow quirk: it narrows
+                                // these two private fields to the `null` they held
+                                // at loop-top and (wrongly) keeps that narrowing
+                                // across the `await … prompt()` above, even though
+                                // its onMessage callback can set them through
+                                // handleAgentMessage — the runtime value here is
+                                // whatever that callback last wrote, not null.
+                                const settled = (this.pendingStderrFailure ?? this.pendingTextFailure) as CursorAgentStreamFailure | null;
+                                if (settled && !this.turnHasModelError) {
+                                    // .raw can be a whole assistant response with the
+                                    // error marker buried in it (Cursor appends
+                                    // `Error: T: […]` after real prose) — use the
+                                    // trimmed snippet so the chat error / blocked
+                                    // summary carries the failure, not the response.
+                                    const settledMessage: string = rawSnippetForFailure(settled);
+                                    // This path ends the turn (break below) without
+                                    // retrying, same as the catch give-up branches —
+                                    // it must surface and stamp Blocked the same way,
+                                    // not just record the model error silently. A
+                                    // stderr-sourced failure already got its chat
+                                    // error row from wireStderrErrorListener at
+                                    // arrival time — do not show it twice.
+                                    this.surfacePromptFailure(settledMessage, {
+                                        deferFooter: true,
+                                        skipChatError: settled.source === 'stderr'
+                                    });
+                                    // Earlier attempt's tools (if any) already ran —
+                                    // attemptProducedToolActivity only covers *this*
+                                    // attempt, so force non-bridgeable explicitly too.
+                                    const { bridgeQueued } = this.recordModelError(
+                                        settled,
+                                        postToolAutoContinueUsed ? { bridgeable: false } : undefined
+                                    );
+                                    if (!bridgeQueued) this.stampBlockedFooter(settledMessage);
+                                }
+                                this.pendingStderrFailure = null;
+                                this.pendingTextFailure = null;
+                                void liveBackend.refreshSessionInfo(liveSessionId, session.path);
+                                break;
+                            }
+                        } catch (error) {
+                            if (this.shouldExit) break;
+                            logger.warn('[cursor-acp] prompt failed', error);
+                            if (this.userAbortRequested) break;
+                            if (!isRetryableCursorError(error)) {
+                                const message = error instanceof Error ? error.message : String(error);
+                                this.surfacePromptFailure(message, { deferFooter: true });
+                                const failure = settleFailure(error);
+                                this.pendingStderrFailure = null;
+                                this.pendingTextFailure = null;
+                                // Same earlier-attempt-tools gap as the settled branch
+                                // above: this RPC rejection can land on the Continue
+                                // attempt, where attemptProducedToolActivity is false.
+                                const { bridgeQueued } = failure
+                                    ? this.recordModelError(
+                                        failure,
+                                        postToolAutoContinueUsed ? { bridgeable: false } : undefined
+                                    )
+                                    : { bridgeQueued: false };
+                                if (!bridgeQueued) this.stampBlockedFooter(message);
+                                break;
+                            }
+                            caughtRetryableError = error;
+                            this.pendingRetryableError = error instanceof Error ? error.message : String(error);
+                        }
+
+                        // Capture the primary attempt's retryable failure and its
+                        // classified settlement before awaiting the drain: a pending
+                        // steer can emit inline text, stderr (`status 429`), or
+                        // generic failures during the wait and must not replace the
+                        // primary failure classification or stderr already received.
+                        const primaryRetryableFailure = caughtRetryableError ?? this.pendingRetryableError;
+                        const primaryPostToolFailure = settleFailure(
+                            primaryRetryableFailure ?? 'Cursor connection interrupted after tool activity'
+                        );
+                        const primaryExhaustedFailure = settleFailure(
+                            primaryRetryableFailure ?? 'Cursor Agent failed after retries'
+                        );
+                        // Wait for any overlapping soft-steer before deciding between
+                        // prompt replay and post-tool Continue (#2509): tool updates
+                        // emitted by the settling steer set attemptProducedToolActivity.
+                        // Skip once one-shot Continue has already been spent so give-up
+                        // publishes Blocked immediately before cleanup drains waiters.
+                        // On earlier retries, surface a status message if a steer stalls
+                        // past the decision window while keeping the drain active so
+                        // recovery can still resume (or Abort can release it). On the
+                        // final ordinary attempt, stop waiting at the deadline so a
+                        // stalled steer still surfaces Blocked without dropping
+                        // softSteerWaiters before turn cleanup.
+                        let drainOutcome: 'drained' | 'timed_out' | 'aborted' = 'drained';
+                        if (!postToolAutoContinueUsed) {
+                            drainOutcome = await this.drainSoftSteerWaitersBeforeRetry(
+                                this.exhaustedRetrySteerWaitTimeoutMs
+                            );
+                            if (drainOutcome === 'aborted') break;
+                            if (drainOutcome === 'timed_out' && retryAttempt < CURSOR_AUTO_RETRY_LIMIT) {
+                                const pauseNotice = 'Waiting for a pending soft steer to finish before retrying Cursor Agent.';
+                                this.session.sendSessionEvent({
+                                    type: 'message',
+                                    message: pauseNotice
+                                });
+                                this.messageBuffer.addMessage(pauseNotice, 'status');
+                                drainOutcome = await this.drainSoftSteerWaitersBeforeRetry();
+                                if (drainOutcome === 'aborted') break;
+                            }
+                        }
+
+                        if (this.attemptProducedToolActivity) {
+                            if (!postToolAutoContinueUsed && drainOutcome !== 'timed_out') {
+                                postToolAutoContinueUsed = true;
+                                promptContent = [{
+                                    type: 'text',
+                                    text: CURSOR_POST_TOOL_INTERRUPT_CONTINUE
+                                }];
+                                this.messageBuffer.addMessage(
+                                    CURSOR_POST_TOOL_INTERRUPT_AUTO_CONTINUE_STATUS,
+                                    'status'
+                                );
+                                // Spend a fresh attempt budget on Continue (not the
+                                // original prompt). Reset so the for-loop can still run.
+                                retryAttempt = -1;
                                 continue;
                             }
-                            this.surfacePromptFailure(`Cursor Agent failed after ${CURSOR_AUTO_RETRY_LIMIT} retries.`);
-                            const exhaustedFailure = settleFailure(
-                                this.pendingRetryableError ?? 'Cursor Agent failed after retries'
-                            );
+                            const giveUpMessage = drainOutcome === 'timed_out'
+                                ? CURSOR_POST_TOOL_INTERRUPT_STEER_TIMEOUT_MESSAGE
+                                : CURSOR_POST_TOOL_INTERRUPT_GIVE_UP_MESSAGE;
+                            this.surfacePromptFailure(giveUpMessage, { deferFooter: true });
+                            const failure = primaryPostToolFailure;
                             this.pendingStderrFailure = null;
                             this.pendingTextFailure = null;
-                            if (exhaustedFailure) this.recordModelError(exhaustedFailure);
+                            // attemptProducedToolActivity is true this attempt, so
+                            // recordModelError already forces bridgeable:false —
+                            // bridgeQueued is always false here, footer always stamps.
+                            const { bridgeQueued } = failure
+                                ? this.recordModelError(failure)
+                                : { bridgeQueued: false };
+                            if (!bridgeQueued) this.stampBlockedFooter(giveUpMessage);
+                            break;
+                        }
+                        if (postToolAutoContinueUsed) {
+                            // One-shot contract (#1724): a retryable failure on the
+                            // Continue attempt itself does not get the normal retry
+                            // budget — give up rather than resending Continue N times.
+                            this.surfacePromptFailure(CURSOR_POST_TOOL_INTERRUPT_GIVE_UP_MESSAGE, { deferFooter: true });
+                            const continueFailure = primaryPostToolFailure;
+                            this.pendingStderrFailure = null;
+                            this.pendingTextFailure = null;
+                            // attemptProducedToolActivity is per-attempt and this
+                            // (Continue) attempt made none, but the turn's earlier
+                            // attempt already ran tools — Bridge must not resend
+                            // lastUserMessage into them regardless, so bridgeQueued
+                            // is always false here too; footer always stamps.
+                            const { bridgeQueued } = continueFailure
+                                ? this.recordModelError(continueFailure, { bridgeable: false })
+                                : { bridgeQueued: false };
+                            if (!bridgeQueued) this.stampBlockedFooter(CURSOR_POST_TOOL_INTERRUPT_GIVE_UP_MESSAGE);
+                            break;
+                        }
+                        if (retryAttempt < CURSOR_AUTO_RETRY_LIMIT) {
+                            this.surfaceRetry(retryAttempt + 1);
+                            continue;
+                        }
+                        {
+                            const message = `Cursor Agent failed after ${CURSOR_AUTO_RETRY_LIMIT} retries.`;
+                            this.surfacePromptFailure(message, { deferFooter: true });
+                            const exhaustedFailure = primaryExhaustedFailure;
+                            this.pendingStderrFailure = null;
+                            this.pendingTextFailure = null;
+                            const { bridgeQueued } = exhaustedFailure
+                                ? this.recordModelError(exhaustedFailure)
+                                : { bridgeQueued: false };
+                            if (!bridgeQueued) this.stampBlockedFooter(message);
                         }
                     }
                 }
@@ -1070,26 +1381,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 session.client.updateAgentState?.((state) => ({ ...state, steeringActive: false }));
                 // Soft-steers share the ACP session; wait for them before ready /
                 // the next prompt so message handlers are not swapped mid-inject.
-                // An Abort (which clears the waiters) must release this wait too:
-                // race the settle against the abort signal so the launcher never
-                // blocks on a soft steer whose completion is unbounded.
-                if (this.softSteerWaiters.length > 0 && !this.shouldExit) {
-                    const waitSignal = this.abortController.signal;
-                    let releaseWait!: () => void;
-                    const abortListener = () => releaseWait();
-                    if (!waitSignal.aborted) {
-                        waitSignal.addEventListener('abort', abortListener, { once: true });
-                    }
-                    try {
-                        await Promise.race([
-                            Promise.allSettled([...this.softSteerWaiters]),
-                            new Promise<void>((resolve) => { releaseWait = resolve; })
-                        ]);
-                    } finally {
-                        // Repeated waits must not accumulate abort listeners.
-                        waitSignal.removeEventListener('abort', abortListener);
-                    }
-                    this.softSteerWaiters = [];
+                if (!this.shouldExit) {
+                    await this.drainSoftSteerWaiters();
                 }
                 // Soft-steer can emit Error: T / RetriableError / strong stderr
                 // after the primary prompt already settled successfully. Flush
@@ -1150,17 +1443,24 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             }
 
             if (requeueBatch) {
-                for (let i = batch.items.length - 1; i >= 0; i -= 1) {
-                    const item = batch.items[i]!;
-                    if (batch.isolate) {
-                        session.queue.unshiftIsolated(item.message, batch.mode, item.localId, {
-                            internal: item.internal
-                        });
-                    } else {
-                        session.queue.unshift(item.message, batch.mode, item.localId);
+                // Never hub-ACKed — put the turn back for resume/recovery. On
+                // switch/exit the terminal reset already cleared the queue.
+                // A Stop-canceled Bridge must not ride along: handleAbort
+                // already dropped it, so requeue only the user content.
+                if (!this.shouldExit) {
+                    if (waitSignal.aborted || this.userAbortRequested) {
+                        requeueAborted();
+                    } else if (!session.queue.isClosed()) {
+                        session.queue.unshiftBatch(batch);
+                        batchSettled = true;
                     }
                 }
                 continue;
+            }
+            } finally {
+                if (!batchSettled) {
+                    session.queue.releaseBatch(batch);
+                }
             }
         }
         } finally {
@@ -1168,6 +1468,16 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             // disconnects the ACP transport, rejecting pending soft-steer
             // requests and settling any waiters.
         }
+    }
+
+    private async disconnectBackend(backend = this.backend): Promise<void> {
+        if (!backend) return;
+        let disconnect = this.backendDisconnects.get(backend);
+        if (!disconnect) {
+            disconnect = backend.disconnect({ waitForTransport: true });
+            this.backendDisconnects.set(backend, disconnect);
+        }
+        await disconnect;
     }
 
     protected async cleanup(): Promise<void> {
@@ -1200,29 +1510,32 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 await this.acpRelaunchPromise.catch(() => {});
             }
 
-            if (this.permissionAdapter) {
-                await this.permissionAdapter.cancelAll('Session ended');
-                this.permissionAdapter = null;
-            }
+            try {
+                if (this.permissionAdapter) {
+                    await this.permissionAdapter.cancelAll('Session ended');
+                    this.permissionAdapter = null;
+                }
 
-            if (this.extensionAdapter) {
-                await this.extensionAdapter.cancelAll('Session ended');
-                this.extensionAdapter = null;
+                if (this.extensionAdapter) {
+                    await this.extensionAdapter.cancelAll('Session ended');
+                    this.extensionAdapter = null;
+                }
+            } finally {
+                await this.disconnectBackend();
             }
-
-            if (this.backend) {
-                await this.backend.disconnect();
-                this.backend = null;
-            }
-
-            if (this.happyServer) {
-                this.happyServer.stop();
-                this.happyServer = null;
-            }
+        } catch (error) {
+            if (!this.shutdownRequested) throw error;
+            logger.debug('[cursor-acp] Error during launcher cleanup', error);
         } finally {
-            overlay?.cleanup();
-            notifyOverlay?.cleanup();
-            setCursorAcpModelsSnapshot(null);
+            this.backend = null;
+            try {
+                this.happyServer?.stop();
+            } finally {
+                this.happyServer = null;
+                overlay?.cleanup();
+                notifyOverlay?.cleanup();
+                setCursorAcpModelsSnapshot(null);
+            }
         }
     }
 
@@ -1487,10 +1800,36 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         });
     }
 
-    private surfacePromptFailure(message: string): void {
-        const converted = convertAgentMessage({ type: 'error', message });
-        if (converted) this.session.sendAgentMessage(converted);
-        this.messageBuffer.addMessage(message, 'status');
+    /**
+     * `deferFooter` holds the blocked stamp back for a caller that still has
+     * to call recordModelError and may find Auto Bridge can still recover —
+     * stamping the footer first would mislabel a turn Bridge goes on to fix
+     * (#1724 bot Minor). Callers with no model-error decision to make
+     * (e.g. backend-unavailable infra failures) use the default immediate path.
+     */
+    /**
+     * `skipChatError` is for a failure wireStderrErrorListener already surfaced
+     * as a chat error row (CursorAgentStreamFailure.source === 'stderr' settled
+     * via pendingStderrFailure) — re-announcing it here would double it up.
+     */
+    private surfacePromptFailure(message: string, opts?: { deferFooter?: boolean; skipChatError?: boolean }): void {
+        if (!opts?.skipChatError) {
+            const converted = convertAgentMessage({ type: 'error', message });
+            if (converted) this.session.sendAgentMessage(converted);
+            this.messageBuffer.addMessage(message, 'status');
+        }
+        if (opts?.deferFooter) return;
+        this.stampBlockedFooter(message);
+    }
+
+    private stampBlockedFooter(message: string): void {
+        // Estate Blocked chrome (#1717) keys off lastNotify from AGENT_NOTIFY_SUMMARY
+        // on assistant text — not error rows (#1724).
+        const footer = convertAgentMessage({
+            type: 'text',
+            text: formatUnexpectedStopBlockedFooter({ summary: message })
+        });
+        if (footer) this.session.sendAgentMessage(footer);
     }
 
     private handleTextMessageClassification(text: string): void {
@@ -1515,15 +1854,20 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
      * via pendingTextFailure until prompt settles, then flushed here.
      * First recorded signal wins for the turn.
      */
+    /**
+     * `bridgeQueued` reflects only whether *this* call just enqueued an
+     * auto-Bridge retry — callers use it to hold a blocked footer when
+     * Bridge may still recover, not as a snapshot of ambient bridge state.
+     */
     private recordModelError(
         failure: CursorAgentStreamFailure,
         opts?: { bridgeable?: boolean }
-    ): void {
+    ): { bridgeQueued: boolean } {
         if (this.turnHasModelError) {
             logger.debug(
                 `[cursor-acp] modelError already recorded for this turn, dropping ${failure.source}/${failure.kind}`
             );
-            return;
+            return { bridgeQueued: false };
         }
         // Abort/Exit/Switch can settle as canceled *or* transport/process-close
         // shapes (ACP process exited, WritableIterable closed, …). Never promote
@@ -1534,7 +1878,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             );
             this.pendingTextFailure = null;
             this.pendingStderrFailure = null;
-            return;
+            return { bridgeQueued: false };
         }
         this.turnHasModelError = true;
         this.pendingTextFailure = null;
@@ -1600,14 +1944,12 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             priorAssistantClaimsDone
         });
 
-        if (
-            !bridgedFailure
+        const shouldAutoBridge = !bridgedFailure
             && bridgeable
             && failure.transient
-            && getAutoBridgeTransientModelErrors()
-        ) {
-            this.tryEnqueueModelErrorBridge('auto');
-        }
+            && getAutoBridgeTransientModelErrors();
+        const bridgeQueued = shouldAutoBridge && this.tryEnqueueModelErrorBridge('auto').ok;
+        return { bridgeQueued };
     }
 
     private async handleBridgeModelErrorRpc(payload: unknown): Promise<{ ok: boolean; reason?: string }> {
@@ -1794,6 +2136,11 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         if (!err || err.eventId !== eventId) {
             return false;
         }
+        if (err.supersededByUserTurn) {
+            // A newer user turn owns the conversation: the Bridge must not
+            // dispatch (fail closed; caller drops the dequeued bridge batch).
+            return false;
+        }
         if (err.bridgeable !== false) {
             this.lastRecordedModelError = { ...err, bridgeable: false };
             this.session.client.updateMetadata((metadata) => {
@@ -1882,6 +2229,10 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             ...current,
             supersededByUserTurn: true
         };
+        // The supersede defers to the dispatch commit, so a Bridge enqueued
+        // mid-setup would otherwise sit queued and replay AFTER the user turn
+        // that just superseded it: drop the not-yet-started row now.
+        this.cancelPendingBridge();
         this.session.client.updateMetadata((metadata) => {
             const err = metadata.lastModelError;
             if (!err || err.eventId !== current.eventId) {
@@ -2133,11 +2484,14 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
         const previousBackend = this.backend;
         if (previousBackend) {
-            await previousBackend.disconnect().catch((error) => {
+            await this.disconnectBackend(previousBackend).catch((error) => {
                 logger.debug('[cursor-acp] Prior ACP disconnect during relaunch', error);
             });
         }
         this.backend = null;
+        if (this.shouldExit || this.sessionTeardownStarted) {
+            throw new Error('Cannot relaunch Cursor ACP while the session is ending');
+        }
 
         try {
             await this.bindFreshAcpBackend({
@@ -2151,6 +2505,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 `[cursor-acp] In-place relaunch with --model ${cursorSpawnModelId(spawnModel) ?? spawnModel} (session=${this.acpSessionId})`
             );
         } catch (error) {
+            if (this.shouldExit || this.sessionTeardownStarted) throw error;
             logger.warn('[cursor-acp] In-place relaunch failed; attempting prior-spawn restore', error);
             try {
                 await this.bindFreshAcpBackend({
@@ -2173,7 +2528,6 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         resumeSessionId: string;
     }): Promise<void> {
         const session = this.session;
-        let recentStderrHint: string | null = null;
         const backend = createCursorAcpBackend({
             cwd: session.path,
             model: args.spawnModel,
@@ -2181,6 +2535,20 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             worktree: session.cursorWorktree,
             addDirs: session.cursorAddDirs
         });
+        this.replacementBackend = backend;
+        try {
+            await this.initializeReplacementBackend(backend, args);
+        } finally {
+            this.replacementBackend = null;
+        }
+    }
+
+    private async initializeReplacementBackend(
+        backend: AcpSdkBackend,
+        { resumeSessionId, autoReview, spawnModel }: { resumeSessionId: string; autoReview: boolean; spawnModel: string | null | undefined }
+    ): Promise<void> {
+        const session = this.session;
+        let recentStderrHint: string | null = null;
         // Publish this.backend only after initialize + session/load so the
         // message loop cannot prompt against a half-ready process.
         registerAcpSessionTitleSync(backend, session.client, this.titleSync);
@@ -2192,13 +2560,14 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
         try {
             await backend.initialize();
+            if (this.shouldExit) throw new Error('Session ending; discarding replacement ACP backend');
             await backend.authenticateIfAvailable('cursor_login');
         } catch (error) {
             const message = classifyCursorAcpLoadError(error, {
                 recentStderr: recentStderrHint,
                 action: 'start'
             });
-            await backend.disconnect().catch(() => {});
+            await this.disconnectBackend(backend).catch(() => {});
             throw new Error(message);
         }
 
@@ -2216,7 +2585,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         );
 
         if (!backend.supportsLoadSession()) {
-            await backend.disconnect().catch(() => {});
+            await this.disconnectBackend(backend).catch(() => {});
             throw new Error(
                 'Cursor ACP session/load is not supported by this agent build; cannot relaunch in place'
             );
@@ -2225,24 +2594,24 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         let acpSessionId: string;
         try {
             acpSessionId = await backend.loadSession({
-                sessionId: args.resumeSessionId,
+                sessionId: resumeSessionId,
                 cwd: session.path,
                 mcpServers: []
             });
         } catch (error) {
             logger.warn('[cursor-acp] session/load failed during in-place relaunch', formatAcpLoadError(error));
             const message = classifyCursorAcpLoadError(error, { recentStderr: recentStderrHint });
-            await backend.disconnect().catch(() => {});
+            await this.disconnectBackend(backend).catch(() => {});
             throw new Error(message);
         }
 
-        if (acpSessionId !== args.resumeSessionId) {
+        if (acpSessionId !== resumeSessionId) {
             session.onSessionFoundWithProtocol(acpSessionId, 'acp');
             await session.client.flushMetadata();
         }
 
         if (this.sessionTeardownStarted || this.shouldExit) {
-            await backend.disconnect().catch(() => {});
+            await this.disconnectBackend(backend).catch(() => {});
             throw new Error('Session ending; discarding replacement ACP backend');
         }
 
@@ -2251,8 +2620,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
         // Fresh ACP process — bookkeeping must reflect THIS spawn's flags, not
         // the prior process (e.g. started with --auto-review, relaunched without).
-        this.spawnedWithAutoReview = args.autoReview;
-        if (args.autoReview) {
+        this.spawnedWithAutoReview = autoReview;
+        if (autoReview) {
             // `/auto-review` is a toggle; drop any *internal* queued slash that was
             // meant for the old process so we do not turn Auto-review off on a
             // spawn that already has --auto-review. Preserve user-sent commands.
@@ -2339,7 +2708,42 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         this.messageBuffer.addMessage(`Cursor worktree: ${worktreePath}`, 'status');
     }
 
-    private async handleAbort(): Promise<void> {
+    /**
+     * Requeue a dequeued-but-never-dispatched batch after an Abort/plain
+     * Stop. A Stop intentionally cancels any pending Bridge (handleAbort →
+     * cancelPendingBridge), so `model-error-bridge` items are dropped rather
+     * than resurrected; only the batch's user content goes back.
+     */
+    private requeueAbortedBatch(batch: {
+        mode: EnhancedMode;
+        isolate: boolean;
+        items: CollectedQueueItem[];
+    }): void {
+        if (this.session.queue.isClosed()) {
+            this.session.queue.releaseBatch(batch);
+            return;
+        }
+        for (let i = batch.items.length - 1; i >= 0; i -= 1) {
+            const item = batch.items[i]!;
+            if (item.internal?.kind === 'model-error-bridge') {
+                if (item.localId) {
+                    this.session.queue.releaseBatch({ items: [item] });
+                }
+                continue;
+            }
+            if (batch.isolate) {
+                this.session.queue.unshiftIsolated(item.message, batch.mode, item.localId, {
+                    internal: item.internal
+                });
+            } else {
+                this.session.queue.unshift(item.message, batch.mode, item.localId, {
+                    internal: item.internal
+                });
+            }
+        }
+    }
+
+    private async handleAbort(leavingRemote = false): Promise<void> {
         // Mark + clear bridge gates BEFORE any await. Otherwise a settling
         // bridge prompt can race markModelErrorBridgeSucceeded and falsely
         // persist bridgedForEventId / modelErrorBridged after the operator canceled.
@@ -2350,6 +2754,15 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         this.cancelPendingBridge();
         this.bridgingForEventId = null;
         this.bridgingSource = null;
+        if (leavingRemote) {
+            // Terminal switch/exit must unpark a waiting loop iteration
+            // before the teardown's awaits: a batch arriving meanwhile would
+            // otherwise be dequeued against the still-live signal and dropped
+            // after the teardown resets the queue (mirrors dsh's entry
+            // abort-and-replace).
+            this.abortController.abort();
+            this.abortController = new AbortController();
+        }
         const backend = this.backend;
         const sessionId = this.acpSessionId ?? this.session.sessionId;
         if (backend && sessionId) {
@@ -2383,8 +2796,12 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         await this.permissionAdapter?.cancelAll('User aborted');
         await this.extensionAdapter?.cancelAll('User aborted');
         // A soft steer may settle after Abort; preserve its reservation until
-        // the completion callback records accepted or indeterminate.
-        this.session.queue.reset({ preserveDispatchingReservations: true });
+        // the completion callback records accepted or indeterminate. Plain
+        // Stop preserves the whole pending queue; only terminal cleanup
+        // (exit / switch-to-local) resets it.
+        if (leavingRemote) {
+            this.session.queue.reset({ preserveDispatchingReservations: true });
+        }
         this.promptInFlight = false;
         // Abort is the hard-stop path: drop soft-steer waiters so the prompt
         // finally cannot block the next prompt on a soft steer whose completion
@@ -2399,15 +2816,92 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async handleExitFromUi(): Promise<void> {
-        await this.requestExit('exit', () => this.handleAbort());
+        await this.requestExit('exit', () => this.handleAbort(true));
     }
 
     private async handleSwitchFromUi(): Promise<void> {
-        await this.requestExit('switch', () => this.handleAbort());
+        await this.requestExit('switch', () => this.handleAbort(true));
     }
 
     private async handleSwitchRequest(): Promise<void> {
-        await this.requestExit('switch', () => this.handleAbort());
+        await this.requestExit('switch', () => this.handleAbort(true));
+    }
+
+    protected override onTerminalTeardownRejected(): void {
+        // A rejected terminal teardown still owes the queue reset and the
+        // dequeue-signal abort, or an idle waiter parks forever on the
+        // un-aborted signal and start() never reaches cleanup().
+        this.session.queue.reset({ preserveDispatchingReservations: true });
+        this.abortController.abort();
+    }
+
+    /**
+     * Wait for any in-flight soft-steer requests to settle before swapping the
+     * primary prompt handler (for an in-loop retry, the next turn, or ready),
+     * releasing on Abort so an unbounded steer cannot stall recovery or exit.
+     */
+    private async drainSoftSteerWaiters(timeoutMs?: number): Promise<'drained' | 'timed_out' | 'aborted'> {
+        const deadline = timeoutMs !== undefined ? Date.now() + timeoutMs : null;
+        while (this.softSteerWaiters.length > 0 && !this.shouldExit) {
+            const waitSignal = this.abortController.signal;
+            if (waitSignal.aborted) {
+                this.softSteerWaiters = [];
+                return 'aborted';
+            }
+            const remainingMs = deadline !== null ? Math.max(0, deadline - Date.now()) : null;
+            if (remainingMs !== null && remainingMs === 0) {
+                return 'timed_out';
+            }
+            const pending = [...this.softSteerWaiters];
+            let releaseWait!: () => void;
+            const drainOrAbort = new Promise<'aborted'>((resolve) => {
+                releaseWait = () => resolve('aborted');
+            });
+            const abortListener = () => releaseWait();
+            waitSignal.addEventListener('abort', abortListener, { once: true });
+            let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
+            const racers: Promise<'drained' | 'timed_out' | 'aborted'>[] = [
+                Promise.allSettled(pending).then(() => 'drained' as const),
+                drainOrAbort
+            ];
+            if (remainingMs !== null) {
+                racers.push(new Promise<'timed_out'>((resolve) => {
+                    timeoutTimer = setTimeout(() => resolve('timed_out'), remainingMs);
+                    timeoutTimer.unref?.();
+                }));
+            }
+            let outcome: 'drained' | 'timed_out' | 'aborted';
+            try {
+                outcome = await Promise.race(racers);
+            } finally {
+                // Repeated waits must not accumulate abort listeners or timers.
+                waitSignal.removeEventListener('abort', abortListener);
+                if (timeoutTimer) clearTimeout(timeoutTimer);
+            }
+            if (waitSignal.aborted || this.shouldExit) {
+                this.softSteerWaiters = [];
+                return 'aborted';
+            }
+            if (outcome === 'timed_out') {
+                // Keep softSteerWaiters intact so finally cleanup still blocks
+                // ready / the next queued prompt behind the stalled steer.
+                return 'timed_out';
+            }
+            const drained = new Set(pending);
+            this.softSteerWaiters = this.softSteerWaiters.filter((waiter) => !drained.has(waiter));
+        }
+        return this.shouldExit || this.abortController.signal.aborted ? 'aborted' : 'drained';
+    }
+
+    private async drainSoftSteerWaitersBeforeRetry(timeoutMs?: number): Promise<'drained' | 'timed_out' | 'aborted'> {
+        if (this.shouldExit || this.userAbortRequested) {
+            return 'aborted';
+        }
+        const outcome = await this.drainSoftSteerWaiters(timeoutMs);
+        if (this.shouldExit || this.userAbortRequested) {
+            return 'aborted';
+        }
+        return outcome;
     }
 }
 
@@ -2510,7 +3004,10 @@ function syncCursorModelsFromAcp(backend: AcpSdkBackend, acpSessionId: string): 
     seedCursorModelsCache(payload);
 }
 
-export async function cursorAcpRemoteLauncher(session: CursorSession): Promise<'switch' | 'exit'> {
-    const launcher = new CursorAcpRemoteLauncher(session);
+export async function cursorAcpRemoteLauncher(
+    session: CursorSession,
+    options?: CursorAcpRemoteLauncherOptions
+): Promise<'switch' | 'exit'> {
+    const launcher = new CursorAcpRemoteLauncher(session, options);
     return launcher.launch();
 }

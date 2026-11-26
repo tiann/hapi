@@ -1,17 +1,21 @@
 import { useCallback, useEffect, useState } from 'react'
-import { ApiClient } from '@/api/client'
+import { ApiClient, ApiError } from '@/api/client'
 import { AUTH_PROXY_REDIRECT_MESSAGE, openAuthProxySignIn } from '@/api/authProxy'
 import { LanguageSwitcher } from '@/components/LanguageSwitcher'
 import { Spinner } from '@/components/Spinner'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { useTranslation } from '@/lib/use-translation'
+import { isPasskeyCancelled, isPasskeySupported, signInWithPasskey } from '@/lib/passkey'
 import type { ServerUrlResult } from '@/hooks/useServerUrl'
 
 type LoginPromptProps = {
-    mode?: 'login' | 'bind'
+    mode?: 'login' | 'bind' | 'reconnect'
+    onReconnect?: () => void
+    onChooseHub?: () => void
     onLogin?: (token: string) => void
     onBind?: (token: string) => Promise<void>
+    onPasskeyLogin?: (passkeySession: string) => void
     baseUrl: string
     serverUrl: string | null
     setServerUrl: (input: string) => ServerUrlResult
@@ -23,12 +27,40 @@ type LoginPromptProps = {
 export function LoginPrompt(props: LoginPromptProps) {
     const { t } = useTranslation()
     const isBindMode = props.mode === 'bind'
+    const isReconnecting = props.mode === 'reconnect'
     const [accessToken, setAccessToken] = useState('')
     const [isLoading, setIsLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [isServerDialogOpen, setIsServerDialogOpen] = useState(false)
     const [serverInput, setServerInput] = useState(props.serverUrl ?? '')
     const [serverError, setServerError] = useState<string | null>(null)
+    const [isPasskeyLoading, setIsPasskeyLoading] = useState(false)
+    const canUsePasskey = !isBindMode && Boolean(props.onPasskeyLogin) && isPasskeySupported()
+
+    const handlePasskeyLogin = useCallback(async () => {
+        if (!props.onPasskeyLogin) return
+        if (props.requireServerUrl && !props.serverUrl) {
+            setServerError(t('login.server.required'))
+            setIsServerDialogOpen(true)
+            return
+        }
+        setIsPasskeyLoading(true)
+        setError(null)
+        try {
+            const session = await signInWithPasskey(props.baseUrl)
+            props.onPasskeyLogin(session)
+        } catch (e) {
+            if (isPasskeyCancelled(e)) return
+            const code = e instanceof ApiError ? e.code : undefined
+            setError(code === 'passkey_popup_blocked'
+                ? t('login.passkey.popupBlocked')
+                : code === 'passkey_revoked'
+                    ? t('login.passkey.revoked')
+                    : t('login.passkey.failed'))
+        } finally {
+            setIsPasskeyLoading(false)
+        }
+    }, [props, t])
 
     const handleSubmit = useCallback(async (e: React.FormEvent) => {
         e.preventDefault()
@@ -112,8 +144,8 @@ export function LoginPrompt(props: LoginPromptProps) {
     const redirected = displayError === AUTH_PROXY_REDIRECT_MESSAGE
     const hubOrigin = new URL(props.baseUrl || window.location.origin, window.location.href).origin
     const serverSummary = props.serverUrl ?? `${props.baseUrl} ${t('login.server.default')}`
-    const title = isBindMode ? t('login.bind.title') : t('login.title')
-    const subtitle = t('login.subtitle')
+    const title = isReconnecting ? 'Reconnecting to hub' : isBindMode ? t('login.bind.title') : t('login.title')
+    const subtitle = isReconnecting ? 'Your saved sign-in will be retried automatically.' : t('login.subtitle')
     const submitLabel = isBindMode ? t('login.bind.submit') : t('login.submit')
 
     return (
@@ -133,7 +165,13 @@ export function LoginPrompt(props: LoginPromptProps) {
                 </div>
 
                 {/* Form */}
-                <form onSubmit={handleSubmit} className="space-y-4">
+                {isReconnecting ? (
+                    <div className="space-y-4">
+                        <p role="status" className="text-sm text-[var(--app-hint)] text-center">{props.error}</p>
+                        <Button type="button" className="w-full" onClick={props.onReconnect}>Retry now</Button>
+                        {props.onChooseHub ? <Button type="button" variant="secondary" className="w-full" onClick={props.onChooseHub}>Sign out and choose hub</Button> : null}
+                    </div>
+                ) : <form onSubmit={handleSubmit} className="space-y-4">
                     <div>
                         <input
                             type="password"
@@ -165,7 +203,7 @@ export function LoginPrompt(props: LoginPromptProps) {
 
                     <button
                         type="submit"
-                        disabled={isLoading || !accessToken.trim()}
+                        disabled={isLoading || isPasskeyLoading || !accessToken.trim()}
                         aria-busy={isLoading}
                         className="w-full py-2.5 rounded-lg bg-[var(--app-button)] text-[var(--app-button-text)] font-medium disabled:opacity-50 hover:opacity-90 transition-opacity inline-flex items-center justify-center gap-2"
                     >
@@ -178,7 +216,28 @@ export function LoginPrompt(props: LoginPromptProps) {
                             submitLabel
                         )}
                     </button>
-                </form>
+
+                    {canUsePasskey && (
+                        <>
+                            <div className="flex items-center gap-3 text-xs text-[var(--app-hint)]">
+                                <div className="h-px flex-1 bg-[var(--app-border)]" />
+                                {t('login.passkey.or')}
+                                <div className="h-px flex-1 bg-[var(--app-border)]" />
+                            </div>
+                            <Button
+                                type="button"
+                                variant="secondary"
+                                className="w-full"
+                                disabled={isLoading || isPasskeyLoading}
+                                aria-busy={isPasskeyLoading}
+                                onClick={() => void handlePasskeyLogin()}
+                            >
+                                {isPasskeyLoading && <Spinner size="sm" label={null} />}
+                                {t('login.passkey.submit')}
+                            </Button>
+                        </>
+                    )}
+                </form>}
 
                 {/* Help links */}
                 {!isBindMode && (
@@ -186,7 +245,7 @@ export function LoginPrompt(props: LoginPromptProps) {
                         <a href="https://hapi.run/docs" target="_blank" rel="noopener noreferrer" className="underline hover:text-[var(--app-fg)]">
                             {t('login.help')}
                         </a>
-                        <Dialog open={isServerDialogOpen} onOpenChange={handleServerDialogOpenChange}>
+                        {!isReconnecting && <Dialog open={isServerDialogOpen} onOpenChange={handleServerDialogOpenChange}>
                             <DialogTrigger asChild>
                                 <button type="button" className="underline hover:text-[var(--app-fg)]">
                                     Hub {props.serverUrl ? `${t('login.server.custom')}` : `${t('login.server.default')}`}
@@ -238,7 +297,7 @@ export function LoginPrompt(props: LoginPromptProps) {
                                     </div>
                                 </form>
                             </DialogContent>
-                        </Dialog>
+                        </Dialog>}
                     </div>
                 )}
             </div>

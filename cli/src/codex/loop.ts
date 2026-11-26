@@ -1,8 +1,8 @@
 // Mode data retained for protocol/config helpers. Codex execution is shared/runtime.ts.
 import type { ReasoningEffort } from './appServerTypes';
-import type { CodexCollaborationMode, CodexPermissionMode } from '@hapi/protocol/types';
+import type { CodexCollaborationMode, PermissionModeOf, Flavors } from '@hapi/protocol/types';
 
-export type PermissionMode = CodexPermissionMode;
+export type PermissionMode = PermissionModeOf<typeof Flavors.codex>;
 
 /** Codex response style. Omit from mode to inherit config.toml / thread default. */
 export type CodexPersonality = 'friendly' | 'pragmatic' | 'none';

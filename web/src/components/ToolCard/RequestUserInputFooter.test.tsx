@@ -17,6 +17,7 @@ vi.mock('@/lib/use-translation', () => ({
 }))
 
 import { RequestUserInputFooter } from './RequestUserInputFooter'
+import { AskUserQuestionFooter } from './AskUserQuestionFooter'
 
 const choice = { id: 'choice', question: 'Choose', isOther: true, options: [{ label: 'Alpha' }, { label: 'Beta' }] }
 
@@ -68,6 +69,8 @@ describe('RequestUserInputFooter', () => {
         const { props, rerender, denyPermission, approvePermission } = renderFooter({ isBlocking: false, questions: [choice] })
         let fail!: (reason: Error) => void
         denyPermission.mockImplementationOnce(() => new Promise((_, reject) => { fail = reject }))
+        fireEvent.click(screen.getByRole('radio', { name: /Alpha/ }))
+        fireEvent.click(screen.getByRole('button', { name: 'tool.requestUserInput.addNote' }))
         fireEvent.change(screen.getByRole('textbox'), { target: { value: 'keep my draft' } })
         fireEvent.click(screen.getByRole('button', { name: 'button.dismiss' }))
         expect(screen.getByRole('button', { name: 'button.dismiss' })).toBeDisabled()
@@ -108,7 +111,7 @@ describe('RequestUserInputFooter', () => {
         fireEvent.click(screen.getByRole('radio', { name: /以上都不是/ }))
         expect(screen.getByText('Choose')).toBeInTheDocument()
         fireEvent.click(screen.getByRole('button', { name: 'tool.next' }))
-        expect(screen.getByRole('textbox')).toHaveValue('')
+        expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
         fireEvent.click(screen.getByRole('radio', { name: /Beta/ }))
         fireEvent.click(screen.getByRole('button', { name: 'tool.prev' }))
         rerender(<RequestUserInputFooter {...props} tool={{ ...props.tool, input: structuredClone(props.tool.input) }} />)
@@ -122,8 +125,7 @@ describe('RequestUserInputFooter', () => {
     })
 
     it('does not interpret a note alone as None of the above', () => {
-        const { approvePermission } = renderFooter()
-        fireEvent.change(screen.getByRole('textbox'), { target: { value: 'custom' } })
+        const { approvePermission } = renderFooter({ questions: [{ ...choice, prefill: 'custom' }] })
         fireEvent.click(screen.getByRole('button', { name: 'tool.submit' }))
         expect(approvePermission).not.toHaveBeenCalled()
         expect(screen.getByText('tool.selectOption')).toBeInTheDocument()
@@ -198,4 +200,106 @@ describe('RequestUserInputFooter', () => {
         expect(textarea).toHaveAttribute('placeholder', 'Describe the change')
         expect(textarea).toHaveValue('Initial draft')
     })
+
+    it('collapses the note textarea initially for options questions', () => {
+        renderFooter()
+        expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: 'tool.requestUserInput.addNote' })).not.toBeInTheDocument()
+    })
+
+    it('shows the add-note control after selecting an option and expands with focus on click', async () => {
+        const { approvePermission } = renderFooter()
+        fireEvent.click(screen.getByRole('radio', { name: /Alpha/ }))
+        expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+        const addNoteButton = screen.getByRole('button', { name: 'tool.requestUserInput.addNote' })
+        const actionsRow = screen.getByTestId('request-user-input-actions')
+        const submitButton = screen.getByRole('button', { name: 'tool.submit' })
+        expect(actionsRow).toContainElement(addNoteButton)
+        expect(actionsRow).toContainElement(submitButton)
+        expect(addNoteButton.compareDocumentPosition(submitButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+        fireEvent.click(addNoteButton)
+        expect(screen.queryByRole('button', { name: 'tool.requestUserInput.addNote' })).not.toBeInTheDocument()
+        const textarea = screen.getByRole('textbox')
+        expect(textarea).toHaveFocus()
+        fireEvent.change(textarea, { target: { value: 'extra context' } })
+        fireEvent.click(screen.getByRole('button', { name: 'tool.submit' }))
+        await waitFor(() => expect(approvePermission).toHaveBeenCalledWith('session-1', 'permission-1', {
+            answers: { choice: { answers: ['Alpha', 'user_note: extra context'] } }
+        }))
+    })
+
+    it('expands and focuses the note textarea immediately when selecting the isOther option', () => {
+        renderFooter()
+        expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+        fireEvent.click(screen.getByRole('radio', { name: /以上都不是/ }))
+        const textarea = screen.getByRole('textbox')
+        expect(textarea).toBeInTheDocument()
+        expect(textarea).toHaveFocus()
+    })
+
+    it('keeps the note textarea expanded when a draft note already has content', () => {
+        renderFooter({ questions: [{ ...choice, prefill: 'Saved draft note' }] })
+        const textarea = screen.getByRole('textbox')
+        expect(textarea).toBeInTheDocument()
+        expect(textarea).toHaveValue('Saved draft note')
+        expect(screen.queryByRole('button', { name: 'tool.requestUserInput.addNote' })).not.toBeInTheDocument()
+    })
+
+    it('keeps per-question note expansion independent across step navigation', () => {
+        renderFooter({ questions: [choice, { ...choice, id: 'second', question: 'Second' }] })
+        fireEvent.click(screen.getByRole('radio', { name: /Alpha/ }))
+        fireEvent.click(screen.getByRole('button', { name: 'tool.requestUserInput.addNote' }))
+        expect(screen.getByRole('textbox')).toBeInTheDocument()
+
+        fireEvent.click(screen.getByRole('button', { name: 'tool.next' }))
+        expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+        fireEvent.click(screen.getByRole('radio', { name: /Beta/ }))
+        expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'tool.requestUserInput.addNote' })).toBeInTheDocument()
+
+        fireEvent.click(screen.getByRole('button', { name: 'tool.prev' }))
+        expect(screen.getByRole('textbox')).toBeInTheDocument()
+    })
+
+    it('renders the textarea immediately for pure-text questions', () => {
+        renderFooter({ questions: [{ id: 'free-text', question: 'Provide details', options: [] }] })
+        expect(screen.getByRole('textbox')).toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: 'tool.requestUserInput.addNote' })).not.toBeInTheDocument()
+    })
+})
+
+// Browser translation can replace React's text node with <font> elements.
+// Exercise both the start and finish of submission with those nodes displaced.
+it.each([RequestUserInputFooter, AskUserQuestionFooter])('submits and recovers from failure after browser translation replaces button text (%#)', async (Footer) => {
+    const approvePermission = vi.fn().mockResolvedValue(undefined)
+    render(<Footer
+        api={{ approvePermission } as unknown as ApiClient}
+        sessionId="session-1"
+        tool={{ ...makeTool({ questions: [choice] }), name: Footer === AskUserQuestionFooter ? 'AskUserQuestion' : 'request_user_input' }}
+        disabled={false}
+        onDone={vi.fn()}
+    />)
+    let rejectSubmission!: (reason: Error) => void
+    approvePermission.mockImplementationOnce(() => new Promise((_, reject) => { rejectSubmission = reject }))
+    fireEvent.click(screen.getByRole('radio', { name: /Alpha/ }))
+    const button = screen.getByRole('button', { name: 'tool.submit' })
+    const translateLabel = () => {
+        const walker = document.createTreeWalker(button, NodeFilter.SHOW_TEXT)
+        let text = walker.nextNode()
+        while (text && !text.textContent?.startsWith('tool.')) text = walker.nextNode()
+        expect(text).not.toBeNull()
+        const font = document.createElement('font')
+        font.textContent = '确认'
+        text!.parentNode!.replaceChild(font, text!)
+    }
+    translateLabel()
+    fireEvent.click(button)
+    expect(approvePermission).toHaveBeenCalledOnce()
+    expect(button).toHaveAttribute('aria-busy', 'true')
+    translateLabel()
+    rejectSubmission(new Error('Try again'))
+    await waitFor(() => expect(button).toHaveAttribute('aria-busy', 'false'))
+    expect(screen.getByText('Try again')).toBeInTheDocument()
+    fireEvent.click(button)
+    await waitFor(() => expect(approvePermission).toHaveBeenCalledTimes(2))
 })

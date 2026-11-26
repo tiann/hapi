@@ -1,4 +1,6 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://hapi.manus.space/sitemap.xml
+# LLM-friendly docs index: https://hapi.run/llms.txt (full text: /llms-full.txt)
+Sitemap: https://hapi.run/sitemap.xml
+Sitemap: https://hapi.run/docs/sitemap.xml

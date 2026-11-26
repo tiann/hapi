@@ -12,12 +12,14 @@ import { withSettingsFileLock } from '@hapi/protocol/settingsFileLock';
 
 const RuntimeSchema = z.object({
     id: z.string(), pid: z.number().int().positive(), marker: z.string(),
+    kind: z.literal('attached').optional(), nativeEndpoint: z.string().optional(), attachedAt: z.number().optional(), supersedes: z.string().optional(),
     serverPid: z.number().int().positive().optional(), serverMarker: z.string().optional(),
     endpoint: z.string(), token: z.string().optional(),
     command: z.string(), args: z.array(z.string()), codexHome: z.string(), hub: z.string(), authHash: z.string(),
     pendingCreations: z.array(z.string()).optional(),
     sessions: z.record(z.string(), z.object({ threadId: z.string(), namespace: z.string(), active: z.boolean() }))
-});
+}).refine(value => value.kind !== 'attached' || (!value.serverPid && !value.serverMarker && value.command === '' && value.args.length === 0),
+    'An attached worker must not record an owned server or executable');
 export type CodexRuntimeRecord = z.infer<typeof RuntimeSchema>;
 
 export function runtimeDirectory(): string {
@@ -49,7 +51,7 @@ function generationMayBeAlive(pid: number, marker?: string, snapshot?: ReadonlyM
 }
 export function runtimeMayBeAlive(owner: CodexRuntimeRecord, snapshot?: ReadonlyMap<number, string | null> | WindowsProcessTable | null): boolean {
     return generationMayBeAlive(owner.pid, owner.marker, snapshot)
-        || Boolean(owner.serverPid && generationMayBeAlive(owner.serverPid, owner.serverMarker, snapshot));
+        || Boolean(owner.kind !== 'attached' && owner.serverPid && generationMayBeAlive(owner.serverPid, owner.serverMarker, snapshot));
 }
 
 export async function readRuntimes(options?: { strict?: boolean }): Promise<CodexRuntimeRecord[]> {
@@ -84,7 +86,7 @@ export async function saveRuntime(record: CodexRuntimeRecord): Promise<void> {
 
 /** The store-wide lock spans cold resume, not merely registry writes. */
 export async function withThreadOwnership<T>(home: string, threadId: string, ownId: string, work: () => Promise<T>,
-    onPreflightRejected?: (error: unknown) => Promise<T>): Promise<T> {
+    onPreflightRejected?: (error: unknown) => Promise<T>, intent: 'owned' | 'attached' = 'owned'): Promise<T> {
     const directory = join(home, 'hapi-runtime-owners');
     await mkdir(directory, { recursive: true, mode: 0o700 });
     return withSettingsFileLock(join(directory, 'ownership'), async () => {
@@ -102,13 +104,22 @@ export async function withThreadOwnership<T>(home: string, threadId: string, own
                     || Boolean(owner.serverPid && mayBeAlive(owner.serverPid, owner.serverMarker)))) {
                     throw new Error(`Codex runtime ${owner.id} has an unconfirmed creation. Inspect/stop that runtime before cold resume; its thread ID may be unknown.`);
                 }
-                const match = Object.entries(owner.sessions).find(([, session]) => session.threadId === threadId && session.active);
+                const match = Object.entries(owner.sessions).find(([, session]) => session.threadId === threadId
+                    && (session.active || owner.kind === 'attached' || intent === 'attached'));
                 if (!match) continue;
+                if (owner.kind === 'attached' && intent === 'owned') {
+                    throw new Error('Externally attached thread: use hapi attach, never cold-resume it into an owned runtime');
+                }
+                if (owner.kind !== 'attached' && intent === 'attached') {
+                    throw new Error('Thread has an owned HAPI binding. Fork it in the external desktop before attaching; no automatic migration.');
+                }
+                if (!match[1].active) continue;
                 const orphanAlive = owner.serverPid && mayBeAlive(owner.serverPid, owner.serverMarker);
                 const wrapperAlive = mayBeAlive(owner.pid, owner.marker);
                 if (wrapperAlive || orphanAlive) {
                     throw new Error(`Thread belongs to another Codex runtime. Use hapi resume ${match[0]}.${orphanAlive && !wrapperAlive ? ' Its wrapper exited; stop the orphaned runtime before recovery.' : ''}`);
-                }            }
+                }
+            }
         } catch (error) {
             // Still under the store lock, before work can mutate native state.
             // Recovery callers can inspect their journal without racing a writer.
@@ -126,8 +137,20 @@ export async function findRuntime(sessionId: string): Promise<CodexRuntimeRecord
 
 export async function findColdBinding(home: string, threadId: string): Promise<string | undefined> {
     for (const owner of await readRuntimes()) {
+        if (owner.kind === 'attached') continue;
         if (owner.codexHome !== home || owner.hub !== configuration.apiUrl || owner.authHash !== runtimeAuthHash()) continue;
         const match = Object.entries(owner.sessions).find(([, session]) => session.threadId === threadId);
+        if (match) return match[0];
+    }
+    return undefined;
+}
+
+export async function findAttachedBinding(home: string, threadId: string): Promise<string | undefined> {
+    const owners = (await readRuntimes({ strict: true })).filter(owner => owner.kind === 'attached' && owner.codexHome === home
+        && owner.hub === configuration.apiUrl && owner.authHash === runtimeAuthHash());
+    const retired = new Set(owners.map(owner => owner.supersedes).filter(id => id !== undefined));
+    for (const owner of owners) {
+        const match = Object.entries(owner.sessions).find(([id, binding]) => binding.threadId === threadId && !retired.has(id));
         if (match) return match[0];
     }
     return undefined;

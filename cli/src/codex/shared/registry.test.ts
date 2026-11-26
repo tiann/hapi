@@ -7,7 +7,7 @@ const state = vi.hoisted(() => ({ home: '', auth: 'token', processes: new Map<nu
 vi.mock('@/configuration', () => ({ configuration: { get happyHomeDir() { return state.home; }, apiUrl: 'hub', get cliApiToken() { return state.auth; } } }));
 vi.mock('./ownershipLiveness', () => ({ readOwnershipProcessSnapshot: () => { if (state.snapshotError) throw new Error('snapshot failed'); return state.snapshot; }, snapshotGenerationMayBeAlive: (snapshot: Map<number,string|null>, pid:number, marker?:string) => snapshot.has(pid) && (!snapshot.get(pid) || !marker || snapshot.get(pid) === marker) }));
 vi.mock('@/utils/process', () => ({ isWindows: () => state.windows, isProcessAlive: (pid: number) => state.processes.has(pid), getProcessStartMarker: (pid: number) => state.processes.get(pid) }));
-import { findRuntime, readRuntimes, runtimeAlive, runtimeAuthHash, runtimeMayBeAlive, saveRuntime, withThreadOwnership, type CodexRuntimeRecord } from './registry';
+import { findAttachedBinding, findColdBinding, findRuntime, readRuntimes, runtimeAlive, runtimeAuthHash, runtimeMayBeAlive, saveRuntime, withThreadOwnership, type CodexRuntimeRecord } from './registry';
 
 const directories: string[] = [];
 afterEach(async () => { state.processes.clear(); state.windows=false;state.snapshot.clear();state.snapshotError=false; state.auth = 'token'; await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
@@ -105,5 +105,45 @@ describe('Windows native ownership snapshots', () => {
         await expect(withThreadOwnership(owner.codexHome,'thread','new',async()=>{})).rejects.toThrow('another Codex runtime');
         state.snapshotError=true;
         await expect(withThreadOwnership(owner.codexHome,'thread','new',async()=>{})).rejects.toThrow('snapshot failed');
+    });
+});
+
+async function attachedFixture(): Promise<CodexRuntimeRecord> {
+    const owner = await fixture();
+    return { ...owner, kind: 'attached', command: '', serverPid: undefined, serverMarker: undefined,
+        nativeEndpoint: 'unix:///private/engine.sock', attachedAt: Date.now() };
+}
+describe('external bridge ownership', () => {
+    it('never permits owned cold resume of an attached thread, even after detach or worker death', async () => {
+        const owner = await attachedFixture(); owner.sessions.sid.active = false; await saveRuntime(owner);
+        expect(await findColdBinding(owner.codexHome, 'thread')).toBeUndefined();
+        await expect(withThreadOwnership(owner.codexHome, 'thread', 'new', async () => {})).rejects.toThrow('use hapi attach');
+        expect(await withThreadOwnership(owner.codexHome, 'different', 'new', async () => 'independent')).toBe('independent');
+    });
+    it('rejects implicit migration of a detached owned binding into an attached view', async () => {
+        const owner = await fixture(); owner.sessions.sid.active = false; await saveRuntime(owner);
+        await expect(withThreadOwnership(owner.codexHome, 'thread', 'new', async () => {}, undefined, 'attached')).rejects.toThrow('no automatic migration');
+    });
+    it('excludes a live or unverifiable attached generation across HAPI homes, but allows a dead worker to reattach', async () => {
+        const owner = await attachedFixture(); state.processes.set(owner.pid, owner.marker); await saveRuntime(owner);
+        state.home = join(directories[0], 'another-hapi');
+        const attach = () => withThreadOwnership(owner.codexHome, 'thread', 'new', async () => 'ok', undefined, 'attached');
+        await expect(attach()).rejects.toThrow('another Codex runtime');
+        state.processes.set(owner.pid, undefined); await expect(attach()).rejects.toThrow('another Codex runtime');
+        state.processes.clear(); expect(await attach()).toBe('ok');
+        expect(runtimeMayBeAlive({ ...owner, serverPid: 9999 }, new Map([[9999, 'external']]))).toBe(false);
+    });
+    it('reattaches one stable view and only retires it after an explicit new-view reservation is saved', async () => {
+        const owner = await attachedFixture(); owner.sessions.sid.active = false; await saveRuntime(owner);
+        expect(await findAttachedBinding(owner.codexHome, 'thread')).toBe('sid');
+        state.auth = 'other-namespace'; expect(await findAttachedBinding(owner.codexHome, 'thread')).toBeUndefined();
+        state.auth = 'token';
+        await saveRuntime({ ...owner, id: 'replacement', supersedes: 'sid', sessions: { fresh: { ...owner.sessions.sid } } });
+        expect(await findAttachedBinding(owner.codexHome, 'thread')).toBe('fresh');
+        expect(await findColdBinding(owner.codexHome, 'thread')).toBeUndefined();
+    });
+    it('fails closed if an attached record contains an owned process or executable', async () => {
+        const owner = await attachedFixture(); await saveRuntime({ ...owner, serverPid: 2222 });
+        await expect(readRuntimes({ strict: true })).rejects.toThrow('Cannot verify');
     });
 });

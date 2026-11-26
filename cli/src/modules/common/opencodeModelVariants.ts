@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { isObject } from '@hapi/protocol';
 import type { OpencodeModelVariantsResponse } from '@hapi/protocol/apiTypes';
 
@@ -6,30 +7,66 @@ export type ListOpencodeModelVariantsResponse = OpencodeModelVariantsResponse;
 const PROBE_TIMEOUT_MS = 10_000;
 const POLL_INTERVAL_MS = 300;
 
+function extractModelVariantIds(rawVariants: unknown): string[] {
+    if (Array.isArray(rawVariants)) {
+        const variants: string[] = [];
+        for (const entry of rawVariants) {
+            if (!isObject(entry)) continue;
+            const id = typeof entry.id === 'string' && entry.id.trim() ? entry.id : '';
+            if (id) {
+                variants.push(id);
+            }
+        }
+        return variants;
+    }
+    if (isObject(rawVariants)) {
+        return Object.keys(rawVariants).filter((key) => key.length > 0);
+    }
+    return [];
+}
+
+function addParsedModelVariants(out: Record<string, string[]>, rawModel: unknown): void {
+    if (!isObject(rawModel)) return;
+    const modelId = typeof rawModel.id === 'string' && rawModel.id.trim() ? rawModel.id : '';
+    const providerID = typeof rawModel.providerID === 'string' && rawModel.providerID.trim() ? rawModel.providerID : '';
+    if (!providerID || !modelId) return;
+    const variants = extractModelVariantIds(rawModel.variants);
+    if (variants.length === 0) return;
+    out[`${providerID}/${modelId}`] = variants;
+}
+
+function isOpencodeCatalogPayload(payload: unknown): boolean {
+    return isObject(payload) && (Array.isArray(payload.data) || Array.isArray(payload.all));
+}
+
 /**
  * Extract a `{ 'providerId/modelId': string[] }` map of model variants from an
- * OpenCode server `GET /provider` payload. Only models with at least one
+ * OpenCode server catalog payload — either v2 `GET /api/model` (`{ data: Model[] }`
+ * with `variants: Array<{ id }>`) or v1 `GET /provider` (`{ all: Provider[] }`
+ * with `variants: Record<string, unknown>`). Only models with at least one
  * variant are collected; malformed entries are skipped defensively.
  */
 export function parseOpencodeProviderVariants(payload: unknown): Record<string, string[]> {
-    if (!isObject(payload) || !Array.isArray(payload.all)) {
+    if (!isObject(payload)) {
         return {};
     }
 
     const out: Record<string, string[]> = {};
-    for (const provider of payload.all) {
-        if (!isObject(provider) || !isObject(provider.models)) {
-            continue;
+    if (Array.isArray(payload.data)) {
+        for (const rawModel of payload.data) {
+            addParsedModelVariants(out, rawModel);
         }
-        for (const [, rawModel] of Object.entries(provider.models)) {
-            if (!isObject(rawModel)) continue;
-            const modelId = typeof rawModel.id === 'string' && rawModel.id.trim() ? rawModel.id : '';
-            const providerID = typeof rawModel.providerID === 'string' ? rawModel.providerID : '';
-            if (!providerID || !modelId) continue;
-            if (!isObject(rawModel.variants)) continue;
-            const variants = Object.keys(rawModel.variants).filter((key) => key.length > 0);
-            if (variants.length === 0) continue;
-            out[`${providerID}/${modelId}`] = variants;
+        return out;
+    }
+
+    if (Array.isArray(payload.all)) {
+        for (const provider of payload.all) {
+            if (!isObject(provider) || !isObject(provider.models)) {
+                continue;
+            }
+            for (const rawModel of Object.values(provider.models)) {
+                addParsedModelVariants(out, rawModel);
+            }
         }
     }
     return out;
@@ -73,14 +110,33 @@ async function listRunningOpencodeServers(): Promise<Array<{ port: number; cwd: 
     }
 }
 
-async function fetchVariantsFromServer(port: number): Promise<Record<string, string[]> | null> {
-    try {
-        const response = await fetch(`http://127.0.0.1:${port}/provider`, { signal: AbortSignal.timeout(1000) });
-        if (!response.ok) return null;
-        return parseOpencodeProviderVariants(await response.json());
-    } catch {
-        return null;
+async function fetchVariantsFromServer(
+    port: number,
+    opts?: { timeoutMs?: number; authHeader?: string }
+): Promise<Record<string, string[]> | null> {
+    const timeoutMs = opts?.timeoutMs ?? 1000;
+    const headers = opts?.authHeader ? { Authorization: opts.authHeader } : undefined;
+    for (const path of ['/api/model', '/provider'] as const) {
+        let response: Response;
+        try {
+            response = await fetch(`http://127.0.0.1:${port}${path}`, {
+                headers,
+                signal: AbortSignal.timeout(timeoutMs)
+            });
+        } catch {
+            // Transport failure / timeout means this server is unreachable.
+            return null;
+        }
+        if (!response.ok) {
+            continue;
+        }
+        const payload: unknown = await response.json().catch(() => null);
+        if (!isOpencodeCatalogPayload(payload)) {
+            continue;
+        }
+        return parseOpencodeProviderVariants(payload);
     }
+    return null;
 }
 
 async function getEphemeralPort(): Promise<number> {
@@ -112,7 +168,7 @@ async function getEphemeralPort(): Promise<number> {
  * the CLI exits gracefully. The reaper timer is unref'd so it never keeps the
  * CLI process alive.
  */
-type ResidentServe = { proc: ReturnType<typeof Bun.spawn>; port: number; cwd: string | null };
+type ResidentServe = { proc: ReturnType<typeof Bun.spawn>; port: number; cwd: string | null; authHeader: string };
 let resident: ResidentServe | null = null;
 let idleReapTimer: ReturnType<typeof setTimeout> | null = null;
 // In-flight coalescing is keyed by cwd: concurrent requests for different
@@ -169,10 +225,10 @@ export function listOpencodeModelVariants(request?: { cwd?: string | null }): Pr
 }
 
 async function listOpencodeModelVariantsUncached(cwd: string | null): Promise<ListOpencodeModelVariantsResponse> {
-    // Prefer a live OpenCode session's server — its /provider catalog is
-    // identical and answering from it skips any spawn entirely. Only servers
-    // running in the same cwd are used: project-level opencode config can
-    // override the provider catalog per directory.
+    // Prefer a live OpenCode session's server — its /api/model or /provider
+    // catalog is identical and answering from it skips any spawn entirely. Only
+    // servers running in the same cwd are used: project-level opencode config
+    // can override the provider catalog per directory.
     for (const server of await listRunningOpencodeServers()) {
         if (server.cwd !== cwd) continue;
         const variants = await fetchVariantsFromServer(server.port);
@@ -189,7 +245,7 @@ async function listOpencodeModelVariantsUncached(cwd: string | null): Promise<Li
             resident.proc.kill();
             resident = null;
         } else {
-            const variants = await fetchVariantsFromServer(resident.port);
+            const variants = await fetchVariantsFromServer(resident.port, { authHeader: resident.authHeader });
             if (variants) {
                 scheduleIdleReap();
                 return { success: true, variants };
@@ -212,14 +268,15 @@ async function listOpencodeModelVariantsUncached(cwd: string | null): Promise<Li
     if (previousResident) {
         previousResident.proc.kill();
     }
-    resident = { proc: spawned.proc, port: spawned.port, cwd };
+    resident = { proc: spawned.proc, port: spawned.port, cwd, authHeader: spawned.authHeader };
     registerExitCleanup();
     scheduleIdleReap();
     return { success: true, variants: spawned.variants };
 }
 
 async function spawnServeWithCatalog(cwd: string | null): Promise<
-    { success: false; error: string } | { success: true; proc: ReturnType<typeof Bun.spawn>; port: number; variants: Record<string, string[]> }
+    { success: false; error: string }
+    | { success: true; proc: ReturnType<typeof Bun.spawn>; port: number; authHeader: string; variants: Record<string, string[]> }
 > {
     let port: number;
     try {
@@ -228,16 +285,28 @@ async function spawnServeWithCatalog(cwd: string | null): Promise<
         return { success: false, error: 'Failed to acquire ephemeral port' };
     }
 
+    // OpenCode v2 `opencode serve` enforces HTTP Basic auth (`opencode:<pw>`)
+    // on `/api/model`. Generating a per-process secret lets us authenticate
+    // deterministically without parsing stdout.
+    const password = randomBytes(24).toString('hex');
+    const authHeader = 'Basic ' + Buffer.from(`opencode:${password}`).toString('base64');
+
     let proc: ReturnType<typeof Bun.spawn> | null = null;
     try {
         proc = Bun.spawn(['opencode', 'serve', '--port', String(port)], {
             stdout: 'ignore',
             stderr: 'ignore',
+            env: {
+                ...process.env,
+                OPENCODE_SERVER_PASSWORD: password,
+                OPENCODE_PASSWORD: password,
+                OPENCODE_SERVER_USERNAME: 'opencode'
+            },
             ...(cwd ? { cwd } : {}),
         });
 
         const deadline = Date.now() + PROBE_TIMEOUT_MS;
-        let payload: unknown = null;
+        let variants: Record<string, string[]> | null = null;
         while (Date.now() < deadline) {
             await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
             // Bail out early instead of burning the full deadline when serve
@@ -245,23 +314,18 @@ async function spawnServeWithCatalog(cwd: string | null): Promise<
             if (proc.exitCode !== null) {
                 break;
             }
-            try {
-                const response = await fetch(`http://127.0.0.1:${port}/provider`, { signal: AbortSignal.timeout(2000) });
-                if (response.ok) {
-                    payload = await response.json();
-                    break;
-                }
-            } catch {
-                // Server not ready yet — keep polling until the deadline.
+            variants = await fetchVariantsFromServer(port, { timeoutMs: 2000, authHeader });
+            if (variants !== null) {
+                break;
             }
         }
 
-        if (!payload || proc.exitCode !== null) {
+        if (variants === null || proc.exitCode !== null) {
             proc.kill();
             return { success: false, error: 'OpenCode provider catalog did not become available in time' };
         }
 
-        return { success: true, proc, port, variants: parseOpencodeProviderVariants(payload) };
+        return { success: true, proc, port, authHeader, variants };
     } catch (error) {
         proc?.kill();
         return {

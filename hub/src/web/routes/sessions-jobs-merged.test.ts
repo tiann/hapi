@@ -75,12 +75,13 @@ describe.each([
     ['without redirect opt-in', false]
 ])('job routes on a merged-away session id (%s)', (_label, follow) => {
     it('keeps the merged source job under a remapped key on the survivor', async () => {
-        const { store, remappedKey } = await setup()
+        const { store, engine, remappedKey } = await setup()
         try {
             expect(store.sessions.getSession(OLD_ID)).toBeNull()
             expect(remappedKey).toBeDefined()
             expect(store.sessionJobs.get(NEW_ID, remappedKey!)?.runId).toBe('run-old')
         } finally {
+            engine.stop()
             store.close()
         }
     })
