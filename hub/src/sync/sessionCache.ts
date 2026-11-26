@@ -2434,6 +2434,8 @@ export class SessionCache {
     ): TransferSessionJobsResult {
         return this.store.runInTransaction(() => {
             const moved = this.store.sessionJobs.transfer(fromSessionId, toSessionId)
+            // Repeat/queue tasks follow their session the same way, in the same commit.
+            this.store.sessionTasks.transfer(fromSessionId, toSessionId)
             if (
                 targetWasRedirectedToSource
                 && !this.clearJobsTransferredToSession(toSessionId, namespace)

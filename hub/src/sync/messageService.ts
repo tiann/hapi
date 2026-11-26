@@ -11,7 +11,7 @@ import {
     isRedundantGoalStatusEventContent,
     unwrapRoleWrappedRecordEnvelope
 } from '@hapi/protocol/messages'
-import { AGENT_MESSAGE_PAYLOAD_TYPE, isObject } from '@hapi/protocol'
+import { AGENT_MESSAGE_PAYLOAD_TYPE, isObject, SESSION_TASK_MESSAGE_LOCAL_ID_PREFIX } from '@hapi/protocol'
 import type {
     MessageContextResponse,
     MessageDeliveryMode,
@@ -1162,6 +1162,9 @@ export class MessageService {
      * real runtime ACK (messages-consumed) confirms them. Job wakes additionally
      * mark the SQLite claim delivered before the agent may have consumed the
      * prompt — sweeping them would strand the batch continuation (#1489 / #1424).
+     * Session-task prompts (`hapi-task:`) are skipped for the same reason: the
+     * task scheduler steps a task forward only on that real ACK, and resumes
+     * the session to get one.
      *
      * Returns the list of localIds that were stamped and the invokedAt timestamp,
      * or null if no messages needed sweeping.
@@ -1177,6 +1180,7 @@ export class MessageService {
                 typeof id === 'string'
                 && !id.startsWith(PEER_MESSAGE_LOCAL_ID_PREFIX)
                 && !id.startsWith(JOB_WAKE_MESSAGE_LOCAL_ID_PREFIX)
+                && !id.startsWith(SESSION_TASK_MESSAGE_LOCAL_ID_PREFIX)
             )
         if (localIds.length === 0) return null
         this.store.messages.markMessagesInvoked(sessionId, localIds, invokedAt)

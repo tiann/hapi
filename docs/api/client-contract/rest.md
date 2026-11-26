@@ -126,6 +126,24 @@ Source: `hub/src/web/routes/messages.ts`; schemas `MessagesQuerySchema`, `SendMe
 
 The hub stamps `sentFrom: 'webapp'` on REST-sent messages server-side; the request body has no such field.
 
+### Session tasks
+
+Source: `hub/src/web/routes/sessionTasks.ts`; schemas `CreateSessionTaskRequestSchema`, `UpdateSessionTaskRequestSchema`, `SessionTaskSchema` (`shared/src/sessionTasks.ts`). A task is a schedule the hub owns: each run sends one ordinary user message into the session, so its prompts reach clients through the message stream like any other.
+
+| Method & path | Request | Response |
+|---|---|---|
+| `GET /api/sessions/:id/tasks` | — | `{tasks: SessionTask[]}`, oldest first |
+| `POST /api/sessions/:id/tasks` | `repeat`: `{kind: 'repeat', text, intervalMs, startAt?, maxRuns?}` · `queue`: `{kind: 'queue', items: [{text}], intervalMs, startAt?}` — `intervalMs` 1 minute to 30 days, 1–50 prompts of up to 20 000 characters, `startAt` at most 366 days ahead | `{task: SessionTask}` |
+| `PATCH /api/sessions/:id/tasks/:taskId` | `{paused: boolean}` | `{task: SessionTask}`, or 404 when the task is not in this session |
+| `DELETE /api/sessions/:id/tasks/:taskId` | — | `{ok: true}`, or 404. A prompt the agent has not taken yet is cancelled with the task |
+
+- `repeat` sends the same prompt on a fixed grid from `startAt` (default: now) and stops after `maxRuns` sends when set. A slot that comes due while the previous prompt is still waiting to be taken is skipped, so a busy agent never has two of the task's prompts queued.
+- `queue` sends its prompts in order, each `intervalMs` after the agent took the previous one.
+- A task has at most one prompt outstanding (`pending: true`). `nextRunAt` is `null` while paused and while a `queue` task waits for its last prompt to be taken.
+- A finished task (every prompt sent, or `maxRuns` reached, and taken) deletes itself. Pausing keeps a prompt already sent in the queue.
+- The hub resumes an inactive session before sending. Until the machine is online the task stays due with `lastError: 'machine_offline'`; a session that cannot be resumed pauses the task with `lastError: 'session_unavailable'`.
+- Every change emits [`session-tasks-changed`](./sse.md). An older hub answers 404 on these routes.
+
 ### Permissions
 
 Source: `hub/src/web/routes/permissions.ts`. Pending requests are **not messages**: they live in `session.agentState.requests` (keyed by request id) and move to `agentState.completedRequests` when resolved — schemas `AgentStateRequestSchema` / `AgentStateCompletedRequestSchema` in `shared/src/schemas.ts`.

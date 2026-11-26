@@ -2104,6 +2104,33 @@ describe('MessageService.sweepImmediateQueuedOnSessionEnd — scheduled rows are
         expect(row?.createdAt).toBe(oldCreated)
     })
 
+    it('session-task prompts stay pending across the sweep next to a swept user prompt', () => {
+        // A task steps forward only on the CLI's real acknowledgement. A synthetic
+        // invokedAt here would tell the scheduler the agent took a prompt it never saw.
+        const store = makeStore()
+        const session = makeSession(store, 'task-prompt-sweep')
+        const publisher = makePublisher()
+        const now = Date.now()
+
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'from a task' }, meta: { sentFrom: 'webapp' } },
+            'hapi-task:11111111-1111-1111-1111-111111111111:1'
+        )
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'typed by the user' }, meta: { sentFrom: 'webapp' } },
+            'typed-prompt'
+        )
+
+        const service = new MessageService(store, makeNoopIo(), publisher as any)
+        const result = service.sweepImmediateQueuedOnSessionEnd(session.id, now)
+
+        expect(result?.localIds).toEqual(['typed-prompt'])
+        const pending = store.messages.getUninvokedLocalMessages(session.id).map((m) => m.localId)
+        expect(pending).toEqual(['hapi-task:11111111-1111-1111-1111-111111111111:1'])
+    })
+
     it('releaseMatureScheduledMessages reports the sessions it emitted to', () => {
         const store = makeStore()
         const released = makeSession(store, 'mature-released')

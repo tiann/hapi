@@ -37,6 +37,9 @@ import { clearAgentTerminalBuffer } from '../socket/agentTerminalBuffer'
 import type { SSEManager } from '../sse/sseManager'
 import { CursorLegacyMigrator, type CursorLegacyMigratorOptions } from '../cursor/cursorLegacyMigrator'
 import { toAttachedJob } from '../store/sessionJobs'
+import { toSessionTask } from '../store/sessionTasks'
+import type { CreateSessionTaskRequest, SessionTask, UpdateSessionTaskRequest } from '@hapi/protocol'
+import { SessionTaskRunner } from './sessionTaskRunner'
 import { SessionWakeGate } from './sessionWakeGate'
 import {
     buildJobTerminalWakePrompt,
@@ -1343,9 +1346,10 @@ export class SyncEngine {
         return this.store.sessionJobs.getPrimaryRunningBySessionIds(sessionIds)
     }
 
-    // ---- Waking a session so the hub can deliver to it -----------------------
+    // ---- Session tasks (repeat / queue schedules) ----------------------------
 
     private wakeGate: SessionWakeGate | null = null
+    private taskRunner: SessionTaskRunner | null = null
 
     /** Lazily built: `resumeSession` and `sessionCache` are only wired after construction. */
     private get deliveryWakeGate(): SessionWakeGate {
@@ -1355,6 +1359,31 @@ export class SyncEngine {
             log: (message, detail) => console.warn(message, detail)
         })
         return this.wakeGate
+    }
+
+    private get sessionTaskRunner(): SessionTaskRunner {
+        this.taskRunner ??= new SessionTaskRunner({
+            store: this.store,
+            getSession: (sessionId) => this.sessionCache.getSession(sessionId) ?? null,
+            wake: (sessionId) => this.deliveryWakeGate.wake(sessionId),
+            wakeFailure: (sessionId) => this.deliveryWakeGate.lastFailure(sessionId),
+            sendMessage: (sessionId, payload) => this.sendMessage(sessionId, { ...payload, sentFrom: 'webapp' }),
+            onTasksChanged: (sessionId) => this.emitSessionTasksChanged(sessionId),
+            log: (message, detail) => console.warn(message, detail)
+        })
+        return this.taskRunner
+    }
+
+    private emitSessionTasksChanged(sessionId: string): void {
+        this.eventPublisher.emit({ type: 'session-tasks-changed', sessionId })
+    }
+
+    /** Run due tasks now instead of waiting for the next 5s tick (after create / resume). */
+    private runSessionTaskTick(): void {
+        if (!this.store) return
+        void this.sessionTaskRunner.tick().catch((error) => {
+            console.warn('[session-task] tick failed', error instanceof Error ? error.message : error)
+        })
     }
 
     /**
@@ -1367,6 +1396,77 @@ export class SyncEngine {
         for (const sessionId of sessionIds) {
             void this.deliveryWakeGate.wake(sessionId).catch(() => undefined)
         }
+    }
+
+    listSessionTasks(sessionId: string): SessionTask[] {
+        return this.store.sessionTasks.list(sessionId).map(toSessionTask)
+    }
+
+    createSessionTask(sessionId: string, request: CreateSessionTaskRequest): SessionTask {
+        const now = Date.now()
+        const task = this.store.sessionTasks.create({
+            sessionId,
+            kind: request.kind,
+            items: request.kind === 'queue' ? request.items.map((item) => item.text) : [request.text],
+            intervalMs: request.intervalMs,
+            maxRuns: request.kind === 'repeat' ? (request.maxRuns ?? null) : null,
+            // A first run that is already past (within the route's grace) goes out now.
+            nextRunAt: Math.max(request.startAt ?? now, now)
+        })
+        this.emitSessionTasksChanged(sessionId)
+        this.runSessionTaskTick()
+        return toSessionTask(task)
+    }
+
+    /**
+     * Pause stops scheduling; a prompt the task already sent stays in the
+     * queue and is still tracked. Resume runs a task that has nothing
+     * pending now, except a queue task that keeps its spacing from when the
+     * agent took its last prompt.
+     */
+    updateSessionTask(sessionId: string, taskId: string, patch: UpdateSessionTaskRequest): SessionTask | null {
+        const task = this.store.sessionTasks.get(sessionId, taskId)
+        if (!task) return null
+        const now = Date.now()
+        let nextRunAt = task.nextRunAt
+        if (patch.paused) {
+            nextRunAt = null
+        } else if (task.state === 'paused') {
+            // Resuming a task that has nothing pending runs it now, except a
+            // queue task that keeps its spacing from when the agent took its
+            // last prompt. One with a prompt pending is scheduled by the
+            // acknowledgement instead.
+            nextRunAt = task.pendingLocalId !== null
+                ? null
+                : task.kind === 'queue' && task.runCount > 0 && task.lastConsumedAt !== null
+                    ? Math.max(now, task.lastConsumedAt + task.intervalMs)
+                    : now
+        }
+        const updated = this.store.sessionTasks.setPaused(taskId, patch.paused, nextRunAt, now)
+        this.emitSessionTasksChanged(sessionId)
+        if (!patch.paused && task.state === 'paused') this.runSessionTaskTick()
+        return updated ? toSessionTask(updated) : null
+    }
+
+    async deleteSessionTask(sessionId: string, taskId: string): Promise<boolean> {
+        const task = this.store.sessionTasks.get(sessionId, taskId)
+        if (!task) return false
+        const deleted = this.store.sessionTasks.delete(taskId)
+        if (task.pendingLocalId !== null) {
+            // The prompt is already in the session's queue; deleting the task
+            // must not leave it to go out on its own.
+            try {
+                await this.cancelQueuedMessage(sessionId, task.pendingLocalId)
+            } catch (error) {
+                console.warn('[session-task] could not cancel the pending prompt', {
+                    sessionId,
+                    taskId,
+                    error: error instanceof Error ? error.message : error
+                })
+            }
+        }
+        this.emitSessionTasksChanged(sessionId)
+        return deleted
     }
 
     /** Move outliving jobs + redirects onto another session (pre-delete). */
@@ -1919,6 +2019,8 @@ export class SyncEngine {
         for (const session of this.sessionCache.getSessions()) if (this.openCodeRewindPending(session.id)) held.add(session.id)
         const maturedSessionIds = this.messageService.releaseMatureScheduledMessages(Date.now(), held)
         this.wakeSessionsWithMatureMessages(maturedSessionIds ?? [])
+        // Same cadence as the scheduled-message scan above: one hub timer drives both.
+        this.runSessionTaskTick()
         void this.reconcileOpenCodeClears()
         this.reconcileDerivedToolWork()
     }
