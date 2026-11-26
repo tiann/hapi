@@ -17,9 +17,9 @@ import {
     isObject,
     isSteeringSupportedForSession,
     hasActiveSteeringTurn,
-    isSessionId,
     type MessageDeliveryMode,
 } from '@hapi/protocol'
+import { isSessionId } from '@hapi/protocol/apiTypes'
 import { normalizeSessionIdPrefix } from '@hapi/protocol/sessionCitation'
 import { configuration } from '@/configuration'
 import { isPeerToolsDisabled } from '@/modules/common/peerTools'
@@ -74,6 +74,7 @@ export type PingPeerSessionSummary = {
         flavor?: string | null
         path?: string | null
         machineId?: string | null
+        agentSessionId?: string
         lifecycleState?: string | null
         piSessionId?: string
         cursorSessionId?: string | null
@@ -267,6 +268,33 @@ function readAgentSessionScope(session: PingPeerSessionSummary): string | null {
     }
     const machineId = session.metadata?.machineId?.trim().toLowerCase() ?? ''
     return machineId ? `${flavor}:${machineId}:${agentSessionId}` : null
+}
+
+function formatPeerResolveHint(session: PingPeerSessionSummary): string {
+    const name = session.metadata?.name?.trim() || resolvePeerSessionLabel(session)
+    const agentSessionId = readAgentSessionId(session)
+    const hubShort = session.id.slice(0, 8)
+    const agentPart = agentSessionId
+        ? ` agentSessionId=${agentSessionId.length > 12 ? `${agentSessionId.slice(0, 12)}…` : agentSessionId}`
+        : ''
+    const flavorPart = session.metadata?.flavor
+        ? ` flavor=${session.metadata.flavor}`
+        : ''
+    const machinePart = session.metadata?.machineId
+        ? ` machineId=${session.metadata.machineId}`
+        : ''
+    return `name="${name}" hubId=${hubShort}…${flavorPart}${machinePart}${agentPart}`
+}
+
+function sortPeersActiveThenUpdated(sessions: PingPeerSessionSummary[]): PingPeerSessionSummary[] {
+    return [...sessions].sort((a, b) => {
+        const aActive = a.active ? 0 : 1
+        const bActive = b.active ? 0 : 1
+        if (aActive !== bActive) {
+            return aActive - bActive
+        }
+        return (b.updatedAt ?? 0) - (a.updatedAt ?? 0)
+    })
 }
 
 function throwPeerResolveNotFound(trimmed: string, sessions: PingPeerSessionSummary[]): never {
@@ -678,6 +706,44 @@ async function sendAttributedPeerMessage(
         throw unconfirmedSendError(localId, detail)
     }
     throw new PingPeerError('send_failed', `send failed: ${detail}`)
+}
+
+/**
+ * Best-effort machineId → hostname map from GET /api/machines (online
+ * machines only). Labels are decoration; failures leave rows unlabeled.
+ */
+async function fetchMachineLabels(
+    apiUrl: string,
+    jwt: string,
+    http: AxiosInstance
+): Promise<Map<string, string>> {
+    const labels = new Map<string, string>()
+    try {
+        const response = await http.get(`${apiUrl}/api/machines`, {
+            headers: authHeaders(jwt),
+            timeout: 10_000,
+            validateStatus: () => true
+        })
+        if (response.status < 200 || response.status >= 300) {
+            return labels
+        }
+        const machines = Array.isArray(response.data?.machines) ? response.data.machines : []
+        for (const machine of machines) {
+            if (!isObject(machine) || typeof machine.id !== 'string') continue
+            const metadata = isObject(machine.metadata) ? machine.metadata : null
+            const label = typeof metadata?.displayName === 'string' && metadata.displayName.trim()
+                ? metadata.displayName.trim()
+                : typeof metadata?.host === 'string' && metadata.host.trim()
+                    ? metadata.host.trim()
+                    : null
+            if (label) {
+                labels.set(machine.id, label)
+            }
+        }
+    } catch {
+        // Unlabeled rows still carry the machine id prefix.
+    }
+    return labels
 }
 
 function resolveMachineLabel(machineId: string | null | undefined, labels: Map<string, string>): string | undefined {

@@ -3,7 +3,6 @@ import chalk from 'chalk'
 import { PeerDeliveryModeSchema, type PeerDeliveryMode } from '@/modules/pingPeer/deliveryMode'
 import { HAPI_SESSION_ID_ENV } from '@/agent/hapiSessionEnv'
 import { initializeToken } from '@/ui/tokenInit'
-import { HAPI_SESSION_ID_ENV } from '@/agent/hapiSessionEnv'
 import {
     PingPeerError,
     exitCodeForPingPeerError,
