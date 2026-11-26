@@ -5,7 +5,7 @@ describe('composer-drafts', () => {
 
     beforeEach(() => {
         storage = {}
-        vi.stubGlobal('sessionStorage', {
+        vi.stubGlobal('localStorage', {
             getItem: vi.fn((key: string) => storage[key] ?? null),
             setItem: vi.fn((key: string, value: string) => { storage[key] = value }),
             removeItem: vi.fn((key: string) => { delete storage[key] }),
@@ -30,7 +30,7 @@ describe('composer-drafts', () => {
         expect(mod.getDraft('session-1')).toBe('hello world')
     })
 
-    it('persists drafts to sessionStorage', async () => {
+    it('persists drafts to localStorage', async () => {
         const mod = await import('./composer-drafts')
         mod.saveDraft('session-1', 'test')
         const stored = JSON.parse(storage['hapi:composer-drafts'] ?? '{}')
@@ -75,19 +75,43 @@ describe('composer-drafts', () => {
         expect(mod.getDraft('session-b')).toBe('text B')
     })
 
-    it('hydrates from existing sessionStorage data', async () => {
+    it('hydrates from existing localStorage data', async () => {
         storage['hapi:composer-drafts'] = JSON.stringify({ 'existing': 'draft text' })
         const mod = await import('./composer-drafts')
         expect(mod.getDraft('existing')).toBe('draft text')
     })
 
-    it('recovers from invalid sessionStorage data', async () => {
+    it('recovers from invalid localStorage data', async () => {
         storage['hapi:composer-drafts'] = 'not valid json'
         const mod = await import('./composer-drafts')
         expect(mod.getDraft('any')).toBe('')
         // Should still be able to save
         mod.saveDraft('any', 'recovered')
         expect(mod.getDraft('any')).toBe('recovered')
+    })
+
+    it('keeps drafts written by another tab when saving', async () => {
+        const mod = await import('./composer-drafts')
+        mod.saveDraft('session-a', 'tab A')
+        // Another tab writes its own draft after this tab hydrated.
+        const other = JSON.parse(storage['hapi:composer-drafts'] ?? '{}')
+        storage['hapi:composer-drafts'] = JSON.stringify({ ...other, 'session-b': 'tab B' })
+
+        mod.saveDraft('session-a', 'tab A edited')
+
+        const stored = JSON.parse(storage['hapi:composer-drafts'] ?? '{}')
+        expect(stored).toEqual({ 'session-a': 'tab A edited', 'session-b': 'tab B' })
+    })
+
+    it('clears only its own entry when another tab has drafts', async () => {
+        const mod = await import('./composer-drafts')
+        mod.saveDraft('session-a', 'tab A')
+        storage['hapi:composer-drafts'] = JSON.stringify({ 'session-a': 'tab A', 'session-b': 'tab B' })
+
+        mod.clearDraft('session-a')
+
+        const stored = JSON.parse(storage['hapi:composer-drafts'] ?? '{}')
+        expect(stored).toEqual({ 'session-b': 'tab B' })
     })
 
     it('ignores non-string values during hydration', async () => {
