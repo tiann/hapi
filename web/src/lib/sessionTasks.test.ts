@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { SESSION_TASK_MAX_ITEMS, type SessionTask, type SessionTaskRun } from '@hapi/protocol'
+import { SESSION_TASK_MAX_ITEMS, type SessionTask, type SessionTaskErrorCode, type SessionTaskRun } from '@hapi/protocol'
 import {
     applySessionTaskEdit,
     buildQueueEditRequest,
@@ -56,6 +56,12 @@ const t = (key: string, params?: Record<string, string | number>) => {
         'tasks.run.skipped': 'skipped',
         'tasks.run.failed': 'failed',
         'tasks.run.failedWith': 'failed: {reason}',
+        'tasks.run.failedReason.machine_offline': 'reason: machine was offline',
+        'tasks.run.failedReason.session_unavailable': 'reason: session could not be resumed',
+        'tasks.run.failedReason.session_archived': 'reason: session was archived',
+        'tasks.run.failedReason.prompt_indeterminate': 'reason: take unknown',
+        'tasks.run.failedReason.prompt_not_taken': 'reason: not taken',
+        'tasks.run.failedReason.send_failed': 'reason: send failed',
         'tasks.run.cancelled': 'cancelled',
         'tasks.run.numbered': '{kind} #{n}',
         'session.time.inMinutes': 'in {n}m',
@@ -398,9 +404,28 @@ describe('run history lines', () => {
 
     it('explains skipped and failed runs', () => {
         expect(taskRunOutcome(run({ outcome: 'skipped', detail: 'previous_prompt_waiting', runNumber: null, preview: null }), t)).toEqual({ text: 'skipped', tone: 'normal' })
-        expect(taskRunOutcome(run({ outcome: 'failed', detail: 'machine_offline', runNumber: null }), t)).toEqual({ text: 'failed: waiting for machine', tone: 'warning' })
+        expect(taskRunOutcome(run({ outcome: 'failed', detail: 'machine_offline', runNumber: null }), t)).toEqual({ text: 'failed: reason: machine was offline', tone: 'warning' })
         expect(taskRunOutcome(run({ outcome: 'failed', detail: null, runNumber: null }), t)).toEqual({ text: 'failed', tone: 'warning' })
+        expect(taskRunOutcome(run({ outcome: 'failed', detail: 'previous_prompt_waiting', runNumber: null }), t)).toEqual({ text: 'failed', tone: 'warning' })
         expect(taskRunOutcome(run({ outcome: 'cancelled' }), t)).toEqual({ text: 'cancelled', tone: 'normal' })
+    })
+
+    it('gives every code a failed run can carry its own reason, apart from the sentence of a task still held up', () => {
+        // A run in the history is over: it says what happened, not what the task is still waiting for.
+        const reasons: Record<SessionTaskErrorCode, string> = {
+            machine_offline: 'reason: machine was offline',
+            session_unavailable: 'reason: session could not be resumed',
+            session_archived: 'reason: session was archived',
+            prompt_indeterminate: 'reason: take unknown',
+            prompt_not_taken: 'reason: not taken',
+            send_failed: 'reason: send failed'
+        }
+        // The fake table gives the two keys different text for every code, so the exact line pins which one is read.
+        for (const [code, reason] of Object.entries(reasons) as [SessionTaskErrorCode, string][]) {
+            expect(taskRunOutcome(run({ outcome: 'failed', detail: code, runNumber: null }), t), code).toEqual({ text: `failed: ${reason}`, tone: 'warning' })
+        }
+        // The row keeps its own sentence for the same code.
+        expect(taskErrorText('session_unavailable', t)).toBe('cannot resume; retrying')
     })
 
     it('numbers a queue run and names a repeat task', () => {

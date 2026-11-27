@@ -387,6 +387,20 @@ export function taskErrorText(code: SessionTaskErrorCode, t: Translate): string 
 
 export type TaskRunOutcome = { text: string; tone: 'normal' | 'warning' }
 
+/**
+ * Why a run could not go out, as a noun phrase that follows "Failed:". The
+ * task row's sentence for the same code describes a task that is still held
+ * up and will retry; a run in the history is over, so it says what happened.
+ */
+const RUN_FAILED_REASON_KEY: Record<SessionTaskErrorCode, string> = {
+    machine_offline: 'tasks.run.failedReason.machine_offline',
+    session_unavailable: 'tasks.run.failedReason.session_unavailable',
+    session_archived: 'tasks.run.failedReason.session_archived',
+    prompt_indeterminate: 'tasks.run.failedReason.prompt_indeterminate',
+    prompt_not_taken: 'tasks.run.failedReason.prompt_not_taken',
+    send_failed: 'tasks.run.failedReason.send_failed'
+}
+
 /** What became of one run: sent (and taken or waiting), skipped, failed or cancelled, and why. */
 export function taskRunOutcome(run: SessionTaskRun, t: Translate): TaskRunOutcome {
     switch (run.outcome) {
@@ -400,7 +414,7 @@ export function taskRunOutcome(run: SessionTaskRun, t: Translate): TaskRunOutcom
             return { text: t('tasks.run.skipped'), tone: 'normal' }
         case 'failed': {
             const text = run.detail && isTaskErrorCode(run.detail)
-                ? t('tasks.run.failedWith', { reason: taskErrorText(run.detail, t) })
+                ? t('tasks.run.failedWith', { reason: t(RUN_FAILED_REASON_KEY[run.detail]) })
                 : t('tasks.run.failed')
             return { text, tone: 'warning' }
         }

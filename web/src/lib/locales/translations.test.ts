@@ -94,4 +94,28 @@ describe('session task strings', () => {
         expect(en['tasks.sessionUnavailable']).toBe('The session cannot be resumed right now; retrying')
         expect(en['tasks.sessionUnavailable']).not.toContain('paused')
     })
+
+    it('gives a failed run in the history its own reason in every locale, apart from the sentence of a task still held up', () => {
+        const live: Record<string, string> = {
+            machine_offline: 'tasks.waitingForMachine',
+            session_unavailable: 'tasks.sessionUnavailable',
+            session_archived: 'tasks.sessionArchived',
+            send_failed: 'tasks.sendFailed'
+        }
+        expect(en['tasks.run.failedReason.machine_offline']).toBe('the machine was offline')
+        expect(en['tasks.run.failedReason.session_unavailable']).toBe('the session could not be resumed')
+        expect(en['tasks.run.failedReason.session_archived']).toBe('the session was archived')
+        expect(en['tasks.run.failedReason.send_failed']).toBe('the send failed')
+        // A noun phrase after "Failed:", never the live "…; retrying" / "Sends once …" sentence.
+        for (const [locale, dict] of locales) {
+            for (const [code, liveKey] of Object.entries(live)) {
+                const reason = dict[`tasks.run.failedReason.${code}`]
+                expect(reason, `${locale} ${code}`).toBeTruthy()
+                expect(reason, `${locale} ${code}`).not.toBe(dict[liveKey])
+            }
+        }
+        for (const [locale, dict] of locales.slice(1)) {
+            expect(dict['tasks.run.failedReason.machine_offline'], locale).not.toBe(en['tasks.run.failedReason.machine_offline'])
+        }
+    })
 })

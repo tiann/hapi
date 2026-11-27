@@ -772,12 +772,42 @@ describe('SessionTasksBar', () => {
         expect(entries[1].textContent).toContain('second')
         expect(entries[2].textContent).toContain('Skipped: the previous prompt was still waiting')
         expect(entries[2].textContent).toContain('Repeat')
-        expect(entries[3].textContent).toContain('Failed: Sends once the machine is back online')
+        expect(entries[3].textContent).toContain('Failed: the machine was offline')
         expect(entries[4].textContent).toContain('Cancelled')
         expect(entries[4].textContent).toContain('Queue #1')
 
         fireEvent.click(toggle)
         await waitFor(() => expect(screen.queryByRole('list', { name: 'History' })).toBeNull())
+    })
+
+    it('gives a failed run in the history the reason it failed, not the row\'s sentence for a task still held up', async () => {
+        const now = Date.now()
+        setup({
+            tasks: [task({ lastError: 'session_unavailable' })],
+            runs: [
+                run({ id: 'r4', recordedAt: now - MINUTE, outcome: 'failed', detail: 'send_failed', runNumber: null, preview: null }),
+                run({ id: 'r3', recordedAt: now - 2 * MINUTE, outcome: 'failed', detail: 'session_archived', runNumber: null, preview: null }),
+                run({ id: 'r2', recordedAt: now - 3 * MINUTE, outcome: 'failed', detail: 'session_unavailable', runNumber: null, preview: null }),
+                run({ id: 'r1', recordedAt: now - 4 * MINUTE, outcome: 'failed', detail: 'machine_offline', runNumber: null, preview: null })
+            ]
+        })
+        // The row is about a task that is still trying, so it says what it is waiting for.
+        const row = await screen.findByRole('listitem')
+        expect(row.textContent).toContain('The session cannot be resumed right now; retrying')
+
+        fireEvent.click(screen.getByRole('button', { name: 'History' }))
+        const history = await screen.findByRole('list', { name: 'History' })
+        const entries = within(history).getAllByRole('listitem')
+        expect(entries.map((entry) => entry.textContent)).toEqual([
+            expect.stringContaining('Failed: the send failed'),
+            expect.stringContaining('Failed: the session was archived'),
+            expect.stringContaining('Failed: the session could not be resumed'),
+            expect.stringContaining('Failed: the machine was offline')
+        ])
+        // A run is over: nothing of "retrying" or of what the task does once the machine is back.
+        expect(history.textContent).not.toContain('retrying')
+        expect(history.textContent).not.toContain('Sends once the machine is back online')
+        expect(history.textContent).not.toContain('nothing runs until it is reopened')
     })
 
     it('keeps the bar for the history alone once the last task is gone', async () => {
