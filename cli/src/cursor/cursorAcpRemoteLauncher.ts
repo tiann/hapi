@@ -1484,27 +1484,6 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
-    private wireAvailableCommands(backend: AcpSdkBackend, sessionId: string): void {
-        const session = this.session;
-        session.availableSlashCommands ??= new Set(session.client.getMetadata()?.slashCommands);
-        const publish = (reported: boolean) => {
-            if (this.backend !== backend || this.sessionTeardownStarted) return;
-            const commands = new Set(backend.getAvailableCommands(sessionId)
-                .map((command) => command.name)
-                .filter((name) => /^[^\s/]+$/.test(name)));
-            // A silent fresh backend has not replaced the previous catalog.
-            if (!reported && commands.size === 0) return;
-            const previous = session.availableSlashCommands;
-            session.availableSlashCommands = commands;
-            if (previous?.size === commands.size && [...commands].every((name) => previous.has(name))) return;
-            session.client.updateMetadata((metadata) => ({ ...metadata, slashCommands: [...commands] }));
-        };
-        backend.setAvailableCommandsUpdateListener((updatedSessionId) => {
-            if (updatedSessionId === null || updatedSessionId === sessionId) publish(true);
-        });
-        publish(backend.hasSessionAvailableCommands(sessionId));
-    }
-
     private async disconnectBackend(backend = this.backend): Promise<void> {
         if (!backend) return;
         let disconnect = this.backendDisconnects.get(backend);
@@ -1572,6 +1551,27 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 setCursorAcpModelsSnapshot(null);
             }
         }
+    }
+
+    private wireAvailableCommands(backend: AcpSdkBackend, sessionId: string): void {
+        const session = this.session;
+        session.availableSlashCommands ??= new Set(session.client.getMetadata()?.slashCommands);
+        const publish = (reported: boolean) => {
+            if (this.backend !== backend || this.sessionTeardownStarted) return;
+            const commands = new Set(backend.getAvailableCommands(sessionId)
+                .map((command) => command.name)
+                .filter((name) => /^[^\s/]+$/.test(name)));
+            // A silent fresh backend has not replaced the previous catalog.
+            if (!reported && commands.size === 0) return;
+            const previous = session.availableSlashCommands;
+            session.availableSlashCommands = commands;
+            if (previous?.size === commands.size && [...commands].every((name) => previous.has(name))) return;
+            session.client.updateMetadata((metadata) => ({ ...metadata, slashCommands: [...commands] }));
+        };
+        backend.setAvailableCommandsUpdateListener((updatedSessionId) => {
+            if (updatedSessionId === null || updatedSessionId === sessionId) publish(true);
+        });
+        publish(backend.hasSessionAvailableCommands(sessionId));
     }
 
     private wireStderrErrorListener(

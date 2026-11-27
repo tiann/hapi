@@ -684,73 +684,6 @@ describe('cursorAcpRemoteLauncher', () => {
         delete process.env.HAPI_SESSION_SUMMARY_CONTRACT;
     });
 
-    it('publishes the current ACP slash catalog and ignores updates for other sessions', async () => {
-        const session = makeSession(null, { keepQueueOpen: true });
-        harness.availableCommands = [{ name: 'rename-chat' }, { name: 'not a command' }];
-        const running = cursorAcpRemoteLauncher(session);
-        try {
-            await vi.waitFor(() => expect(session.availableSlashCommands).toEqual(new Set(['rename-chat'])));
-            const updateMetadata = vi.mocked(session.client.updateMetadata);
-            const catalogUpdates = () => updateMetadata.mock.calls
-                .map(([update]) => update({} as Parameters<typeof update>[0]).slashCommands)
-                .filter((commands) => commands !== undefined);
-            expect(catalogUpdates()).toEqual([['rename-chat']]);
-
-            harness.availableCommands = [{ name: 'simplify' }];
-            harness.availableCommandsListener?.('unrelated-session');
-            expect(catalogUpdates()).toEqual([['rename-chat']]);
-            harness.availableCommandsListener?.('new-acp-session');
-            expect(catalogUpdates()).toEqual([['rename-chat'], ['simplify']]);
-
-            harness.availableCommands = [];
-            harness.availableCommandsListener?.('new-acp-session');
-            expect(catalogUpdates()).toEqual([['rename-chat'], ['simplify'], []]);
-        } finally {
-            session.queue.close();
-            await running;
-        }
-    });
-
-    it('keeps the resumed slash catalog until the backend reports a replacement', async () => {
-        const session = makeSession('previous-session', { keepQueueOpen: true });
-        vi.mocked(session.client.getMetadata).mockReturnValue({ slashCommands: ['rename-chat'] } as never);
-        const running = cursorAcpRemoteLauncher(session);
-        try {
-            await vi.waitFor(() => expect(session.client.emitSessionReady).toHaveBeenCalled());
-            expect(session.availableSlashCommands).toEqual(new Set(['rename-chat']));
-
-            harness.availableCommandsListener?.('loaded-acp-session');
-            expect(session.availableSlashCommands).toEqual(new Set());
-        } finally {
-            session.queue.close();
-            await running;
-        }
-    });
-
-    it.each([false, true])('does not replay an advertised command after a retryable failure (tool activity: %s)', async (ranTool) => {
-        const session = makeSession(null, { keepQueueOpen: true });
-        harness.availableCommands = [{ name: 'rename-chat' }];
-        harness.promptErrors = [new Error('http/2 stream closed with error code CANCEL')];
-        if (ranTool) {
-            harness.promptMessageBatches = [[{ type: 'tool_call', id: 'tool', name: 'shell', input: {}, status: 'completed' }]];
-        }
-        const running = cursorAcpRemoteLauncher(session);
-        try {
-            await vi.waitFor(() => expect(session.availableSlashCommands?.has('rename-chat')).toBe(true));
-            const mode: EnhancedMode = { permissionMode: 'default' };
-            enqueueCursorUserMessage(session.queue, '/rename-chat New title', mode, 'command', session.availableSlashCommands);
-            enqueueCursorUserMessage(session.queue, 'next task', mode, 'prompt', session.availableSlashCommands);
-            await vi.waitFor(() => expect(harness.prompts).toEqual([
-                [{ type: 'text', text: '/rename-chat New title' }],
-                ...(ranTool ? [[{ type: 'text', text: 'Continue.' }]] : []),
-                [{ type: 'text', text: 'next task' }]
-            ]));
-        } finally {
-            session.queue.close();
-            await running;
-        }
-    });
-
     it('does not auto-bridge after a soft-steer accepted newer input', async () => {
         // Cold-review Major 2026-09-12: steer B into prompt A, then A hits 429.
         // Bridge must not replay A (would override the accepted correction).
@@ -6395,6 +6328,73 @@ describe('cursorAcpRemoteLauncher', () => {
             lastUserMessage: longPrompt,
             priorAssistantClaimsDone: false
         })).toEqual({ ok: false, reason: 'not_bridgeable' });
+    });
+
+    it('publishes the current ACP slash catalog and ignores updates for other sessions', async () => {
+        const session = makeSession(null, { keepQueueOpen: true });
+        harness.availableCommands = [{ name: 'rename-chat' }, { name: 'not a command' }];
+        const running = cursorAcpRemoteLauncher(session);
+        try {
+            await vi.waitFor(() => expect(session.availableSlashCommands).toEqual(new Set(['rename-chat'])));
+            const updateMetadata = vi.mocked(session.client.updateMetadata);
+            const catalogUpdates = () => updateMetadata.mock.calls
+                .map(([update]) => update({} as Parameters<typeof update>[0]).slashCommands)
+                .filter((commands) => commands !== undefined);
+            expect(catalogUpdates()).toEqual([['rename-chat']]);
+
+            harness.availableCommands = [{ name: 'simplify' }];
+            harness.availableCommandsListener?.('unrelated-session');
+            expect(catalogUpdates()).toEqual([['rename-chat']]);
+            harness.availableCommandsListener?.('new-acp-session');
+            expect(catalogUpdates()).toEqual([['rename-chat'], ['simplify']]);
+
+            harness.availableCommands = [];
+            harness.availableCommandsListener?.('new-acp-session');
+            expect(catalogUpdates()).toEqual([['rename-chat'], ['simplify'], []]);
+        } finally {
+            session.queue.close();
+            await running;
+        }
+    });
+
+    it('keeps the resumed slash catalog until the backend reports a replacement', async () => {
+        const session = makeSession('previous-session', { keepQueueOpen: true });
+        vi.mocked(session.client.getMetadata).mockReturnValue({ slashCommands: ['rename-chat'] } as never);
+        const running = cursorAcpRemoteLauncher(session);
+        try {
+            await vi.waitFor(() => expect(session.client.emitSessionReady).toHaveBeenCalled());
+            expect(session.availableSlashCommands).toEqual(new Set(['rename-chat']));
+
+            harness.availableCommandsListener?.('loaded-acp-session');
+            expect(session.availableSlashCommands).toEqual(new Set());
+        } finally {
+            session.queue.close();
+            await running;
+        }
+    });
+
+    it.each([false, true])('does not replay an advertised command after a retryable failure (tool activity: %s)', async (ranTool) => {
+        const session = makeSession(null, { keepQueueOpen: true });
+        harness.availableCommands = [{ name: 'rename-chat' }];
+        harness.promptErrors = [new Error('http/2 stream closed with error code CANCEL')];
+        if (ranTool) {
+            harness.promptMessageBatches = [[{ type: 'tool_call', id: 'tool', name: 'shell', input: {}, status: 'completed' }]];
+        }
+        const running = cursorAcpRemoteLauncher(session);
+        try {
+            await vi.waitFor(() => expect(session.availableSlashCommands?.has('rename-chat')).toBe(true));
+            const mode: EnhancedMode = { permissionMode: 'default' };
+            enqueueCursorUserMessage(session.queue, '/rename-chat New title', mode, 'command', session.availableSlashCommands);
+            enqueueCursorUserMessage(session.queue, 'next task', mode, 'prompt', session.availableSlashCommands);
+            await vi.waitFor(() => expect(harness.prompts).toEqual([
+                [{ type: 'text', text: '/rename-chat New title' }],
+                ...(ranTool ? [[{ type: 'text', text: 'Continue.' }]] : []),
+                [{ type: 'text', text: 'next task' }]
+            ]));
+        } finally {
+            session.queue.close();
+            await running;
+        }
     });
 
     it('does not wrap pass-through slash commands as Bridge prompts', async () => {
