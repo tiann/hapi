@@ -1,5 +1,5 @@
 ---
-description: "Fork, rewind, branch across harnesses and export HAPI conversations, with per-agent support for Claude Code, Codex, OpenCode, Grok, Cursor and Pi."
+description: "Fork, rewind, branch across harnesses and export HAPI conversations, with per-agent support for Claude Code, Codex, Cursor, OpenCode, Grok and Pi."
 ---
 
 # Fork, rewind, branch and export
