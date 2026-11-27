@@ -2681,7 +2681,8 @@ export class SyncEngine {
                     undefined, undefined, request.workspace === 'worktree' ? 'worktree' : 'simple',
                     request.worktreeName, undefined, undefined, request.agent === 'cursor' ? 'default' : undefined, undefined,
                     undefined, undefined, undefined, 'remote', undefined, childId, undefined,
-                    sourceAgent === 'cursor' || request.agent === 'cursor' ? false : undefined
+                    // The confirmed Cursor workspace may have disappeared since the dialog opened.
+                    sourceAgent === 'cursor' ? false : undefined
                 )
                 if (spawn.type !== 'success') {
                     if (spawn.childStarted === false) {

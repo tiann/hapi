@@ -62,7 +62,8 @@ export async function runCursor(opts: {
             model: opts.model,
             reservedSessionId: opts.reservedSessionId
         });
-    const { api, session } = bootstrap;
+    const { api, session, metadata } = bootstrap;
+    const previousSlashCommands = new Set(metadata.slashCommands);
 
     const startingMode: 'local' | 'remote' = startedBy === 'runner' ? 'remote' : 'local';
 
@@ -114,7 +115,8 @@ export async function runCursor(opts: {
         };
         const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
         enqueueCursorUserMessage(
-            messageQueue, formattedText, enhancedMode, localId, sessionWrapperRef.current?.availableSlashCommands
+            messageQueue, formattedText, enhancedMode, localId,
+            sessionWrapperRef.current?.availableSlashCommands ?? previousSlashCommands
         );
     });
 

@@ -58,9 +58,14 @@ export function parseCursorSpecialCommand(message: string): CursorSpecialCommand
     return { type: null };
 }
 
-export function isAdvertisedCursorSlashCommand(message: string, commands?: ReadonlySet<string>): boolean {
+export function isCursorSlashCommand(
+    message: string,
+    commands?: ReadonlySet<string>,
+    isolated = false
+): boolean {
+    if (parseCursorSpecialCommand(message).type === 'pass-through') return true;
     const name = /^\/([^\s/]+)(?=\s|$)/.exec(message.trimStart())?.[1];
-    return name !== undefined && commands?.has(name) === true;
+    return name !== undefined && (isolated || commands?.has(name) === true);
 }
 
 export function cursorPassThroughStatusMessage(command: CursorPassThroughCommand): string {

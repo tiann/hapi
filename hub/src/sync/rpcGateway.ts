@@ -335,6 +335,7 @@ export class RpcGateway {
         reservedSessionId?: string,
         /** Claude: resume the spawned child truncated to this entry uuid. */
         resumeSessionAt?: string,
+        /** Pass false to reject a missing directory instead of letting the runner create it. */
         approvedNewDirectoryCreation?: boolean
     ): Promise<
         | { type: 'success'; sessionId: string }

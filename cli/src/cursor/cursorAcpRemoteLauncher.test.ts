@@ -321,6 +321,7 @@ vi.mock('./utils/cursorAcpBackend', () => ({
                 harness.stderrErrorHandler = handler;
             }),
             getAvailableCommands: vi.fn(() => harness.availableCommands),
+            hasSessionAvailableCommands: vi.fn(() => harness.availableCommands.length > 0),
             setAvailableCommandsUpdateListener: vi.fn((listener: typeof harness.availableCommandsListener) => {
                 harness.availableCommandsListener = listener;
             }),
@@ -710,10 +711,29 @@ describe('cursorAcpRemoteLauncher', () => {
         }
     });
 
-    it('sends an advertised command separately and does not replay it after a retryable failure', async () => {
+    it('keeps the resumed slash catalog until the backend reports a replacement', async () => {
+        const session = makeSession('previous-session', { keepQueueOpen: true });
+        vi.mocked(session.client.getMetadata).mockReturnValue({ slashCommands: ['rename-chat'] } as never);
+        const running = cursorAcpRemoteLauncher(session);
+        try {
+            await vi.waitFor(() => expect(session.client.emitSessionReady).toHaveBeenCalled());
+            expect(session.availableSlashCommands).toEqual(new Set(['rename-chat']));
+
+            harness.availableCommandsListener?.('loaded-acp-session');
+            expect(session.availableSlashCommands).toEqual(new Set());
+        } finally {
+            session.queue.close();
+            await running;
+        }
+    });
+
+    it.each([false, true])('does not replay an advertised command after a retryable failure (tool activity: %s)', async (ranTool) => {
         const session = makeSession(null, { keepQueueOpen: true });
         harness.availableCommands = [{ name: 'rename-chat' }];
         harness.promptErrors = [new Error('http/2 stream closed with error code CANCEL')];
+        if (ranTool) {
+            harness.promptMessageBatches = [[{ type: 'tool_call', id: 'tool', name: 'shell', input: {}, status: 'completed' }]];
+        }
         const running = cursorAcpRemoteLauncher(session);
         try {
             await vi.waitFor(() => expect(session.availableSlashCommands?.has('rename-chat')).toBe(true));
@@ -722,6 +742,7 @@ describe('cursorAcpRemoteLauncher', () => {
             enqueueCursorUserMessage(session.queue, 'next task', mode, 'prompt', session.availableSlashCommands);
             await vi.waitFor(() => expect(harness.prompts).toEqual([
                 [{ type: 'text', text: '/rename-chat New title' }],
+                ...(ranTool ? [[{ type: 'text', text: 'Continue.' }]] : []),
                 [{ type: 'text', text: 'next task' }]
             ]));
         } finally {

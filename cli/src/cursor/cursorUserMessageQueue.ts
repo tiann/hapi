@@ -1,5 +1,5 @@
 import type { EnhancedMode } from './loop';
-import { isAdvertisedCursorSlashCommand, parseCursorSpecialCommand } from './cursorSpecialCommands';
+import { isCursorSlashCommand } from './cursorSpecialCommands';
 import type { MessageQueue2 } from '@/utils/MessageQueue2';
 
 /**
@@ -16,8 +16,7 @@ export function enqueueCursorUserMessage(
     // Preserve caller localId for messages-consumed / cancel. Bridge provenance
     // is queue-owned (`internal.kind === 'model-error-bridge'`), so a forged
     // `bridge:*` localId cannot impersonate a Bridge turn.
-    const specialCommand = parseCursorSpecialCommand(formattedText);
-    if (specialCommand.type !== null || isAdvertisedCursorSlashCommand(formattedText, availableSlashCommands)) {
+    if (isCursorSlashCommand(formattedText, availableSlashCommands)) {
         messageQueue.pushIsolated(formattedText.trim(), enhancedMode, localId);
         return;
     }

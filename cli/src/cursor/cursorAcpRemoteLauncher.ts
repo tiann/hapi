@@ -37,7 +37,7 @@ import { CURSOR_AUTO_MODEL_ID, cursorSpawnModelId, isCursorAutoModelId } from '@
 import { CURSOR_PLAN_CONTINUE } from './utils/cursorPlanContinue';
 import {
     cursorPassThroughStatusMessage,
-    isAdvertisedCursorSlashCommand,
+    isCursorSlashCommand,
     parseCursorSpecialCommand
 } from './cursorSpecialCommands';
 import { buildCursorModelsSeedPayload, seedCursorModelsCache } from '@/modules/common/cursorModels';
@@ -627,9 +627,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 if (!taken) {
                     return { steered: false, error: 'Message not in queue' };
                 }
-                const isControlCommand = Boolean(taken.item.isolate)
-                    || parseCursorSpecialCommand(taken.item.message).type !== null
-                    || isAdvertisedCursorSlashCommand(taken.item.message, session.availableSlashCommands);
+                const isControlCommand = taken.item.isolate
+                    || isCursorSlashCommand(taken.item.message, session.availableSlashCommands);
                 if (isControlCommand) {
                     session.queue.restoreReservation(taken);
                     return { steered: false, error: 'Control commands cannot be steered' };
@@ -1142,9 +1141,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     this.lastUserMessage = batch.message;
 
                     const specialCommand = parseCursorSpecialCommand(batch.message);
-                    this.lastUserMessageWasSlashCommand = specialCommand.type === 'pass-through'
-                        || (batch.isolate && batch.message.startsWith('/'))
-                        || isAdvertisedCursorSlashCommand(batch.message, session.availableSlashCommands);
+                    this.lastUserMessageWasSlashCommand = isCursorSlashCommand(
+                        batch.message, session.availableSlashCommands, batch.isolate
+                    );
                     if (specialCommand.type === 'pass-through') {
                         messageBuffer.addMessage(cursorPassThroughStatusMessage(specialCommand.command), 'status');
                     }
@@ -1276,18 +1275,6 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                             this.pendingRetryableError = error instanceof Error ? error.message : String(error);
                         }
 
-                        // A command can take effect before Cursor reports a tool call.
-                        if (this.lastUserMessageWasSlashCommand) {
-                            const message = this.pendingRetryableError ?? 'Cursor command failed';
-                            const failure = settleFailure(caughtRetryableError ?? message);
-                            this.surfacePromptFailure(message, { deferFooter: true });
-                            this.pendingStderrFailure = null;
-                            this.pendingTextFailure = null;
-                            if (failure) this.recordModelError(failure);
-                            this.stampBlockedFooter(message);
-                            break;
-                        }
-
                         // Capture the primary attempt's retryable failure and its
                         // classified settlement before awaiting the drain: a pending
                         // steer can emit inline text, stderr (`status 429`), or
@@ -1380,12 +1367,16 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                             if (!bridgeQueued) this.stampBlockedFooter(CURSOR_POST_TOOL_INTERRUPT_GIVE_UP_MESSAGE);
                             break;
                         }
-                        if (retryAttempt < CURSOR_AUTO_RETRY_LIMIT) {
+                        // A slash command can take effect before Cursor reports a tool call.
+                        // Post-tool recovery above can still send a distinct Continue.
+                        if (retryAttempt < CURSOR_AUTO_RETRY_LIMIT && !this.lastUserMessageWasSlashCommand) {
                             this.surfaceRetry(retryAttempt + 1);
                             continue;
                         }
                         {
-                            const message = `Cursor Agent failed after ${CURSOR_AUTO_RETRY_LIMIT} retries.`;
+                            const message = this.lastUserMessageWasSlashCommand
+                                ? (this.pendingRetryableError ?? 'Cursor command failed')
+                                : `Cursor Agent failed after ${CURSOR_AUTO_RETRY_LIMIT} retries.`;
                             this.surfacePromptFailure(message, { deferFooter: true });
                             const exhaustedFailure = primaryExhaustedFailure;
                             this.pendingStderrFailure = null;
@@ -1394,6 +1385,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                                 ? this.recordModelError(exhaustedFailure)
                                 : { bridgeQueued: false };
                             if (!bridgeQueued) this.stampBlockedFooter(message);
+                            break;
                         }
                     }
                 }
@@ -1494,21 +1486,23 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
     private wireAvailableCommands(backend: AcpSdkBackend, sessionId: string): void {
         const session = this.session;
-        const publish = () => {
+        session.availableSlashCommands ??= new Set(session.client.getMetadata()?.slashCommands);
+        const publish = (reported: boolean) => {
             if (this.backend !== backend || this.sessionTeardownStarted) return;
             const commands = new Set(backend.getAvailableCommands(sessionId)
                 .map((command) => command.name)
                 .filter((name) => /^[^\s/]+$/.test(name)));
-            const previous = session.availableSlashCommands
-                ?? new Set(session.client.getMetadata()?.slashCommands);
+            // A silent fresh backend has not replaced the previous catalog.
+            if (!reported && commands.size === 0) return;
+            const previous = session.availableSlashCommands;
             session.availableSlashCommands = commands;
-            if (previous.size === commands.size && [...commands].every((name) => previous.has(name))) return;
+            if (previous?.size === commands.size && [...commands].every((name) => previous.has(name))) return;
             session.client.updateMetadata((metadata) => ({ ...metadata, slashCommands: [...commands] }));
         };
         backend.setAvailableCommandsUpdateListener((updatedSessionId) => {
-            if (updatedSessionId === null || updatedSessionId === sessionId) publish();
+            if (updatedSessionId === null || updatedSessionId === sessionId) publish(true);
         });
-        publish();
+        publish(backend.hasSessionAvailableCommands(sessionId));
     }
 
     private async disconnectBackend(backend = this.backend): Promise<void> {
