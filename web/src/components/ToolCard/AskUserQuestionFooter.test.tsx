@@ -2,7 +2,7 @@ import { StrictMode } from 'react'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type { ApiClient } from '@/api/client'
-import type { ChatToolCall } from '@/chat/types'
+import type { ChatToolCall, ToolCallBlock } from '@/chat/types'
 
 vi.mock('@/hooks/usePlatform', () => ({
     usePlatform: () => ({ haptic: { notification: vi.fn(), selection: vi.fn() } })
@@ -12,6 +12,7 @@ vi.mock('@/lib/use-translation', () => ({
 }))
 
 import { AskUserQuestionFooter } from './AskUserQuestionFooter'
+import { AskUserQuestionView } from './views/AskUserQuestionView'
 
 function makeTool(id: string, allowFreeText?: boolean): ChatToolCall {
     return {
@@ -169,6 +170,19 @@ describe('AskUserQuestionFooter draft persistence (hapi#1734)', () => {
         expect(denyPermission).not.toHaveBeenCalled()
         expect(field.value).toBe('my answer')
         expect(document.activeElement).not.toBe(field)
+    })
+
+    it('marks the chosen Cursor option by ID when a completed question is reopened', () => {
+        const tool = { ...makeTool('cursor-q'), name: 'CursorAskQuestion', input: {
+            questions: [{ id: 'branch', prompt: 'Which branch?', options: [
+                { id: 'dev', label: 'Development' }, { id: 'main', label: 'Main branch' }
+            ] }]
+        }, permission: { id: 'p', status: 'approved', answers: { branch: ['dev'] } } }
+        render(<AskUserQuestionView block={{ tool } as ToolCallBlock} metadata={null} />)
+        const selected = document.querySelector('div[class*="border-[var(--app-md-quote-border)]"][class*="p-[2px]"]')
+        expect(selected?.textContent).toContain('Development')
+        expect(selected?.textContent).not.toContain('Main branch')
+        expect(screen.queryByText('dev')).toBeNull()
     })
 
     it('submits only an advertised option ID from a Cursor question', async () => {
