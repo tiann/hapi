@@ -47,6 +47,28 @@
         }
       }
     },
+    "Automatically retry transient model errors once" : {
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "一時的なモデルエラーを自動で1回再試行"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Повторить запрос один раз при временной ошибке модели"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂时性模型错误自动重试一次"
+          }
+        }
+      }
+    },
     "Continue" : {
       "extractionState" : "manual",
       "localizations" : {

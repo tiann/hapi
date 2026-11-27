@@ -59,6 +59,16 @@ class HapiApiTest {
 
     private fun lastRequestBody() = Json.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
 
+    @Test fun cursorRetryUpdateSendsOnlyTheFlagAndReturnsTheHubState() {
+        server.enqueue(ok("""{"autoBridgeTransientModelErrors":false}"""))
+        val confirmed = runBlocking { session.api.setCursorAutoRetry(true) }
+        assertEquals(false, confirmed.autoBridgeTransientModelErrors)
+        val req = server.takeRequest()
+        assertEquals("PUT", req.method)
+        assertEquals("/api/hub-settings", req.path)
+        assertEquals("""{"autoBridgeTransientModelErrors":true}""", req.body.readUtf8())
+    }
+
     @Test
     fun `production clients reject cleartext hub urls`() {
         assertFailsWith<IllegalArgumentException> {

@@ -113,6 +113,7 @@
     <string name="settings_category_general_summary">Внешний вид, язык и о приложении</string>
     <string name="settings_back">Назад</string>
     <string name="settings_cancel">Отмена</string>
+    <string name="settings_cursor_retry">Повторить запрос один раз при временной ошибке модели</string>
     <string name="settings_retry">Повторить</string>
     <string name="settings_load_error">Не удалось загрузить эту панель.</string>
     <string name="settings_owner_only">Эта панель доступна только владельцу хаба (пространство имён по умолчанию).</string>

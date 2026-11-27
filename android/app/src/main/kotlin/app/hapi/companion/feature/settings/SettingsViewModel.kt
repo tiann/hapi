@@ -1,5 +1,6 @@
 package app.hapi.companion.feature.settings
 
+import app.hapi.data.api.ApiError
 import app.hapi.data.auth.JwtPeek
 import app.hapi.protocol.wire.HubHealthResponse
 import app.hapi.companion.ui.theme.ColorThemePreset
@@ -38,6 +39,8 @@ sealed interface HubInfoState {
  * passes [probeHealth] = false — it needs only the owner gate, so opening the
  * hub itself fires no `/health` request (the General subpage's holder does).
  */
+data class CursorRetrySetting(val enabled: Boolean? = null, val pending: Boolean = false, val error: String? = null)
+
 class SettingsViewModel(
     private val themePrefs: ThemePrefs,
     private val languagePrefs: LanguagePrefs,
@@ -49,6 +52,8 @@ class SettingsViewModel(
     private val scope: CoroutineScope,
     /** Kick off the About hub probe eagerly (default) or skip it. */
     probeHealth: Boolean = true,
+    private val fetchCursorRetry: (suspend () -> Boolean?)? = null,
+    private val updateCursorRetry: (suspend (Boolean) -> Boolean?)? = null,
 ) {
 
     val themeSettings: StateFlow<ThemeSettings> = themePrefs.settings
@@ -66,10 +71,54 @@ class SettingsViewModel(
 
     val hubInfo: StateFlow<HubInfoState> = mutableHubInfo.asStateFlow()
 
+    private val retrySetting = MutableStateFlow(CursorRetrySetting())
+    val cursorRetry: StateFlow<CursorRetrySetting> = retrySetting.asStateFlow()
+
     init {
-        scope.launch { mutableIsOwner.value = isOwnerNamespace(runCatching { currentJwt() }.getOrNull()) }
+        scope.launch {
+            mutableIsOwner.value = isOwnerNamespace(runCatching { currentJwt() }.getOrNull())
+            if (probeHealth && mutableIsOwner.value) refreshCursorRetry()
+        }
         if (probeHealth) {
             scope.launch { loadHubInfo() }
+        }
+    }
+
+    fun refreshCursorRetry() {
+        val fetch = fetchCursorRetry ?: return
+        if (!mutableIsOwner.value) return
+        val previous = retrySetting.value
+        if (previous.pending || !retrySetting.compareAndSet(previous, previous.copy(pending = true))) return
+        scope.launch { runRetryRequest { fetch() } }
+    }
+
+    fun setCursorRetry(enabled: Boolean) {
+        val update = updateCursorRetry ?: return
+        val previous = retrySetting.value
+        if (!mutableIsOwner.value || previous.enabled == null || previous.enabled == enabled || previous.pending) return
+        if (!retrySetting.compareAndSet(previous, previous.copy(pending = true))) return
+        scope.launch { runRetryRequest(reconcileFailure = true) { update(enabled) } }
+    }
+
+    private suspend fun runRetryRequest(reconcileFailure: Boolean = false, request: suspend () -> Boolean?) {
+        retrySetting.value = try {
+            CursorRetrySetting(enabled = request())
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            if (error is ApiError && (error.status == 403 || error.status == 404)) CursorRetrySetting()
+            else {
+                val confirmed = if (reconcileFailure) {
+                    try {
+                        fetchCursorRetry?.invoke()
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        null
+                    }
+                } else null
+                CursorRetrySetting(enabled = confirmed, error = error.message.orEmpty())
+            }
         }
     }
 

@@ -433,6 +433,9 @@ class HapiApi internal constructor(
         )
     }
 
+    suspend fun setCursorAutoRetry(enabled: Boolean): HubSettingsResponse =
+        request("PUT", url("api", "hub-settings").build(), mapOf("autoBridgeTransientModelErrors" to enabled).toJsonBody())
+
     /** `GET /api/features`. */
     override suspend fun getFeatures(): FeaturesResponse =
         request("GET", url("api", "features").build())

@@ -120,6 +120,7 @@
     <string name="settings_category_general_summary">外観、言語、アプリ情報</string>
     <string name="settings_back">戻る</string>
     <string name="settings_cancel">キャンセル</string>
+    <string name="settings_cursor_retry">一時的なモデルエラーを自動で1回再試行</string>
     <string name="settings_retry">再試行</string>
     <string name="settings_load_error">このダッシュボードを読み込めませんでした。</string>
     <string name="settings_owner_only">このダッシュボードは Hub のオーナー（default namespace）のみ利用できます。</string>

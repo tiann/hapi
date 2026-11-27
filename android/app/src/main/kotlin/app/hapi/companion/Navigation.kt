@@ -993,6 +993,8 @@ private class SettingsViewModelHolder(
         fetchHealth = { hubGraph.session.api.health() },
         scope = scope,
         probeHealth = probeHealth,
+        fetchCursorRetry = { hubGraph.session.api.getHubSettings().autoBridgeTransientModelErrors },
+        updateCursorRetry = { hubGraph.session.api.setCursorAutoRetry(it).autoBridgeTransientModelErrors },
     )
 
     override fun onCleared() {
