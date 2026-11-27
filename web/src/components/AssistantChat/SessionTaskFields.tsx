@@ -141,13 +141,15 @@ export function IntervalField({ id, label = 'composer.taskInterval', value, onCh
 export function FirstRunField({ id, value, onChange, disabled }: {
     /** Prefix for the group's label id. */
     id: string
-    /** '' runs now, a `datetime-local` value runs at that time. */
-    value: string
-    onChange: (next: string) => void
+    /** null runs now; a `datetime-local` value runs at that time, '' while it is incomplete. */
+    value: string | null
+    onChange: (next: string | null) => void
     disabled: boolean
 }) {
     const { t } = useTranslation()
-    const scheduled = value !== ''
+    // The mode is the value's kind, not whether it is filled in: a datetime-local input reports
+    // '' for as long as any segment is missing, which must not read as "now" and take the field away mid-edit.
+    const scheduled = value !== null
     const labelId = `${id}-label`
     return (
         <div role="group" aria-labelledby={labelId}>
@@ -157,7 +159,7 @@ export function FirstRunField({ id, value, onChange, disabled }: {
                     type="button"
                     aria-pressed={!scheduled}
                     disabled={disabled}
-                    onClick={() => onChange('')}
+                    onClick={() => onChange(null)}
                     className={`flex-1 rounded-md px-2 py-1 text-xs font-medium transition-colors ${
                         !scheduled
                             ? 'bg-[var(--app-secondary-bg)] text-[var(--app-fg)]'
@@ -170,7 +172,7 @@ export function FirstRunField({ id, value, onChange, disabled }: {
                     type="button"
                     aria-pressed={scheduled}
                     disabled={disabled}
-                    onClick={() => onChange(minDateTimeLocal())}
+                    onClick={() => onChange(value ?? minDateTimeLocal())}
                     className={`flex-1 rounded-md px-2 py-1 text-xs font-medium transition-colors ${
                         scheduled
                             ? 'bg-[var(--app-secondary-bg)] text-[var(--app-fg)]'

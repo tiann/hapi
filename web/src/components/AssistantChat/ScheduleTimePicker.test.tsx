@@ -270,6 +270,49 @@ describe('ScheduleTimePicker task modes', () => {
         }))
     })
 
+    it('keeps "At a set time" while the date is incomplete, and refuses to create until it is complete', async () => {
+        const picker = renderPicker({ composerDraft: 'ping' })
+        fireEvent.click(screen.getByRole('button', { name: 'Repeat' }))
+        const group = screen.getByRole('group', { name: 'First run' })
+        fireEvent.click(within(group).getByRole('button', { name: 'At a set time' }))
+        const input = screen.getByLabelText('First run date and time') as HTMLInputElement
+        expect(input.value).not.toBe('')
+
+        // A segment cleared to retype it: the browser reports an empty value until the date is complete.
+        fireEvent.change(input, { target: { value: '' } })
+        expect(screen.getByLabelText('First run date and time')).toBe(input)
+        expect(within(group).getByRole('button', { name: 'At a set time' })).toHaveAttribute('aria-pressed', 'true')
+        expect(within(group).getByRole('button', { name: 'Now' })).toHaveAttribute('aria-pressed', 'false')
+        // The form does not take the gap for "now": nothing is created until the time is whole.
+        fireEvent.click(screen.getByRole('button', { name: 'Create repeat task' }))
+        expect((await screen.findByRole('alert')).textContent).toBe('The first run must be in the future.')
+        expect(picker.createTask).not.toHaveBeenCalled()
+
+        const at = new Date(Date.now() + 2 * 60 * 60 * 1000)
+        const pad = (n: number) => String(n).padStart(2, '0')
+        const value = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}T${pad(at.getHours())}:${pad(at.getMinutes())}`
+        fireEvent.change(input, { target: { value } })
+        fireEvent.click(screen.getByRole('button', { name: 'Create repeat task' }))
+        // The task starts at the retyped time (to the minute), not at once.
+        await waitFor(() => expect(picker.createTask).toHaveBeenCalledWith(expect.objectContaining({ startAt: new Date(value).getTime() })))
+    })
+
+    it('goes back to "now" only through its own button', async () => {
+        const picker = renderPicker({ composerDraft: 'ping' })
+        fireEvent.click(screen.getByRole('button', { name: 'Queue' }))
+        fireEvent.change(screen.getByLabelText('Message 1'), { target: { value: 'first' } })
+        const group = screen.getByRole('group', { name: 'First run' })
+        fireEvent.click(within(group).getByRole('button', { name: 'At a set time' }))
+        fireEvent.change(screen.getByLabelText('First run date and time'), { target: { value: '' } })
+        fireEvent.click(within(group).getByRole('button', { name: 'Now' }))
+
+        expect(screen.queryByLabelText('First run date and time')).toBeNull()
+        expect(within(group).getByRole('button', { name: 'Now' })).toHaveAttribute('aria-pressed', 'true')
+        fireEvent.click(screen.getByRole('button', { name: 'Start queue' }))
+        await waitFor(() => expect(picker.createTask).toHaveBeenCalledTimes(1))
+        expect(picker.createTask.mock.calls[0]?.[0]).not.toHaveProperty('startAt')
+    })
+
     it('edits a queue one prompt per row, each free to span several lines', async () => {
         const picker = renderPicker()
 

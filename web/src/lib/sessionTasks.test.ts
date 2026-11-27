@@ -167,6 +167,16 @@ describe('buildRepeatRequest', () => {
         expect(buildRepeatRequest({ ...EMPTY_REPEAT_DRAFT, stopAfterRuns: '0' }, 'x')).toEqual({ error: 'runs' })
         expect(buildRepeatRequest({ ...EMPTY_REPEAT_DRAFT, stopAfterRuns: '2.5' }, 'x')).toEqual({ error: 'runs' })
     })
+
+    it('runs now only when no first run was picked, and refuses a set time that is still incomplete', () => {
+        // null is the "Now" choice: no start time goes out, for either kind of task.
+        const now = buildRepeatRequest(EMPTY_REPEAT_DRAFT, 'x')
+        expect('request' in now && 'startAt' in now.request).toBe(false)
+        expect('request' in buildQueueRequest(EMPTY_QUEUE_DRAFT, 'first')).toBe(true)
+        // '' is a set time with a segment missing, not "now": the form is refused until the date is complete.
+        expect(buildRepeatRequest({ ...EMPTY_REPEAT_DRAFT, firstRunAt: '' }, 'x')).toEqual({ error: 'firstRun' })
+        expect(buildQueueRequest({ ...EMPTY_QUEUE_DRAFT, items: ['first'], firstRunAt: '' })).toEqual({ error: 'firstRun' })
+    })
 })
 
 describe('buildQueueRequest', () => {
@@ -240,14 +250,14 @@ const queueTask: SessionTask = {
 
 describe('taskToDraft', () => {
     it('fills the editor with the task\'s own fields', () => {
-        expect(taskToDraft(repeatTask)).toEqual({ text: 'ping', interval: { value: '1', unit: 'minutes' }, firstRunAt: '', stopAfterRuns: '5' })
+        expect(taskToDraft(repeatTask)).toEqual({ text: 'ping', interval: { value: '1', unit: 'minutes' }, firstRunAt: null, stopAfterRuns: '5' })
         // Only the prompts still to send.
-        expect(taskToDraft(queueTask)).toEqual({ items: ['b', 'c'], interval: { value: '1', unit: 'minutes' }, firstRunAt: '' })
+        expect(taskToDraft(queueTask)).toEqual({ items: ['b', 'c'], interval: { value: '1', unit: 'minutes' }, firstRunAt: null })
     })
 })
 
 describe('buildRepeatEditRequest', () => {
-    const draft: RepeatTaskDraft = { text: 'pong', interval: { value: '30', unit: 'minutes' }, firstRunAt: '', stopAfterRuns: '5' }
+    const draft: RepeatTaskDraft = { text: 'pong', interval: { value: '30', unit: 'minutes' }, firstRunAt: null, stopAfterRuns: '5' }
 
     it('sends only the fields that changed and leaves an untouched run limit alone', () => {
         expect(buildRepeatEditRequest(repeatTask, draft)).toEqual({

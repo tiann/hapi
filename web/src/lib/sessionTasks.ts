@@ -49,8 +49,8 @@ export type TaskDraftError =
 export type RepeatTaskDraft = {
     text: string
     interval: IntervalInput
-    /** '' runs now, a `datetime-local` value runs at that time. */
-    firstRunAt: string
+    /** null runs now; a `datetime-local` value runs at that time, '' while that value is still incomplete. */
+    firstRunAt: string | null
     /** '' repeats until the task is paused or deleted. */
     stopAfterRuns: string
 }
@@ -59,14 +59,14 @@ export type QueueTaskDraft = {
     /** One prompt per entry; each may span several lines. */
     items: string[]
     interval: IntervalInput
-    firstRunAt: string
+    firstRunAt: string | null
 }
 
 export const EMPTY_INTERVAL: IntervalInput = { value: '10', unit: 'minutes' }
 
-export const EMPTY_REPEAT_DRAFT: RepeatTaskDraft = { text: '', interval: EMPTY_INTERVAL, firstRunAt: '', stopAfterRuns: '' }
+export const EMPTY_REPEAT_DRAFT: RepeatTaskDraft = { text: '', interval: EMPTY_INTERVAL, firstRunAt: null, stopAfterRuns: '' }
 /** One blank row: the queue editor always shows at least one prompt field. */
-export const EMPTY_QUEUE_DRAFT: QueueTaskDraft = { items: [''], interval: EMPTY_INTERVAL, firstRunAt: '' }
+export const EMPTY_QUEUE_DRAFT: QueueTaskDraft = { items: [''], interval: EMPTY_INTERVAL, firstRunAt: null }
 
 export function intervalToMs(value: number, unit: SessionTaskIntervalUnit): number {
     return Math.round(value * UNIT_MS[unit])
@@ -112,8 +112,9 @@ function readInterval(interval: IntervalInput): number | 'short' | 'long' | 'inv
     return ms
 }
 
-function readFirstRun(firstRunAt: string, now: number = Date.now()): { startAt?: number } | { error: TaskDraftError } {
-    if (!firstRunAt) return {}
+function readFirstRun(firstRunAt: string | null, now: number = Date.now()): { startAt?: number } | { error: TaskDraftError } {
+    if (firstRunAt === null) return {}
+    // '' is a set time with a segment missing: the browser reports no value until the date is complete.
     const ms = new Date(firstRunAt).getTime()
     // The hub tolerates a first run up to a minute in the past (clock skew, a slow request); see
     // checkSessionTaskStartAt. Anything older, or beyond the horizon, is refused here first.
@@ -227,18 +228,18 @@ export function buildQueueRequest(
     }
 }
 
-/** The form fields of an existing task, for the inline editor under its row. */
+/** The form fields of an existing task, for the inline editor under its row. The editor does not offer a first run. */
 export function taskToDraft(task: SessionTask): RepeatTaskDraft | QueueTaskDraft {
     const described = describeIntervalMs(task.intervalMs)
     const interval: IntervalInput = { value: String(described.value), unit: described.unit }
     if (task.kind === 'queue') {
         // Only the prompts still to send can change; the ones already sent stay as they are.
-        return { items: task.items.slice(task.runCount).map((item) => item.text), interval, firstRunAt: '' }
+        return { items: task.items.slice(task.runCount).map((item) => item.text), interval, firstRunAt: null }
     }
     return {
         text: task.items[0]?.text ?? '',
         interval,
-        firstRunAt: '',
+        firstRunAt: null,
         stopAfterRuns: task.maxRuns === null ? '' : String(task.maxRuns)
     }
 }
