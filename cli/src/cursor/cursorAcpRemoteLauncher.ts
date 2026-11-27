@@ -1,6 +1,7 @@
 import type { CursorRewindRpcParams } from '@hapi/protocol/apiTypes';
 import React from 'react';
 import { settleAcpLauncherShutdown } from '@/modules/common/remote/settleAcpLauncherShutdown';
+import { cursorTodosBySession } from './utils/cursorTodoSnapshot';
 import { restoreCursorRewindSettings } from './utils/restoreCursorRewindSettings';
 import { CursorConversationHistory, loadCursorHistoryStore } from './cursorConversationHistory';
 import { randomUUID } from 'node:crypto';
@@ -1548,6 +1549,11 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 // the transcript. Until this callback succeeds, keep input fenced.
                 await this.disconnectBackend();
                 if (this.shouldExit) throw new Error('Cursor session ended during rewind');
+                cursorTodosBySession.set(this.session.client, { revision: prepared.id, items: params.cursorTodoSnapshot ?? [] });
+                if (!params.cursorTodoSnapshot) {
+                    // Older Hubs only send the new binding. Discard their stale snapshot on cold resume too.
+                    this.session.client.updateAgentState(state => ({ ...state, cursorTodoRevision: prepared.id, cursorTodoSnapshot: [] }));
+                }
                 this.wireReplacementBackend(prepared.backend, () => {});
                 await this.activateLoadedBackend(prepared.backend, prepared.id, this.spawnedWithAutoReview, prepared.mode);
                 this.session.onSessionFoundWithProtocol(prepared.id, 'acp');

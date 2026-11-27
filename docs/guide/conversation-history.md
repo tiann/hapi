@@ -88,6 +88,8 @@ Before truncating the chat, the runner checks that Cursor can restore the curren
 
 HAPI records a boundary when a single plain-text user prompt matches one new native Cursor turn and its stored checkpoint. After a restart, fork or rewind, only newly verified messages gain checkpoints. Fork from the latest turn remains available when the current store can be verified.
 
+Cursor todo updates after rewind continue from the last checklist in the retained transcript, including when the runner reconnects.
+
 Rewind keeps the HAPI session ID. HAPI first loads an independent native copy at the checkpoint. The Hub then saves the new Cursor ID and shortens the transcript in a single transaction. The original Cursor store stays on disk. The Hub allows up to 255 seconds on the HTTP request so a slow native load can finish both RPC phases. If the Hub rejects the cut while the original session is still bound, the runner discards the prepared replacement and releases queued input. If the runner disconnects and input remains blocked, stop the active runner session and resume it to load the binding saved by the Hub. Workspace files stay untouched.
 
 ## Branch with options

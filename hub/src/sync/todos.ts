@@ -1,6 +1,6 @@
 import { isObject } from '@hapi/protocol'
 import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
-import { TodoItemSchema, TodosSchema } from '@hapi/protocol/schemas'
+import { CursorTodoSnapshotSchema, type CursorTodoSnapshot, TodoItemSchema, TodosSchema } from '@hapi/protocol/schemas'
 import type { TodoItem } from '@hapi/protocol/types'
 
 export { TodoItemSchema, TodosSchema }
@@ -96,4 +96,17 @@ export function extractTodoWriteTodosFromMessageContent(messageContent: unknown)
     return extractTodosFromClaudeOutput(record.content)
         ?? extractTodosFromCodexMessage(record.content)
         ?? extractTodosFromAcpMessage(record.content)
+}
+
+/** The adapter merges native updates by ID; keep empty and cancelled snapshots exactly as emitted. */
+export function cursorTodoSnapshotAfterCut(rows: ReadonlyArray<{ content: unknown }>): CursorTodoSnapshot {
+    for (let i = rows.length - 1; i >= 0; i--) {
+        const record = unwrapRoleWrappedRecordEnvelope(rows[i].content)
+        if (!record || (record.role !== 'agent' && record.role !== 'assistant') || !isObject(record.content) || record.content.type !== 'codex') continue
+        const data = record.content.data
+        if (!isObject(data) || data.type !== 'plan') continue
+        const result = CursorTodoSnapshotSchema.safeParse(data.entries)
+        if (result.success) return result.data
+    }
+    return []
 }

@@ -410,6 +410,7 @@ vi.mock('@/ui/logger', () => ({
 }));
 
 import { classifyCursorAcpLoadError, cursorAcpRemoteLauncher } from './cursorAcpRemoteLauncher';
+import { cursorTodosBySession } from './utils/cursorTodoSnapshot';
 import { CursorConversationHistory } from './cursorConversationHistory';
 import { createCursorAcpBackend } from './utils/cursorAcpBackend';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
@@ -695,7 +696,9 @@ describe('cursorAcpRemoteLauncher', () => {
             session.queue.push('next prompt', { permissionMode: 'default' }, 'next');
             await expect(rewind({ cursorCommittedSessionId: 'wrong', messageLocalId })).rejects.toThrow('No matching');
             expect(harness.promptSends).toBe(0);
-            await expect(rewind({ cursorCommittedSessionId: 'loaded-acp-session', messageLocalId })).resolves.toMatchObject({ success: true });
+            const retained = [{ id: 'keep', content: 'Retained', priority: 'medium', status: 'completed' }];
+            await expect(rewind({ cursorCommittedSessionId: 'loaded-acp-session', cursorTodoSnapshot: retained, messageLocalId })).resolves.toMatchObject({ success: true });
+            expect(cursorTodosBySession.get(session.client)).toEqual({ revision: 'loaded-acp-session', items: retained });
             await vi.waitFor(() => expect(harness.promptSends).toBe(1));
             expect(session.onSessionFoundWithProtocol).toHaveBeenCalledWith('loaded-acp-session', 'acp');
             const candidate = vi.mocked(createCursorAcpBackend).mock.results.at(-1)!.value;

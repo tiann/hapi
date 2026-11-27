@@ -7,7 +7,7 @@
  * - No E2E encryption; data is stored as JSON in SQLite
  */
 
-import { type SessionReadStateRequest, isKnownFlavor, matchesClaudeSessionId, isLiveLifecycleState, isSteeringSupportedForSession, MACHINE_CAPABILITIES, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
+import { type SessionReadStateRequest, isObject, isKnownFlavor, matchesClaudeSessionId, isLiveLifecycleState, isSteeringSupportedForSession, MACHINE_CAPABILITIES, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
 import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
@@ -96,7 +96,7 @@ import { SessionEnumerationCache } from './sessionEnumerationCache'
 import { ingestNotifySummaryFromMessage } from './workGraphNotifyIngest'
 import { MetadataSchema, type OpenCodeRewindOperation } from '@hapi/protocol/schemas'
 import type { OpenCodeRewindReport } from '@hapi/protocol/apiTypes'
-import { extractTodoWriteTodosFromMessageContent } from './todos'
+import { cursorTodoSnapshotAfterCut, extractTodoWriteTodosFromMessageContent } from './todos'
 import {
     readAutoBridgeTransientModelErrorsEnabled,
     writeAutoBridgeTransientModelErrorsEnabled
@@ -3685,6 +3685,7 @@ export class SyncEngine {
         const transcript = JSON.stringify(this.store.messages.getAllMessages(sessionId))
         const operationId = randomUUID()
         let childId: string
+        let cursorTodoSnapshot: import('@hapi/protocol/schemas').CursorTodoSnapshot = []
         try {
             // Preparation loads an independent native copy and fences prompt dispatch.
             // Until the transaction commits, restarting the runner resumes the original.
@@ -3704,7 +3705,14 @@ export class SyncEngine {
                 }, version, namespace)
                 if (update.result !== 'success') throw new Error('Cursor session binding changed during rewind')
                 this.store.messages.truncateMessagesFromLocalId(sessionId, localId)
-                const todos = this.store.messages.getAllMessages(sessionId).map(m => extractTodoWriteTodosFromMessageContent(m.content)).filter(Boolean).at(-1) ?? null
+                const retained = this.store.messages.getAllMessages(sessionId)
+                cursorTodoSnapshot = cursorTodoSnapshotAfterCut(retained)
+                const stored = this.store.sessions.getSession(sessionId)!
+                const state = this.store.sessions.updateSessionAgentState(sessionId, {
+                    ...(isObject(stored.agentState) ? stored.agentState : {}), cursorTodoRevision: childId, cursorTodoSnapshot
+                }, stored.agentStateVersion, namespace)
+                if (state.result !== 'success') throw new Error('Cursor agent state changed during rewind')
+                const todos = retained.map(m => extractTodoWriteTodosFromMessageContent(m.content)).filter(Boolean).at(-1) ?? null
                 this.store.sessions.replaceSessionTodos(sessionId, todos, namespace)
             })
         } catch (error) {
@@ -3726,7 +3734,7 @@ export class SyncEngine {
         this.sessionCache.refreshSession(sessionId)
         this.eventPublisher.emit({ type: 'messages-invalidated', sessionId, namespace, reason: 'rewind', truncateFromLocalId: localId })
         try {
-            const ack = await this.rpcGateway.rewindConversation(sessionId, { messageLocalId: localId, cursorCommittedSessionId: childId })
+            const ack = await this.rpcGateway.rewindConversation(sessionId, { messageLocalId: localId, cursorCommittedSessionId: childId, cursorTodoSnapshot })
             if (ack?.success && ack.truncateFromLocalId === localId) return { type: 'success' }
         } catch { /* The durable cut is authoritative even if the worker disconnected. */ }
         return { type: 'error', message: 'Cursor rewind committed. If input is blocked, stop the active runner session and resume it from the verified checkpoint.' }

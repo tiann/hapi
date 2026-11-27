@@ -939,6 +939,7 @@ export type CursorRewindRpcParams = {
     cursorPrepareOperationId?: string
     cursorAbortOperationId?: string
     cursorCommittedSessionId?: string
+    cursorTodoSnapshot?: import('./schemas').CursorTodoSnapshot
 }
 
 export type RewindConversationRpcResult = {
