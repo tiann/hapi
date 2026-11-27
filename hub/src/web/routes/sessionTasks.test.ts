@@ -3,7 +3,7 @@ import { Hono } from 'hono'
 import type { CreateSessionTaskRequest, SessionTask, SessionTaskRun, UpdateSessionTaskRequest } from '@hapi/protocol'
 import type { Session, SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
-import { createSessionTaskRoutes } from './sessionTasks'
+import { createSessionTaskRoutes, TASK_REQUEST_DRAIN_MAX_BYTES } from './sessionTasks'
 
 const SESSION_ID = '11111111-1111-1111-1111-111111111111'
 
@@ -192,6 +192,78 @@ describe('session task routes', () => {
         expect(await patch.json()).toEqual({ error: 'Task request too large' })
         expect(engine.createSessionTask).not.toHaveBeenCalled()
         expect(engine.updateSessionTask).not.toHaveBeenCalled()
+    })
+
+    describe('a refused body is read first', () => {
+        const PIECE = 64 * 1024
+
+        /** A body handed over in `PIECE` pieces, as the hub pulls them; `pulled` counts the bytes it asked for. */
+        function streamedBody(length: number | null) {
+            const state = { pulled: 0, ended: false }
+            const body = new ReadableStream<Uint8Array>({
+                pull(controller) {
+                    if (length !== null && state.pulled >= length) {
+                        state.ended = true
+                        controller.close()
+                        return
+                    }
+                    controller.enqueue(new Uint8Array(PIECE))
+                    state.pulled += PIECE
+                }
+            })
+            return { body, state }
+        }
+
+        it('reads an oversize body to its end before it answers 413, with or without a declared length', async () => {
+            const { app, base, engine } = setup()
+            const total = 1024 * 1024 + 1
+            const headerSets: Array<Record<string, string>> = [
+                { 'Content-Type': 'application/json', 'Content-Length': String(total) },
+                { 'Content-Type': 'application/json' }
+            ]
+            for (const headers of headerSets) {
+                const { body, state } = streamedBody(total)
+                const res = await app.request(base, { method: 'POST', body, headers, duplex: 'half' })
+                expect(res.status).toBe(413)
+                expect(await res.json()).toEqual({ error: 'Task request too large' })
+                // The hub closes a connection whose request body it did not read, and a
+                // close over an unread body is a reset that can swallow the answer on
+                // its way to a client that sent the whole body first.
+                expect(state.ended).toBe(true)
+            }
+            expect(engine.createSessionTask).not.toHaveBeenCalled()
+        })
+
+        it('stops reading a refused body at the drain cap', async () => {
+            const { app, base } = setup()
+            const { body, state } = streamedBody(null)
+            const res = await app.request(base, { method: 'POST', body, headers: { 'Content-Type': 'application/json' }, duplex: 'half' })
+            expect(res.status).toBe(413)
+            expect(state.ended).toBe(false)
+            // One piece may be pulled ahead of the last one read.
+            expect(state.pulled).toBeLessThanOrEqual(TASK_REQUEST_DRAIN_MAX_BYTES + PIECE)
+        })
+
+        it('hands a body within the limit on whole', async () => {
+            const { app, base, engine } = setup()
+            // The largest body the schema allows: 50 prompts of 20 000 characters, just under the limit.
+            const request = { kind: 'queue', items: Array.from({ length: 50 }, () => ({ text: 'x'.repeat(20_000) })), intervalMs: 60_000 }
+            const bytes = new TextEncoder().encode(JSON.stringify(request))
+            expect(bytes.byteLength).toBeGreaterThan(1_000_000)
+            expect(bytes.byteLength).toBeLessThanOrEqual(1024 * 1024)
+            // In pieces, so the body is put back together from more than one chunk.
+            const stream = new ReadableStream<Uint8Array>({
+                start(controller) {
+                    for (let offset = 0; offset < bytes.byteLength; offset += PIECE) {
+                        controller.enqueue(bytes.subarray(offset, offset + PIECE))
+                    }
+                    controller.close()
+                }
+            })
+            const res = await app.request(base, { method: 'POST', body: stream, headers: { 'Content-Type': 'application/json' }, duplex: 'half' })
+            expect(res.status).toBe(200)
+            expect(engine.createSessionTask).toHaveBeenCalledWith(SESSION_ID, request)
+        })
     })
 
     it('rejects a first run that is too far in the past or the future', async () => {

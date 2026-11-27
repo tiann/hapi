@@ -1,5 +1,4 @@
-import { Hono, type Context } from 'hono'
-import { bodyLimit } from 'hono/body-limit'
+import { Hono, type Context, type Next } from 'hono'
 import {
     checkSessionTaskStartAt,
     CreateSessionTaskRequestSchema,
@@ -14,22 +13,77 @@ import { requireSessionFromParam, requireSyncEngine } from './guards'
 
 /** Task requests are small (50 prompts of at most 20 000 characters); a larger body is refused before it is parsed. */
 const TASK_REQUEST_MAX_BYTES = 1024 * 1024
+/**
+ * How much of a refused body is still read before the 413 goes out (see
+ * `taskBodyLimit`): above every body the field limits can produce — 50
+ * prompts of 20 000 characters at four bytes each is about 4 MB — and
+ * bounded all the same.
+ */
+export const TASK_REQUEST_DRAIN_MAX_BYTES = 8 * 1024 * 1024
 const RUN_HISTORY_DEFAULT_LIMIT = 50
 const TOO_MANY_TASKS_ERROR = `A session may hold at most ${SESSION_TASK_MAX_ACTIVE_PER_SESSION} active tasks`
 
 const taskRequestTooLarge = (c: Context<WebAppEnv>) => c.json({ error: 'Task request too large' }, 413)
 
 /**
- * The JSON body of a task request: null when it is not JSON. A body over the
- * limit is a 413: `bodyLimit` answers that itself when the request declares
- * its length, and errors the body stream otherwise, so the parse has to let
- * that through.
+ * Refuse a body over `TASK_REQUEST_MAX_BYTES` with a 413 — but only once the
+ * body has been read.
+ *
+ * Bun closes a connection whose request body was left unread, and a close
+ * over unread data is a reset, which can reach the client before the answer
+ * does. A client that sends the whole body before it reads (Python's urllib)
+ * then saw a reset instead of the 413 about half of the time; only a client
+ * that read while sending, or omitted the length, got the answer reliably.
+ * So an oversize body is read and discarded first, as far as
+ * `TASK_REQUEST_DRAIN_MAX_BYTES`; past that the connection is reset after
+ * all, which only a sender far beyond the documented limit meets. Whether
+ * the length is declared makes no difference: the body is always read.
+ *
+ * A body within the limit is handed on whole, so the handler parses the same
+ * bytes it would have read from the socket.
  */
-async function readJsonBody(c: Context<WebAppEnv>): Promise<unknown | Response> {
+async function taskBodyLimit(c: Context<WebAppEnv>, next: Next): Promise<Response | void> {
+    const body = c.req.raw.body
+    if (!body) return next()
+    const reader = body.getReader()
+    const chunks: Uint8Array[] = []
+    let read = 0
+    for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        read += value.byteLength
+        if (read > TASK_REQUEST_MAX_BYTES) {
+            // Read and throw away the rest, as far as the drain cap; a client
+            // that went away in the meantime leaves nothing to read.
+            try {
+                while (read < TASK_REQUEST_DRAIN_MAX_BYTES) {
+                    const rest = await reader.read()
+                    if (rest.done) break
+                    read += rest.value.byteLength
+                }
+            } catch {
+                // The body could not be read to its end: the 413 goes out all the same.
+            }
+            return taskRequestTooLarge(c)
+        }
+        chunks.push(value)
+    }
+    const bytes = new Uint8Array(read)
+    let offset = 0
+    for (const chunk of chunks) {
+        bytes.set(chunk, offset)
+        offset += chunk.byteLength
+    }
+    c.req.raw = new Request(c.req.raw, { body: bytes })
+    return next()
+}
+
+/** The JSON body of a task request: null when it is not JSON. */
+async function readJsonBody(c: Context<WebAppEnv>): Promise<unknown> {
     try {
         return await c.req.json()
-    } catch (error) {
-        return error instanceof Error && error.name === 'BodyLimitError' ? taskRequestTooLarge(c) : null
+    } catch {
+        return null
     }
 }
 
@@ -52,7 +106,6 @@ function capItems(body: unknown): unknown {
  */
 export function createSessionTaskRoutes(getSyncEngine: () => SyncEngine | null): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
-    const taskBodyLimit = bodyLimit({ maxSize: TASK_REQUEST_MAX_BYTES, onError: taskRequestTooLarge })
 
     app.get('/sessions/:id/tasks', (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
@@ -95,9 +148,6 @@ export function createSessionTaskRoutes(getSyncEngine: () => SyncEngine | null):
         }
 
         const body = await readJsonBody(c)
-        if (body instanceof Response) {
-            return body
-        }
         const parsed = CreateSessionTaskRequestSchema.safeParse(capItems(body))
         if (!parsed.success) {
             return c.json({ error: 'Invalid body', issues: parsed.error.flatten() }, 400)
@@ -135,9 +185,6 @@ export function createSessionTaskRoutes(getSyncEngine: () => SyncEngine | null):
         }
 
         const body = await readJsonBody(c)
-        if (body instanceof Response) {
-            return body
-        }
         const parsed = UpdateSessionTaskRequestSchema.safeParse(capItems(body))
         if (!parsed.success) {
             return c.json({ error: 'Invalid body', issues: parsed.error.flatten() }, 400)
