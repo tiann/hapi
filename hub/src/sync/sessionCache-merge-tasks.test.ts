@@ -56,11 +56,15 @@ describe('session tasks through a session merge', () => {
             startAt: 1,
             nextRunAt: 1
         })
+        store.sessionTasks.recordRun({
+            sessionId: oldSession.id, taskId: task.id, taskKind: 'repeat', runNumber: 1, localId: 'hapi-task:m:1', outcome: 'sent', scheduledFor: 1
+        }, 1)
         events.length = 0
 
         await cache.mergeSessions(oldSession.id, newSession.id, 'default')
 
         expect(store.sessionTasks.list(newSession.id).map((row) => row.id)).toEqual([task.id])
+        expect(store.sessionTasks.listRuns(newSession.id, 10).map((run) => run.taskId)).toEqual([task.id])
         expect(taskChanges(events)).toEqual([{ type: 'session-tasks-changed', sessionId: newSession.id }])
     })
 

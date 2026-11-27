@@ -1,6 +1,6 @@
 import { describe, expect, it, mock } from 'bun:test'
 import { Hono } from 'hono'
-import type { CreateSessionTaskRequest, SessionTask, UpdateSessionTaskRequest } from '@hapi/protocol'
+import type { CreateSessionTaskRequest, SessionTask, SessionTaskRun, UpdateSessionTaskRequest } from '@hapi/protocol'
 import type { Session, SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { createSessionTaskRoutes } from './sessionTasks'
@@ -51,6 +51,23 @@ function wireTask(sessionId: string, overrides: Partial<SessionTask> = {}): Sess
     }
 }
 
+function wireRun(overrides: Partial<SessionTaskRun> = {}): SessionTaskRun {
+    return {
+        id: 'run-1',
+        sessionId: SESSION_ID,
+        taskId: 'task-1',
+        taskKind: 'repeat',
+        runNumber: 1,
+        outcome: 'sent',
+        scheduledFor: 1_000,
+        recordedAt: 1_001,
+        takenAt: null,
+        detail: null,
+        preview: 'ping',
+        ...overrides
+    }
+}
+
 function setup(options: { found?: boolean; engine?: Partial<Record<string, unknown>> } = {}) {
     const session = createSession()
     const engine = {
@@ -58,9 +75,11 @@ function setup(options: { found?: boolean; engine?: Partial<Record<string, unkno
             ? { ok: false as const, reason: 'not-found' as const }
             : { ok: true as const, sessionId: session.id, session }),
         listSessionTasks: mock(() => [wireTask(session.id)]),
-        createSessionTask: mock((_sessionId: string, _request: CreateSessionTaskRequest) => wireTask(session.id)),
+        listSessionTaskRuns: mock((_sessionId: string, _limit: number) => [wireRun()]),
+        createSessionTask: mock((_sessionId: string, _request: CreateSessionTaskRequest) => ({ type: 'created', task: wireTask(session.id) })),
         updateSessionTask: mock((_sessionId: string, _taskId: string, body: UpdateSessionTaskRequest) =>
             ({ type: 'updated', task: wireTask(session.id, { state: body.paused ? 'paused' : 'active', nextRunAt: body.paused ? null : 2_000 }) })),
+        runSessionTaskNow: mock((_sessionId: string, _taskId: string) => ({ type: 'queued', task: wireTask(session.id) })),
         deleteSessionTask: mock(async (_sessionId: string, _taskId: string) => ({ type: 'deleted', prompt: 'none' as const })),
         ...options.engine
     } as unknown as SyncEngine
@@ -87,6 +106,33 @@ describe('session task routes', () => {
         expect(res.status).toBe(200)
         expect(await res.json()).toEqual({ tasks: [wireTask(SESSION_ID)] })
         expect(engine.listSessionTasks).toHaveBeenCalledWith(SESSION_ID)
+    })
+
+    describe('history', () => {
+        it('lists the newest runs, 50 by default', async () => {
+            const { app, base, engine } = setup()
+            const res = await app.request(`${base}/history`)
+            expect(res.status).toBe(200)
+            expect(await res.json()).toEqual({ runs: [wireRun()] })
+            expect(engine.listSessionTaskRuns).toHaveBeenCalledWith(SESSION_ID, 50)
+        })
+
+        it('passes a limit in range through and rejects the rest of the query', async () => {
+            const { app, base, engine } = setup()
+            expect((await app.request(`${base}/history?limit=5`)).status).toBe(200)
+            expect(engine.listSessionTaskRuns).toHaveBeenLastCalledWith(SESSION_ID, 5)
+            expect((await app.request(`${base}/history?limit=200`)).status).toBe(200)
+            expect((await app.request(`${base}/history?limit=201`)).status).toBe(400)
+            expect((await app.request(`${base}/history?limit=0`)).status).toBe(400)
+            expect((await app.request(`${base}/history?limit=abc`)).status).toBe(400)
+            expect((await app.request(`${base}/history?limit=5&taskId=x`)).status).toBe(400)
+        })
+
+        it('answers 404 before the engine when the session does not exist', async () => {
+            const { app, base, engine } = setup({ found: false })
+            expect((await app.request(`${base}/history`)).status).toBe(404)
+            expect(engine.listSessionTaskRuns).not.toHaveBeenCalled()
+        })
     })
 
     it('creates a queue task from a valid body', async () => {
@@ -161,6 +207,13 @@ describe('session task routes', () => {
         expect((await postStartAt(Date.now() - 10_000)).status).toBe(200)
     })
 
+    it('answers too_many_tasks when the session is at the cap', async () => {
+        const { app, base } = setup({ engine: { createSessionTask: mock(() => ({ type: 'too-many-tasks' })) } })
+        const res = await post(app, base, { kind: 'repeat', text: 'ping', intervalMs: 60_000 })
+        expect(res.status).toBe(400)
+        expect(await res.json()).toMatchObject({ code: 'too_many_tasks' })
+    })
+
     it('pauses and resumes through PATCH', async () => {
         const patch = mock((_sessionId: string, _taskId: string, body: UpdateSessionTaskRequest) =>
             ({ type: 'updated', task: wireTask(SESSION_ID, { state: body.paused ? 'paused' : 'active', nextRunAt: body.paused ? null : 2_000 }) }))
@@ -179,15 +232,68 @@ describe('session task routes', () => {
         expect((await post(app, `${base}/task-1`, { paused: 'yes' }, 'PATCH')).status).toBe(400)
     })
 
+    it('edits every editable field through PATCH', async () => {
+        const { app, base, engine } = setup()
+        const body = { text: 'pong', intervalMs: 120_000, maxRuns: null, paused: false }
+        const res = await post(app, `${base}/task-1`, body, 'PATCH')
+        expect(res.status).toBe(200)
+        expect(engine.updateSessionTask).toHaveBeenCalledWith(SESSION_ID, 'task-1', body)
+
+        // A queue edit with too many prompts is refused like a create.
+        const items = Array.from({ length: 51 }, () => ({ text: 'x' }))
+        expect((await post(app, `${base}/task-1`, { items }, 'PATCH')).status).toBe(400)
+    })
+
+    it('answers wrong_task_kind and invalid_max_runs with their codes', async () => {
+        const { app, base } = setup({
+            engine: {
+                updateSessionTask: mock((_sessionId: string, _taskId: string, body: UpdateSessionTaskRequest) => {
+                    if (body.text !== undefined) return { type: 'wrong-task-kind', fields: ['text', 'maxRuns'] }
+                    if (body.items !== undefined) return { type: 'wrong-task-kind', fields: ['items'] }
+                    return { type: 'invalid-max-runs' }
+                })
+            }
+        })
+
+        const kind = await post(app, `${base}/task-1`, { items: [{ text: 'x' }] }, 'PATCH')
+        expect(kind.status).toBe(400)
+        expect(await kind.json()).toMatchObject({ code: 'wrong_task_kind', error: 'Not editable on a task of this kind: items' })
+        const both = await post(app, `${base}/task-1`, { text: 'x', maxRuns: 4 }, 'PATCH')
+        expect(await both.json()).toMatchObject({ code: 'wrong_task_kind', error: 'Not editable on a task of this kind: text, maxRuns' })
+
+        const limit = await post(app, `${base}/task-1`, { maxRuns: 3 }, 'PATCH')
+        expect(limit.status).toBe(400)
+        expect(await limit.json()).toMatchObject({ code: 'invalid_max_runs' })
+    })
+
     it('answers 404 for a task that is not in this session', async () => {
         const { app, base } = setup({
             engine: {
                 updateSessionTask: mock(() => ({ type: 'not-found' })),
+                runSessionTaskNow: mock(() => ({ type: 'not-found' })),
                 deleteSessionTask: mock(async () => ({ type: 'not-found' }))
             }
         })
         expect((await post(app, `${base}/missing`, { paused: true }, 'PATCH')).status).toBe(404)
+        expect((await post(app, `${base}/missing/run`, undefined)).status).toBe(404)
         expect((await post(app, `${base}/missing`, undefined, 'DELETE')).status).toBe(404)
+    })
+
+    describe('run now', () => {
+        it('answers the task and kicks the scheduler', async () => {
+            const { app, base, engine } = setup()
+            const res = await post(app, `${base}/task-1/run`, undefined)
+            expect(res.status).toBe(200)
+            expect(await res.json()).toEqual({ task: wireTask(SESSION_ID) })
+            expect(engine.runSessionTaskNow).toHaveBeenCalledWith(SESSION_ID, 'task-1')
+        })
+
+        it('answers 409 prompt_pending while a prompt of the task is waiting', async () => {
+            const { app, base } = setup({ engine: { runSessionTaskNow: mock(() => ({ type: 'prompt-pending', task: wireTask(SESSION_ID, { pending: true }) })) } })
+            const res = await post(app, `${base}/task-1/run`, undefined)
+            expect(res.status).toBe(409)
+            expect(await res.json()).toMatchObject({ code: 'prompt_pending' })
+        })
     })
 
     describe('DELETE', () => {
@@ -208,9 +314,11 @@ describe('session task routes', () => {
     it('answers 404 before touching the engine when the session does not exist', async () => {
         const { app, base, engine } = setup({ found: false })
         expect((await app.request(base)).status).toBe(404)
+        expect((await app.request(`${base}/history`)).status).toBe(404)
         expect((await post(app, `${base}/task-1`, undefined, 'DELETE')).status).toBe(404)
+        expect((await post(app, `${base}/task-1/run`, undefined)).status).toBe(404)
         expect((await post(app, base, { kind: 'repeat', text: 'ping', intervalMs: 60_000 })).status).toBe(404)
-        for (const name of ['listSessionTasks', 'createSessionTask', 'updateSessionTask', 'deleteSessionTask'] as const) {
+        for (const name of ['listSessionTasks', 'listSessionTaskRuns', 'createSessionTask', 'updateSessionTask', 'runSessionTaskNow', 'deleteSessionTask'] as const) {
             expect((engine[name] as unknown as { mock: { calls: unknown[] } }).mock.calls).toEqual([])
         }
     })
@@ -223,5 +331,7 @@ describe('session task routes', () => {
         })
         app.route('/api', createSessionTaskRoutes(() => null))
         expect((await app.request('http://localhost/api/sessions/x/tasks')).status).toBe(503)
+        expect((await app.request('http://localhost/api/sessions/x/tasks/history')).status).toBe(503)
+        expect((await post(app, 'http://localhost/api/sessions/x/tasks/t/run', undefined)).status).toBe(503)
     })
 })

@@ -44,8 +44,8 @@ Source: `hub/src/web/routes/sessions.ts`; shapes `SessionSchema` (`shared/src/sc
 
 | Method & path | Request | Response |
 |---|---|---|
-| `GET /api/sessions` | Query: `limit?` (1–500), `order?=updatedAt` | `{sessions: (SessionSummary & {futureScheduledMessageCount, nextScheduledAt})[], serverTime: number}` — Hub epoch milliseconds at response time; use this clock to age job heartbeats. |
-| `GET /api/sessions/content-search` | Query: `query`, `limit?` (1–100, default 50), repeated `sessionId?` to scope | `SessionContentSearchResponse` `{results: [{session: SessionSummary, match}], hasPotentiallyIncompleteResults}` — message-text search across sessions |
+| `GET /api/sessions` | Query: `limit?` (1–500), `order?=updatedAt` | `{sessions: (SessionSummary & {futureScheduledMessageCount, nextScheduledAt, activeTaskCount, nextTaskRunAt})[], serverTime: number}` — Hub epoch milliseconds at response time; use this clock to age job heartbeats. The two task fields are described under [Session tasks](#session-tasks). |
+| `GET /api/sessions/content-search` | Query: `query`, `limit?` (1–100, default 50), repeated `sessionId?` to scope | `SessionContentSearchResponse` `{results: [{session: SessionSummary, match}], hasPotentiallyIncompleteResults}` — message-text search across sessions; each `session` carries the same `futureScheduledMessageCount` / `nextScheduledAt` / `activeTaskCount` / `nextTaskRunAt` as the list rows |
 | `POST /api/sessions/content-search` | `{query, limit?, sessionIds?: string[]}` | Same as `GET`; use for long `sessionIds` scopes (`413` above the body limit) |
 | `GET /api/sessions/:id/content-search` | Query: `query`, `limit?` (1–1000) | `SessionContentMatchesResponse` `{matches, total, hasPotentiallyIncompleteResults}` — matches inside one session; empty `query` returns no matches |
 | `PUT /api/sessions/:id/read-state` | `{type: "read", readRevision, expectedVersion}` or `{type: "unread", expectedVersion}` | `{status, contentRevision, readState}`; see [Read state](./read-state.md) |
@@ -128,21 +128,28 @@ The hub stamps `sentFrom: 'webapp'` on REST-sent messages server-side; the reque
 
 ### Session tasks
 
-Source: `hub/src/web/routes/sessionTasks.ts`; schemas `CreateSessionTaskRequestSchema`, `UpdateSessionTaskRequestSchema`, `SessionTaskSchema` (`shared/src/sessionTasks.ts`). A task is a schedule the hub owns: each run sends one ordinary user message into the session, so its prompts reach clients through the message stream like any other.
+Source: `hub/src/web/routes/sessionTasks.ts`; schemas `CreateSessionTaskRequestSchema`, `UpdateSessionTaskRequestSchema`, `SessionTaskSchema`, `SessionTaskRunSchema`, `SessionTaskRunListQuerySchema`, `SessionTaskDeleteResponseSchema` (`shared/src/sessionTasks.ts`). A task is a schedule the hub owns: each run sends one ordinary user message into the session, so its prompts reach clients through the message stream like any other.
 
 | Method & path | Request | Response |
 |---|---|---|
 | `GET /api/sessions/:id/tasks` | — | `{tasks: SessionTask[]}`, oldest first |
 | `POST /api/sessions/:id/tasks` | `repeat`: `{kind: 'repeat', text, intervalMs, startAt?, maxRuns?}` · `queue`: `{kind: 'queue', items: [{text}], intervalMs, startAt?}` — `intervalMs` 1 minute to 30 days, 1–50 prompts of up to 20 000 characters, `maxRuns` 1–10 000, `startAt` at most 60 s in the past and 366 days ahead. Body ≤ 1 MB (413) | `{task: SessionTask}` |
-| `PATCH /api/sessions/:id/tasks/:taskId` | `{paused: boolean}` — body ≤ 1 MB (413) | `{task: SessionTask}`, or 404 when the task is not in this session |
-| `DELETE /api/sessions/:id/tasks/:taskId` | — | `{ok: true, prompt: 'none' \| 'cancelled' \| 'taken' \| 'unconfirmed'}`, or 404. A prompt the agent has not taken yet is cancelled with the task; `prompt` says what became of it: `none` (there was none), `cancelled`, `taken` (the agent got it first), or `unconfirmed` (the cancel could not be confirmed — the row stays indeterminate in the queued-message bar, where the user retries or discards it) |
+| `GET /api/sessions/:id/tasks/history` | Query: `limit?` (1–200, default 50) | `{runs: SessionTaskRun[]}`, newest first — what the session's tasks did: prompts sent (with `takenAt` once the agent took them), slots skipped, runs that could not go out, prompts cancelled. A finished task's runs stay; at most 500 rows per session are kept, rows older than 30 days are dropped |
+| `PATCH /api/sessions/:id/tasks/:taskId` | Any subset of `{paused: boolean, text, items: [{text}], intervalMs, maxRuns: number \| null}`, at least one field — body ≤ 1 MB (413) | `{task: SessionTask}`; 404 when the task is not in this session |
+| `POST /api/sessions/:id/tasks/:taskId/run` | — | `{task: SessionTask}` — the task's next prompt goes out now (the scheduler is kicked before the answer; the prompt itself arrives through the message stream) |
+| `DELETE /api/sessions/:id/tasks/:taskId` | — | `{ok: true, prompt: 'none' \| 'cancelled' \| 'taken' \| 'unconfirmed'}`; 404 when the task is not in this session |
 
 - `repeat` sends the same prompt on a fixed grid from `startAt` (default: now) and stops after `maxRuns` sends when set. A slot that comes due while the previous prompt is still waiting to be taken is skipped, so a busy agent never has two of the task's prompts queued.
 - `queue` sends its prompts in order, each `intervalMs` after the agent took the previous one.
 - A task has at most one prompt outstanding (`pending: true`). `nextRunAt` is `null` while paused, and from the moment a `queue` prompt is sent until the agent takes it (the next prompt is then scheduled `intervalMs` after that acknowledgement).
 - `startAt` is kept on the task. Resuming a task that has not sent anything yet keeps its first run (`nextRunAt` = `startAt`, or now if that is past); one that has already run resumes to now, except that a `queue` task keeps its spacing from when its last prompt was taken.
 - A finished task (every prompt sent, or `maxRuns` reached, and taken) deletes itself. Pausing keeps a prompt already sent in the queue.
+- **Edit.** Which fields apply depends on the task's kind: `text` and `maxRuns` are for `repeat`, `items` are the prompts a `queue` has not sent yet (the sent prefix is kept, so `items(new) = old[0..runCount) + items`, up to 50 prompts); a field of the other kind is 400 `wrong_task_kind`. `maxRuns` below `runCount` is 400 `invalid_max_runs`; equal to it ends the task once the pending prompt is taken, or at once when nothing is pending; `null` removes the limit. `intervalMs` re-anchors a task that has already run and has nothing pending to `now + intervalMs` (also when resumed in the same request; a task that has not run yet keeps its `startAt`). The answer is the task as edited.
+- **Run now** is refused with 409 `prompt_pending` while a prompt of the task is waiting; otherwise the task becomes active, its error clears and `nextRunAt` is now.
+- **Delete** cancels a prompt the agent has not taken yet. `prompt` says what became of it: `none` (there was no such prompt), `cancelled`, `taken` (the agent got it first), or `unconfirmed` — the cancel could not be confirmed, the row stays indeterminate in the queued-message bar, where the user retries or discards it.
 - The hub resumes an inactive session before sending (at most 3 resumes at once across the hub; the rest are retried on later ticks). An archived session is never resumed and its scheduled messages are not released: a task on it stays due with `lastError: 'session_archived'` and runs by itself once the session is reopened. No error pauses a task — `machine_offline` and `session_unavailable` keep it due, paced by the wake backoff; `prompt_indeterminate` and `prompt_not_taken` describe a prompt that went out but is not progressing (the agent taking it, or Retry/Discard in the queued-message bar, moves the task on).
+- A session may hold at most 20 active tasks (paused ones do not count); creating another answers 400 `too_many_tasks`.
+- `GET /api/sessions` and the content-search results carry, next to `futureScheduledMessageCount` / `nextScheduledAt`, `activeTaskCount` (the session's active tasks, one waiting for its prompt included) and `nextTaskRunAt` (the earliest `nextRunAt` among them, or `null`).
 - Every change — including a task that moved into the session through a merge or an OpenCode `/clear` — emits [`session-tasks-changed`](./sse.md). An older hub answers 404 on these routes.
 
 ### Permissions

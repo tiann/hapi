@@ -4,10 +4,12 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Store } from './index'
+import { SESSION_TASK_RUNS_TABLE_SQL } from './sessionTasks'
 
 /**
- * v37→v38: `start_at` on session_tasks. Every path that builds the schema
- * (fresh, the step ladder, the legacy chain) must end up with it.
+ * v37→v38: `start_at` on session_tasks and the `session_task_runs` history.
+ * Every path that builds the schema (fresh, the step ladder, the v26 fast
+ * path, the legacy chain) must end up with both.
  */
 
 const tempDirs: string[] = []
@@ -24,16 +26,19 @@ function tempDatabasePath(tag: string): string {
     return join(dir, 'hapi.db')
 }
 
-/** The session_tasks objects by name; empty when the table is missing. */
+/** The phase-1 and phase-2 objects by name; `undefined` when a table is missing. */
 function taskObjects(db: Database): Array<{ name: string; type: string }> {
     return db.prepare(
         `SELECT name, type FROM sqlite_master
-         WHERE tbl_name = 'session_tasks' AND name NOT LIKE 'sqlite_%'
-         ORDER BY name`
+         WHERE tbl_name IN ('session_tasks', 'session_task_runs') AND name NOT LIKE 'sqlite_%'
+         ORDER BY tbl_name, name`
     ).all() as Array<{ name: string; type: string }>
 }
 
 const EXPECTED_TASK_OBJECTS = [
+    { name: 'idx_session_task_runs_recorded', type: 'index' },
+    { name: 'idx_session_task_runs_session', type: 'index' },
+    { name: 'session_task_runs', type: 'table' },
     { name: 'idx_session_tasks_active_due', type: 'index' },
     { name: 'idx_session_tasks_pending', type: 'index' },
     { name: 'idx_session_tasks_session', type: 'index' },
@@ -48,16 +53,19 @@ function columnNames(db: Database, table: string): string[] {
     return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name)
 }
 
-/** Take a current database back to the v37 shape: no `start_at`. */
+/** Take a current database back to the v37 shape: no `start_at`, no run history. */
 function downgradeToV37(db: Database): void {
     db.exec(`
+        DROP INDEX idx_session_task_runs_session;
+        DROP INDEX idx_session_task_runs_recorded;
+        DROP TABLE session_task_runs;
         ALTER TABLE session_tasks DROP COLUMN start_at;
         PRAGMA user_version = 37;
     `)
 }
 
 describe('schema migration v37 to v38', () => {
-    it('adds start_at to a v37 database, dated from creation for existing tasks', () => {
+    it('adds start_at (dated from creation for existing tasks) and the run history table to a v37 database', () => {
         const dbPath = tempDatabasePath('v37')
         const original = new Store(dbPath)
         const sessionId = original.sessions.getOrCreateSession('v37', { path: '/tmp', flavor: 'cursor' }, null, 'default').id
@@ -80,21 +88,31 @@ describe('schema migration v37 to v38', () => {
         expect(startAt?.notnull).toBe(1)
         // The task predates the column: its first run is taken to be when it was created.
         expect(migrated.sessionTasks.getById(task.id)).toMatchObject({ startAt: 5_000, createdAt: 5_000, runCount: 0 })
+        migrated.sessionTasks.recordRun({
+            sessionId, taskId: task.id, taskKind: 'repeat', runNumber: 1, localId: 'hapi-task:v38:1', outcome: 'sent', scheduledFor: 5_000
+        }, 5_000)
+        expect(migrated.sessionTasks.listRuns(sessionId, 10)).toHaveLength(1)
         migrated.close()
     })
 
-    it('is idempotent when the column already exists', () => {
+    it('is idempotent when the column and the table already exist', () => {
         const store = new Store(':memory:')
         const sessionId = store.sessions.getOrCreateSession('idempotent-v38', { path: '/tmp', flavor: 'cursor' }, null, 'default').id
         const task = store.sessionTasks.create({
             sessionId, kind: 'queue', items: ['a'], intervalMs: 60_000, maxRuns: null, startAt: 1, nextRunAt: 1
         })
+        store.sessionTasks.recordRun({
+            sessionId, taskId: task.id, taskKind: 'queue', runNumber: null, outcome: 'skipped', scheduledFor: 1
+        }, 1)
         const step = (store as unknown as { migrateFromV37ToV38: () => void }).migrateFromV37ToV38.bind(store)
         // A database that stopped mid-upgrade runs the step again.
         step()
         step()
         expect(store.sessionTasks.getById(task.id)?.id).toBe(task.id)
-        expect(taskObjects((store as unknown as { db: Database }).db)).toEqual(EXPECTED_TASK_OBJECTS)
+        expect(store.sessionTasks.listRuns(sessionId, 10)).toHaveLength(1)
+        const internalDb = (store as unknown as { db: Database }).db
+        internalDb.exec(SESSION_TASK_RUNS_TABLE_SQL)
+        expect(taskObjects(internalDb)).toEqual(EXPECTED_TASK_OBJECTS)
         store.close()
     })
 
@@ -103,18 +121,21 @@ describe('schema migration v37 to v38', () => {
         const internalDb = (store as unknown as { db: Database }).db
         expect(userVersion(internalDb)).toBe(38)
         expect(taskObjects(internalDb)).toEqual(EXPECTED_TASK_OBJECTS)
-        // The column cascades with its session like the rest of the task.
+        expect(columnNames(internalDb, 'session_task_runs')).toEqual([
+            'id', 'session_id', 'task_id', 'task_kind', 'run_number', 'local_id', 'outcome',
+            'scheduled_for', 'recorded_at', 'taken_at', 'detail', 'preview'
+        ])
+        // The history cascades with its session like the tasks do.
         const sessionId = store.sessions.getOrCreateSession('fresh-v38', { path: '/tmp', flavor: 'cursor' }, null, 'default').id
-        const task = store.sessionTasks.create({
-            sessionId, kind: 'repeat', items: ['ping'], intervalMs: 60_000, maxRuns: null, startAt: 7, nextRunAt: 7
-        })
-        expect(task.startAt).toBe(7)
+        store.sessionTasks.recordRun({
+            sessionId, taskId: 't', taskKind: 'repeat', runNumber: null, outcome: 'failed', scheduledFor: null, detail: 'send_failed'
+        }, 1)
         store.sessions.deleteSession(sessionId, 'default')
-        expect(store.sessionTasks.getById(task.id)).toBeNull()
+        expect(store.sessionTasks.listRuns(sessionId, 10)).toEqual([])
         store.close()
     })
 
-    it('the legacy chain (user_version 0 with tables) creates the table with the column', () => {
+    it('the legacy chain (user_version 0 with tables) creates both tables', () => {
         const dbPath = tempDatabasePath('legacy')
         new Store(dbPath).close()
         const legacy = new Database(dbPath)
@@ -123,6 +144,9 @@ describe('schema migration v37 to v38', () => {
             DROP INDEX idx_session_tasks_active_due;
             DROP INDEX idx_session_tasks_session;
             DROP TABLE session_tasks;
+            DROP INDEX idx_session_task_runs_session;
+            DROP INDEX idx_session_task_runs_recorded;
+            DROP TABLE session_task_runs;
             PRAGMA user_version = 0;
         `)
         legacy.close()

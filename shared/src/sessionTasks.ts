@@ -28,6 +28,8 @@ export const SESSION_TASK_MAX_START_OFFSET_MS = 366 * 24 * 60 * 60 * 1000
 export const SESSION_TASK_START_GRACE_MS = 60 * 1000
 /** A session may not hold more active tasks than this; the hub answers `too_many_tasks`. */
 export const SESSION_TASK_MAX_ACTIVE_PER_SESSION = 20
+/** How much of a prompt a run-history `preview` carries. */
+export const SESSION_TASK_RUN_PREVIEW_LENGTH = 120
 
 export const SessionTaskKindSchema = z.enum(['repeat', 'queue'])
 export type SessionTaskKind = z.infer<typeof SessionTaskKindSchema>
@@ -166,6 +168,7 @@ export const SessionTaskDeleteResponseSchema = z.object({
 export type SessionTaskDeleteResponse = z.infer<typeof SessionTaskDeleteResponseSchema>
 
 export const SessionTaskRunOutcomeSchema = z.enum(['sent', 'skipped', 'failed', 'cancelled'])
+export type SessionTaskRunOutcome = z.infer<typeof SessionTaskRunOutcomeSchema>
 
 /** One line of what a task did: a prompt it sent, a slot it skipped, or a run that could not go out. */
 export const SessionTaskRunSchema = z.object({

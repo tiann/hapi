@@ -1,10 +1,13 @@
 import { randomUUID } from 'node:crypto'
 import type { Database, SQLQueryBindings } from 'bun:sqlite'
-import type {
-    SessionTask,
-    SessionTaskErrorCode,
-    SessionTaskKind,
-    SessionTaskState
+import {
+    SESSION_TASK_RUN_PREVIEW_LENGTH,
+    type SessionTask,
+    type SessionTaskErrorCode,
+    type SessionTaskKind,
+    type SessionTaskRun,
+    type SessionTaskRunOutcome,
+    type SessionTaskState
 } from '@hapi/protocol'
 import { prepareCached } from './statementCache'
 
@@ -18,7 +21,22 @@ import { prepareCached } from './statementCache'
  * `pending_local_id`; the task's next step is computed only after the CLI
  * acknowledges taking that message, so a task has at most one prompt
  * outstanding and nothing is sent twice across a hub restart.
+ *
+ * `session_task_runs` is the history of what the tasks did (sent, skipped,
+ * failed, cancelled). A run outlives its task: finished tasks delete
+ * themselves, their runs stay until the retention below drops them.
  */
+
+/** Run-history rows kept per session; the oldest go first when a new one exceeds this. */
+export const SESSION_TASK_RUNS_MAX_PER_SESSION = 500
+/** Run-history rows older than this are deleted (the scheduler checks at most once an hour). */
+export const SESSION_TASK_RUN_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
+
+/** Active tasks of one session, for the session-list summary. */
+export type SessionTaskSummary = {
+    activeTaskCount: number
+    nextTaskRunAt: number | null
+}
 
 export type StoredSessionTask = {
     id: string
@@ -44,6 +62,23 @@ export type StoredSessionTask = {
     updatedAt: number
 }
 
+export type StoredSessionTaskRun = {
+    id: string
+    sessionId: string
+    taskId: string
+    taskKind: SessionTaskKind
+    /** 1-based number of the prompt, or null when no prompt was sent. */
+    runNumber: number | null
+    localId: string | null
+    outcome: SessionTaskRunOutcome
+    scheduledFor: number | null
+    recordedAt: number
+    /** For `sent`: when the agent took the prompt, or null while it is still waiting. */
+    takenAt: number | null
+    detail: string | null
+    preview: string | null
+}
+
 type DbTaskRow = {
     id: string
     session_id: string
@@ -63,7 +98,23 @@ type DbTaskRow = {
     updated_at: number
 }
 
+type DbRunRow = {
+    id: string
+    session_id: string
+    task_id: string
+    task_kind: string
+    run_number: number | null
+    local_id: string | null
+    outcome: string
+    scheduled_for: number | null
+    recorded_at: number
+    taken_at: number | null
+    detail: string | null
+    preview: string | null
+}
+
 const TASK_COLUMNS = `id, session_id, kind, state, items, interval_ms, max_runs, run_count, next_run_at, pending_local_id, last_run_at, last_consumed_at, last_error, start_at, created_at, updated_at`
+const RUN_COLUMNS = `id, session_id, task_id, task_kind, run_number, local_id, outcome, scheduled_for, recorded_at, taken_at, detail, preview`
 
 /**
  * v37 created the table without `start_at`; the v37→v38 step adds the column
@@ -102,6 +153,28 @@ export const SESSION_TASKS_TABLE_SQL = `
         WHERE pending_local_id IS NOT NULL;
 `
 
+export const SESSION_TASK_RUNS_TABLE_SQL = `
+    CREATE TABLE IF NOT EXISTS session_task_runs (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        task_kind TEXT NOT NULL,
+        run_number INTEGER,
+        local_id TEXT,
+        outcome TEXT NOT NULL,
+        scheduled_for INTEGER,
+        recorded_at INTEGER NOT NULL,
+        taken_at INTEGER,
+        detail TEXT,
+        preview TEXT,
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_task_runs_session
+        ON session_task_runs(session_id, recorded_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_session_task_runs_recorded
+        ON session_task_runs(recorded_at);
+`
+
 function parseItems(raw: string): string[] {
     try {
         const parsed: unknown = JSON.parse(raw)
@@ -133,6 +206,23 @@ function toStored(row: DbTaskRow): StoredSessionTask {
     }
 }
 
+function toStoredRun(row: DbRunRow): StoredSessionTaskRun {
+    return {
+        id: row.id,
+        sessionId: row.session_id,
+        taskId: row.task_id,
+        taskKind: row.task_kind as SessionTaskKind,
+        runNumber: row.run_number,
+        localId: row.local_id,
+        outcome: row.outcome as SessionTaskRunOutcome,
+        scheduledFor: row.scheduled_for,
+        recordedAt: row.recorded_at,
+        takenAt: row.taken_at,
+        detail: row.detail,
+        preview: row.preview
+    }
+}
+
 /** Wire projection. Omits the scheduler's bookkeeping (`pendingLocalId`, `lastConsumedAt`). */
 export function toSessionTask(task: StoredSessionTask): SessionTask {
     return {
@@ -153,6 +243,27 @@ export function toSessionTask(task: StoredSessionTask): SessionTask {
         createdAt: task.createdAt,
         updatedAt: task.updatedAt
     }
+}
+
+export function toSessionTaskRun(run: StoredSessionTaskRun): SessionTaskRun {
+    return {
+        id: run.id,
+        sessionId: run.sessionId,
+        taskId: run.taskId,
+        taskKind: run.taskKind,
+        runNumber: run.runNumber,
+        outcome: run.outcome,
+        scheduledFor: run.scheduledFor,
+        recordedAt: run.recordedAt,
+        takenAt: run.takenAt,
+        detail: run.detail,
+        preview: run.preview
+    }
+}
+
+/** The start of a prompt, as a run-history row carries it. */
+export function sessionTaskRunPreview(text: string): string {
+    return Array.from(text).slice(0, SESSION_TASK_RUN_PREVIEW_LENGTH).join('')
 }
 
 export class SessionTaskStore {
@@ -221,6 +332,26 @@ export class SessionTaskStore {
             const bAt = b.nextRunAt ?? Number.MAX_SAFE_INTEGER
             return (aAt - bAt) || (a.createdAt - b.createdAt) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
         })
+    }
+
+    /** Active tasks and their earliest next run, per session (sessions without active tasks are absent). */
+    summarizeActiveBySessionIds(sessionIds: string[]): Map<string, SessionTaskSummary> {
+        const summaries = new Map<string, SessionTaskSummary>()
+        if (sessionIds.length === 0) return summaries
+        const placeholders = sessionIds.map(() => '?').join(',')
+        const rows = prepareCached(this.db,
+            `SELECT session_id, COUNT(*) AS active_task_count, MIN(next_run_at) AS next_task_run_at
+             FROM session_tasks
+             WHERE state = 'active' AND session_id IN (${placeholders})
+             GROUP BY session_id`
+        ).all(...sessionIds) as Array<{ session_id: string; active_task_count: number; next_task_run_at: number | null }>
+        for (const row of rows) {
+            summaries.set(row.session_id, {
+                activeTaskCount: row.active_task_count,
+                nextTaskRunAt: row.next_task_run_at
+            })
+        }
+        return summaries
     }
 
     create(input: {
@@ -357,11 +488,91 @@ export class SessionTaskStore {
         return result.changes > 0
     }
 
-    /** A merged-away session's tasks follow it to the surviving row. */
+    /** A merged-away session's tasks and runs follow it to the surviving row. */
     transfer(fromSessionId: string, toSessionId: string): number {
         const result = prepareCached(this.db,
             `UPDATE session_tasks SET session_id = ? WHERE session_id = ?`
         ).run(toSessionId, fromSessionId)
+        prepareCached(this.db, `UPDATE session_task_runs SET session_id = ? WHERE session_id = ?`)
+            .run(toSessionId, fromSessionId)
+        return result.changes
+    }
+
+    // ---- Run history -------------------------------------------------------------
+
+    /** Write one line of history, then keep the session within the per-session cap. */
+    recordRun(input: {
+        sessionId: string
+        taskId: string
+        taskKind: SessionTaskKind
+        runNumber: number | null
+        localId?: string | null
+        outcome: SessionTaskRunOutcome
+        scheduledFor: number | null
+        detail?: string | null
+        preview?: string | null
+    }, now: number): StoredSessionTaskRun {
+        const id = randomUUID()
+        prepareCached(this.db,
+            `INSERT INTO session_task_runs
+                (id, session_id, task_id, task_kind, run_number, local_id, outcome, scheduled_for, recorded_at, taken_at, detail, preview)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`
+        ).run(
+            id,
+            input.sessionId,
+            input.taskId,
+            input.taskKind,
+            input.runNumber,
+            input.localId ?? null,
+            input.outcome,
+            input.scheduledFor,
+            now,
+            input.detail ?? null,
+            input.preview ?? null
+        )
+        prepareCached(this.db,
+            `DELETE FROM session_task_runs
+             WHERE session_id = ? AND id NOT IN (
+                 SELECT id FROM session_task_runs WHERE session_id = ?
+                 ORDER BY recorded_at DESC, rowid DESC LIMIT ${SESSION_TASK_RUNS_MAX_PER_SESSION}
+             )`
+        ).run(input.sessionId, input.sessionId)
+        const row = prepareCached(this.db, `SELECT ${RUN_COLUMNS} FROM session_task_runs WHERE id = ?`)
+            .get(id) as DbRunRow | undefined
+        if (!row) throw new Error('recordRun: row missing after insert')
+        return toStoredRun(row)
+    }
+
+    /** The agent took a prompt the task sent: stamp when. */
+    markRunTaken(sessionId: string, localId: string, takenAt: number): boolean {
+        const result = prepareCached(this.db,
+            `UPDATE session_task_runs SET taken_at = ?
+             WHERE session_id = ? AND local_id = ? AND outcome = 'sent' AND taken_at IS NULL`
+        ).run(takenAt, sessionId, localId)
+        return result.changes > 0
+    }
+
+    /** A prompt the task sent was cancelled before the agent took it. */
+    markRunCancelled(sessionId: string, localId: string): boolean {
+        const result = prepareCached(this.db,
+            `UPDATE session_task_runs SET outcome = 'cancelled'
+             WHERE session_id = ? AND local_id = ? AND outcome = 'sent' AND taken_at IS NULL`
+        ).run(sessionId, localId)
+        return result.changes > 0
+    }
+
+    /** Newest first. */
+    listRuns(sessionId: string, limit: number): StoredSessionTaskRun[] {
+        const rows = prepareCached(this.db,
+            `SELECT ${RUN_COLUMNS} FROM session_task_runs WHERE session_id = ?
+             ORDER BY recorded_at DESC, rowid DESC LIMIT ?`
+        ).all(sessionId, limit) as DbRunRow[]
+        return rows.map(toStoredRun)
+    }
+
+    /** Drop history older than `olderThan`; returns the number of rows deleted. */
+    pruneRuns(olderThan: number): number {
+        const result = prepareCached(this.db, `DELETE FROM session_task_runs WHERE recorded_at < ?`).run(olderThan)
         return result.changes
     }
 }

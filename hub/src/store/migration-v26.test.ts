@@ -66,10 +66,10 @@ describe('schema migration v26 to v27', () => {
     })
 
     // The v26 fast path runs the later steps by hand and returns before the
-    // required-tables check; without the v36→v37 step it would reach the
-    // current version with no session_tasks, and the scheduler and the task
-    // routes would fail on the first request.
-    it('creates the session_tasks table and its indexes on the way', () => {
+    // required-tables check; without the steps it would reach the current
+    // version with no session_tasks, and the scheduler and the task routes
+    // would fail on the first request.
+    it('creates the session task tables and their indexes on the way', () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v26-tasks-'))
         tempDirs.push(dir)
         const dbPath = join(dir, 'hapi.db')
@@ -81,6 +81,9 @@ describe('schema migration v26 to v27', () => {
             DROP INDEX idx_session_tasks_active_due;
             DROP INDEX idx_session_tasks_session;
             DROP TABLE session_tasks;
+            DROP INDEX idx_session_task_runs_session;
+            DROP INDEX idx_session_task_runs_recorded;
+            DROP TABLE session_task_runs;
             PRAGMA user_version = 26;
         `)
         legacy.close()
@@ -89,8 +92,13 @@ describe('schema migration v26 to v27', () => {
         const internalDb = (migrated as unknown as { db: Database }).db
         expect((internalDb.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(38)
         expect(internalDb.prepare(
-            "SELECT name, type FROM sqlite_master WHERE tbl_name = 'session_tasks' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            `SELECT name, type FROM sqlite_master
+             WHERE tbl_name IN ('session_tasks', 'session_task_runs') AND name NOT LIKE 'sqlite_%'
+             ORDER BY tbl_name, name`
         ).all()).toEqual([
+            { name: 'idx_session_task_runs_recorded', type: 'index' },
+            { name: 'idx_session_task_runs_session', type: 'index' },
+            { name: 'session_task_runs', type: 'table' },
             { name: 'idx_session_tasks_active_due', type: 'index' },
             { name: 'idx_session_tasks_pending', type: 'index' },
             { name: 'idx_session_tasks_session', type: 'index' },
@@ -101,6 +109,10 @@ describe('schema migration v26 to v27', () => {
             sessionId, kind: 'repeat', items: ['ping'], intervalMs: 60_000, maxRuns: null, startAt: 1, nextRunAt: 1
         })
         expect(migrated.sessionTasks.findRunnable(1).map((row) => row.id)).toEqual([task.id])
+        migrated.sessionTasks.recordRun({
+            sessionId, taskId: task.id, taskKind: 'repeat', runNumber: null, outcome: 'skipped', scheduledFor: 1
+        }, 1)
+        expect(migrated.sessionTasks.listRuns(sessionId, 10)).toHaveLength(1)
         migrated.close()
     })
 })

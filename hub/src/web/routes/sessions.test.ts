@@ -2348,6 +2348,7 @@ describe('sessions routes', () => {
                 return new Map(ids.map((id) => [id, 0]))
             },
             getNextScheduledAtBySessionIds: (_ids: string[]) => new Map<string, number>(),
+            getSessionTaskSummaries: () => new Map(),
             getPrimaryAttachedJobsBySessionIds: () => new Map(),
             allocateAttachedJobVersion: () => Date.now(),
             resolveSessionAccess: () => ({ ok: false, reason: 'not-found' as const })
@@ -2372,12 +2373,61 @@ describe('sessions routes', () => {
         expect(unlimitedBody.sessions).toHaveLength(3)
     })
 
+    it('carries each session\'s task summary in the list and in search results', async () => {
+        const withTasks = createSession({ id: 'with-tasks', createdAt: 10 })
+        const withoutTasks = createSession({ id: 'without-tasks', createdAt: 20 })
+        const summaries = new Map([[withTasks.id, { activeTaskCount: 2, nextTaskRunAt: 1_700_000_000_000 }]])
+        const asked: string[][] = []
+        const engine = {
+            getSessionsByNamespace: () => [withTasks, withoutTasks],
+            getFutureScheduledMessageCounts: (ids: string[]) => new Map(ids.map((id) => [id, 0])),
+            getNextScheduledAtBySessionIds: () => new Map(),
+            getSessionTaskSummaries: (ids: string[]) => {
+                asked.push(ids)
+                return summaries
+            },
+            getPrimaryAttachedJobsBySessionIds: () => new Map(),
+            allocateAttachedJobVersion: () => Date.now(),
+            searchSessionContent: () => [{
+                sessionId: withTasks.id,
+                messageId: 'message-1',
+                role: 'user' as const,
+                seq: 3,
+                createdAt: 123,
+                snippet: 'context needle',
+                truncated: false
+            }],
+            hasPotentiallyIncompleteSessionContent: () => false,
+            resolveSessionAccess: () => ({ ok: false, reason: 'not-found' as const })
+        } as unknown as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
+
+        const list = await (await app.request('/api/sessions')).json() as { sessions: Array<Record<string, unknown>> }
+        expect([...list.sessions].sort((a, b) => String(a.id).localeCompare(String(b.id)))
+            .map((session) => [session.id, session.activeTaskCount, session.nextTaskRunAt])).toEqual([
+            ['with-tasks', 2, 1_700_000_000_000],
+            ['without-tasks', 0, null]
+        ])
+        expect(asked.at(-1)?.sort()).toEqual(['with-tasks', 'without-tasks'])
+
+        const search = await app.request('/api/sessions/content-search?query=needle')
+        const body = await search.json() as { results: Array<{ session: Record<string, unknown> }> }
+        expect(body.results[0].session).toMatchObject({ id: withTasks.id, activeTaskCount: 2, nextTaskRunAt: 1_700_000_000_000 })
+        expect(asked.at(-1)).toEqual([withTasks.id])
+    })
+
     it('searches message content only through the explicit content endpoint', async () => {
         const session = createSession({ id: 'content-session' })
         const engine = {
             getSessionsByNamespace: () => [session],
             getFutureScheduledMessageCounts: (ids: string[]) => new Map(ids.map((id) => [id, 0])),
             getNextScheduledAtBySessionIds: (ids: string[]) => new Map(ids.map((id) => [id, null])),
+            getSessionTaskSummaries: () => new Map(),
             getPrimaryAttachedJobsBySessionIds: () => new Map(),
             allocateAttachedJobVersion: () => Date.now(),
             hasPotentiallyIncompleteSessionContent: (namespace: string, query: string, sessionIds?: readonly string[]) => {
@@ -2442,6 +2492,7 @@ describe('sessions routes', () => {
             getSessionsByNamespace: () => sessions,
             getFutureScheduledMessageCounts: (ids: string[]) => new Map(ids.map((id) => [id, 0])),
             getNextScheduledAtBySessionIds: (ids: string[]) => new Map(ids.map((id) => [id, null])),
+            getSessionTaskSummaries: () => new Map(),
             getPrimaryAttachedJobsBySessionIds: () => new Map(),
             allocateAttachedJobVersion: () => Date.now(),
             hasPotentiallyIncompleteSessionContent: () => false,
@@ -2476,6 +2527,7 @@ describe('sessions routes', () => {
             getSessionsByNamespace: () => [],
             getFutureScheduledMessageCounts: () => new Map(),
             getNextScheduledAtBySessionIds: () => new Map(),
+            getSessionTaskSummaries: () => new Map(),
             searchSessionContent: () => []
         } as unknown as Partial<SyncEngine>
         const app = new Hono<WebAppEnv>()
@@ -2507,7 +2559,8 @@ describe('sessions routes', () => {
                 throw new Error('must reject before searching')
             },
             getFutureScheduledMessageCounts: () => new Map(),
-            getNextScheduledAtBySessionIds: () => new Map()
+            getNextScheduledAtBySessionIds: () => new Map(),
+            getSessionTaskSummaries: () => new Map()
         } as unknown as Partial<SyncEngine>
         const app = new Hono<WebAppEnv>()
         app.use('*', async (c, next) => {
@@ -2618,6 +2671,7 @@ describe('sessions routes', () => {
             getSessionsByNamespace: () => sessions,
             getFutureScheduledMessageCounts: (ids: string[]) => new Map(ids.map((id) => [id, 0])),
             getNextScheduledAtBySessionIds: (_ids: string[]) => new Map<string, number>(),
+            getSessionTaskSummaries: () => new Map(),
             getPrimaryAttachedJobsBySessionIds: () => new Map(),
             allocateAttachedJobVersion: () => Date.now(),
             resolveSessionAccess: () => ({ ok: false, reason: 'not-found' as const })
@@ -2775,6 +2829,7 @@ describe('sessions routes', () => {
             getSessionsByNamespace: () => sessions,
             getFutureScheduledMessageCounts: (ids: string[]) => new Map(ids.map((id) => [id, 0])),
             getNextScheduledAtBySessionIds: (_ids: string[]) => new Map<string, number>(),
+            getSessionTaskSummaries: () => new Map(),
             getPrimaryAttachedJobsBySessionIds: () => new Map(),
             allocateAttachedJobVersion: () => Date.now(),
             resolveSessionAccess: () => ({ ok: false, reason: 'not-found' as const })
@@ -2811,6 +2866,7 @@ describe('sessions routes', () => {
             getSessionsByNamespace: () => [session],
             getFutureScheduledMessageCounts: (ids: string[]) => new Map(ids.map((id) => [id, 0])),
             getNextScheduledAtBySessionIds: (_ids: string[]) => new Map<string, number>(),
+            getSessionTaskSummaries: () => new Map(),
             allocateAttachedJobVersion: (id: string) => {
                 expect(id).toBe(session.id)
                 callOrder.push('allocate')

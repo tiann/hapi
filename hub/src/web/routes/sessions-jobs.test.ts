@@ -47,6 +47,7 @@ describe('session-attached jobs routes (tiann/hapi#1404)', () => {
             getSessionsByNamespace: () => [session],
             getFutureScheduledMessageCounts: () => new Map(),
             getNextScheduledAtBySessionIds: () => new Map(),
+            getSessionTaskSummaries: () => new Map(),
             getPrimaryAttachedJobsBySessionIds: (ids: string[]) => {
                 const map = new Map<string, AttachedJob>()
                 const primary = [...jobs.values()].find((j) => j.status === 'running')
@@ -208,6 +209,7 @@ describe('session-attached jobs routes (tiann/hapi#1404)', () => {
             getSessionsByNamespace: () => [session],
             getFutureScheduledMessageCounts: () => new Map([[session.id, 0]]),
             getNextScheduledAtBySessionIds: () => new Map([[session.id, null]]),
+            getSessionTaskSummaries: () => new Map(),
             getPrimaryAttachedJobsBySessionIds: (ids: string[]) => {
                 const map = new Map<string, AttachedJob>()
                 for (const id of ids) map.set(id, job)

@@ -3,7 +3,9 @@ import { bodyLimit } from 'hono/body-limit'
 import {
     checkSessionTaskStartAt,
     CreateSessionTaskRequestSchema,
+    SESSION_TASK_MAX_ACTIVE_PER_SESSION,
     SESSION_TASK_MAX_ITEMS,
+    SessionTaskRunListQuerySchema,
     UpdateSessionTaskRequestSchema
 } from '@hapi/protocol'
 import type { SyncEngine } from '../../sync/syncEngine'
@@ -12,6 +14,7 @@ import { requireSessionFromParam, requireSyncEngine } from './guards'
 
 /** Task requests are small (50 prompts of at most 20 000 characters); a larger body is refused before it is parsed. */
 const TASK_REQUEST_MAX_BYTES = 1024 * 1024
+const RUN_HISTORY_DEFAULT_LIMIT = 50
 
 const taskRequestTooLarge = (c: Context<WebAppEnv>) => c.json({ error: 'Task request too large' }, 413)
 
@@ -62,6 +65,24 @@ export function createSessionTaskRoutes(getSyncEngine: () => SyncEngine | null):
         return c.json({ tasks: engine.listSessionTasks(sessionResult.sessionId) })
     })
 
+    /** What the session's tasks did, newest first. */
+    app.get('/sessions/:id/tasks/history', (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+        const parsed = SessionTaskRunListQuerySchema.safeParse(c.req.query())
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid query', issues: parsed.error.flatten() }, 400)
+        }
+        const runs = engine.listSessionTaskRuns(sessionResult.sessionId, parsed.data.limit ?? RUN_HISTORY_DEFAULT_LIMIT)
+        return c.json({ runs })
+    })
+
     app.post('/sessions/:id/tasks', taskBodyLimit, async (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) {
@@ -91,10 +112,17 @@ export function createSessionTaskRoutes(getSyncEngine: () => SyncEngine | null):
                 code: 'invalid_start_at'
             }, 400)
         }
-        return c.json({ task: engine.createSessionTask(sessionResult.sessionId, parsed.data) })
+        const created = engine.createSessionTask(sessionResult.sessionId, parsed.data)
+        if (created.type === 'too-many-tasks') {
+            return c.json({
+                error: `A session may hold at most ${SESSION_TASK_MAX_ACTIVE_PER_SESSION} active tasks`,
+                code: 'too_many_tasks'
+            }, 400)
+        }
+        return c.json({ task: created.task })
     })
 
-    /** Pause or resume a task. */
+    /** Edit a task: pause or resume it, or change its prompts, interval or run limit. */
     app.patch('/sessions/:id/tasks/:taskId', taskBodyLimit, async (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) {
@@ -116,6 +144,42 @@ export function createSessionTaskRoutes(getSyncEngine: () => SyncEngine | null):
         const result = engine.updateSessionTask(sessionResult.sessionId, c.req.param('taskId'), parsed.data)
         if (result.type === 'not-found') {
             return c.json({ error: 'Task not found' }, 404)
+        }
+        if (result.type === 'wrong-task-kind') {
+            return c.json({
+                error: `Not editable on a task of this kind: ${result.fields.join(', ')}`,
+                code: 'wrong_task_kind'
+            }, 400)
+        }
+        if (result.type === 'invalid-max-runs') {
+            return c.json({
+                error: 'maxRuns is below the number of prompts the task already sent',
+                code: 'invalid_max_runs'
+            }, 400)
+        }
+        return c.json({ task: result.task })
+    })
+
+    /** Send the task's next prompt now instead of waiting for its next run. */
+    app.post('/sessions/:id/tasks/:taskId/run', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const result = engine.runSessionTaskNow(sessionResult.sessionId, c.req.param('taskId'))
+        if (result.type === 'not-found') {
+            return c.json({ error: 'Task not found' }, 404)
+        }
+        if (result.type === 'prompt-pending') {
+            return c.json({
+                error: 'A prompt of this task is still waiting to be taken',
+                code: 'prompt_pending'
+            }, 409)
         }
         return c.json({ task: result.task })
     })

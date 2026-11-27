@@ -3,8 +3,14 @@ import { type Database, type SQLQueryBindings } from 'bun:sqlite'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { SESSION_TASK_RUN_PREVIEW_LENGTH } from '@hapi/protocol'
 import { Store } from './index'
-import { toSessionTask } from './sessionTasks'
+import {
+    SESSION_TASK_RUNS_MAX_PER_SESSION,
+    sessionTaskRunPreview,
+    toSessionTask,
+    toSessionTaskRun
+} from './sessionTasks'
 
 const tempDirs: string[] = []
 
@@ -91,6 +97,9 @@ describe('session task store', () => {
             startAt: 5,
             nextRunAt: 5
         })
+        first.sessionTasks.recordRun({
+            sessionId, taskId: created.id, taskKind: 'queue', runNumber: 1, localId: 'hapi-task:q:1', outcome: 'sent', scheduledFor: 5
+        }, 5)
         first.close()
 
         const reopened = new Store(path)
@@ -98,6 +107,7 @@ describe('session task store', () => {
         expect(loaded?.items).toEqual(['first', '你好', '吃饭了吗？'])
         expect(loaded?.kind).toBe('queue')
         expect(loaded?.startAt).toBe(5)
+        expect(reopened.sessionTasks.listRuns(sessionId, 10).map((run) => run.localId)).toEqual(['hapi-task:q:1'])
         reopened.close()
     })
 
@@ -136,6 +146,30 @@ describe('session task store', () => {
         expect(duePlan.some((step) => step.includes('idx_session_tasks_active_due'))).toBe(true)
         // The phase-1 single OR query could not use either.
         expect([...pendingPlan, ...duePlan].some((step) => step.startsWith('SCAN session_tasks'))).toBe(false)
+    })
+
+    it('counts the active tasks of a session and summarizes them for the session list', () => {
+        const store = makeStore()
+        const a = makeSession(store, 'a')
+        const b = makeSession(store, 'b')
+        const c = makeSession(store, 'c')
+        makeRepeatTask(store, a, { nextRunAt: 5_000 })
+        makeRepeatTask(store, a, { nextRunAt: 3_000 })
+        const waiting = makeRepeatTask(store, a, { nextRunAt: 1_000 })
+        store.sessionTasks.markSent(waiting.id, { localId: 'hapi-task:w:1', nextRunAt: null, now: 0 })
+        const paused = makeRepeatTask(store, a, { nextRunAt: 500 })
+        pause(store, paused.id, 0)
+        makeRepeatTask(store, b, { nextRunAt: 9_000 })
+
+        expect(store.sessionTasks.countActive(a)).toBe(3)
+        expect(store.sessionTasks.countActive(b)).toBe(1)
+        expect(store.sessionTasks.countActive(c)).toBe(0)
+        // A task waiting for its prompt to be taken is active but has no next run of its own.
+        const summaries = store.sessionTasks.summarizeActiveBySessionIds([a, b, c])
+        expect(summaries.get(a)).toEqual({ activeTaskCount: 3, nextTaskRunAt: 3_000 })
+        expect(summaries.get(b)).toEqual({ activeTaskCount: 1, nextTaskRunAt: 9_000 })
+        expect(summaries.has(c)).toBe(false)
+        expect(store.sessionTasks.summarizeActiveBySessionIds([]).size).toBe(0)
     })
 
     it('markSent counts a send once and keeps a paused task unscheduled', () => {
@@ -235,27 +269,38 @@ describe('session task store', () => {
         expect(store.sessionTasks.getById(task.id)?.lastError).toBeNull()
     })
 
-    it('deleting a session removes its tasks with it', () => {
+    it('deleting a session removes its tasks and their runs with it', () => {
         const store = makeStore()
         const session = makeSession(store, 's')
         const task = makeRepeatTask(store, session)
+        store.sessionTasks.recordRun({
+            sessionId: session, taskId: task.id, taskKind: 'repeat', runNumber: null, outcome: 'failed', scheduledFor: 1_000, detail: 'send_failed'
+        }, 1_000)
 
         expect(store.sessions.deleteSession(session, 'default')).toBe(true)
         expect(store.sessionTasks.getById(task.id)).toBeNull()
+        expect(store.sessionTasks.listRuns(session, 10)).toEqual([])
     })
 
-    it('transfer moves a merged-away session\'s tasks to the survivor', () => {
+    it('transfer moves a merged-away session\'s tasks and runs to the survivor', () => {
         const store = makeStore()
         const from = makeSession(store, 'from')
         const to = makeSession(store, 'to')
         const task = makeRepeatTask(store, from)
         makeRepeatTask(store, to)
+        store.sessionTasks.recordRun({
+            sessionId: from, taskId: task.id, taskKind: 'repeat', runNumber: null, outcome: 'skipped', scheduledFor: 1_000, detail: 'previous_prompt_waiting'
+        }, 1_000)
 
         expect(store.sessionTasks.transfer(from, to)).toBe(1)
         expect(store.sessionTasks.list(to).map((row) => row.id)).toContain(task.id)
         expect(store.sessionTasks.list(from)).toEqual([])
+        expect(store.sessionTasks.listRuns(to, 10).map((run) => run.taskId)).toEqual([task.id])
+        expect(store.sessionTasks.listRuns(from, 10)).toEqual([])
+        // Deleting the merged-away row no longer takes the task or its history with it.
         store.sessions.deleteSession(from, 'default')
         expect(store.sessionTasks.getById(task.id)?.sessionId).toBe(to)
+        expect(store.sessionTasks.listRuns(to, 10)).toHaveLength(1)
     })
 
     it('toSessionTask projects the wire shape', () => {
@@ -297,5 +342,123 @@ describe('session task store', () => {
         const store = makeStore()
         const session = makeSession(store, 's')
         expect(() => makeRepeatTask(store, session, { items: [] })).toThrow()
+    })
+
+    describe('run history', () => {
+        it('records a line, stamps it when the prompt is taken, and lists the newest first', () => {
+            const store = makeStore()
+            const session = makeSession(store, 's')
+            const task = makeRepeatTask(store, session)
+            const first = store.sessionTasks.recordRun({
+                sessionId: session, taskId: task.id, taskKind: 'repeat', runNumber: 1,
+                localId: 'hapi-task:r:1', outcome: 'sent', scheduledFor: 1_000, preview: 'check progress'
+            }, 1_000)
+            const second = store.sessionTasks.recordRun({
+                sessionId: session, taskId: task.id, taskKind: 'repeat', runNumber: null,
+                outcome: 'skipped', scheduledFor: 61_000, detail: 'previous_prompt_waiting'
+            }, 61_000)
+
+            expect(first).toMatchObject({
+                taskId: task.id,
+                taskKind: 'repeat',
+                runNumber: 1,
+                localId: 'hapi-task:r:1',
+                outcome: 'sent',
+                scheduledFor: 1_000,
+                recordedAt: 1_000,
+                takenAt: null,
+                detail: null,
+                preview: 'check progress'
+            })
+            expect(store.sessionTasks.listRuns(session, 10).map((run) => run.id)).toEqual([second.id, first.id])
+            expect(store.sessionTasks.listRuns(session, 1).map((run) => run.id)).toEqual([second.id])
+            expect(toSessionTaskRun(first)).toEqual({
+                id: first.id,
+                sessionId: session,
+                taskId: task.id,
+                taskKind: 'repeat',
+                runNumber: 1,
+                outcome: 'sent',
+                scheduledFor: 1_000,
+                recordedAt: 1_000,
+                takenAt: null,
+                detail: null,
+                preview: 'check progress'
+            })
+
+            expect(store.sessionTasks.markRunTaken(session, 'hapi-task:r:1', 3_000)).toBe(true)
+            expect(store.sessionTasks.listRuns(session, 10).at(-1)?.takenAt).toBe(3_000)
+            // Only a waiting sent prompt is stamped, and only once.
+            expect(store.sessionTasks.markRunTaken(session, 'hapi-task:r:1', 4_000)).toBe(false)
+            expect(store.sessionTasks.markRunTaken(session, 'hapi-task:none', 4_000)).toBe(false)
+        })
+
+        it('flips a waiting sent prompt to cancelled, and nothing else', () => {
+            const store = makeStore()
+            const session = makeSession(store, 's')
+            const task = makeRepeatTask(store, session)
+            store.sessionTasks.recordRun({
+                sessionId: session, taskId: task.id, taskKind: 'repeat', runNumber: 1, localId: 'hapi-task:c:1', outcome: 'sent', scheduledFor: 1_000
+            }, 1_000)
+            store.sessionTasks.recordRun({
+                sessionId: session, taskId: task.id, taskKind: 'repeat', runNumber: null, localId: 'hapi-task:c:x', outcome: 'failed', scheduledFor: 61_000
+            }, 61_000)
+            store.sessionTasks.markRunTaken(session, 'hapi-task:c:1', 2_000)
+            store.sessionTasks.recordRun({
+                sessionId: session, taskId: task.id, taskKind: 'repeat', runNumber: 2, localId: 'hapi-task:c:2', outcome: 'sent', scheduledFor: 61_000
+            }, 61_000)
+
+            // Taken already: not cancelled.
+            expect(store.sessionTasks.markRunCancelled(session, 'hapi-task:c:1')).toBe(false)
+            // Not a sent prompt.
+            expect(store.sessionTasks.markRunCancelled(session, 'hapi-task:c:x')).toBe(false)
+            expect(store.sessionTasks.markRunCancelled(session, 'hapi-task:c:2')).toBe(true)
+            expect(store.sessionTasks.listRuns(session, 10).map((run) => [run.runNumber, run.outcome, run.takenAt])).toEqual([
+                [2, 'cancelled', null],
+                [null, 'failed', null],
+                [1, 'sent', 2_000]
+            ])
+        })
+
+        it(`keeps at most ${SESSION_TASK_RUNS_MAX_PER_SESSION} rows per session and leaves other sessions alone`, () => {
+            const store = makeStore()
+            const a = makeSession(store, 'a')
+            const b = makeSession(store, 'b')
+            for (let index = 0; index < SESSION_TASK_RUNS_MAX_PER_SESSION + 20; index += 1) {
+                store.sessionTasks.recordRun({
+                    sessionId: a, taskId: 't', taskKind: 'repeat', runNumber: null, outcome: 'skipped', scheduledFor: index
+                }, index)
+            }
+            store.sessionTasks.recordRun({ sessionId: b, taskId: 't', taskKind: 'repeat', runNumber: null, outcome: 'skipped', scheduledFor: 1 }, 1)
+
+            const runs = store.sessionTasks.listRuns(a, 1_000)
+            expect(runs).toHaveLength(SESSION_TASK_RUNS_MAX_PER_SESSION)
+            expect(runs[0].scheduledFor).toBe(SESSION_TASK_RUNS_MAX_PER_SESSION + 19)
+            expect(runs.at(-1)?.scheduledFor).toBe(20)
+            expect(store.sessionTasks.listRuns(b, 10)).toHaveLength(1)
+        })
+
+        it('prunes rows recorded before a cutoff', () => {
+            const store = makeStore()
+            const session = makeSession(store, 's')
+            const record = (taskId: string, at: number) => store.sessionTasks.recordRun({
+                sessionId: session, taskId, taskKind: 'repeat', runNumber: null, outcome: 'skipped', scheduledFor: null
+            }, at)
+            record('old', 100)
+            record('edge', 1_000)
+            record('new', 2_000)
+
+            expect(store.sessionTasks.pruneRuns(1_000)).toBe(1)
+            expect(store.sessionTasks.listRuns(session, 10).map((run) => run.taskId)).toEqual(['new', 'edge'])
+            expect(store.sessionTasks.pruneRuns(1_000)).toBe(0)
+        })
+
+        it('cuts a preview to the wire length', () => {
+            const long = 'x'.repeat(SESSION_TASK_RUN_PREVIEW_LENGTH + 10)
+            expect(sessionTaskRunPreview(long)).toBe('x'.repeat(SESSION_TASK_RUN_PREVIEW_LENGTH))
+            expect(sessionTaskRunPreview('short')).toBe('short')
+            // By characters, not UTF-16 units.
+            expect(Array.from(sessionTaskRunPreview('你好'.repeat(SESSION_TASK_RUN_PREVIEW_LENGTH))).length).toBe(SESSION_TASK_RUN_PREVIEW_LENGTH)
+        })
     })
 })

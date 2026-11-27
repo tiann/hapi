@@ -37,15 +37,28 @@ import { clearAgentTerminalBuffer } from '../socket/agentTerminalBuffer'
 import type { SSEManager } from '../sse/sseManager'
 import { CursorLegacyMigrator, type CursorLegacyMigratorOptions } from '../cursor/cursorLegacyMigrator'
 import { toAttachedJob } from '../store/sessionJobs'
-import { toSessionTask, type StoredSessionTask } from '../store/sessionTasks'
-import type {
-    CreateSessionTaskRequest,
-    SessionTask,
-    SessionTaskDeleteResponse,
-    UpdateSessionTaskRequest
+import {
+    toSessionTask,
+    toSessionTaskRun,
+    type SessionTaskStore,
+    type SessionTaskSummary,
+    type StoredSessionTask
+} from '../store/sessionTasks'
+import {
+    SESSION_TASK_MAX_ACTIVE_PER_SESSION,
+    type CreateSessionTaskRequest,
+    type SessionTask,
+    type SessionTaskDeleteResponse,
+    type SessionTaskRun,
+    type UpdateSessionTaskRequest
 } from '@hapi/protocol'
 import { SessionTaskRunner } from './sessionTaskRunner'
-import type { DeleteSessionTaskResult, UpdateSessionTaskResult } from './sessionTaskTypes'
+import type {
+    CreateSessionTaskResult,
+    DeleteSessionTaskResult,
+    RunSessionTaskNowResult,
+    UpdateSessionTaskResult
+} from './sessionTaskTypes'
 import { SessionWakeGate, type WakeableSession } from './sessionWakeGate'
 import {
     buildJobTerminalWakePrompt,
@@ -190,6 +203,23 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     return value !== null && typeof value === 'object' && !Array.isArray(value)
         ? value as Record<string, unknown>
         : null
+}
+
+/** Patch fields that do not apply to a task of this kind. */
+function wrongTaskKindFields(task: StoredSessionTask, patch: UpdateSessionTaskRequest): string[] {
+    const fields: string[] = []
+    if (task.kind === 'repeat') {
+        if (patch.items !== undefined) fields.push('items')
+        return fields
+    }
+    if (patch.text !== undefined) fields.push('text')
+    if (patch.maxRuns !== undefined) fields.push('maxRuns')
+    return fields
+}
+
+/** A `repeat` task has sent every prompt `maxRuns` allows. */
+function taskLimitReached(task: StoredSessionTask): boolean {
+    return task.kind === 'repeat' && task.maxRuns !== null && task.runCount >= task.maxRuns
 }
 
 /**
@@ -1435,8 +1465,21 @@ export class SyncEngine {
         return this.store.sessionTasks.list(sessionId).map(toSessionTask)
     }
 
-    createSessionTask(sessionId: string, request: CreateSessionTaskRequest): SessionTask {
+    /** Newest first. */
+    listSessionTaskRuns(sessionId: string, limit: number): SessionTaskRun[] {
+        return this.store.sessionTasks.listRuns(sessionId, limit).map(toSessionTaskRun)
+    }
+
+    /** Active tasks and their earliest next run, per session (for `activeTaskCount` / `nextTaskRunAt`). */
+    getSessionTaskSummaries(sessionIds: string[]): Map<string, SessionTaskSummary> {
+        return this.store.sessionTasks.summarizeActiveBySessionIds(sessionIds)
+    }
+
+    createSessionTask(sessionId: string, request: CreateSessionTaskRequest): CreateSessionTaskResult {
         const now = Date.now()
+        if (this.store.sessionTasks.countActive(sessionId) >= SESSION_TASK_MAX_ACTIVE_PER_SESSION) {
+            return { type: 'too-many-tasks' }
+        }
         const startAt = request.startAt ?? now
         const task = this.store.sessionTasks.create({
             sessionId,
@@ -1450,29 +1493,73 @@ export class SyncEngine {
         })
         this.emitSessionTasksChanged(sessionId)
         this.runSessionTaskTick()
-        return toSessionTask(task)
+        return { type: 'created', task: toSessionTask(task) }
     }
 
     /**
-     * Pause stops scheduling; a prompt the task already sent stays in the
-     * queue and is still tracked. Resume runs a task that has nothing
-     * pending now, except that a task which has not run yet keeps its
-     * first-run time and a `queue` task keeps its spacing from when the
-     * agent took its last prompt.
+     * Edit a task. Which fields apply depends on its kind (see
+     * `wrongTaskKindFields`). A pause stops scheduling while a prompt already
+     * sent stays tracked; a resume runs a task that has nothing pending now,
+     * except that a task which has not run yet keeps its first-run time and a
+     * queue task keeps its spacing from when the agent took its last prompt.
      */
     updateSessionTask(sessionId: string, taskId: string, patch: UpdateSessionTaskRequest): UpdateSessionTaskResult {
         const store = this.store.sessionTasks
         const task = store.get(sessionId, taskId)
         if (!task) return { type: 'not-found' }
+        const wrongKind = wrongTaskKindFields(task, patch)
+        if (wrongKind.length > 0) return { type: 'wrong-task-kind', fields: wrongKind }
+        if (patch.maxRuns != null && patch.maxRuns < task.runCount) return { type: 'invalid-max-runs' }
+
         const now = Date.now()
+        const changes: Parameters<SessionTaskStore['update']>[1] = {}
+        if (patch.text !== undefined) {
+            changes.items = [patch.text]
+        }
+        if (patch.items !== undefined) {
+            // The prompts already sent stay: the list is the task's history and its future.
+            changes.items = [...task.items.slice(0, task.runCount), ...patch.items.map((item) => item.text)]
+        }
+        if (patch.intervalMs !== undefined) changes.intervalMs = patch.intervalMs
+        if (patch.maxRuns !== undefined) changes.maxRuns = patch.maxRuns
         const resuming = patch.paused === false && task.state === 'paused'
-        const updated = store.update(taskId, {
-            state: { paused: patch.paused as boolean, nextRunAt: patch.paused ? null : resumeRunAt(task, task.intervalMs, now) }
-        }, now)
+        if (patch.paused !== undefined && patch.paused !== (task.state === 'paused')) {
+            changes.state = {
+                paused: patch.paused,
+                nextRunAt: patch.paused ? null : resumeRunAt(task, patch.intervalMs ?? task.intervalMs, now)
+            }
+        }
+        // A new interval re-anchors a task that has nothing pending and has
+        // already run: the next prompt goes out one interval from now.
+        if (changes.intervalMs !== undefined && !patch.paused && task.pendingLocalId === null && task.runCount > 0) {
+            changes.state = { paused: false, nextRunAt: now + changes.intervalMs }
+        }
+
+        const updated = store.update(taskId, changes, now)
         if (!updated) return { type: 'not-found' }
+        if (!resuming) {
+            // maxRuns brought down to what already ran ends the task now that nothing is pending
+            // (with a prompt pending, the acknowledgement ends it: SessionTaskRunner.completeSend).
+            if (updated.pendingLocalId === null && taskLimitReached(updated)) store.delete(updated.id)
+        }
         this.emitSessionTasksChanged(sessionId)
         if (resuming) this.runSessionTaskTick()
         return { type: 'updated', task: toSessionTask(updated) }
+    }
+
+    /** Run the task's next prompt now instead of waiting for its next run. */
+    runSessionTaskNow(sessionId: string, taskId: string): RunSessionTaskNowResult {
+        const store = this.store.sessionTasks
+        const task = store.get(sessionId, taskId)
+        if (!task) return { type: 'not-found' }
+        if (task.pendingLocalId !== null) return { type: 'prompt-pending', task: toSessionTask(task) }
+        const now = Date.now()
+        // The state change clears the stored error as well.
+        const updated = store.update(taskId, { state: { paused: false, nextRunAt: now } }, now)
+        if (!updated) return { type: 'not-found' }
+        this.emitSessionTasksChanged(sessionId)
+        this.runSessionTaskTick()
+        return { type: 'queued', task: toSessionTask(updated) }
     }
 
     /**
@@ -1498,8 +1585,14 @@ export class SyncEngine {
         const promptSessionId = this.store.resolveMessageTarget(task.sessionId) ?? task.sessionId
         try {
             const result = await this.cancelQueuedMessage(promptSessionId, localId)
-            if (result.status === 'cancelled') return 'cancelled'
-            if (result.status === 'invoked') return 'taken'
+            if (result.status === 'cancelled') {
+                this.store.sessionTasks.markRunCancelled(task.sessionId, localId)
+                return 'cancelled'
+            }
+            if (result.status === 'invoked') {
+                this.store.sessionTasks.markRunTaken(task.sessionId, localId, result.message.invokedAt ?? Date.now())
+                return 'taken'
+            }
         } catch (error) {
             console.warn('[session-task] could not cancel the pending prompt', {
                 sessionId: promptSessionId,

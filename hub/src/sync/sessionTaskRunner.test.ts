@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test'
-import { buildSessionTaskMessageLocalId } from '@hapi/protocol'
+import { buildSessionTaskMessageLocalId, SESSION_TASK_RUN_PREVIEW_LENGTH } from '@hapi/protocol'
 import { Store } from '../store'
-import type { StoredSessionTask } from '../store/sessionTasks'
+import { SESSION_TASK_RUN_RETENTION_MS, type StoredSessionTask, type StoredSessionTaskRun } from '../store/sessionTasks'
 import { SessionTaskRunner, SESSION_TASK_MAX_PENDING_WAKE_ATTEMPTS } from './sessionTaskRunner'
 import type { SessionWakeResult, WakeableSession } from './sessionWakeGate'
 
@@ -59,6 +59,7 @@ function makeHarness(options: { active?: boolean; archived?: boolean } = {}) {
         retryDelayMs: 15_000
     })
     const task = (id: string) => store.sessionTasks.getById(id) as StoredSessionTask
+    const runs = (id = sessionId) => store.sessionTasks.listRuns(id, 50)
     return {
         store,
         sessionId,
@@ -73,6 +74,7 @@ function makeHarness(options: { active?: boolean; archived?: boolean } = {}) {
         duringSend,
         runner,
         task,
+        runs,
         setClock: (value: number) => { clock = value },
         advance: (ms: number) => { clock += ms },
         /** The CLI acknowledges taking a prompt. */
@@ -88,6 +90,19 @@ function makeHarness(options: { active?: boolean; archived?: boolean } = {}) {
 }
 
 type Harness = ReturnType<typeof makeHarness>
+
+const stripRun = (run: StoredSessionTaskRun) => ({
+    taskId: run.taskId,
+    taskKind: run.taskKind,
+    runNumber: run.runNumber,
+    localId: run.localId,
+    outcome: run.outcome,
+    scheduledFor: run.scheduledFor,
+    recordedAt: run.recordedAt,
+    takenAt: run.takenAt,
+    detail: run.detail,
+    preview: run.preview
+})
 
 describe('SessionTaskRunner', () => {
     describe('repeat tasks', () => {
@@ -273,8 +288,9 @@ describe('SessionTaskRunner', () => {
             const changesAfterFirstFailure = h.changes.length
             h.advance(MINUTE)
             await h.runner.tick()
-            // Same failure again: no redundant change event.
+            // Same failure again: no redundant change event, no second history line.
             expect(h.changes.length).toBe(changesAfterFirstFailure)
+            expect(h.runs()).toHaveLength(1)
 
             h.wake.outcome = { type: 'active' }
             h.session.active = true
@@ -295,6 +311,7 @@ describe('SessionTaskRunner', () => {
             // Nothing was attempted, so there is nothing to report: no error, no event, still due.
             expect(h.task(created.id)).toMatchObject({ state: 'active', lastError: null, nextRunAt: T0 })
             expect(h.changes).toEqual([])
+            expect(h.runs()).toEqual([])
         })
 
         it('keeps a task due, with the reason, while its session cannot be resumed', async () => {
@@ -309,6 +326,7 @@ describe('SessionTaskRunner', () => {
             expect(h.sent).toEqual([])
             // A resume can be refused for a while and succeed later: the task is not paused.
             expect(h.task(created.id)).toMatchObject({ state: 'active', nextRunAt: T0, lastError: 'session_unavailable' })
+            expect(h.runs().map((run) => [run.outcome, run.detail])).toEqual([['failed', 'session_unavailable']])
 
             // The user opens the session (it initializes): the next tick goes through by itself.
             h.session.active = true
@@ -328,6 +346,7 @@ describe('SessionTaskRunner', () => {
             expect(h.sent).toEqual([])
             // Archiving does not pause the task: it stays due and says why.
             expect(h.task(created.id)).toMatchObject({ state: 'active', nextRunAt: T0, lastError: 'session_archived' })
+            expect(h.runs().map((run) => [run.outcome, run.detail])).toEqual([['failed', 'session_archived']])
 
             h.session.archived = false
             h.wake.outcome = { type: 'active' }
@@ -352,7 +371,7 @@ describe('SessionTaskRunner', () => {
 
         it(`stops waking after ${SESSION_TASK_MAX_PENDING_WAKE_ATTEMPTS} wakes that the agent did not take the prompt in`, async () => {
             const h: Harness = makeHarness()
-            const created = h.create({
+            h.create({
                 sessionId: h.sessionId, kind: 'queue', items: ['a', 'b'], intervalMs: 10 * MINUTE, maxRuns: null, nextRunAt: T0
             })
             await h.runner.tick()
@@ -361,7 +380,7 @@ describe('SessionTaskRunner', () => {
                 h.session.active = false
                 await h.runner.tick()
                 expect(h.wakeCalls).toHaveLength(attempt)
-                expect(h.task(created.id)?.lastError).toBeNull()
+                expect(h.task(h.runs()[0].taskId as string)?.lastError).toBeNull()
             }
 
             h.session.active = false
@@ -387,7 +406,8 @@ describe('SessionTaskRunner', () => {
             await h.runner.tick()
             expect(h.task(created.id)).toMatchObject({ lastError: 'machine_offline', pendingLocalId: h.sent[0].localId, state: 'active' })
             const changesAfterFirstFailure = h.changes.length
-            // No repeat event on the next tick.
+            // No history line for a prompt that did go out, and no repeat event on the next tick.
+            expect(h.runs()).toHaveLength(1)
             h.advance(MINUTE)
             await h.runner.tick()
             expect(h.changes.length).toBe(changesAfterFirstFailure)
@@ -451,6 +471,7 @@ describe('SessionTaskRunner', () => {
             expect(h.sent).toEqual([])
             expect(h.store.messages.getMessages(h.sessionId)).toEqual([])
             expect(h.store.sessionTasks.getById(created.id)).toBeNull()
+            expect(h.runs()).toEqual([])
         })
 
         it('sends nothing when the task is paused during the wake', async () => {
@@ -536,10 +557,12 @@ describe('SessionTaskRunner', () => {
             expect(h.task(created.id)).toMatchObject({ lastError: 'prompt_indeterminate', pendingLocalId: h.sent[0].localId, runCount: 1 })
             // An indeterminate row is never replayed, so waking the session would not help.
             expect(h.wakeCalls).toEqual([])
+            expect(h.runs().map((run) => run.outcome)).toEqual(['sent'])
 
             h.discard(h.sent[0].localId)
             await h.runner.tick()
             expect(h.task(created.id)).toMatchObject({ lastError: null, pendingLocalId: null, nextRunAt: T0 + 10 * MINUTE })
+            expect(h.runs().map((run) => run.outcome)).toEqual(['cancelled'])
         })
 
         it('moves on when the user retries it and the agent takes it', async () => {
@@ -590,6 +613,143 @@ describe('SessionTaskRunner', () => {
             h.store.messages.markMessagesInvoked(replacementId, [localId], T0 + MINUTE)
             await h.runner.tick()
             expect(h.store.sessionTasks.get(replacementId, created.id)).toMatchObject({ pendingLocalId: null, lastConsumedAt: T0 + MINUTE })
+            expect(h.runs(replacementId)[0]).toMatchObject({ takenAt: T0 + MINUTE })
+        })
+    })
+
+    describe('run history', () => {
+        it('records each prompt sent, when it was taken, and nothing for the ticks in between', async () => {
+            const h: Harness = makeHarness()
+            const longText = `x`.repeat(SESSION_TASK_RUN_PREVIEW_LENGTH + 40)
+            const created = h.create({
+                sessionId: h.sessionId, kind: 'queue', items: [longText, 'b'], intervalMs: 10 * MINUTE, maxRuns: null, nextRunAt: T0
+            })
+            await h.runner.tick()
+            await h.runner.tick()
+            expect(h.runs().map(stripRun)).toEqual([{
+                taskId: created.id,
+                taskKind: 'queue',
+                runNumber: 1,
+                localId: h.sent[0].localId,
+                outcome: 'sent',
+                scheduledFor: T0,
+                recordedAt: T0,
+                takenAt: null,
+                detail: null,
+                preview: 'x'.repeat(SESSION_TASK_RUN_PREVIEW_LENGTH)
+            }])
+
+            h.take(h.sent[0].localId, T0 + MINUTE)
+            await h.runner.tick()
+            expect(h.runs()[0]?.takenAt).toBe(T0 + MINUTE)
+        })
+
+        it('records a skipped slot with its due time', async () => {
+            const h: Harness = makeHarness()
+            const created = h.create({
+                sessionId: h.sessionId, kind: 'repeat', items: ['ping'], intervalMs: 10 * MINUTE, maxRuns: null, nextRunAt: T0
+            })
+            await h.runner.tick()
+            h.setClock(T0 + 10 * MINUTE + 5_000)
+            await h.runner.tick()
+
+            // Newest first.
+            expect(h.runs().map((run) => [run.outcome, run.runNumber, run.scheduledFor, run.detail, run.preview])).toEqual([
+                ['skipped', null, T0 + 10 * MINUTE, 'previous_prompt_waiting', 'ping'],
+                ['sent', 1, T0, null, 'ping']
+            ])
+        })
+
+        it('flips a prompt the user discarded to cancelled', async () => {
+            const h: Harness = makeHarness()
+            h.create({
+                sessionId: h.sessionId, kind: 'queue', items: ['a', 'b'], intervalMs: 10 * MINUTE, maxRuns: null, nextRunAt: T0
+            })
+            await h.runner.tick()
+            h.discard(h.sent[0].localId)
+            await h.runner.tick()
+            expect(h.runs().map((run) => [run.outcome, run.runNumber, run.takenAt])).toEqual([['cancelled', 1, null]])
+        })
+
+        it('writes a failed line when a failure is new for the task, not on every tick', async () => {
+            const h: Harness = makeHarness({ active: false })
+            const created = h.create({
+                sessionId: h.sessionId, kind: 'repeat', items: ['ping'], intervalMs: 10 * MINUTE, maxRuns: null, nextRunAt: T0
+            })
+            h.wake.outcome = { type: 'refused', failure: { code: 'no_machine_online', message: 'No machine online' } }
+            await h.runner.tick()
+            h.advance(MINUTE)
+            await h.runner.tick()
+            h.wake.outcome = { type: 'refused', failure: { code: 'resume_failed', message: 'spawn failed' } }
+            await h.runner.tick()
+
+            expect(h.runs().map((run) => [run.outcome, run.detail, run.scheduledFor, run.recordedAt])).toEqual([
+                ['failed', 'send_failed', T0, T0 + MINUTE],
+                ['failed', 'machine_offline', T0, T0]
+            ])
+            expect(created.id).toBe(h.runs()[0].taskId)
+        })
+
+        it('keeps the history of a finished task and follows it through a merge', async () => {
+            const h: Harness = makeHarness()
+            const created = h.create({
+                sessionId: h.sessionId, kind: 'queue', items: ['a'], intervalMs: 10 * MINUTE, maxRuns: null, nextRunAt: T0
+            })
+            await h.runner.tick()
+            h.take(h.sent[0].localId)
+            await h.runner.tick()
+            expect(h.task(created.id)).toBeNull()
+            expect(h.runs()).toHaveLength(1)
+
+            const survivorId = h.store.sessions.getOrCreateSession('task-session-survivor', { path: '/tmp', flavor: 'cursor' }, null, 'default').id
+            h.store.sessionTasks.transfer(h.sessionId, survivorId)
+            expect(h.runs()).toEqual([])
+            expect(h.runs(survivorId).map((run) => run.taskId)).toEqual([created.id])
+        })
+
+        it('keeps at most a bounded number of rows per session', async () => {
+            const h: Harness = makeHarness()
+            for (let index = 0; index < 505; index += 1) {
+                h.store.sessionTasks.recordRun({
+                    sessionId: h.sessionId,
+                    taskId: 't',
+                    taskKind: 'repeat',
+                    runNumber: null,
+                    outcome: 'skipped',
+                    scheduledFor: T0 + index,
+                    detail: 'previous_prompt_waiting'
+                }, T0 + index)
+            }
+            const runs = h.store.sessionTasks.listRuns(h.sessionId, 1_000)
+            expect(runs).toHaveLength(500)
+            expect(runs[0].scheduledFor).toBe(T0 + 504)
+            expect(runs.at(-1)?.scheduledFor).toBe(T0 + 5)
+        })
+
+        it('deletes rows past the retention age at most once an hour', async () => {
+            const h: Harness = makeHarness()
+            h.create({
+                sessionId: h.sessionId, kind: 'repeat', items: ['ping'], intervalMs: 10 * MINUTE, maxRuns: null, nextRunAt: T0 + HOUR
+            })
+            h.store.sessionTasks.recordRun({
+                sessionId: h.sessionId, taskId: 'old', taskKind: 'repeat', runNumber: null, outcome: 'skipped', scheduledFor: null
+            }, T0 - SESSION_TASK_RUN_RETENTION_MS - 1)
+
+            const oldRuns = () => h.runs().filter((run) => run.taskId === 'old')
+            // The first tick prunes; the next one, an hour less later, does not.
+            await h.runner.tick()
+            expect(oldRuns()).toEqual([])
+            h.store.sessionTasks.recordRun({
+                sessionId: h.sessionId, taskId: 'old', taskKind: 'repeat', runNumber: null, outcome: 'skipped', scheduledFor: null
+            }, T0 - SESSION_TASK_RUN_RETENTION_MS - 1)
+            h.advance(HOUR - 1)
+            await h.runner.tick()
+            expect(oldRuns()).toHaveLength(1)
+            h.advance(1)
+            await h.runner.tick()
+            expect(oldRuns()).toEqual([])
+            // Rows inside the retention age stay.
+            expect(h.runs().filter((run) => run.taskId !== 'old').length).toBeGreaterThan(0)
         })
     })
 
@@ -610,6 +770,8 @@ describe('SessionTaskRunner', () => {
             await h.runner.tick()
             expect(h.sent).toEqual([])
             expect(h.task(created.id)).toMatchObject({ runCount: 1, pendingLocalId: buildSessionTaskMessageLocalId(created.id, 1) })
+            // The recovered send is in the history too.
+            expect(h.runs().map((run) => [run.outcome, run.runNumber, run.preview])).toEqual([['sent', 1, 'a']])
         })
 
         it('keeps a task due after a failed send and retries after a delay', async () => {
@@ -621,6 +783,7 @@ describe('SessionTaskRunner', () => {
             await h.runner.tick()
             expect(h.sent).toEqual([])
             expect(h.task(created.id)).toMatchObject({ state: 'active', runCount: 0, nextRunAt: T0, lastError: 'send_failed' })
+            expect(h.runs().map((run) => [run.outcome, run.detail])).toEqual([['failed', 'send_failed']])
 
             h.advance(1_000)
             await h.runner.tick()

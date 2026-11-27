@@ -12,7 +12,7 @@ import { PushStore } from './pushStore'
 import { FcmStore } from './fcmStore'
 import { ScratchlistStore } from './scratchlistStore'
 import { SessionJobsStore } from './sessionJobsStore'
-import { SESSION_TASKS_TABLE_SQL, SessionTaskStore } from './sessionTasks'
+import { SESSION_TASK_RUNS_TABLE_SQL, SESSION_TASKS_TABLE_SQL, SessionTaskStore } from './sessionTasks'
 import { SessionRedirectStore } from './sessionRedirectStore'
 import { SessionStore } from './sessionStore'
 import { UserStore } from './userStore'
@@ -78,6 +78,7 @@ const REQUIRED_TABLES = [
     'session_scratchlist',
     'session_jobs',
     'session_tasks',
+    'session_task_runs',
     'usage_events',
     'usage_scan_state',
     'events',
@@ -410,7 +411,8 @@ export class Store {
             // #1489 wake-on-terminal at v33→v34; session_redirects at v34→v35;
             // passkey_credentials at v35→v36
             // (jobs remapped again after upstream took 28/29/30).
-            // session_tasks (repeat/queue schedules) at v36→v37; start_at at v37→v38.
+            // session_tasks (repeat/queue schedules) at v36→v37; start_at and the
+            // session_task_runs history at v37→v38.
             21: () => this.migrateFromV21ToV22(),
             22: () => this.migrateFromV22ToV23(),
             23: () => this.migrateFromV23ToV24(),
@@ -659,6 +661,7 @@ export class Store {
                 ON session_jobs(session_id, status, updated_at DESC);
 
             ${SESSION_TASKS_TABLE_SQL}
+            ${SESSION_TASK_RUNS_TABLE_SQL}
 
             CREATE TABLE IF NOT EXISTS session_redirects (
                 old_id TEXT PRIMARY KEY,
@@ -1429,12 +1432,13 @@ export class Store {
     }
 
     /**
-     * v37→v38: `start_at` on session_tasks, so a task that has not run yet
-     * keeps its first-run time across a pause. A database that got the table
-     * from the v36→v37 step of this build already carries the column. Rows
-     * written before the column exists are dated from their creation, which
-     * is when phase 1 ran a task first. Idempotent.
-     * Rollback: `ALTER TABLE session_tasks DROP COLUMN start_at; PRAGMA user_version = 37;`
+     * v37→v38: `start_at` on session_tasks (a task that has not run yet keeps
+     * its first-run time across a pause) and `session_task_runs`, the history
+     * of what the tasks did. A database that got the table from the v36→v37
+     * step of this build already carries the column. Rows written before the
+     * column exist are dated from their creation, which is when phase 1 ran
+     * a task first. Idempotent.
+     * Rollback: `DROP TABLE session_task_runs; ALTER TABLE session_tasks DROP COLUMN start_at; PRAGMA user_version = 37;`
      */
     private migrateFromV37ToV38(): void {
         const columns = this.db.prepare('PRAGMA table_info(session_tasks)').all() as Array<{ name: string }>
@@ -1444,6 +1448,7 @@ export class Store {
                 UPDATE session_tasks SET start_at = created_at;
             `)
         }
+        this.db.exec(SESSION_TASK_RUNS_TABLE_SQL)
     }
 
     private ensureUsageScanParserVersion(): void {

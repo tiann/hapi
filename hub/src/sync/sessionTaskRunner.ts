@@ -4,7 +4,11 @@ import {
     type SessionTaskErrorCode
 } from '@hapi/protocol'
 import type { Store } from '../store'
-import type { StoredSessionTask } from '../store/sessionTasks'
+import {
+    SESSION_TASK_RUN_RETENTION_MS,
+    sessionTaskRunPreview,
+    type StoredSessionTask
+} from '../store/sessionTasks'
 import type { SessionWakeResult, WakeableSession } from './sessionWakeGate'
 
 /**
@@ -19,10 +23,17 @@ import type { SessionWakeResult, WakeableSession } from './sessionWakeGate'
  *
  * A `repeat` task that comes due while its previous prompt is still waiting
  * skips that slot, so a busy agent never has a second prompt stacked on it.
+ *
+ * Every run leaves a line in the run history (`session_task_runs`): a prompt
+ * sent (stamped when the agent takes it, or flipped to `cancelled`), a slot
+ * skipped, or a run that could not go out.
  */
 
 /** Times the hub wakes a session for one pending prompt before it stops and reports `prompt_not_taken`. */
 export const SESSION_TASK_MAX_PENDING_WAKE_ATTEMPTS = 3
+/** How often run-history rows past the retention age are deleted. */
+export const SESSION_TASK_RUN_PRUNE_INTERVAL_MS = 60 * 60 * 1000
+
 export type SessionTaskRunnerDeps = {
     store: Pick<Store, 'sessionTasks' | 'messages' | 'resolveMessageTarget'>
     getSession: (sessionId: string) => WakeableSession | null
@@ -35,6 +46,7 @@ export type SessionTaskRunnerDeps = {
     now?: () => number
     /** How long to wait before retrying a run whose send threw. */
     retryDelayMs?: number
+    pruneIntervalMs?: number
     log?: (message: string, detail: Record<string, unknown>) => void
 }
 
@@ -59,12 +71,14 @@ export class SessionTaskRunner {
     private readonly retryAt = new Map<string, number>()
     /** Wake attempts so far, per pending prompt localId. */
     private readonly pendingWakeAttempts = new Map<string, number>()
+    private lastPruneAt = 0
 
     constructor(private readonly deps: SessionTaskRunnerDeps) {}
 
     /** Look at every task that needs attention now. Safe to call on every tick. */
     async tick(): Promise<void> {
         const now = this.now()
+        this.pruneRuns(now)
         const runs: Array<Promise<void>> = []
         for (const task of this.deps.store.sessionTasks.findRunnable(now)) {
             if (this.inFlight.has(task.id)) continue
@@ -86,6 +100,17 @@ export class SessionTaskRunner {
         return true
     }
 
+    /** Run-history rows older than the retention age go, at most once per interval. */
+    private pruneRuns(now: number): void {
+        if (now - this.lastPruneAt < (this.deps.pruneIntervalMs ?? SESSION_TASK_RUN_PRUNE_INTERVAL_MS)) return
+        this.lastPruneAt = now
+        try {
+            this.deps.store.sessionTasks.pruneRuns(now - SESSION_TASK_RUN_RETENTION_MS)
+        } catch (error) {
+            this.log('prune failed', error)
+        }
+    }
+
     private async run(task: StoredSessionTask, now: number): Promise<void> {
         try {
             if (task.pendingLocalId !== null) {
@@ -97,7 +122,11 @@ export class SessionTaskRunner {
         } catch (error) {
             this.retryAt.set(task.id, this.now() + (this.deps.retryDelayMs ?? 15_000))
             this.log('run failed', error, task)
-            this.changed(task, this.deps.store.sessionTasks.setError(task.id, 'send_failed', this.now()))
+            const failedAt = this.now()
+            if (this.deps.store.sessionTasks.setError(task.id, 'send_failed', failedAt)) {
+                this.recordRun(task, { outcome: 'failed', detail: 'send_failed', now: failedAt })
+                this.changed(task)
+            }
         }
     }
 
@@ -116,8 +145,9 @@ export class SessionTaskRunner {
             : ({ status: 'absent' } as const)
 
         if (lookup.status === 'invoked' || lookup.status === 'absent') {
-            const consumedAt = lookup.status === 'invoked' ? (lookup.message.invokedAt ?? now) : now
-            this.completeSend(task, localId, consumedAt, now)
+            const taken = lookup.status === 'invoked'
+            const consumedAt = taken ? (lookup.message.invokedAt ?? now) : now
+            this.completeSend(task, localId, taken, consumedAt, now)
             return
         }
         if (lookup.status === 'indeterminate') {
@@ -136,8 +166,12 @@ export class SessionTaskRunner {
             && task.nextRunAt !== null
             && task.nextRunAt <= now
         ) {
+            const skippedFor = task.nextRunAt
             const nextRunAt = nextRepeatRunAt(task.nextRunAt, task.intervalMs, now)
-            this.changed(task, store.skipDueSlot(task.id, nextRunAt, now))
+            if (store.skipDueSlot(task.id, nextRunAt, now)) {
+                this.recordRun(task, { outcome: 'skipped', scheduledFor: skippedFor, detail: 'previous_prompt_waiting', now })
+                this.changed(task)
+            }
         }
 
         // The prompt is still waiting on a session that is not running: wake it
@@ -147,9 +181,11 @@ export class SessionTaskRunner {
         }
     }
 
-    private completeSend(task: StoredSessionTask, localId: string, consumedAt: number, now: number): void {
+    private completeSend(task: StoredSessionTask, localId: string, taken: boolean, consumedAt: number, now: number): void {
         const store = this.deps.store.sessionTasks
         this.pendingWakeAttempts.delete(localId)
+        if (taken) store.markRunTaken(task.sessionId, localId, consumedAt)
+        else store.markRunCancelled(task.sessionId, localId)
         const finished = task.kind === 'queue'
             ? task.runCount >= task.items.length
             : task.maxRuns !== null && task.runCount >= task.maxRuns
@@ -211,6 +247,7 @@ export class SessionTaskRunner {
             return
         }
         const localId = buildSessionTaskMessageLocalId(task.id, runNumber)
+        const preview = sessionTaskRunPreview(text)
         // A previous hub process may have inserted this prompt and stopped
         // before recording it. The localId makes that insert idempotent.
         if (this.deps.store.messages.lookupQueuedMessage(this.promptSessionId(task), localId).status === 'absent') {
@@ -232,6 +269,7 @@ export class SessionTaskRunner {
             }
             return
         }
+        this.recordRun(task, { runNumber, localId, outcome: 'sent', preview, now: sentAt })
         this.changed(task)
     }
 
@@ -251,9 +289,48 @@ export class SessionTaskRunner {
         }
     }
 
-    /** Put the wake failure on the task. The task stays due (nothing here pauses it): the gate's backoff paces the retries. */
-    private recordWakeFailure(task: StoredSessionTask, outcome: Extract<SessionWakeResult, { type: 'refused' }>): void {
-        this.changed(task, this.deps.store.sessionTasks.setError(task.id, taskErrorCodeFor(outcome.failure.code), this.now()))
+    /**
+     * Put the wake failure on the task. The task stays due (nothing here
+     * pauses it): the gate's backoff paces the retries, and the error clears
+     * on the next run that goes out. A failure that stopped a run from going
+     * out is also one history line, written when it is new for the task.
+     */
+    private recordWakeFailure(
+        task: StoredSessionTask,
+        outcome: Extract<SessionWakeResult, { type: 'refused' }>,
+        now: number = this.now()
+    ): void {
+        const code = taskErrorCodeFor(outcome.failure.code)
+        if (!this.deps.store.sessionTasks.setError(task.id, code, now)) return
+        if (task.pendingLocalId === null) {
+            this.recordRun(task, { outcome: 'failed', detail: code, now })
+        }
+        this.changed(task)
+    }
+
+    private recordRun(
+        task: StoredSessionTask,
+        run: {
+            runNumber?: number
+            localId?: string
+            outcome: 'sent' | 'skipped' | 'failed'
+            scheduledFor?: number | null
+            detail?: string | null
+            preview?: string | null
+            now: number
+        }
+    ): void {
+        this.deps.store.sessionTasks.recordRun({
+            sessionId: task.sessionId,
+            taskId: task.id,
+            taskKind: task.kind,
+            runNumber: run.runNumber ?? null,
+            localId: run.localId,
+            outcome: run.outcome,
+            scheduledFor: run.scheduledFor === undefined ? task.nextRunAt : run.scheduledFor,
+            detail: run.detail ?? null,
+            preview: run.preview ?? sessionTaskRunPreview(task.items[0] ?? '')
+        }, run.now)
     }
 
     private changed(task: StoredSessionTask, storeChanged: boolean = true): void {
