@@ -51,6 +51,18 @@ final class ToolContentPresentationTests: XCTestCase {
         XCTAssertEqual(checklistItems(try json(#"{"plan":[{"step":"Inspect","status":"completed"}]}"#)).first?.glyph, "☑")
     }
 
+    func testCursorPlanOverviewCanStandAloneAndOmitsDuplicates() throws {
+        let both: JSONValue = .object(["overview": .string(" Review the changes. "), "plan": .string("## Steps")])
+        XCTAssertEqual(planProposalOverview(tool("CursorCreatePlan", input: both)), "Review the changes.")
+        XCTAssertEqual(planProposalMarkdown(tool("CursorCreatePlan", input: both)), "## Steps")
+        XCTAssertNil(planProposalOverview(tool("ExitPlanMode", input: both)))
+        let onlyOverview = try json(#"{"overview":"Review only."}"#)
+        XCTAssertEqual(planProposalOverview(tool("CursorCreatePlan", input: onlyOverview)), "Review only.")
+        for input in [#"{"overview":" \n "}"#, #"{"overview":42}"#, #"{"overview":"Summary","plan":"\nSummary\n"}"#] {
+            XCTAssertNil(planProposalOverview(tool("CursorCreatePlan", input: try json(input))))
+        }
+    }
+
     func testResultEnvelopesAndWhitespace() throws {
         for payload in [#"{"output":"hello\n"}"#, #"{"result":{"data":{"text":"hello\n"}}}"#,
                         #"{"content":["hello\n"]}"#, #"{"file":{"content":"hello\n"}}"#,

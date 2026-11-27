@@ -136,6 +136,19 @@ describe('PermissionFooter', () => {
             expect(denyPermission).toHaveBeenCalledWith('session-1', 'permission-1', { decision: 'abort' })
         })
 
+        it.each([
+            ['tool.allow', 'approve'],
+            ['tool.deny', 'deny']
+        ] as const)('Cursor plan offers one-shot %s and sends it without a session permission decision', (label, call) => {
+            const { approvePermission, denyPermission } = renderFooter({ flavor: 'cursor', name: 'CursorCreatePlan' })
+            expect(buttonLabels()).toEqual(['tool.allow', 'tool.deny'])
+            fireEvent.click(screen.getByRole('button', { name: label }))
+            const sent = call === 'approve' ? approvePermission : denyPermission
+            const other = call === 'approve' ? denyPermission : approvePermission
+            expect(sent).toHaveBeenCalledWith('session-1', 'permission-1')
+            expect(other).not.toHaveBeenCalled()
+        })
+
         it('claude allow sends a plain approval', () => {
             const { approvePermission } = renderFooter({ flavor: 'claude' })
             fireEvent.click(screen.getByRole('button', { name: 'tool.allow' }))

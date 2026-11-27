@@ -24,11 +24,13 @@ struct ToolCallBody: View {
     var body: some View {
         let questionTool = isQuestionDetailsTool(tool.name)
         let answers = questionTool ? tool.permission?.answers : nil
+        let overview = planProposalOverview(tool)
+        let plan = planProposalMarkdown(tool)
         VStack(alignment: .leading, spacing: 12) {
             if questionTool {
                 QuestionToolBody(tool: tool)
-            } else if let plan = planProposalMarkdown(tool) {
-                PlanProposalContent(markdown: plan)
+            } else if overview != nil || plan != nil {
+                PlanProposalContent(overview: overview, markdown: plan)
                 if planProposalShowsResult(tool) { ToolResultSection(tool: tool) }
             } else {
                 SectionLabel(text: String(localized: "Input"))
@@ -60,11 +62,24 @@ struct ToolCallBody: View {
 /// Shared by the transcript and inspector. Unlike ordinary tool output, the
 /// proposal is a reading document: no preview budget or paged-source fallback.
 struct PlanProposalContent: View {
-    let markdown: String
+    let overview: String?
+    let markdown: String?
+    @Environment(\.hapiTheme) private var theme
+    @Environment(\.hapiTypography) private var typography
 
     var body: some View {
-        CachedMarkdownView(markdown: markdown)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: 8) {
+            if let overview {
+                Text(verbatim: overview)
+                    .font(typography.bodyFont)
+                    .foregroundStyle(theme.textSecondary)
+                    .textSelection(.enabled)
+            }
+            if let markdown {
+                CachedMarkdownView(markdown: markdown)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

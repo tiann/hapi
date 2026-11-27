@@ -45,6 +45,7 @@ import app.hapi.protocol.catalog.Flavors
  * - codex family (incl. cursor and codex-dialect tool names): Allow
  *   (`decision: approved`) / Abort (`decision: abort`) + overflow
  *   Allow-for-session (`decision: approved_for_session`);
+ * - CursorCreatePlan: one-shot Allow or Deny (rejects the proposal);
  * - everyone else: Allow (`{}`) / Deny (`{}`) + overflow Allow-for-session
  *   (claude: `allowTools`) and, for claude edit tools, Allow-all-edits
  *   (`mode: acceptEdits`).
@@ -110,7 +111,7 @@ private fun PermissionActionsRow(
         return
     }
     val resolving = override == PermissionRowOverride.Resolving
-    val codex = isCodexUx(flavor, tool.name)
+    val codex = tool.name != "CursorCreatePlan" && isCodexUx(flavor, tool.name)
     val canAllowForSession = !codex && tool.name !in HIDE_ALLOW_FOR_SESSION
     val canAllowAllEdits = flavor == "claude" && tool.name in EDIT_TOOLS
     var overflowOpen by remember { mutableStateOf(false) }

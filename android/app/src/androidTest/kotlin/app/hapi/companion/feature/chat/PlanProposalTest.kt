@@ -11,10 +11,12 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import app.hapi.companion.feature.chat.blocks.ToolCallBlockView
+import app.hapi.companion.feature.chat.blocks.PendingPermissionFooter
 import app.hapi.companion.feature.chat.blocks.previewToolCall
 import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.protocol.chat.ToolPermission
@@ -23,6 +25,7 @@ import app.hapi.protocol.chat.ToolCallBlock
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -38,7 +41,11 @@ class PlanProposalTest {
     @Test fun cursorPlanStartsExpandedUpdatesInPlaceAndKeepsSourceAndErrors() {
         val block = mutableStateOf(previewToolCall(
             "proposal", "CursorCreatePlan",
-            input = mapOf("name" to "Update navigation", "plan" to "# 实施计划\n\nRead **input.plan**."),
+            input = mapOf(
+                "name" to "Update navigation",
+                "overview" to "Review navigation before beginning.",
+                "plan" to "# 实施计划\n\nRead **input.plan**.",
+            ),
         ))
         block.value = block.value.withTool(block.value.tool.copy(result = JsonNull))
         val projection = TranscriptProjection()
@@ -50,12 +57,14 @@ class PlanProposalTest {
             }
         }
         compose.onNodeWithText("Update navigation").assertIsDisplayed()
+        compose.onNodeWithText("Review navigation before beginning.").assertIsDisplayed()
         compose.onNodeWithText("实施计划").assertIsDisplayed()
         compose.onNodeWithText("Read input.plan.").assertIsDisplayed()
         compose.onNodeWithText("Input").assertDoesNotExist()
         compose.onNodeWithText("Result").assertDoesNotExist()
         compose.onNodeWithText("Awaiting approval").assertDoesNotExist()
         compose.onNodeWithText("Plan proposal").performClick()
+        compose.onNodeWithText("Review navigation before beginning.").assertDoesNotExist()
         compose.onNodeWithText("实施计划").assertDoesNotExist()
         // The same call keeps the user's explicit folding through updates.
         compose.runOnIdle {
@@ -91,6 +100,24 @@ class PlanProposalTest {
         val document = compose.onNodeWithText("Then approve.").fetchSemanticsNode().boundsInRoot
         val approval = compose.onNodeWithText("Awaiting approval").fetchSemanticsNode().boundsInRoot
         assertTrue("Read the plan before approval", document.bottom <= approval.top)
+    }
+
+    @Test fun cursorProposalOffersOnlyOneShotApprovalAndRejection() {
+        val block = previewToolCall("proposal", "CursorCreatePlan", input = mapOf("overview" to "Review first."))
+        val actions = mutableListOf<PermissionAction>()
+        compose.setContent {
+            HapiTheme {
+                PendingPermissionFooter(
+                    tool = block.tool, requestId = "approval", flavor = "cursor", override = null,
+                    onAction = { _, action -> actions += action },
+                )
+            }
+        }
+        compose.onNodeWithText("Allow").performClick()
+        compose.onNodeWithText("Deny").performClick()
+        compose.onNodeWithText("Abort").assertDoesNotExist()
+        compose.onNodeWithContentDescription("More options").assertDoesNotExist()
+        compose.runOnIdle { assertEquals(listOf(PermissionAction.Allow, PermissionAction.Deny), actions) }
     }
 
     @Test fun longPlansRemainFullMarkdownInsteadOfPagedToolSource() {

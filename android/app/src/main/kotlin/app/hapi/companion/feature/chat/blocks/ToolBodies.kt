@@ -61,13 +61,17 @@ import kotlinx.serialization.json.JsonPrimitive
 internal fun ToolCallBody(tool: ChatToolCall, basePath: String?, modifier: Modifier = Modifier) {
     val questionTool = isQuestionDetailsTool(tool.name)
     val plan = planProposalMarkdown(tool)
+    val overview = planProposalOverview(tool)
     val answers = if (questionTool) tool.permission?.answers else null
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (questionTool) {
             QuestionToolBody(tool)
-        } else if (plan != null) {
+        } else if (overview != null || plan != null) {
+            overview?.let {
+                Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.hapi.textSecondary)
+            }
             // Plans are reading documents, never paged/truncated tool source.
-            Markdown(text = plan)
+            plan?.let { Markdown(text = it) }
             if (planProposalShowsResult(tool)) ToolResultSection(tool)
         } else {
             SectionLabel(stringResource(R.string.settings_usage_input))

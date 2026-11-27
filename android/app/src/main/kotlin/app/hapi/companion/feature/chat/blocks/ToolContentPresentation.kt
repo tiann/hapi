@@ -30,6 +30,12 @@ internal fun planProposalMarkdown(tool: ChatToolCall): String? =
     if (isPlanProposalTool(tool.name)) (tool.input as? JsonObject)?.get("plan").textValue()?.takeIf { it.isNotBlank() }
     else null
 
+internal fun planProposalOverview(tool: ChatToolCall): String? {
+    if (tool.name != "CursorCreatePlan") return null
+    return (tool.input as? JsonObject)?.get("overview").textValue()?.trim()
+        ?.takeIf { it.isNotEmpty() && it != planProposalMarkdown(tool)?.trim() }
+}
+
 internal fun planProposalShowsResult(tool: ChatToolCall): Boolean {
     if (tool.state == "error") return true
     val result = tool.result ?: return false

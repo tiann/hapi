@@ -156,6 +156,7 @@ final class PermissionActionPresentationTests: XCTestCase {
             ("codex", "exec_command", .abort, true, false),
             ("codex", "Edit", .abort, true, false),
             ("cursor", "CursorBash", .abort, true, false),
+            ("cursor", "CursorCreatePlan", .deny, false, false),
             ("gemini", "GeminiBash", .abort, true, false),
         ] {
             let options = PermissionActionOptions(flavor: flavor, toolName: tool)

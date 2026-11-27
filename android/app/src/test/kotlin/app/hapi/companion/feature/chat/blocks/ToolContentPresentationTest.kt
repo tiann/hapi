@@ -59,6 +59,18 @@ class ToolContentPresentationTest {
         assertNull(planProposalMarkdown(tool("update_plan", json("""{"plan":[{"step":"Inspect","status":"completed"}]}"""))))
     }
 
+    @Test fun cursorPlanOverviewCanStandAloneAndOmitsDuplicates() {
+        val both = json("""{"overview":" Review the changes. ","plan":"## Steps"}""")
+        assertEquals("Review the changes.", planProposalOverview(tool("CursorCreatePlan", both)))
+        assertEquals("## Steps", planProposalMarkdown(tool("CursorCreatePlan", both)))
+        assertNull(planProposalOverview(tool("ExitPlanMode", both)))
+        val onlyOverview = json("""{"overview":"Review only."}""")
+        assertEquals("Review only.", planProposalOverview(tool("CursorCreatePlan", onlyOverview)))
+        for (input in listOf("""{"overview":" \n "}""", """{"overview":42}""", """{"overview":"Summary","plan":"\nSummary\n"}""")) {
+            assertNull(planProposalOverview(tool("CursorCreatePlan", json(input))))
+        }
+    }
+
     @Test fun resultEnvelopesAndWhitespace() {
         for (payload in listOf("""{"output":"hello\n"}""", """{"result":{"data":{"text":"hello\n"}}}""",
             """{"content":["hello\n"]}""", """{"file":{"content":"hello\n"}}""",

@@ -31,6 +31,14 @@ func planProposalMarkdown(_ tool: ChatToolCall) -> String? {
     return plan
 }
 
+func planProposalOverview(_ tool: ChatToolCall) -> String? {
+    guard tool.name == "CursorCreatePlan",
+          let overview = tool.input?[chatKey: "overview"]?.chatString?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !overview.isEmpty,
+          overview != planProposalMarkdown(tool)?.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
+    return overview
+}
+
 /// A synthesized Codex proposal completes with null output. Keep diagnostics,
 /// but don't suggest that its visible document is still waiting for output.
 func planProposalShowsResult(_ tool: ChatToolCall) -> Bool {
