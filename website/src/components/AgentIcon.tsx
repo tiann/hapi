@@ -3,7 +3,7 @@
 // ./features, which pulls in peer deps (@lobehub/ui, antd) the site doesn't install.
 import AntigravityColor from "@lobehub/icons/es/Antigravity/components/Color";
 import ClaudeColor from "@lobehub/icons/es/Claude/components/Color";
-import CodexColor from "@lobehub/icons/es/Codex/components/Color";
+import CodexMono from "@lobehub/icons/es/Codex/components/Mono";
 import CursorMono from "@lobehub/icons/es/Cursor/components/Mono";
 import DeepSeekColor from "@lobehub/icons/es/DeepSeek/components/Color";
 import GrokMono from "@lobehub/icons/es/Grok/components/Mono";
@@ -36,7 +36,7 @@ function PiLogo({ size }: { size: string }) {
 const LOGOS: Record<Exclude<AgentFlavor, "copilot" | "pi">, IconType> = {
     agy: AntigravityColor,
     claude: ClaudeColor,
-    codex: CodexColor,
+    codex: CodexMono,
     cursor: CursorMono,
     dsh: DeepSeekColor,
     grok: GrokMono,

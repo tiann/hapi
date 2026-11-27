@@ -3,7 +3,7 @@
 // components only depend on react and es-toolkit.
 import AntigravityColor from '@lobehub/icons/es/Antigravity/components/Color'
 import ClaudeColor from '@lobehub/icons/es/Claude/components/Color'
-import CodexColor from '@lobehub/icons/es/Codex/components/Color'
+import CodexMono from '@lobehub/icons/es/Codex/components/Mono'
 import CursorMono from '@lobehub/icons/es/Cursor/components/Mono'
 import DeepSeekColor from '@lobehub/icons/es/DeepSeek/components/Color'
 import GeminiColor from '@lobehub/icons/es/Gemini/components/Color'
@@ -13,14 +13,12 @@ import OpenCodeMono from '@lobehub/icons/es/OpenCode/components/Mono'
 import type { IconType } from '@lobehub/icons/es/types'
 import { CopilotIcon } from '@/components/icons/CopilotIcon'
 
-// Brand logos per agent flavor. Color variant where it stays visible on both
-// light and dark surfaces (claude/codex/gemini); Mono (currentColor) where the
-// package ships no Color variant — or where, like KimiColor, the main glyph is
-// hard-coded #fff and would vanish on the default light theme.
+// Use Mono (currentColor) for Codex to avoid the Color variant's white tile.
+// Kimi also uses Mono because its Color glyph is white.
 const FLAVOR_LOGOS: Record<string, IconType> = {
     agy: AntigravityColor,
     claude: ClaudeColor,
-    codex: CodexColor,
+    codex: CodexMono,
     dsh: DeepSeekColor,
     cursor: CursorMono,
     gemini: GeminiColor,

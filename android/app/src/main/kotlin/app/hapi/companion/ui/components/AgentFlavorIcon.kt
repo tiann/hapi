@@ -31,9 +31,9 @@ import app.hapi.companion.ui.theme.hapi
  * Brand logo per agent flavor — port of `web/src/components/AgentFlavorIcon.tsx`
  * (brand SVGs via @lobehub/icons, the same source the web ships).
  *
- * Color variants (agy/claude/codex/gemini) keep their literal brand fills and
+ * Color variants (agy/claude/gemini) keep their literal brand fills and
  * render untinted so they stay visible on both light and dark surfaces — the
- * reason the web picked Color for them. Mono variants (cursor/grok/kimi/
+ * reason the web picked Color for them. Mono variants (codex/cursor/grok/kimi/
  * opencode/pi) are currentColor upstream and tint with [LocalContentColor];
  * copilot mirrors the web's fixed GitHub-mark tint (#24292F light /
  * #E6EDF3 dark). Unknown flavors fall back to the web's "Un" badge.
@@ -84,11 +84,11 @@ fun AgentFlavorIcon(flavor: String?, modifier: Modifier = Modifier.size(16.dp)) 
 private val COLOR_FLAVOR_ICONS: Map<String, Int> = mapOf(
     "agy" to R.drawable.ic_agent_agy,
     "claude" to R.drawable.ic_agent_claude,
-    "codex" to R.drawable.ic_agent_codex,
     "gemini" to R.drawable.ic_agent_gemini,
 )
 
 private val MONO_FLAVOR_ICONS: Map<String, Int> = mapOf(
+    "codex" to R.drawable.ic_agent_codex,
     "cursor" to R.drawable.ic_agent_cursor,
     "grok" to R.drawable.ic_agent_grok,
     "kimi" to R.drawable.ic_agent_kimi,
