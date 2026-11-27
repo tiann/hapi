@@ -55,7 +55,7 @@ export function AgentIcon({ flavor }: { flavor: AgentFlavor }) {
             ) : (
                 (() => {
                     const Logo = LOGOS[flavor];
-                    return <Logo size={size} />;
+                    return <Logo size={size} color={flavor === "codex" ? "#6179F5" : undefined} />;
                 })()
             )}
         </span>

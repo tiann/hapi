@@ -28,10 +28,11 @@ describe('AgentFlavorIcon', () => {
         }
     })
 
-    it('renders the Codex mark without the color variant’s background tile', () => {
+    it('renders the Codex mark in blue without a background tile', () => {
         const { container } = render(<AgentFlavorIcon flavor="codex" />)
         const svg = container.querySelector('svg')
         expect(svg?.getAttribute('fill')).toBe('currentColor')
+        expect(svg?.getAttribute('color')).toBe('#6179F5')
         expect(svg?.querySelectorAll('path')).toHaveLength(1)
     })
 

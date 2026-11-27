@@ -13,8 +13,8 @@ import OpenCodeMono from '@lobehub/icons/es/OpenCode/components/Mono'
 import type { IconType } from '@lobehub/icons/es/types'
 import { CopilotIcon } from '@/components/icons/CopilotIcon'
 
-// Use Mono (currentColor) for Codex to avoid the Color variant's white tile.
-// Kimi also uses Mono because its Color glyph is white.
+// Use the tile-free glyph for Codex with a blue visible on light and dark surfaces.
+// Kimi uses Mono because its Color glyph is white.
 const FLAVOR_LOGOS: Record<string, IconType> = {
     agy: AntigravityColor,
     claude: ClaudeColor,
@@ -63,7 +63,7 @@ export function AgentFlavorIcon({ flavor, className }: { flavor?: string | null;
                 aria-hidden="true"
                 className={`inline-flex items-center justify-center leading-none ${sizeClass}`}
             >
-                <Logo size="100%" />
+                <Logo size="100%" color={normalized === 'codex' ? '#6179F5' : undefined} />
             </span>
         )
     }
