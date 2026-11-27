@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { SessionTask, UpdateSessionTaskRequest } from '@hapi/protocol'
 import { ApiError, type ApiClient } from '@/api/client'
-import { useSessionTaskHistory, useSessionTaskMutations, useSessionTasks } from '@/hooks/queries/useSessionTasks'
+import { isSessionTaskGone, useSessionTaskHistory, useSessionTaskMutations, useSessionTasks } from '@/hooks/queries/useSessionTasks'
 import { formatTaskInterval, taskStatus } from '@/lib/sessionTasks'
 import { useOptionalAddToast } from '@/lib/toast-context'
 import { useTranslation } from '@/lib/use-translation'
@@ -104,8 +104,8 @@ function SessionTaskRow({ task, mutations, editing, onEditChange }: {
     const { t } = useTranslation()
     const addToast = useOptionalAddToast()
     const [confirming, setConfirming] = useState(false)
-    // Set when the question is dismissed, so focus returns to the Delete button,
-    // which only exists again once the icon row is back.
+    // Set when the question ends with the keyboard inside it (kept, or the delete refused), so focus
+    // returns to the Delete button, which only exists again once the icon row is back.
     const returnFocusRef = useRef(false)
     const deleteButtonRef = useRef<HTMLButtonElement | null>(null)
     const editButtonRef = useRef<HTMLButtonElement | null>(null)
@@ -128,6 +128,13 @@ function SessionTaskRow({ task, mutations, editing, onEditChange }: {
                 // The prompt the agent had not taken: say when it could not be pulled back.
                 if (result.prompt === 'unconfirmed') toast(t('tasks.deleteUnconfirmed'))
                 else if (result.prompt === 'taken') toast(t('tasks.deletePromptTaken'))
+            },
+            onError: (error) => {
+                // A 404 means the task is gone, which the row shows by leaving.
+                if (isSessionTaskGone(error)) return
+                toast(t('tasks.deleteFailed'))
+                // The question's buttons went with the question; the keyboard goes back to where it came from.
+                returnFocusRef.current = true
             }
         })
     }
@@ -149,17 +156,21 @@ function SessionTaskRow({ task, mutations, editing, onEditChange }: {
         if (returnFocus) editButtonRef.current?.focus()
     }
 
-    // The question starts on the safe answer, and ends back on the Delete button.
+    // The question starts on the safe answer.
     useEffect(() => {
-        if (confirming) {
-            keepButtonRef.current?.focus()
-            return
-        }
-        if (returnFocusRef.current) {
-            returnFocusRef.current = false
-            deleteButtonRef.current?.focus()
-        }
+        if (confirming) keepButtonRef.current?.focus()
     }, [confirming])
+
+    // ...and ends back on the Delete button. The button that had focus is kept by React and becomes the
+    // first one of the icon row, so focus is moved on purpose, once that row is back and its buttons are
+    // enabled: after the question, or after a refused delete. This runs after every render, because
+    // whether a request is in flight cannot be a dependency: an answer that comes at once may never be
+    // rendered as pending.
+    useEffect(() => {
+        if (confirming || deletePending || !returnFocusRef.current) return
+        returnFocusRef.current = false
+        deleteButtonRef.current?.focus()
+    })
 
     // A task with a prompt still waiting cannot run again: the hub keeps one prompt per task.
     const runNowTitle = task.pending ? t('composer.taskPromptPending') : t('tasks.runNow')
@@ -229,7 +240,12 @@ function SessionTaskRow({ task, mutations, editing, onEditChange }: {
                             aria-label={t(paused ? 'tasks.resume' : 'tasks.pause')}
                             title={t(paused ? 'tasks.resume' : 'tasks.pause')}
                             disabled={busy}
-                            onClick={() => mutations.setPaused.mutate({ taskId: task.id, paused: !paused })}
+                            onClick={() => mutations.setPaused.mutate({ taskId: task.id, paused: !paused }, {
+                                // A refusal flips the row back; say so. A 404 means the task is gone, which the row shows by leaving.
+                                onError: (error) => {
+                                    if (!isSessionTaskGone(error)) toast(t(paused ? 'tasks.resumeFailed' : 'tasks.pauseFailed'))
+                                }
+                            })}
                             onMouseDown={(e) => e.preventDefault()}
                             className={ICON_BUTTON_CLASS}
                         >

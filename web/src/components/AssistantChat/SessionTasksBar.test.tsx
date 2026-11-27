@@ -328,15 +328,16 @@ describe('SessionTasksBar', () => {
         let rejectUpdate!: (reason: unknown) => void
         const hub = fakeHub({ tasks: [task()], listFailsAfterFirst: new ApiError('HTTP 502 Bad Gateway', 502) })
         hub.api.updateSessionTask.mockImplementation(() => new Promise((_resolve, reject) => { rejectUpdate = reject }))
-        mount(hub)
+        mount(hub, true)
         await screen.findByRole('listitem')
 
         fireEvent.click(screen.getByRole('button', { name: 'Pause task' }))
         // The row flipped at once, before the hub has said anything...
         await screen.findByRole('button', { name: 'Resume task' })
         expect(screen.getByRole('listitem').textContent).toContain('Paused')
+        expect(screen.getByTestId('toasts').textContent).toBe('')
         await waitFor(() => expect(hub.api.updateSessionTask).toHaveBeenCalledWith('session-1', 'task-1', { paused: true }))
-        // ...and the refusal put it back, by rollback alone (the refetch fails too).
+        // ...and the refusal put it back, by rollback alone (the refetch fails too), and said so.
         await act(async () => {
             rejectUpdate(new ApiError('HTTP 500 Internal Server Error', 500))
             await Promise.resolve()
@@ -344,7 +345,16 @@ describe('SessionTasksBar', () => {
         await waitFor(() => expect(screen.getByRole('button', { name: 'Pause task' })).toBeTruthy())
         expect(screen.queryByRole('button', { name: 'Resume task' })).toBeNull()
         expect(screen.getByRole('listitem').textContent).not.toContain('Paused')
+        expect(screen.getByTestId('toasts').textContent).toBe('The task could not be paused.')
         await waitFor(() => expect(hub.api.listSessionTasks).toHaveBeenCalledTimes(2))
+    })
+
+    it('says so as well when the hub refuses to resume a task', async () => {
+        setup({ tasks: [task({ state: 'paused', nextRunAt: null })], updateError: new ApiError('HTTP 500 Internal Server Error', 500) })
+        await screen.findByRole('listitem')
+        fireEvent.click(screen.getByRole('button', { name: 'Resume task' }))
+        await waitFor(() => expect(screen.getByTestId('toasts').textContent).toBe('The task could not be resumed.'))
+        await waitFor(() => expect(screen.getByRole('listitem').textContent).toContain('Paused'))
     })
 
     it('drops a task the hub no longer has when a pause answers 404, even if the refetch fails', async () => {
@@ -359,6 +369,8 @@ describe('SessionTasksBar', () => {
         // The failed refetch is visible, with a way to retry, instead of a silent empty bar.
         await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Tasks could not be loaded.'), { timeout: 6000 })
         expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
+        // A task that is gone was not "refused": no note claims the pause failed.
+        expect(screen.getByTestId('toasts').textContent).toBe('')
     })
 
     it('deletes a task only after a confirmation', async () => {
@@ -386,7 +398,7 @@ describe('SessionTasksBar', () => {
         await waitFor(() => expect(screen.queryByRole('listitem')).toBeNull())
     })
 
-    it('brings a task back when the hub refuses the delete, and says when its prompt could not be pulled back', async () => {
+    it('brings a task back when the hub refuses the delete, says so, and puts focus back on Delete', async () => {
         const refused = setup({ tasks: [task()], deleteError: new ApiError('HTTP 500 Internal Server Error', 500), listFailsAfterFirst: new Error('offline') })
         await screen.findByRole('listitem')
         fireEvent.click(screen.getByRole('button', { name: 'Delete task' }))
@@ -395,9 +407,14 @@ describe('SessionTasksBar', () => {
         // Back once the hub refuses; the refetch cannot have repaired it, it fails too.
         await screen.findByRole('button', { name: 'Pause task' })
         expect(screen.getByRole('listitem').textContent).toContain('check progress')
-        expect(screen.getByTestId('toasts').textContent).toBe('')
+        // The row returning by itself would read as "nothing happened": the refusal is said out loud.
+        expect(screen.getByTestId('toasts').textContent).toBe('The task could not be deleted.')
+        // The question's buttons are gone, so the keyboard would be on the page; it goes back to where it came from.
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Delete task' })).not.toBeDisabled())
+        expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Delete task' }))
+    })
 
-        cleanup()
+    it('says when the prompt of a deleted task could not be pulled back', async () => {
         const unconfirmed = setup({ tasks: [task({ id: 'task-9' })], deleteResult: { ok: true, prompt: 'unconfirmed' } })
         await screen.findByRole('listitem')
         fireEvent.click(screen.getByRole('button', { name: 'Delete task' }))
