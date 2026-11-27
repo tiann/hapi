@@ -9,6 +9,10 @@ import {
     SESSION_TASK_MAX_START_OFFSET_MS,
     SESSION_TASK_MAX_TEXT_LENGTH,
     SESSION_TASK_MESSAGE_LOCAL_ID_PREFIX,
+    SessionTaskDeleteResponseSchema,
+    SessionTaskErrorCodeSchema,
+    SessionTaskRunListQuerySchema,
+    SessionTaskRunSchema,
     SessionTaskSchema,
     UpdateSessionTaskRequestSchema
 } from './sessionTasks'
@@ -138,6 +142,7 @@ describe('SessionTaskSchema', () => {
         totalRuns: 2,
         nextRunAt: null,
         pending: true,
+        startAt: 1_000,
         lastRunAt: 1_000,
         lastError: null,
         createdAt: 1_000,
@@ -153,13 +158,71 @@ describe('SessionTaskSchema', () => {
         expect(SessionTaskSchema.safeParse({ ...task, lastError: 'offline' }).success).toBe(false)
         expect(SessionTaskSchema.safeParse({ ...task, pendingLocalId: 'hapi-task:t1:1' }).success).toBe(false)
     })
+
+    it('requires startAt and accepts every reason a run did not go out', () => {
+        const { startAt: _startAt, ...withoutStartAt } = task
+        expect(SessionTaskSchema.safeParse(withoutStartAt).success).toBe(false)
+        for (const code of SessionTaskErrorCodeSchema.options) {
+            expect(SessionTaskSchema.safeParse({ ...task, lastError: code }).success).toBe(true)
+        }
+    })
 })
 
 describe('UpdateSessionTaskRequestSchema', () => {
-    it('takes exactly one paused flag', () => {
+    it('takes any subset of the editable fields, but at least one', () => {
         expect(UpdateSessionTaskRequestSchema.parse({ paused: true })).toEqual({ paused: true })
+        expect(UpdateSessionTaskRequestSchema.parse({ text: 'edited', intervalMs: 2 * MINUTE, maxRuns: null }))
+            .toEqual({ text: 'edited', intervalMs: 2 * MINUTE, maxRuns: null })
+        expect(UpdateSessionTaskRequestSchema.parse({ items: [{ text: 'a' }, { text: 'b\nsecond line' }] }))
+            .toEqual({ items: [{ text: 'a' }, { text: 'b\nsecond line' }] })
         expect(UpdateSessionTaskRequestSchema.safeParse({}).success).toBe(false)
+    })
+
+    it('rejects values the create schema rejects too, and unknown fields', () => {
         expect(UpdateSessionTaskRequestSchema.safeParse({ paused: 'true' }).success).toBe(false)
-        expect(UpdateSessionTaskRequestSchema.safeParse({ paused: true, text: 'edited' }).success).toBe(false)
+        expect(UpdateSessionTaskRequestSchema.safeParse({ text: '   ' }).success).toBe(false)
+        expect(UpdateSessionTaskRequestSchema.safeParse({ items: [] }).success).toBe(false)
+        expect(UpdateSessionTaskRequestSchema.safeParse({ intervalMs: 1_000 }).success).toBe(false)
+        expect(UpdateSessionTaskRequestSchema.safeParse({ maxRuns: 0 }).success).toBe(false)
+        expect(UpdateSessionTaskRequestSchema.safeParse({ paused: true, kind: 'queue' }).success).toBe(false)
+    })
+})
+
+describe('SessionTaskDeleteResponseSchema', () => {
+    it('reports what became of a prompt the agent had not taken', () => {
+        for (const prompt of ['none', 'cancelled', 'taken', 'unconfirmed']) {
+            expect(SessionTaskDeleteResponseSchema.parse({ ok: true, prompt })).toEqual({ ok: true, prompt })
+        }
+        expect(SessionTaskDeleteResponseSchema.safeParse({ ok: true }).success).toBe(false)
+        expect(SessionTaskDeleteResponseSchema.safeParse({ ok: true, prompt: 'deleted' }).success).toBe(false)
+    })
+})
+
+describe('SessionTaskRunSchema', () => {
+    const sent = {
+        id: 'r1', sessionId: 's1', taskId: 't1', taskKind: 'repeat', runNumber: 3, outcome: 'sent',
+        scheduledFor: 1_000, recordedAt: 1_001, takenAt: 1_004, detail: null, preview: 'check the deploy'
+    }
+
+    it('round-trips a sent, taken prompt and a skipped slot', () => {
+        expect(SessionTaskRunSchema.parse(sent)).toEqual(sent)
+        const skipped = {
+            id: 'r2', sessionId: 's1', taskId: 't1', taskKind: 'repeat', runNumber: null, outcome: 'skipped',
+            scheduledFor: 61_000, recordedAt: 61_004, takenAt: null, detail: 'previous_prompt_waiting', preview: null
+        }
+        expect(SessionTaskRunSchema.parse(skipped)).toEqual(skipped)
+    })
+
+    it('rejects an unknown outcome, kind or field', () => {
+        expect(SessionTaskRunSchema.safeParse({ ...sent, outcome: 'delivered' }).success).toBe(false)
+        expect(SessionTaskRunSchema.safeParse({ ...sent, taskKind: 'cron' }).success).toBe(false)
+        expect(SessionTaskRunSchema.safeParse({ ...sent, text: 'check the deploy' }).success).toBe(false)
+    })
+
+    it('limits the history page a client may ask for', () => {
+        expect(SessionTaskRunListQuerySchema.parse({ limit: '50' })).toEqual({ limit: 50 })
+        expect(SessionTaskRunListQuerySchema.parse({})).toEqual({})
+        expect(SessionTaskRunListQuerySchema.safeParse({ limit: 201 }).success).toBe(false)
+        expect(SessionTaskRunListQuerySchema.safeParse({ limit: 0 }).success).toBe(false)
     })
 })

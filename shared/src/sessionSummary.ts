@@ -131,6 +131,10 @@ export type SessionSummary = {
     futureScheduledMessageCount: number
     /** Epoch ms of the soonest uninvoked future scheduled message, or null. */
     nextScheduledAt: number | null
+    /** Active repeat/queue tasks on the session (a queued prompt that is waiting included). */
+    activeTaskCount: number
+    /** Epoch ms of the earliest next run among the session's active tasks, or null. */
+    nextTaskRunAt: number | null
     /**
      * Primary running session-attached job (tiann/hapi#1404), or null.
      * Independent of agent `active` / thinking — work that outlives the agent.
@@ -322,6 +326,8 @@ export function toSessionSummary(
         derivedToolWork: session.derivedToolWork === true,
         futureScheduledMessageCount: 0,
         nextScheduledAt: null,
+        activeTaskCount: 0,
+        nextTaskRunAt: null,
         attachedJob,
         attachedJobUpdatedAt: extras?.attachedJobUpdatedAt
             ?? attachedJob?.updatedAt
