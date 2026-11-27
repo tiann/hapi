@@ -97,9 +97,11 @@ struct QuestionAnswerForm: Equatable {
 
     let fields: [Field]
     let nestedAnswers: Bool
+    let cursorQuestion: Bool
 
     init(tool: ChatToolCall) {
         let name = toolPresentationName(tool.name)
+        cursorQuestion = isCursorAskQuestionToolName(name)
         nestedAnswers = isRequestUserInputToolName(name)
         if nestedAnswers {
             // One answer slot per stable ID; malformed duplicates must not
@@ -108,7 +110,7 @@ struct QuestionAnswerForm: Equatable {
             fields = parseRequestUserInputQuestions(tool.input)
                 .filter { seen.insert($0.id).inserted }.map(Field.request)
         } else {
-            let cursor = isCursorAskQuestionToolName(name)
+            let cursor = cursorQuestion
             let parsed = parseAskUserQuestions(tool.input, cursorDialect: cursor)
             let questions = parsed.isEmpty
                 ? [AskQuestion(id: nil, header: nil, question: "", options: [], multiSelect: false)] : parsed
@@ -140,7 +142,7 @@ struct QuestionAnswerDraft: Equatable {
     }
 
     func showsText(at index: Int, in form: QuestionAnswerForm) -> Bool {
-        form.fields[index].options.isEmpty || (expanded[index] ?? !text(at: index, in: form).isEmpty)
+        !form.cursorQuestion && (form.fields[index].options.isEmpty || (expanded[index] ?? !text(at: index, in: form).isEmpty))
     }
 
     func isAnswered(at index: Int, in form: QuestionAnswerForm) -> Bool {
@@ -214,12 +216,13 @@ struct QuestionOptionTitle: Equatable {
 }
 
 enum QuestionCardState: Equatable {
-    case answering, submitting, answered, handled, canceled, failed, waiting
+    case answering, submitting, answered, handled, skipped, canceled, failed, waiting
 
     var title: String {
         switch self {
         case .answered: String(localized: "Answered")
         case .handled: String(localized: "Question handled")
+        case .skipped: String(localized: "Question skipped")
         case .canceled: String(localized: "Question canceled")
         case .failed: String(localized: "Question failed")
         case .waiting, .answering: String(localized: "Awaiting response")
@@ -231,14 +234,16 @@ enum QuestionCardState: Equatable {
         switch self {
         case .answered: "checkmark.circle.fill"
         case .handled: "checkmark.circle"
-        case .canceled: "xmark.circle"
+        case .skipped, .canceled: "xmark.circle"
         case .failed: "exclamationmark.circle"
         default: "questionmark.circle"
         }
     }
 
     init(tool: ChatToolCall, details: QuestionToolDetails, override: PermissionRowOverride?) {
-        if tool.state == .error { self = .failed }
+        if isCursorAskQuestionToolName(toolPresentationName(tool.name)), tool.permission?.status == .denied,
+           tool.permission?.reason == "Skipped" { self = .skipped }
+        else if tool.state == .error { self = .failed }
         else if tool.permission?.status == .denied || tool.permission?.status == .canceled { self = .canceled }
         else if details.hasAnswers { self = .answered }
         else if override == .alreadyHandled { self = .handled }

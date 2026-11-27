@@ -84,6 +84,7 @@ internal class QuestionAnswerForm(tool: ChatToolCall) {
     }
 
     val fields: List<Field>
+    val cursorQuestion = isCursorAskQuestionToolName(toolPresentationName(tool.name))
     val nestedAnswers: Boolean
 
     /** Validated sign-in URL (request_user_input only); opened on submit after explicit confirmation. */
@@ -102,7 +103,7 @@ internal class QuestionAnswerForm(tool: ChatToolCall) {
             val seen = mutableSetOf<String>()
             requestParsed.questions.filter { seen.add(it.id) }.map(Field::Request)
         } else {
-            val cursor = isCursorAskQuestionToolName(name)
+            val cursor = cursorQuestion
             val parsed = parseAskUserQuestions(tool.input, cursor)
                 .ifEmpty { listOf(AskQuestion(null, null, "", emptyList(), false)) }
             val seen = mutableSetOf<String>()
@@ -141,7 +142,7 @@ internal data class QuestionAnswerDraft(
     fun text(index: Int, form: QuestionAnswerForm): String = texts[index] ?: form.fields[index].prefill
 
     fun showsText(index: Int, form: QuestionAnswerForm): Boolean =
-        form.fields[index].options.isEmpty() || (expanded[index] ?: text(index, form).isNotEmpty())
+        !form.cursorQuestion && (form.fields[index].options.isEmpty() || (expanded[index] ?: text(index, form).isNotEmpty()))
 
     fun isAnswered(index: Int, form: QuestionAnswerForm): Boolean =
         form.fields[index].isAnswered(selected(index), text(index, form))
@@ -231,12 +232,13 @@ internal data class QuestionOptionTitle(val text: String, val recommended: Boole
 }
 
 internal enum class QuestionCardState {
-    Answering, Submitting, Answered, Handled, Canceled, Failed, Waiting;
+    Answering, Submitting, Answered, Handled, Skipped, Canceled, Failed, Waiting;
 
     companion object {
         fun of(tool: ChatToolCall, details: QuestionToolDetails, override: PermissionRowOverride?): QuestionCardState {
             val status = tool.permission?.status
             return when {
+                isCursorAskQuestionToolName(toolPresentationName(tool.name)) && status == "denied" && tool.permission?.reason == "Skipped" -> Skipped
                 tool.state == ToolState.ERROR -> Failed
                 status == "denied" || status == "canceled" -> Canceled
                 details.hasAnswers -> Answered

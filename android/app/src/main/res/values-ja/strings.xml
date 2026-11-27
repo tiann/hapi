@@ -467,6 +467,7 @@
     <string name="chat_question_awaiting">回答待ち</string>
     <string name="chat_question_answered">回答済み</string>
     <string name="chat_question_handled">質問は対応済みです</string>
+    <string name="chat_question_skipped">質問をスキップしました</string>
     <string name="chat_question_canceled">質問はキャンセルされました</string>
     <string name="chat_question_failed">質問に失敗しました</string>
     <string name="chat_question_submitting">回答を送信中…</string>
@@ -478,6 +479,7 @@
     <string name="chat_question_optional">任意</string>
     <string name="chat_question_other_answer">その他の回答</string>
     <string name="chat_question_hide_note">メモを隠す</string>
+    <string name="chat_question_skip">スキップ</string>
     <string name="chat_question_previous">前の質問</string>
     <string name="chat_question_submit">回答を送信</string>
     <string name="chat_question_next">次の質問</string>

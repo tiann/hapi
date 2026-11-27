@@ -799,6 +799,7 @@ export default {
   'tool.questionsAnswers': '質問と回答',
   'tool.submit': '送信',
   'tool.submitting': '送信中…',
+  'tool.questionSkipped': '質問をスキップしました',
   'tool.skip': 'スキップ',
   'tool.prev': '← 前へ',
   'tool.next': '次へ →',

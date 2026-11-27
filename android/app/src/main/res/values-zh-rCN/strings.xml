@@ -467,6 +467,7 @@
     <string name="chat_question_awaiting">等待回答</string>
     <string name="chat_question_answered">已回答</string>
     <string name="chat_question_handled">已处理</string>
+    <string name="chat_question_skipped">已跳过问题</string>
     <string name="chat_question_canceled">问题已取消</string>
     <string name="chat_question_failed">问题处理失败</string>
     <string name="chat_question_submitting">正在提交回答…</string>
@@ -478,6 +479,7 @@
     <string name="chat_question_optional">可选</string>
     <string name="chat_question_other_answer">其他答案</string>
     <string name="chat_question_hide_note">收起备注</string>
+    <string name="chat_question_skip">跳过</string>
     <string name="chat_question_previous">上一题</string>
     <string name="chat_question_submit">提交回答</string>
     <string name="chat_question_next">下一题</string>

@@ -843,6 +843,7 @@ export default {
   'tool.questionsAnswers': '问答',
   'tool.submit': '提交',
   'tool.submitting': '提交中…',
+  'tool.questionSkipped': '已跳过问题',
   'tool.skip': '跳过',
   'tool.prev': '← 上一个',
   'tool.next': '下一个 →',

@@ -141,6 +141,7 @@ final class QuestionAnswerDraftTests: XCTestCase {
         draft.select(1, at: 0, in: form)
         draft.select(0, at: 0, in: form)
         draft.setText("Custom", at: 0, in: form)
+        XCTAssertFalse(draft.showsText(at: 0, in: form))
         XCTAssertEqual(draft.submission(in: form), .flatAnswers(["target": ["stable-a", "stable-b"]]))
         draft.select(0, at: 0, in: form)
         XCTAssertEqual(draft.submission(in: form), .flatAnswers(["target": ["stable-b"]]))

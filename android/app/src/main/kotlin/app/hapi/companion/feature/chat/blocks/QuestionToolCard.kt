@@ -123,7 +123,7 @@ private fun QuestionSummary(details: QuestionToolDetails, state: QuestionCardSta
             val (icon, tint) = when (state) {
                 QuestionCardState.Answered -> Icons.Filled.CheckCircle to MaterialTheme.colorScheme.primary
                 QuestionCardState.Handled -> Icons.Filled.CheckCircle to MaterialTheme.hapi.hint
-                QuestionCardState.Canceled -> Icons.Filled.Close to MaterialTheme.hapi.hint
+                QuestionCardState.Skipped, QuestionCardState.Canceled -> Icons.Filled.Close to MaterialTheme.hapi.hint
                 QuestionCardState.Failed -> Icons.Filled.Warning to MaterialTheme.colorScheme.error
                 else -> null to MaterialTheme.hapi.hint
             }
@@ -165,6 +165,7 @@ private fun QuestionSummary(details: QuestionToolDetails, state: QuestionCardSta
 private fun QuestionCardState.titleRes(): Int = when (this) {
     QuestionCardState.Answered -> R.string.chat_question_answered
     QuestionCardState.Handled -> R.string.chat_question_handled
+    QuestionCardState.Skipped -> R.string.chat_question_skipped
     QuestionCardState.Canceled -> R.string.chat_question_canceled
     QuestionCardState.Failed -> R.string.chat_question_failed
     QuestionCardState.Submitting -> R.string.chat_question_submitting
@@ -286,7 +287,12 @@ internal fun QuestionAnswerFormView(
                     )
                 }
             }
-            if (field.options.isNotEmpty()) {
+            if (form.cursorQuestion) {
+                TextButton(onClick = { onSubmit(PermissionAction.Deny) }, enabled = interactive,
+                    modifier = Modifier.testTag("question-skip")) {
+                    Text(stringResource(R.string.chat_question_skip))
+                }
+            } else if (field.options.isNotEmpty()) {
                 val expanded = draft.showsText(index, form)
                 TextButton(
                     onClick = {

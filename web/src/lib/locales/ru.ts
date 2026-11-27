@@ -719,6 +719,7 @@ export default {
   'tool.questionsAnswers': 'Вопросы и ответы',
   'tool.submit': 'Отправить',
   'tool.submitting': 'Отправка…',
+  'tool.questionSkipped': 'Вопрос пропущен',
   'tool.skip': 'Пропустить',
   'tool.prev': '← Назад',
   'tool.next': 'Далее →',
