@@ -27,6 +27,10 @@ export function resolveCursorModeAfterPlanApproval(
     return mode;
 }
 
+export function cursorSmartAutoOption(option: ConfigOption | undefined) {
+    return option?.options?.find(({ value }) => value === 'auto-review' || value === 'autoReview');
+}
+
 export async function applyCursorAcpMode(
     backend: AcpSdkBackend,
     sessionId: string,
@@ -34,7 +38,7 @@ export async function applyCursorAcpMode(
     previousMode?: PermissionModeOf<typeof Flavors.cursor>
 ): Promise<void> {
     const option = backend.getConfigOptionByCategory?.(sessionId, 'mode');
-    const smart = option?.options?.find(({ value }) => value === 'auto-review' || value === 'autoReview');
+    const smart = cursorSmartAutoOption(option);
     if (mode === 'autoReview' && !smart) {
         throw new Error('This Cursor ACP session does not offer Smart Auto. Use a supported mode here or use Smart Auto in the Cursor terminal.');
     }

@@ -28,6 +28,7 @@ import { buildCursorModelsSnapshotFromAcp } from './utils/cursorAcpModelsSnapsho
 import { CursorExtensionAdapter } from './utils/cursorExtensionAdapter';
 import {
     applyCursorAcpMode,
+    cursorSmartAutoOption,
     applyCursorAcpModel,
     resolveCursorModeAfterPlanApproval,
     wireIdForCursorSessionState
@@ -548,6 +549,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             }
         }
 
+        this.publishPermissionModeCapabilities(backend, acpSessionId);
         syncCursorModelsFromAcp(backend, acpSessionId);
 
         const initialMetadata = backend.getSessionModelsMetadata(acpSessionId);
@@ -881,7 +883,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 try {
                     const argument = batch.message.trim().slice('/auto-review'.length).trim();
                     const native = this.acpSessionId ? this.backend?.getConfigOptionByCategory(this.acpSessionId, 'mode') : undefined;
-                    const smart = native && native.options?.find(({ value }) => value === 'auto-review' || value === 'autoReview');
+                    const smart = cursorSmartAutoOption(native);
                     if (argument === 'status') {
                         const status = smart && native?.currentValue
                             ? (native.currentValue === smart.value ? 'on' : 'off')
@@ -2678,7 +2680,23 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         this.acpSessionId = acpSessionId;
 
         syncCursorModelsFromAcp(backend, acpSessionId);
+        this.publishPermissionModeCapabilities(backend, acpSessionId);
         this.applyDisplayMode(modeAfterLoad);
+    }
+
+    private publishPermissionModeCapabilities(backend: AcpSdkBackend, sessionId: string): void {
+        const mode = backend.getConfigOptionByCategory?.(sessionId, 'mode');
+        // Older ACP responses can omit the config catalog entirely.
+        const native = mode?.options?.map(option => option.value);
+        const supported = native && [
+            'default',
+            ...['plan', 'ask', 'debug'].filter(value => native.includes(value)),
+            ...(cursorSmartAutoOption(mode) ? ['autoReview'] : []),
+            'yolo'
+        ];
+        const previous = this.session.client.getMetadata?.()?.cursorAcpPermissionModes;
+        if (previous === supported || (previous && supported && previous.length === supported.length && previous.every((v, i) => v === supported[i]))) return;
+        this.session.client.updateMetadata((metadata) => ({ ...metadata, cursorAcpPermissionModes: supported }));
     }
 
     private async restoreSelectedPermissionMode(): Promise<void> {

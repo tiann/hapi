@@ -302,6 +302,14 @@ describe('HappyComposer generic model/effort value buttons', () => {
         expect(screen.queryByText('Model')).toBeNull()
     })
 
+    it('shows only negotiated Cursor permission modes on the active-session gear', () => {
+        renderComposer('cursor', { cursorAcpPermissionModes: ['default', 'plan', 'ask', 'yolo'] })
+        fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+        expect(screen.getByRole('button', { name: 'Ask Mode' })).toBeTruthy()
+        expect(screen.queryByRole('button', { name: 'Debug Mode' })).toBeNull()
+        expect(screen.getByRole('button', { name: 'Yolo' })).toBeTruthy()
+    })
+
     it('opens the full sheet from the gear with Model before Permission', () => {
         renderComposer('claude')
         fireEvent.click(screen.getByRole('button', { name: 'Settings' }))

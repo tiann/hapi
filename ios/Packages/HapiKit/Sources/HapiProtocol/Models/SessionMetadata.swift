@@ -134,6 +134,7 @@ public struct SessionMetadata: Codable, Equatable, Sendable {
     public var opencodeSessionId: String?
     public var grokSessionId: String?
     public var agySessionId: String?
+    public var cursorAcpPermissionModes: [String]?
     public var cursorSessionId: String?
     public var kimiSessionId: String?
     public var copilotSessionId: String?

@@ -2133,7 +2133,10 @@ class ChatViewModel(
             active = detail?.active ?: summary?.active ?: false,
             controlledByUser = terminalControlled(detail),
             permissionMode = detail?.permissionMode,
-            permissionModes = PermissionModes.forFlavor(flavor),
+            permissionModes = PermissionModes.forFlavor(flavor).filterNot {
+                flavor == "cursor" && detail?.active == true && !terminalControlled(detail) &&
+                    detail.metadata?.cursorAcpPermissionModes?.contains(it.wireId) == false
+            },
             model = model,
             modelOptions = modelOptions,
             modelOptionsLoading = modelOptionsLoading,

@@ -2627,6 +2627,7 @@ function SessionChatInner(props: SessionChatProps) {
                         modelReasoningEffort={agentFlavor === 'codex' || agentFlavor === 'opencode' ? props.session.modelReasoningEffort : undefined}
                         effort={agentFlavor === 'agy' ? agyCurrentEffort : props.session.effort}
                         agentFlavor={agentFlavor}
+                        cursorAcpPermissionModes={props.session.active && !controlledByUser ? props.session.metadata?.cursorAcpPermissionModes : undefined}
                         machineId={sessionMachineId}
                         inputTranslation={inputTranslation.visible ? {
                             enabled: inputTranslation.enabled,

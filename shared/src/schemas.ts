@@ -246,6 +246,8 @@ export const MetadataSchema = z.object({
     agyProtocol: z.literal('acp').optional(),
     cursorSessionId: z.string().optional(),
     cursorSessionProtocol: z.enum(['acp', 'stream-json']).optional(),
+    // HAPI mode IDs from the live ACP catalog, including HAPI-managed default and yolo.
+    cursorAcpPermissionModes: z.array(z.string()).optional(),
     // Drives the web `CursorMigrationBanner`:
     //   'in_progress' = legacy-to-ACP transplant currently running; banner shows spinner + "Upgrading..."
     //   'ambiguous'   = migrator refused to transplant (ambiguous source drawer OR size mismatch);

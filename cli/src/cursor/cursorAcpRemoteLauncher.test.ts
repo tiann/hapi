@@ -4393,6 +4393,20 @@ describe('cursorAcpRemoteLauncher', () => {
         await runPromise;
     });
 
+    it.each([false, true])('publishes the actual Smart Auto capability (%s) after ACP negotiation', async offered => {
+        harness.advertisesSmartAuto = offered;
+        const session = makeSession(null, { keepQueueOpen: true });
+        let metadata = { path: session.path, host: 'test' };
+        vi.mocked(session.client.updateMetadata).mockImplementation(update => { metadata = update(metadata); });
+        const running = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(session.client.emitSessionReady).toHaveBeenCalled());
+        expect(metadata).toMatchObject({
+            cursorAcpPermissionModes: ['default', 'plan', 'debug', ...(offered ? ['autoReview'] : []), 'yolo']
+        });
+        session.queue.close();
+        await running;
+    });
+
     it('rejects unavailable Smart Auto without publishing it or dispatching an unconfirmed toggle', async () => {
         const session = makeSession(null, { keepQueueOpen: true });
         const running = cursorAcpRemoteLauncher(session);

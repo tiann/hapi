@@ -28,6 +28,16 @@ import {
 // Values that are not a registered flavor, including names an object lookup would inherit.
 const UNREGISTERED = [null, undefined, '', 'unknown-flavor', 'Claude', 'Pi', '__proto__', 'constructor'] as const
 
+test('remote Cursor uses advertised settings while old sessions and other agents retain their catalogs', () => {
+    const advertised = ['default', 'plan', 'ask', 'yolo']
+    const modes = (flavor: string, supported?: string[]) => getPermissionModeOptionsForFlavor(flavor, supported).map(option => option.mode)
+    expect(modes('cursor', advertised)).toEqual(advertised)
+    expect(modes('cursor')).toContain('autoReview')
+    expect(modes('cursor')).toContain('debug')
+    expect(modes('cursor', ['default', 'debug', 'autoReview', 'yolo'])).toContain('autoReview')
+    expect(modes('codex', advertised)).toContain('autoReview')
+})
+
 describe('flavor registry', () => {
     // The agent selectors list flavors in this order.
     test('AGENT_FLAVORS keeps its order', () => {

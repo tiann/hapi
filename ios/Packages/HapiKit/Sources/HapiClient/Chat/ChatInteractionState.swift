@@ -405,7 +405,11 @@ public func buildSessionConfigState(
         active: active,
         controlledByUser: controlledByUser,
         permissionMode: detail?.permissionMode,
-        permissionModes: permissionModeOptions(forFlavor: flavor),
+        permissionModes: permissionModeOptions(forFlavor: flavor).filter {
+            option in
+            guard flavor == "cursor", active, !controlledByUser, let supported = detail?.metadata?.cursorAcpPermissionModes else { return true }
+            return supported.contains(option.mode.rawValue)
+        },
         collaborationMode: detail?.collaborationMode,
         canChangeCollaborationMode: detail != nil && flavor == "codex" && active && !controlledByUser,
         model: model,
