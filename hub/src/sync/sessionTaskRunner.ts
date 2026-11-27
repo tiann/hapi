@@ -103,6 +103,7 @@ export class SessionTaskRunner {
     async tick(): Promise<void> {
         const now = this.now()
         this.pruneRuns(now)
+        this.forgetEndedTasks()
         const runs: Array<Promise<void>> = []
         for (const task of this.deps.store.sessionTasks.findRunnable(now)) {
             if (this.inFlight.has(task.id)) continue
@@ -132,6 +133,22 @@ export class SessionTaskRunner {
         if (retryAt > now) return false
         this.retryAt.delete(taskId)
         return true
+    }
+
+    /**
+     * Drop what is kept per task once its row is gone. The routes (a delete,
+     * an edit that ends the task) and a session that takes its tasks with it
+     * remove the row without passing through `remove`. A task id is never
+     * reused, so nothing of a deleted task can mislead; this only keeps the
+     * maps down to the tasks that exist. A task without bookkeeping costs no
+     * lookup.
+     */
+    private forgetEndedTasks(): void {
+        for (const tasks of [this.skipRecordedAt, this.retryAt]) {
+            for (const taskId of tasks.keys()) {
+                if (!this.deps.store.sessionTasks.getById(taskId)) tasks.delete(taskId)
+            }
+        }
     }
 
     /** Run-history rows older than the retention age go, at most once per interval. */

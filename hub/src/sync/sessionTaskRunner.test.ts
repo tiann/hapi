@@ -92,6 +92,15 @@ function makeHarness(options: { active?: boolean; archived?: boolean } = {}) {
 
 type Harness = ReturnType<typeof makeHarness>
 
+/**
+ * What the runner keeps per task in memory. Only a leak in it shows from the
+ * outside (a task id is never reused), so the test reads it directly.
+ */
+const bookkeeping = (runner: SessionTaskRunner) => runner as unknown as {
+    skipRecordedAt: Map<string, { pendingLocalId: string; at: number }>
+    retryAt: Map<string, number>
+}
+
 const stripRun = (run: StoredSessionTaskRun) => ({
     taskId: run.taskId,
     taskKind: run.taskKind,
@@ -532,6 +541,33 @@ describe('SessionTaskRunner', () => {
                     expect(h.changes).toHaveLength(changesWhenStuck + slot)
                 }
                 expect(h.runs().filter((run) => run.outcome === 'skipped')).toHaveLength(1)
+            })
+
+            it('forgets what it keeps about a task once its row is gone', async () => {
+                const h: Harness = makeHarness()
+                const skipped = await stuckPrompt(h)
+                for (let attempt = 0; attempt < SESSION_TASK_MAX_PENDING_WAKE_ATTEMPTS; attempt += 1) await h.runner.tick()
+                await h.runner.tick()
+                // A task whose send failed keeps the time of its retry.
+                const failed = h.create({
+                    sessionId: h.sessionId, kind: 'queue', items: ['b'], intervalMs: MINUTE, maxRuns: null, nextRunAt: T0
+                })
+                h.sendFailure.error = new Error('insert failed')
+                h.setClock(T0 + MINUTE)
+                await h.runner.tick()
+                expect(h.task(failed.id)?.lastError).toBe('send_failed')
+                h.sendFailure.error = undefined
+
+                // The skipped slot is a history line, so the runner remembers when it wrote it.
+                expect([...bookkeeping(h.runner).skipRecordedAt.keys()]).toEqual([skipped])
+                expect([...bookkeeping(h.runner).retryAt.keys()]).toEqual([failed.id])
+
+                // Deleted the way the routes delete a task: the row goes, and nothing stays behind.
+                h.store.sessionTasks.delete(skipped)
+                h.store.sessionTasks.delete(failed.id)
+                await h.runner.tick()
+                expect(bookkeeping(h.runner).skipRecordedAt.size).toBe(0)
+                expect(bookkeeping(h.runner).retryAt.size).toBe(0)
             })
 
             it('writes the first skipped slot, then at most one line an hour, while the hub is trying to deliver the prompt', async () => {
