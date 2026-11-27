@@ -81,6 +81,11 @@ class PermissionVerdictTest {
         assertFalse(PermissionVerdicts.isCodexSession(null, "Bash"))
     }
 
+    @Test fun cursorPlanProposalsUseOneShotActions() {
+        assertFalse(PermissionVerdicts.isCodexUx("cursor", "CursorCreatePlan"))
+        assertTrue(PermissionVerdicts.isCodexUx("cursor", "CursorBash"))
+    }
+
     @Test fun claudeApprovedModeAcceptEditsWinsOverDecision() {
         assertEquals(
             PermissionVerdictLabel.APPROVED_ALLOW_ALL_EDITS,

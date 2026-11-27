@@ -35,7 +35,7 @@ import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.companion.ui.theme.HapiTypography
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.chat.ChatToolCall
-import app.hapi.protocol.catalog.Flavors
+import app.hapi.companion.feature.chat.permissions.PermissionVerdicts.isCodexUx
 
 /**
  * Pending-permission footers (B-M3b): the approval buttons for ordinary tool
@@ -85,13 +85,6 @@ fun PendingPermissionFooter(
     }
 }
 
-/** `PermissionFooter.isCodexSession` twin (UI button-set selection). */
-private fun isCodexUx(flavor: String?, toolName: String): Boolean =
-    Flavors.isCodexFamily(flavor) || flavor == "cursor" ||
-        toolName.startsWith("Codex") || toolName.startsWith("Gemini") ||
-        toolName.startsWith("OpenCode") || toolName.startsWith("Copilot") ||
-        toolName.startsWith("Cursor")
-
 private val EDIT_TOOLS = setOf("Edit", "MultiEdit", "Write", "NotebookEdit")
 
 private val HIDE_ALLOW_FOR_SESSION = EDIT_TOOLS +
@@ -111,7 +104,7 @@ private fun PermissionActionsRow(
         return
     }
     val resolving = override == PermissionRowOverride.Resolving
-    val codex = tool.name != "CursorCreatePlan" && isCodexUx(flavor, tool.name)
+    val codex = isCodexUx(flavor, tool.name)
     val canAllowForSession = !codex && tool.name !in HIDE_ALLOW_FOR_SESSION
     val canAllowAllEdits = flavor == "claude" && tool.name in EDIT_TOOLS
     var overflowOpen by remember { mutableStateOf(false) }

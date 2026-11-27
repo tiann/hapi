@@ -113,6 +113,7 @@ public enum PermissionAction: Equatable, Sendable {
 /// a codex-dialect tool name — selects both the button set and the plain
 /// allow body.
 public func isCodexPermissionUX(flavor: String?, toolName: String?) -> Bool {
+    if toolName == "CursorCreatePlan" { return false }
     if isCodexFamilyFlavor(flavor) || flavor == "cursor" {
         return true
     }

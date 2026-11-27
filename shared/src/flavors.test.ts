@@ -139,6 +139,11 @@ describe('getPermissionReplyStyle with a tool name', () => {
         }
     )
 
+    test('Cursor plan proposals always use one-shot replies', () => {
+        expect(getPermissionReplyStyle('cursor', 'CursorCreatePlan')).toBe('generic')
+        expect(getPermissionReplyStyle(undefined, 'CursorCreatePlan')).toBe('generic')
+    })
+
     test('other tool names keep the flavor style', () => {
         expect(getPermissionReplyStyle('claude', 'Bash')).toBe(getPermissionReplyStyle('claude'))
         expect(getPermissionReplyStyle('agy', 'Edit')).toBe(getPermissionReplyStyle('agy'))

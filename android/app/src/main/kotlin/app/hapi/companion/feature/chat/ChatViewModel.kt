@@ -36,6 +36,7 @@ import app.hapi.data.store.ScratchlistCreateResult
 import app.hapi.data.store.SessionDetailStore
 import app.hapi.data.store.SessionScratchlist
 import app.hapi.protocol.catalog.CatalogOption
+import app.hapi.companion.feature.chat.permissions.PermissionVerdicts.isCodexUx
 import app.hapi.protocol.catalog.Flavors
 import app.hapi.protocol.catalog.ModelCatalog
 import app.hapi.protocol.catalog.PermissionMode
@@ -1872,7 +1873,7 @@ class ChatViewModel(
         val flavor = currentFlavor()
         val request = currentDetail()?.agentState?.requests?.get(requestId)
         val toolName = request?.tool
-        val codexUx = isCodexPermissionUx(flavor, toolName)
+        val codexUx = isCodexUx(flavor, toolName)
         return when (action) {
             PermissionAction.Allow ->
                 if (codexUx) ApprovePermissionRequest(decision = "approved")
@@ -2391,18 +2392,5 @@ class ChatViewModel(
 
         fun Exception.isSessionInactive(): Boolean =
             this is ApiError && status == 409 && code == "session_inactive"
-
-        /**
-         * Codex-style approval UX (`PermissionFooter.isCodexSession`): codex
-         * family or cursor flavor, or a codex-dialect tool name.
-         */
-        fun isCodexPermissionUx(flavor: String?, toolName: String?): Boolean =
-            Flavors.isCodexFamily(flavor) ||
-                flavor == "cursor" ||
-                toolName?.let { name ->
-                    name.startsWith("Codex") || name.startsWith("Gemini") ||
-                        name.startsWith("OpenCode") || name.startsWith("Copilot") ||
-                        name.startsWith("Cursor")
-                } == true
     }
 }
