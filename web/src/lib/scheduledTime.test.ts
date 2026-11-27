@@ -21,6 +21,7 @@ const t = (key: string, params?: Record<string, string | number>) => {
         'tasks.countOne': '1 task',
         'tasks.count': '{count} tasks',
         'tasks.nextRun': 'Next {when}',
+        'tasks.dueNow': 'Due now; sending next',
         'tasks.tooltipWaiting': 'Waiting for the agent to take a prompt',
     }
     let out = table[key] ?? key
@@ -94,5 +95,11 @@ describe('task tooltip', () => {
 
     it('says every task is waiting on a prompt when none has a next run', () => {
         expect(formatTaskTooltipDetail({ nextTaskRunAt: null }, t)).toBe('Waiting for the agent to take a prompt')
+    })
+
+    it('says a due task is being sent instead of naming a time that has passed', () => {
+        // A task the hub keeps due while it is held up has a next run in the past.
+        const overdue = Date.now() - 5 * 60_000
+        expect(formatTaskTooltipDetail({ nextTaskRunAt: overdue }, t)).toBe('Due now; sending next')
     })
 })
