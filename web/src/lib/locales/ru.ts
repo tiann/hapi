@@ -968,6 +968,7 @@ export default {
   'settings.usage.bucketDetails': '{requests} запросов · {input} вход · {output} выход',
   'settings.usage.sessions': 'Сессий с расходом: {count}',
   'settings.usage.quotas.title': 'Квоты аккаунтов CLI',
+  'settings.usage.quotas.billingCycle': 'Тариф',
   'settings.usage.quotas.cursorUsageGuide': 'Где посмотреть расход квоты Cursor',
   'settings.usage.quotas.refresh': 'Обновить квоты',
   'settings.usage.quotas.refreshing': 'Обновление…',

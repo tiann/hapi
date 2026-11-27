@@ -1125,6 +1125,7 @@ export default {
   'settings.usage.bucketDetails': '{requests} requests · {input} in · {output} out',
   'settings.usage.sessions': '{count} sessions with usage',
   'settings.usage.quotas.title': 'CLI account quotas',
+  'settings.usage.quotas.billingCycle': 'Plan',
   'settings.usage.quotas.cursorUsageGuide': 'Where to check your Cursor usage',
   'settings.usage.quotas.refresh': 'Refresh quotas',
   'settings.usage.quotas.refreshing': 'Refreshing…',

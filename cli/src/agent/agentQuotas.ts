@@ -21,6 +21,7 @@ import { resolveHapiHomeDir } from '@/configuration'
 import { withBunRuntimeEnv } from '@/utils/bunRuntime'
 import { killProcessByChildProcess } from '@/utils/process'
 import { getAgentAvailability } from './agentAvailability'
+import { probeCursorQuota } from './cursorQuota'
 import { getAgentLaunchCommand } from './agentLaunchCommand'
 
 const CACHE_TTL_MS = 60_000
@@ -1231,7 +1232,8 @@ export async function getAgentQuotasResponse(options?: {
         const accounts = await Promise.all([
             probeCodexQuota(env, probeTimeoutMs),
             probeAgyQuota(env),
-            probeClaudeQuota(env)
+            probeClaudeQuota(env),
+            probeCursorQuota(env, probeTimeoutMs)
         ])
         const fetchedAt = Date.now()
         const response: AgentQuotasResponse = {

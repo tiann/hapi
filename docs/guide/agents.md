@@ -237,7 +237,7 @@ Interactive TUI-only commands (`/config`, `/mcp`, `/sandbox`, `/btw`, `/rewind`,
 
 ### Model errors
 
-Cursor sometimes reports a transient model error inside a turn instead of failing it. HAPI detects these, shows a banner in the chat and an indicator in the session list, and sends a notification. **Bridge & retry** re-sends your last message as a one-shot recovery prompt; a new message from you always takes precedence. The hub owner can enable one automatic retry for eligible transient errors in the default namespace (off by default). An exhausted quota requires account action or a reset. Settings → Usage links to [Cursor’s guide to account usage](https://cursor.com/help/models-and-usage/usage-limits#how-do-i-check-my-usage) for the dashboard that matches the subscription.
+Cursor sometimes reports a transient model error inside a turn instead of failing it. HAPI detects these, shows a banner in the chat and an indicator in the session list, and sends a notification. **Bridge & retry** re-sends your last message as a one-shot recovery prompt; a new message from you always takes precedence. The hub owner can enable one automatic retry for eligible transient errors in the default namespace (off by default). An exhausted quota requires account action or a reset. Settings → Usage shows the included pools reported by the Cursor login on each runner and links to [Cursor’s guide to account usage](https://cursor.com/help/models-and-usage/usage-limits#how-do-i-check-my-usage) for the dashboard that matches the subscription.
 
 ### Limitations
 

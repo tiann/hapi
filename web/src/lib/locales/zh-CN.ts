@@ -1123,6 +1123,7 @@ export default {
   'settings.usage.bucketDetails': '{requests} 次请求 · 输入 {input} · 输出 {output}',
   'settings.usage.sessions': '{count} 个会话有用量记录',
   'settings.usage.quotas.title': 'CLI 账号额度',
+  'settings.usage.quotas.billingCycle': '套餐',
   'settings.usage.quotas.cursorUsageGuide': '如何查看 Cursor 账户用量',
   'settings.usage.quotas.refresh': '刷新额度',
   'settings.usage.quotas.refreshing': '正在刷新…',

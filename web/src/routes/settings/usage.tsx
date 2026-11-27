@@ -11,6 +11,7 @@ type UsageRange = '7d' | '30d' | 'all'
 const AGENT_LABELS: Record<string, string> = {
     codex: 'Codex',
     agy: 'Antigravity (agy)',
+    cursor: 'Cursor',
     claude: 'Claude Code',
 }
 

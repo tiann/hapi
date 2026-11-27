@@ -1054,6 +1054,7 @@ export default {
   'settings.usage.bucketDetails': '{requests} リクエスト · 入力 {input} · 出力 {output}',
   'settings.usage.sessions': '使用量のあるセッション {count} 件',
   'settings.usage.quotas.title': 'CLI アカウントのクォータ',
+  'settings.usage.quotas.billingCycle': 'プラン',
   'settings.usage.quotas.cursorUsageGuide': 'Cursor のアカウント使用量を確認する方法',
   'settings.usage.quotas.refresh': 'クォータを更新',
   'settings.usage.quotas.refreshing': '更新中…',
