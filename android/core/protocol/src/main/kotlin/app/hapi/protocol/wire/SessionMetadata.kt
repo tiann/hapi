@@ -26,6 +26,7 @@ data class SessionMetadata(
     /** `'local' | 'remote' | 'pty'`. */
     val startingMode: String? = null,
     val lifecycleState: String? = null,
+    val lastModelError: ModelError? = null,
     val worktree: WorktreeMetadata? = null,
     val capabilities: SessionCapabilities? = null,
     /** Loopback MCP URL when the session's CLI happy server is running. */
@@ -51,7 +52,6 @@ data class SessionMetadata(
      * `PATCH /api/sessions/:id {translateInput}`. Absent ⇒ off.
      */
     val translateInput: Boolean? = null,
-    val lastModelError: ModelError? = null,
 )
 
 /** `metadata.summary` on the detail session (`{text, updatedAt}`). */
