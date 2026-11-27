@@ -534,6 +534,54 @@ describe('SessionTasksBar', () => {
         expect(screen.getByRole('listitem').querySelector('span.line-clamp-2')?.textContent).toBe('check progress\nand the build')
     })
 
+    it('lets the open editor take the height it needs instead of scrolling inside the capped task list', async () => {
+        setup({ tasks: [task()] })
+        await screen.findByRole('listitem')
+        const list = screen.getByRole('list', { name: 'Tasks' })
+        // Many tasks scroll inside the bar. The editor opens inside the list, under its row: capped, its own
+        // fields would scroll in a small inner box with Save below the fold (jsdom lays nothing out, so the
+        // classes are what is checked).
+        expect(list.className.split(/\s+/)).toEqual(expect.arrayContaining(['max-h-48', 'overflow-y-auto']))
+
+        fireEvent.click(screen.getByRole('button', { name: 'Edit task' }))
+        const editor = await screen.findByRole('group', { name: 'Edit task' })
+        expect(editor.closest('ul')).toBe(list)
+        expect(list.className.split(/\s+/)).not.toContain('max-h-48')
+        expect(list.className.split(/\s+/)).not.toContain('overflow-y-auto')
+
+        // Closed, the list is capped again.
+        fireEvent.click(within(editor).getByRole('button', { name: 'Cancel' }))
+        await waitFor(() => expect(screen.queryByRole('group', { name: 'Edit task' })).toBeNull())
+        expect(list.className.split(/\s+/)).toEqual(expect.arrayContaining(['max-h-48', 'overflow-y-auto']))
+    })
+
+    it('does not say its rule hints twice under an open editor, which carries them for the task being edited', async () => {
+        setup({ tasks: [task(), task({ id: 'task-2', kind: 'queue', items: [{ text: 'a' }, { text: 'b' }], totalRuns: 2, createdAt: 2 })] })
+        const rows = await screen.findAllByRole('listitem')
+        const skip = 'If the agent is still busy when a run is due, that run is skipped.'
+        const wake = 'If the session is not running, the hub resumes it first.'
+        expect(screen.getAllByText(skip)).toHaveLength(1)
+        expect(screen.getAllByText(wake)).toHaveLength(1)
+
+        // A repeat task: its editor repeats both rules, so the bar's own lines step aside.
+        fireEvent.click(within(rows[0]).getByRole('button', { name: 'Edit task' }))
+        const editor = await screen.findByRole('group', { name: 'Edit task' })
+        expect(within(editor).getAllByText(skip)).toHaveLength(1)
+        expect(within(editor).getAllByText(wake)).toHaveLength(1)
+        expect(screen.getAllByText(skip)).toHaveLength(1)
+        expect(screen.getAllByText(wake)).toHaveLength(1)
+
+        fireEvent.click(within(editor).getByRole('button', { name: 'Cancel' }))
+        await waitFor(() => expect(screen.queryByRole('group', { name: 'Edit task' })).toBeNull())
+        expect(screen.getAllByText(skip)).toHaveLength(1)
+        expect(screen.getAllByText(wake)).toHaveLength(1)
+
+        // A queue: its editor carries the wake rule too.
+        fireEvent.click(within(rows[1]).getByRole('button', { name: 'Edit task' }))
+        await screen.findByRole('group', { name: 'Edit task' })
+        expect(screen.getAllByText(wake)).toHaveLength(1)
+    })
+
     it('closes the editor on Escape and puts focus back on the Edit button', async () => {
         setup({ tasks: [task()] })
         await screen.findByRole('listitem')

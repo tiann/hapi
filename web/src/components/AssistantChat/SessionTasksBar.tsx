@@ -372,7 +372,10 @@ export function SessionTasksBar({ api, sessionId }: { api: ApiClient | null; ses
                     </p>
                 ) : null}
                 {tasks.length > 0 ? (
-                    <ul className="flex flex-col gap-1.5 max-h-48 overflow-y-auto" aria-labelledby={headingId}>
+                    // The inline editor opens inside the list, under its row: a capped list would scroll the
+                    // editor's own fields in a small inner box, with Save below its fold. While one is open
+                    // the list takes the height it needs and the page scrolls instead.
+                    <ul className={`flex flex-col gap-1.5 ${editingTaskId === null ? 'max-h-48 overflow-y-auto' : ''}`} aria-labelledby={headingId}>
                         {tasks.map((task) => (
                             <SessionTaskRow
                                 key={task.id}
@@ -385,8 +388,9 @@ export function SessionTasksBar({ api, sessionId }: { api: ApiClient | null; ses
                         ))}
                     </ul>
                 ) : null}
-                {hasRepeat ? <p className="mt-1 text-xs text-[var(--app-hint)]">{t('composer.taskHintSkip')}</p> : null}
-                {tasks.length > 0 ? <p className="mt-0.5 text-xs text-[var(--app-hint)]">{t('composer.taskHintWake')}</p> : null}
+                {/* The open editor carries these rules for the task being edited; the bar's own lines would say them twice. */}
+                {editingTaskId === null && hasRepeat ? <p className="mt-1 text-xs text-[var(--app-hint)]">{t('composer.taskHintSkip')}</p> : null}
+                {editingTaskId === null && tasks.length > 0 ? <p className="mt-0.5 text-xs text-[var(--app-hint)]">{t('composer.taskHintWake')}</p> : null}
                 {historyOpen && hasRunHistory ? (
                     <div id={historyId} className="mt-1.5 max-h-64 overflow-y-auto pb-1">
                         <SessionTaskHistory
