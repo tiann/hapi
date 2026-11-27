@@ -1,5 +1,6 @@
 package app.hapi.companion.feature.chat
 
+import app.hapi.companion.feature.cursor.CursorModelControls
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -50,7 +51,8 @@ fun SessionConfigSheet(
     onSetEffort: (String?) -> Unit,
     onLoadModelOptions: () -> Unit,
 ) {
-    LaunchedEffect(Unit) { onLoadModelOptions() }
+    val cursorReady = config.flavor == "cursor" && (config.cursorCatalog != null || config.modelOptions != null)
+    LaunchedEffect(config.flavor, config.active, config.controlledByUser, cursorReady) { onLoadModelOptions() }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         SessionConfigSheetContent(
@@ -99,7 +101,7 @@ internal fun SessionConfigSheetContent(
         // passes `allowSendWhenInactive` unconditionally (SessionChat.tsx:
         // 2140) and the send path auto-resumes, so the offline notice above
         // stays informational only.
-        val permissionSwitchWithheld = config.flavor == "copilot" && config.controlledByUser
+        val permissionSwitchWithheld = config.flavor in setOf("copilot", "cursor") && config.controlledByUser
         if (config.permissionModes.isNotEmpty() && !permissionSwitchWithheld) {
             SectionTitle(stringResource(R.string.chat_config_permission_mode))
             config.permissionModes.forEach { mode ->
@@ -112,6 +114,9 @@ internal fun SessionConfigSheetContent(
             }
         }
 
+        config.cursorCatalog?.let { catalog ->
+            CursorModelControls(catalog, config.model ?: catalog.currentModelId?.takeUnless { it in setOf("default", "default[]") } ?: "auto", !config.pending) { onSetModel(it) }
+        }
         val modelOptions = config.modelOptions
         if (modelOptions != null || config.modelOptionsLoading) {
             SectionTitle(stringResource(R.string.chat_config_model))

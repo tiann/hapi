@@ -26,7 +26,7 @@ data class NewSessionForm(
     val modelReasoningEffort: String = "default",
     /** Native permission mode for grok + codex-family flavors. */
     val permissionMode: String = "default",
-    /** HAPI YOLO preference for the remaining flavors (claude/agy/cursor/pi). */
+    /** HAPI YOLO preference for flavors using the generic toggle. */
     val yolo: Boolean = false,
     /** `'simple' | 'worktree'`. */
     val sessionType: String = SESSION_TYPE_SIMPLE,
@@ -63,7 +63,7 @@ object NewSessionLogic {
      * `web/src/lib/codexFamilyPermissionAgents.ts`).
      */
     fun usesNativePermissionSelect(flavor: String?): Boolean =
-        flavor == "claude" || flavor == "grok" || usesCodexFamilyPermissionModes(flavor)
+        flavor == "claude" || flavor == "grok" || flavor == "cursor" || usesCodexFamilyPermissionModes(flavor)
 
     /**
      * Flavors whose create-form permission choice lives in the single
@@ -142,8 +142,7 @@ object NewSessionLogic {
     /**
      * Exact spawn body (`POST /api/machines/:id/spawn`), field-for-field port
      * of the web `handleCreate` mapping:
-     * - `model`/`effort` only for flavors whose picker exists in this v1
-     *   (claude static list, codex machine catalog; others send no model);
+     * - Claude and Codex omit their default model. Cursor sends Auto or an advertised model ID;
      * - `yolo` only for flavors still on the YOLO toggle (not
      *   `usesNativePermissionSelect`) — **including `false`**;
      * - `permissionMode` for every `usesNativePermissionSelect` flavor —
@@ -155,16 +154,13 @@ object NewSessionLogic {
      * - `startingMode` omitted = the runner's `'remote'` default (v1 fixes
      *   remote; pty is deferred, matching the web create form).
      *
-     * Unlike web, Android has no persistent YOLO preference to migrate: the
-     * toggle only lives in the in-memory form / a draft that is deleted on
-     * success, so there is nothing to bridge into `permissionMode` here.
+     * Cursor drafts from the old YOLO toggle are migrated in [sanitizeDraft].
      */
     fun buildSpawnRequest(form: NewSessionForm, codexFastTierVisible: Boolean): SpawnSessionRequest {
         val agent = form.agent
         val resolvedModel = when {
-            // v1 model pickers: claude (static presets) and codex (machine
-            // catalog). Other flavors' discovery endpoints are TODO(M3d+),
-            // so their model is never sent.
+            // An explicit CLI Auto is distinct from the ACP account default.
+            agent == "cursor" -> form.model
             (agent == "claude" || agent == "codex") && form.model != "auto" -> form.model
             else -> null
         }
@@ -355,7 +351,12 @@ object NewSessionLogic {
         val allowedModes = PermissionModes.forFlavor(base.agent).map { it.wireId }
         val sessionType = if (base.sessionType == SESSION_TYPE_WORKTREE) SESSION_TYPE_WORKTREE else SESSION_TYPE_SIMPLE
         return base.copy(
-            permissionMode = if (base.permissionMode in allowedModes) base.permissionMode else "default",
+            permissionMode = when {
+                base.agent == "cursor" && base.permissionMode == "default" && base.yolo -> "yolo"
+                base.permissionMode in allowedModes -> base.permissionMode
+                else -> "default"
+            },
+            yolo = base.yolo && base.agent != "cursor",
             serviceTier = if (base.serviceTier == "fast") "fast" else "standard",
             collaborationMode = if (base.collaborationMode == "plan") "plan" else "default",
             copilotAgentMode = app.hapi.protocol.catalog.CopilotAgentMode.normalize(base.copilotAgentMode).wireId,

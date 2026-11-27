@@ -1,5 +1,6 @@
 package app.hapi.companion.feature.newsession
 
+import app.hapi.companion.feature.cursor.CursorModelControls
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -107,6 +108,7 @@ fun NewSessionScreen(
             onWorktreeNameChange = viewModel::setWorktreeName,
             onAgentSelected = viewModel::setAgent,
             onRetryAgentAvailability = viewModel::retryAgentAvailability,
+            onRetryModels = viewModel::retryModels,
             onModelSelected = viewModel::setModel,
             onEffortSelected = viewModel::setEffort,
             onReasoningEffortSelected = viewModel::setModelReasoningEffort,
@@ -146,6 +148,7 @@ internal fun NewSessionContent(
     onWorktreeNameChange: (String) -> Unit,
     onAgentSelected: (String) -> Unit,
     onRetryAgentAvailability: () -> Unit = {},
+    onRetryModels: () -> Unit = {},
     onModelSelected: (String) -> Unit,
     onEffortSelected: (String) -> Unit,
     onReasoningEffortSelected: (String) -> Unit,
@@ -175,16 +178,22 @@ internal fun NewSessionContent(
         SessionTypeSection(state, onSessionTypeChange, onWorktreeNameChange)
         AgentSection(state, onAgentSelected, onRetryAgentAvailability)
 
+        state.cursorCatalog?.let { catalog ->
+            CursorModelControls(catalog, form.model, !state.isSpawning, onModelSelected)
+        }
         state.modelOptions?.let { options ->
             OptionDropdown(
                 label = stringResource(R.string.new_session_model),
                 options = options,
                 selected = form.model,
-                enabled = !state.isSpawning && !state.modelsLoading && state.modelsError == null,
+                enabled = !state.isSpawning && !state.modelsLoading && (state.modelsError == null || form.agent == "cursor"),
                 loading = state.modelsLoading,
                 supportingError = state.modelsError,
                 onSelect = onModelSelected,
             )
+        }
+        if (state.modelsError != null) {
+            TextButton(onClick = onRetryModels) { Text(stringResource(R.string.new_session_retry)) }
         }
         state.effortOptions?.let { options ->
             OptionDropdown(
@@ -598,7 +607,7 @@ private fun SectionLabel(text: String) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun OptionDropdown(
+internal fun OptionDropdown(
     label: String,
     options: List<OptionItem>,
     selected: String,

@@ -292,6 +292,18 @@ data class CodexModelsResponse(
     val error: String? = null,
 )
 
+@Serializable
+data class CursorModelSummary(val modelId: String, val name: String? = null)
+
+@Serializable
+data class CursorModelsResponse(
+    val success: Boolean,
+    val availableModels: List<CursorModelSummary>? = null,
+    val cliModelSkus: List<CursorModelSummary>? = null,
+    val currentModelId: String? = null,
+    val error: String? = null,
+)
+
 /** `CodexModelSummary` (`shared/src/apiTypes.ts`). */
 @Serializable
 data class CodexModelSummary(

@@ -99,6 +99,9 @@
     <string name="new_session_yolo_maps_to">Применяет нативный режим %1$s.</string>
     <string name="new_session_collaboration_mode">Режим совместной работы</string>
     <string name="new_session_copilot_agent_mode">Режим агента</string>
+    <string name="cursor_thinking">Размышление</string>
+    <string name="cursor_context_window">Контекстное окно</string>
+    <string name="cursor_model_variant">Вариант</string>
     <string name="new_session_fast_mode">Быстрый режим</string>
     <string name="new_session_fast_mode_standard">Стандартный</string>
     <string name="new_session_fast_mode_fast">Быстрый</string>

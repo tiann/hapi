@@ -106,6 +106,9 @@
     <string name="new_session_yolo_maps_to">将应用原生的 %1$s 模式。</string>
     <string name="new_session_collaboration_mode">协作模式</string>
     <string name="new_session_copilot_agent_mode">代理模式</string>
+    <string name="cursor_thinking">思考</string>
+    <string name="cursor_context_window">上下文窗口</string>
+    <string name="cursor_model_variant">模型变体</string>
     <string name="new_session_fast_mode">快速模式</string>
     <string name="new_session_fast_mode_standard">标准</string>
     <string name="new_session_fast_mode_fast">快速</string>

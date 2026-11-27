@@ -1,5 +1,6 @@
 package app.hapi.companion.feature.newsession
 
+import app.hapi.companion.feature.cursor.CursorModelPicker
 import app.hapi.companion.feature.directorybrowser.RemoteDirectoryBrowserController
 import app.hapi.companion.feature.directorybrowser.RemoteDirectoryPath
 import app.hapi.companion.feature.newsession.NewSessionLogic.buildSpawnRequest
@@ -18,6 +19,7 @@ import app.hapi.protocol.catalog.CopilotAgentMode
 import app.hapi.protocol.catalog.Flavors
 import app.hapi.protocol.catalog.PermissionMode
 import app.hapi.protocol.catalog.PermissionModes
+import app.hapi.protocol.wire.CursorModelsResponse
 import app.hapi.protocol.wire.CodexModelSummary
 import app.hapi.protocol.wire.AgentAvailabilityEntry
 import app.hapi.protocol.wire.Machine
@@ -90,22 +92,23 @@ sealed interface PermissionUi {
      */
     data class NativeSelect(val options: List<OptionItem>) : PermissionUi
 
-    /** HAPI YOLO toggle (agy/cursor) with the native mode it maps to. */
+    /** HAPI YOLO toggle with the native mode it maps to. */
     data class YoloToggle(val nativeModeLabel: String?) : PermissionUi
 
     /** Pi: the agent manages its own permissions. */
     data object Managed : PermissionUi
 }
 
-/** Machine codex-models catalog state (web `useCodexModels`). */
-sealed interface CodexModelsUi {
-    data object Hidden : CodexModelsUi
-    data object Loading : CodexModelsUi
-    data class Loaded(val models: List<CodexModelSummary>) : CodexModelsUi
+/** Machine model catalog state (web `useCodexModels`). */
+sealed interface MachineModelsUi {
+    data class Cursor(val catalog: CursorModelsResponse) : MachineModelsUi
+    data object Hidden : MachineModelsUi
+    data object Loading : MachineModelsUi
+    data class Loaded(val models: List<CodexModelSummary>) : MachineModelsUi
 
     /** Runner has no machine RPC (`rpc_target_missing`) — hide the picker. */
-    data object Unsupported : CodexModelsUi
-    data class Failed(val message: String) : CodexModelsUi
+    data object Unsupported : MachineModelsUi
+    data class Failed(val message: String) : MachineModelsUi
 }
 
 sealed interface AgentAvailabilityUi {
@@ -127,7 +130,7 @@ data class NewSessionUiState(
     val agents: List<OptionItem>,
     val agentAvailabilityLoading: Boolean,
     val agentAvailabilityError: String?,
-    /** Null hides the model picker (v1: only claude + supported codex). */
+    /** Generic model options; a loaded Cursor catalog has its own parameter controls. */
     val modelOptions: List<OptionItem>?,
     val modelsLoading: Boolean,
     val modelsError: String?,
@@ -138,6 +141,7 @@ data class NewSessionUiState(
     val permission: PermissionUi,
     /** Grok create-form gate: `true` renders the Auto-unavailable hint (web `PermissionField`). */
     val grokAutoUnavailable: Boolean,
+    val cursorCatalog: CursorModelsResponse? = null,
     val showCollaborationMode: Boolean,
     val collaborationModeOptions: List<OptionItem>,
     val showFastMode: Boolean,
@@ -179,7 +183,7 @@ class NewSessionViewModel(
 ) {
     private val form = MutableStateFlow(NewSessionForm())
     private val prefsData = MutableStateFlow(NewSessionPrefsData())
-    private val codexModels = MutableStateFlow<CodexModelsUi>(CodexModelsUi.Hidden)
+    private val machineModels = MutableStateFlow<MachineModelsUi>(MachineModelsUi.Hidden)
     private val agentAvailability = MutableStateFlow<AgentAvailabilityUi>(AgentAvailabilityUi.Loading)
     /** Grok Auto gate: `null` = unknown/loading (never disables), `false` = unsupported. */
     private val grokAutoSupport = MutableStateFlow<Boolean?>(null)
@@ -203,11 +207,11 @@ class NewSessionViewModel(
     )
 
     private var directoryJob: Job? = null
-    private var codexJob: Job? = null
+    private var modelsJob: Job? = null
     private var availabilityJob: Job? = null
     private var defaultDirectoryJob: Job? = null
     private var grokAutoJob: Job? = null
-    private var codexFetchedForMachine: String? = null
+    private var fetchedModelCatalog: Pair<String, String>? = null
 
     /** `(machineId, cwd)` already probed — a failed probe never retries (web `retry: false`). */
     private var grokAutoProbedFor: Pair<String, String>? = null
@@ -243,7 +247,7 @@ class NewSessionViewModel(
             form.value = initial
             if (!draftRestored) applyPreferredLaunchSettings(initial.machineId, initial.agent)
             refreshAgentAvailability()
-            refreshCodexModelsIfNeeded()
+            refreshModelsIfNeeded()
             // A restored directory should probe existence but not pop the
             // autocomplete dropdown — suggestions belong to typing.
             suppressSuggestions = true
@@ -291,7 +295,7 @@ class NewSessionViewModel(
     val uiState: StateFlow<NewSessionUiState> = combine(
         form,
         machineStore.machines,
-        combine(codexModels, agentAvailability, grokAutoSupport) { codex, availability, grokAuto ->
+        combine(machineModels, agentAvailability, grokAutoSupport) { codex, availability, grokAuto ->
             CatalogState(codex, availability, grokAuto)
         },
         combine(suggestions, pathExistence, prefsData, outsideWorkspaceRoots, directoryLookupError) {
@@ -310,7 +314,7 @@ class NewSessionViewModel(
         initialValue = buildUiState(
             form.value,
             machineStore.machines.value,
-            CatalogState(codexModels.value, agentAvailability.value, grokAutoSupport.value),
+            CatalogState(machineModels.value, agentAvailability.value, grokAutoSupport.value),
             DirectoryData(emptyList(), emptyMap(), prefsData.value, emptySet(), null),
             SpawnFlags(isSpawning = false, spawnError = null, confirmed = false, machinesSettled = false),
         ),
@@ -324,7 +328,7 @@ class NewSessionViewModel(
     )
 
     private data class CatalogState(
-        val codex: CodexModelsUi,
+        val codex: MachineModelsUi,
         val availability: AgentAvailabilityUi,
         val grokAutoSupported: Boolean?,
     )
@@ -381,6 +385,7 @@ class NewSessionViewModel(
         form.update {
             it.copy(
                 agent = agent,
+                yolo = if (agent == "cursor") false else it.yolo,
                 model = "auto",
                 effort = "auto",
                 modelReasoningEffort = "default",
@@ -391,7 +396,7 @@ class NewSessionViewModel(
             )
         }
         applyPreferredLaunchSettings(form.value.machineId, agent)
-        refreshCodexModelsIfNeeded()
+        refreshModelsIfNeeded()
         refreshGrokAutoSupportIfNeeded()
     }
 
@@ -406,7 +411,7 @@ class NewSessionViewModel(
 
     fun setModelReasoningEffort(value: String) = form.update { it.copy(modelReasoningEffort = value) }
 
-    fun setPermissionMode(mode: String) = form.update { it.copy(permissionMode = mode) }
+    fun setPermissionMode(mode: String) = form.update { it.copy(permissionMode = mode, yolo = if (it.agent == "cursor") false else it.yolo) }
 
     fun setYolo(enabled: Boolean) = form.update { it.copy(yolo = enabled) }
 
@@ -423,9 +428,9 @@ class NewSessionViewModel(
 
     fun setCopilotAgentMode(mode: String) = form.update { it.copy(copilotAgentMode = mode) }
 
-    fun retryCodexModels() {
-        codexFetchedForMachine = null
-        refreshCodexModelsIfNeeded()
+    fun retryModels() {
+        fetchedModelCatalog = null
+        refreshModelsIfNeeded()
     }
 
     fun retryAgentAvailability() = refreshAgentAvailability(force = true)
@@ -441,6 +446,10 @@ class NewSessionViewModel(
         val machineId = current.machineId ?: return
         if (current.trimmedDirectory.isEmpty() || spawnInFlight) return
         if (worktreeNameBlocks(current)) return
+        if (current.agent == "cursor" && current.model != "auto") {
+            val catalog = (machineModels.value as? MachineModelsUi.Cursor)?.catalog ?: return
+            if (!CursorModelPicker.contains(catalog, current.model)) return
+        }
         when (val availability = agentAvailability.value) {
             AgentAvailabilityUi.Loading -> return
             is AgentAvailabilityUi.Failed -> {
@@ -600,7 +609,7 @@ class NewSessionViewModel(
         // draft still owns the form.
         if (!draftRestored) applyPreferredLaunchSettings(machineId, form.value.agent)
         refreshAgentAvailability(force = true)
-        refreshCodexModelsIfNeeded()
+        refreshModelsIfNeeded()
         if (resetDirectory) initializeMachineDirectory(machineId) else scheduleDirectoryWork()
     }
 
@@ -728,44 +737,53 @@ class NewSessionViewModel(
         }
     }
 
-    private fun refreshCodexModelsIfNeeded() {
+    private fun refreshModelsIfNeeded() {
         val current = form.value
-        if (current.agent != "codex") {
-            codexJob?.cancel()
-            codexFetchedForMachine = null
-            codexModels.value = CodexModelsUi.Hidden
+        if (current.agent !in setOf("codex", "cursor") || current.machineId == null) {
+            modelsJob?.cancel()
+            fetchedModelCatalog = null
+            machineModels.value = MachineModelsUi.Hidden
             return
         }
         val machineId = current.machineId
-        if (machineId == null) {
-            codexModels.value = CodexModelsUi.Hidden
-            return
-        }
-        if (codexFetchedForMachine == machineId && codexModels.value !is CodexModelsUi.Hidden) return
-        codexFetchedForMachine = machineId
-        codexJob?.cancel()
-        codexModels.value = CodexModelsUi.Loading
-        codexJob = scope.launch {
+        val key = machineId to current.agent
+        if (fetchedModelCatalog == key && machineModels.value !is MachineModelsUi.Hidden) return
+        fetchedModelCatalog = key
+        modelsJob?.cancel()
+        machineModels.value = MachineModelsUi.Loading
+        modelsJob = scope.launch {
             val state = try {
-                val response = gateway.codexModels(machineId)
-                if (response.success) {
-                    CodexModelsUi.Loaded(response.models.orEmpty())
+                if (current.agent == "cursor") {
+                    val response = gateway.cursorModels(machineId)
+                    if (response.success) MachineModelsUi.Cursor(response)
+                    else MachineModelsUi.Failed(response.error ?: "Cursor")
                 } else {
-                    CodexModelsUi.Failed(response.error ?: strings.codexModelsFailed)
+                    val response = gateway.codexModels(machineId)
+                    if (response.success) {
+                        MachineModelsUi.Loaded(response.models.orEmpty())
+                    } else {
+                        MachineModelsUi.Failed(response.error ?: strings.codexModelsFailed)
+                    }
                 }
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (error: ApiError) {
                 if (error.code == "rpc_target_missing") {
-                    CodexModelsUi.Unsupported
+                    MachineModelsUi.Unsupported
                 } else {
-                    CodexModelsUi.Failed(error.message ?: strings.codexModelsFailed)
+                    MachineModelsUi.Failed(error.message ?: strings.codexModelsFailed)
                 }
             } catch (error: Exception) {
-                CodexModelsUi.Failed(error.message ?: strings.codexModelsFailed)
+                MachineModelsUi.Failed(error.message ?: strings.codexModelsFailed)
             }
-            codexModels.value = state
-            if (state is CodexModelsUi.Loaded) {
+            if (fetchedModelCatalog != key) return@launch
+            machineModels.value = state
+            if (state is MachineModelsUi.Cursor) {
+                form.update { draft ->
+                    if (CursorModelPicker.contains(state.catalog, draft.model)) draft else draft.copy(model = "auto")
+                }
+            }
+            if (state is MachineModelsUi.Loaded) {
                 // Reconcile restored selections with the live catalog (web
                 // validation effects): unknown model → auto; unsupported
                 // effort → default; no fast tier → standard.
@@ -823,7 +841,7 @@ class NewSessionViewModel(
     }
 
     private fun reconcileCodexSelections(current: NewSessionForm): NewSessionForm {
-        val loaded = codexModels.value as? CodexModelsUi.Loaded ?: return current
+        val loaded = machineModels.value as? MachineModelsUi.Loaded ?: return current
         var next = current
         if (next.model != "auto" && loaded.models.none { it.id == next.model }) {
             next = next.copy(model = "auto")
@@ -840,7 +858,7 @@ class NewSessionViewModel(
 
     private fun codexFastTierVisible(current: NewSessionForm): Boolean {
         if (current.agent != "codex") return false
-        val loaded = codexModels.value as? CodexModelsUi.Loaded ?: return false
+        val loaded = machineModels.value as? MachineModelsUi.Loaded ?: return false
         return NewSessionLogic.codexModelAdvertisesFastTier(current.model, loaded.models)
     }
 
@@ -914,17 +932,19 @@ class NewSessionViewModel(
 
         val modelOptions: List<OptionItem>? = when {
             agent == "claude" -> NewSessionCatalogs.CLAUDE_MODELS
-            agent == "codex" && codex is CodexModelsUi.Loaded -> {
+            agent == "codex" && codex is MachineModelsUi.Loaded -> {
                 listOf(OptionItem("auto", "Default")) + codex.models.map { OptionItem(it.id, it.displayName) }
             }
-            agent == "codex" && (codex is CodexModelsUi.Loading || codex is CodexModelsUi.Failed) ->
-                listOf(OptionItem("auto", "Default"))
-            // codex Unsupported (old runner) and every other flavor: hidden.
+            agent == "cursor" && codex is MachineModelsUi.Unsupported && currentForm.model != "auto" ->
+                listOf(OptionItem("auto", "Auto"))
+            agent in setOf("cursor", "codex") && (codex is MachineModelsUi.Loading || codex is MachineModelsUi.Failed) ->
+                listOf(OptionItem("auto", if (agent == "cursor") "Auto" else "Default"))
+            // Other flavors without a model picker, and older runners without model discovery.
             else -> null
         }
 
-        val reasoningEffortOptions: List<OptionItem>? = if (agent == "codex" && codex !is CodexModelsUi.Unsupported) {
-            val advertised = (codex as? CodexModelsUi.Loaded)
+        val reasoningEffortOptions: List<OptionItem>? = if (agent == "codex" && codex !is MachineModelsUi.Unsupported) {
+            val advertised = (codex as? MachineModelsUi.Loaded)
                 ?.let { NewSessionLogic.codexReasoningEfforts(it.models, currentForm.model) }
             advertised?.let { efforts ->
                 listOf(OptionItem("default", "Default")) +
@@ -952,12 +972,12 @@ class NewSessionViewModel(
             else -> PermissionUi.YoloToggle(hapiYoloNativeMode(agent)?.label)
         }
 
-        val showFastMode = agent == "codex" && codex is CodexModelsUi.Loaded &&
+        val showFastMode = agent == "codex" && codex is MachineModelsUi.Loaded &&
             NewSessionLogic.codexModelAdvertisesFastTier(currentForm.model, codex.models)
 
         // Web `isLaunchPreferenceValidationPending` (codex slice): a restored
         // codex model/effort must not spawn before the catalog validated it.
-        val codexValidationPending = agent == "codex" && codex is CodexModelsUi.Loading &&
+        val codexValidationPending = agent == "codex" && codex is MachineModelsUi.Loading &&
             (currentForm.model != "auto" || currentForm.modelReasoningEffort != "default" || currentForm.serviceTier == "fast")
 
         val nameError = if (currentForm.sessionType == SESSION_TYPE_WORKTREE) {
@@ -978,8 +998,9 @@ class NewSessionViewModel(
             agentAvailabilityLoading = availability is AgentAvailabilityUi.Loading,
             agentAvailabilityError = availabilityError,
             modelOptions = modelOptions,
-            modelsLoading = agent == "codex" && codex is CodexModelsUi.Loading,
-            modelsError = (codex as? CodexModelsUi.Failed)?.message?.let { strings.modelsFailedDetail.format(it) },
+            cursorCatalog = (codex as? MachineModelsUi.Cursor)?.catalog,
+            modelsLoading = agent in setOf("cursor", "codex") && codex is MachineModelsUi.Loading,
+            modelsError = (codex as? MachineModelsUi.Failed)?.message?.let { strings.modelsFailedDetail.format(it) },
             effortOptions = if (agent == "claude") NewSessionCatalogs.CLAUDE_EFFORTS else null,
             reasoningEffortOptions = reasoningEffortOptions,
             permission = permission,
@@ -1000,7 +1021,7 @@ class NewSessionViewModel(
                 availability is AgentAvailabilityUi.Loaded &&
                 currentForm.agent in availableAgentIds &&
                 nameError == null &&
-                !codexValidationPending,
+                !codexValidationPending && !(agent == "cursor" && currentForm.model != "auto" && codex !is MachineModelsUi.Cursor),
             confirmCreateDirectory = flags.confirmed && needsCreationWarning,
         )
     }

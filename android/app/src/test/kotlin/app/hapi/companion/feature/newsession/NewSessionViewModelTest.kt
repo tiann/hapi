@@ -96,6 +96,9 @@ private class FakeGateway : NewSessionGateway {
         return availabilityResult
     }
 
+    var cursorCatalog = app.hapi.protocol.wire.CursorModelsResponse(false)
+    override suspend fun cursorModels(machineId: String) = cursorCatalog
+
     override suspend fun codexModels(machineId: String): CodexModelsResponse {
         codexCalls.add(machineId)
         codexThrows?.let { throw it }
@@ -246,7 +249,7 @@ class SpawnBodyTest {
     }
 
     @Test
-    fun `grok sends permissionMode not yolo, cursor sends yolo not permissionMode`() {
+    fun `grok and cursor send native permission modes and cursor sends its selected model`() {
         val grok = encode(
             NewSessionLogic.buildSpawnRequest(
                 NewSessionForm(directory = "/repo", agent = "grok", permissionMode = "auto", yolo = true),
@@ -258,13 +261,13 @@ class SpawnBodyTest {
 
         val cursor = encode(
             NewSessionLogic.buildSpawnRequest(
-                NewSessionForm(directory = "/repo", agent = "cursor", yolo = true, model = "sonic"),
+                NewSessionForm(directory = "/repo", agent = "cursor", permissionMode = "ask", model = "sonic[fast=false]"),
                 codexFastTierVisible = false,
             ),
         )
-        // Cursor has no v1 model picker: even a stashed model id is not sent.
-        assertEquals(setOf("directory", "agent", "yolo", "sessionType"), cursor.keys)
-        assertEquals(true, cursor["yolo"]!!.jsonPrimitive.boolean)
+        assertEquals(setOf("directory", "agent", "permissionMode", "model", "sessionType"), cursor.keys)
+        assertEquals("ask", cursor["permissionMode"]!!.jsonPrimitive.content)
+        assertEquals("sonic[fast=false]", cursor["model"]!!.jsonPrimitive.content)
     }
 
     @Test
@@ -435,9 +438,9 @@ class NewSessionLogicTest {
                 NewSessionForm(agent = "grok", model = "auto", permissionMode = "plan"),
             ),
         )
-        // YOLO-toggle flavors (cursor) never carry a remembered mode either.
+        // Cursor remembers its explicit ACP mode.
         assertEquals(
-            PreferredLaunchSettings(),
+            PreferredLaunchSettings(permissionMode = "plan"),
             NewSessionLogic.launchPreferenceFrom(
                 NewSessionForm(agent = "cursor", yolo = true, permissionMode = "plan"),
             ),
@@ -508,7 +511,7 @@ class NewSessionLogicTest {
             ),
         )
 
-        // Grok / cursor never resolve a remembered mode, even if one leaked in.
+        // Grok excludes remembered modes, while Cursor restores a supported mode.
         assertEquals(
             PreferredLaunchSettings(),
             NewSessionLogic.resolvePreferredLaunchSettings(
@@ -517,7 +520,7 @@ class NewSessionLogicTest {
             ),
         )
         assertEquals(
-            PreferredLaunchSettings(),
+            PreferredLaunchSettings(permissionMode = "yolo"),
             NewSessionLogic.resolvePreferredLaunchSettings(
                 "cursor",
                 PreferredLaunchSettings(permissionMode = "yolo"),
@@ -1122,15 +1125,37 @@ class NewSessionViewModelTest {
 
         vm.setAgent("claude")
         advanceUntilIdle()
-        // Claude is on the native select now; the YOLO toggle only remains for
-        // the flavors still carrying it (cursor here).
+        // Claude and Cursor both expose native permission modes.
         assertTrue(vm.uiState.value.permission is PermissionUi.NativeSelect)
 
         vm.setAgent("cursor")
         advanceUntilIdle()
-        val toggle = vm.uiState.value.permission
-        assertTrue(toggle is PermissionUi.YoloToggle)
-        assertEquals("Yolo", (toggle as PermissionUi.YoloToggle).nativeModeLabel)
+        val modes = vm.uiState.value.permission as PermissionUi.NativeSelect
+        assertTrue(modes.options.map { it.value }.containsAll(listOf("default", "ask", "plan", "debug", "autoReview", "yolo")))
+    }
+
+    @Test
+    fun cursorOpensACPCatalogAndSpawnsTheSelectedWireAndMode() = runTest {
+        val wire = "grok-4.7[reasoning_effort=high,fast=true]"
+        val gateway = FakeGateway().apply {
+            cursorCatalog = app.hapi.protocol.wire.CursorModelsResponse(true, listOf(app.hapi.protocol.wire.CursorModelSummary(wire)))
+        }
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1"))), FakePrefs())
+        advanceUntilIdle()
+        vm.setAgent("cursor")
+        advanceUntilIdle()
+        assertEquals(wire, vm.uiState.value.cursorCatalog?.availableModels?.single()?.modelId)
+        vm.setModel(wire)
+        vm.setPermissionMode("ask")
+        vm.setDirectory("/repo")
+        advanceUntilIdle()
+        vm.create()
+        advanceUntilIdle()
+        val request = gateway.spawnCalls.single().second
+        assertEquals(wire, request.model)
+        assertEquals("ask", request.permissionMode)
+        assertEquals(null, request.yolo)
+        assertEquals("yolo", NewSessionLogic.sanitizeDraft(NewSessionForm(agent = "cursor", yolo = true)).permissionMode)
     }
 
     @Test

@@ -11,6 +11,7 @@ import app.hapi.protocol.wire.CancelMessageResponse
 import app.hapi.protocol.wire.MessageContextResponse
 import app.hapi.protocol.wire.RetryIndeterminateMessageResponse
 import app.hapi.protocol.wire.RestartRunnerResponse
+import app.hapi.protocol.wire.CursorModelsResponse
 import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.DeleteUploadRequest
 import app.hapi.protocol.wire.DeleteUploadResponse
@@ -574,6 +575,9 @@ class HapiApi internal constructor(
      * `GET /api/sessions/:id/codex-models` — active codex session's model
      * catalog (RPC-wrapped: check `success`; 400 on other flavors).
      */
+    override suspend fun getSessionCursorModels(sessionId: String): CursorModelsResponse =
+        request("GET", url("api", "sessions", sessionId, "cursor-models").build())
+
     override suspend fun getSessionCodexModels(sessionId: String): CodexModelsResponse =
         request("GET", url("api", "sessions", sessionId, "codex-models").build())
 
@@ -648,6 +652,9 @@ class HapiApi internal constructor(
      * 503 with code `rpc_target_missing` → [ApiError]; callers hide the picker
      * (web ref: `useCodexModels`). Added in B-M3d.
      */
+    suspend fun getMachineCursorModels(machineId: String): CursorModelsResponse =
+        request("GET", url("api", "machines", machineId, "cursor-models").build())
+
     suspend fun getMachineCodexModels(machineId: String): CodexModelsResponse =
         request("GET", url("api", "machines", machineId, "codex-models").build())
 

@@ -1,6 +1,7 @@
 package app.hapi.companion.feature.newsession
 
 import app.hapi.data.api.HapiApi
+import app.hapi.protocol.wire.CursorModelsResponse
 import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.AgentAvailabilityResponse
 import app.hapi.protocol.wire.GrokModelsResponse
@@ -31,6 +32,8 @@ interface NewSessionGateway {
     suspend fun agentAvailability(machineId: String): AgentAvailabilityResponse
 
     /** `GET /api/machines/:id/codex-models` (RPC-wrapped; 503 `rpc_target_missing` = hide picker). */
+    suspend fun cursorModels(machineId: String): CursorModelsResponse
+
     suspend fun codexModels(machineId: String): CodexModelsResponse
 
     /** `GET /api/machines/:id/grok-models?cwd=` (RPC-wrapped) — Auto-mode capability probe. */
@@ -53,6 +56,8 @@ class ApiNewSessionGateway(private val api: HapiApi) : NewSessionGateway {
 
     override suspend fun agentAvailability(machineId: String): AgentAvailabilityResponse =
         api.getMachineAgentAvailability(machineId)
+
+    override suspend fun cursorModels(machineId: String): CursorModelsResponse = api.getMachineCursorModels(machineId)
 
     override suspend fun codexModels(machineId: String): CodexModelsResponse =
         api.getMachineCodexModels(machineId)

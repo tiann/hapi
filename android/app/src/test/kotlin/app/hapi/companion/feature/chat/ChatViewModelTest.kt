@@ -199,6 +199,9 @@ private open class FakeMessagesApi : ChatSessionApi {
     override suspend fun setModel(sessionId: String, model: String?) {}
     override suspend fun setEffort(sessionId: String, effort: String?) {}
     override suspend fun setModelReasoningEffort(sessionId: String, modelReasoningEffort: String?) {}
+    override suspend fun getSessionCursorModels(sessionId: String) =
+        app.hapi.protocol.wire.CursorModelsResponse(false)
+
     override suspend fun getSessionCodexModels(sessionId: String): CodexModelsResponse =
         CodexModelsResponse(success = false, error = "not scripted")
     override suspend fun getSlashCommands(sessionId: String): app.hapi.protocol.wire.SlashCommandsResponse =
