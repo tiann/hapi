@@ -169,6 +169,19 @@ for request/response shapes and error semantics, and `src/web/routes/` for all e
 - `POST /api/sessions/:id/messages/:messageId/steer` - Steer a queued message when the session supports it.
 - `POST /api/sessions/:id/messages/:messageId/retry` - Explicitly retry indeterminate delivery when safe; never auto-replay.
 
+### Session tasks (`src/web/routes/sessionTasks.ts`)
+
+A task is a schedule the hub owns: `repeat` sends the same prompt on a fixed grid, `queue` sends a list of prompts each `intervalMs` after the agent took the previous one. Every run inserts one ordinary user message, so the prompts reach clients through the message stream like any other. The scheduler (`src/sync/sessionTaskRunner.ts`) runs on the same 5 s tick as the scheduled-message scan, keeps at most one prompt of a task outstanding, and resumes an inactive session before sending (at most 3 resumes at once across the hub, `src/sync/sessionWakeGate.ts`; an archived session is never resumed). See the [client contract](../docs/api/client-contract/rest.md#session-tasks).
+
+- `GET /api/sessions/:id/tasks` - List the session's tasks, oldest first.
+- `POST /api/sessions/:id/tasks` - Create a `repeat` or `queue` task; a session holds at most 20 active ones.
+- `GET /api/sessions/:id/tasks/history` - What the session's tasks did (prompts sent and taken, slots skipped, runs that could not go out), newest first; 500 rows per session, 30 days.
+- `PATCH /api/sessions/:id/tasks/:taskId` - Pause or resume a task, or change its prompts, interval or run limit.
+- `POST /api/sessions/:id/tasks/:taskId/run` - Send the task's next prompt now.
+- `DELETE /api/sessions/:id/tasks/:taskId` - Delete a task; a prompt the agent has not taken yet is cancelled.
+
+Every change emits `session-tasks-changed` over SSE, and the session list carries `activeTaskCount` / `nextTaskRunAt` per session.
+
 ### Permissions (`src/web/routes/permissions.ts`)
 
 - `POST /api/sessions/:id/permissions/:requestId/approve` - Approve permission.
@@ -324,6 +337,7 @@ See `src/store/index.ts` for SQLite persistence:
 
 - Sessions with metadata and agent state.
 - Messages with pagination support.
+- Session tasks (`session_tasks`: hub-owned `repeat` / `queue` schedules, at most one prompt outstanding each) and their run history (`session_task_runs`: sent, skipped, failed and cancelled runs, 500 rows per session).
 - Machines with runner state.
 - Todo extraction from messages.
 - Users table for Telegram bindings (includes namespace).
