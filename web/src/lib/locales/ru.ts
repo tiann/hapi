@@ -1035,8 +1035,6 @@ export default {
   'settings.display.sessionPreviewLimit': 'Сессий до сворачивания',
   'settings.display.sessionPreviewLimit.decrease': 'Показывать меньше сессий до сворачивания',
   'settings.display.sessionPreviewLimit.increase': 'Показывать больше сессий до сворачивания',
-  'settings.display.activeSessionsOnly': 'Только активные сессии',
-  'settings.display.activeSessionsOnly.desc': 'Скрыть неактивные сессии, кроме открытой и сессий с выполняющейся долгой задачей.',
   'settings.display.pinInProgressSessions': 'Закреплять сессии в работе',
   'settings.display.pinInProgressSessions.desc': 'Насколько громко сессии всплывают в верхний раздел «В работе» над папками проекта. По умолчанию — долгие задачи (фоновая работа с измерителем session job). Глобальные закрепления остаются выше. Подключённые, но простаивающие сессии (сокет хаба есть, агент не работает и не ждёт вас) остаются в папках проекта в любом режиме — это не работа в процессе. Выключено — всё остаётся в группах по каталогам.',
   'settings.display.pinInProgressMode.off': 'Выкл.',

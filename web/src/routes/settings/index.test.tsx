@@ -155,10 +155,6 @@ vi.mock('@/hooks/useSessionListStatusMode', () => ({
     ],
 }))
 
-vi.mock('@/hooks/useShowActiveSessionsOnly', () => ({
-    useShowActiveSessionsOnly: () => ({ showActiveSessionsOnly: false, setShowActiveSessionsOnly: vi.fn() }),
-}))
-
 vi.mock('@/hooks/usePinInProgressSessions', () => ({
     usePinInProgressSessions: () => ({
         pinInProgressMode: 'off' as const,
