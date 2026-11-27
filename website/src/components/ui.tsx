@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import {
     Bell,
+    CalendarClock,
     Check,
     CircleCheck,
     CirclePlus,
@@ -25,6 +26,7 @@ export const ICONS: Record<string, LucideIcon> = {
     smartphone: Smartphone,
     terminal: SquareTerminal,
     plus: CirclePlus,
+    "calendar-clock": CalendarClock,
     mic: Mic,
     bell: Bell,
     check: CircleCheck,

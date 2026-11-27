@@ -1,10 +1,10 @@
 ---
-description: "Send, queue, steer and schedule messages to your agent; pick model and effort; attach files; use slash commands, mentions and keyboard shortcuts."
+description: "Send, queue, steer, schedule and automate messages to your agent; pick model and effort; attach files; use slash commands, mentions and keyboard shortcuts."
 ---
 
 # Composer
 
-The composer is the input box at the bottom of a chat. Besides sending text, it lets you queue or steer messages while the agent is busy, schedule a message for later, switch model and effort, attach files, and reference other sessions.
+The composer is the input box at the bottom of a chat. Besides sending text, it lets you queue or steer messages while the agent is busy, schedule a message for later, set up repeat and queue tasks that the hub sends on their own, switch model and effort, attach files, and reference other sessions.
 
 This page covers the web app and PWA, plus the iOS and Android apps where they differ. Voice input and dictation are covered in [Voice input and assistant](./voice-assistant.md).
 

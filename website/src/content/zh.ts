@@ -115,6 +115,11 @@ export const zh: Content = {
                         body: "运行 `hapi runner start`，然后在 App 的新建会话中选择机器、目录和代理。",
                     },
                     {
+                        icon: "calendar-clock",
+                        title: "定时发送与循环任务",
+                        body: "稍后再发消息，或交给 hub 一个循环、队列任务：它会自行把消息送进会话，会话没在运行就先唤起它。",
+                    },
+                    {
                         icon: "mic",
                         title: "语音",
                         body: "通过 Web 语音助手免手动与代理对话，或在原生 App 中听写并在发送前检查。",
