@@ -185,7 +185,11 @@ export const SessionTaskRunSchema = z.object({
     recordedAt: z.number(),
     /** For `sent`: when the agent took the prompt, or null while it is still waiting. */
     takenAt: z.number().nullable(),
-    /** For `skipped` and `failed`: the reason (`previous_prompt_waiting` or a SessionTaskErrorCode). */
+    /**
+     * For `skipped` and `failed`: the reason (`previous_prompt_waiting` or a SessionTaskErrorCode).
+     * `cancel_unconfirmed` on a `sent` or `cancelled` row: the prompt was cancelled while no CLI
+     * confirmed it holds no copy; the hub keeps asking, and the detail goes once one did.
+     */
     detail: z.string().nullable(),
     /** Start of the prompt's text, so a finished task's runs stay readable. */
     preview: z.string().nullable()

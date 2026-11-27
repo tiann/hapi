@@ -283,6 +283,32 @@ describe('session task store', () => {
         expect(store.sessionTasks.unsentPending(single.id, 'hapi-task:u:other', 3_000)).toBe(false)
     })
 
+    it('recountUnsent counts a pulled-back prompt again once the agent is found to have taken it', () => {
+        const store = makeStore()
+        const session = makeSession(store, 's')
+        const queue = makeRepeatTask(store, session, { kind: 'queue', items: ['a', 'b', 'c'], maxRuns: null, nextRunAt: 1_000 })
+        store.sessionTasks.markSent(queue.id, { localId: 'hapi-task:w:1', nextRunAt: null, now: 1_000 })
+        store.sessionTasks.recordRun({ sessionId: session, taskId: queue.id, taskKind: 'queue', runNumber: 1, localId: 'hapi-task:w:1', outcome: 'sent', scheduledFor: 1_000 }, 1_000)
+        store.sessionTasks.markRunCancelled(session, 'hapi-task:w:1')
+        // No CLI confirmed that cancel (there was none in the room): the row keeps its marker.
+        store.sessionTasks.markRunCancelUnconfirmed(session, 'hapi-task:w:1')
+        expect(store.sessionTasks.unsentPending(queue.id, 'hapi-task:w:1', 2_000)).toBe(true)
+        expect(store.sessionTasks.getById(queue.id)).toMatchObject({ runCount: 0, lastRunAt: null })
+
+        // The CLI reports the take: the row is sent again, and the prompt counts as before the pull-back.
+        store.sessionTasks.markRunTaken(session, 'hapi-task:w:1', 1_500)
+        expect(store.sessionTasks.listRuns(session, 10).map((run) => [run.outcome, run.takenAt, run.detail])).toEqual([['sent', 1_500, null]])
+        expect(store.sessionTasks.recountUnsent(queue.id, 1, 3_000)).toBe(true)
+        expect(store.sessionTasks.getById(queue.id)).toMatchObject({ runCount: 1, lastRunAt: 1_000, pendingLocalId: null, updatedAt: 3_000 })
+
+        // Only once: the task is no longer as the pause left it.
+        expect(store.sessionTasks.recountUnsent(queue.id, 1, 4_000)).toBe(false)
+        // Another run number is not what the task is waiting on.
+        const other = makeRepeatTask(store, session, { kind: 'queue', items: ['a', 'b'], maxRuns: null, nextRunAt: 1_000 })
+        expect(store.sessionTasks.recountUnsent(other.id, 2, 5_000)).toBe(false)
+        expect(store.sessionTasks.getById(other.id)?.runCount).toBe(0)
+    })
+
     it('skipDueSlot only moves an active task that has a prompt pending', () => {
         const store = makeStore()
         const session = makeSession(store, 's')

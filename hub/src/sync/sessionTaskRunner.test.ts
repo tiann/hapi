@@ -179,6 +179,27 @@ describe('SessionTaskRunner', () => {
             expect(h.task(created.id)?.nextRunAt).toBe(T0 + 160 * MINUTE)
         })
 
+        it('waits with a run while an earlier copy of its prompt is still unaccounted for', async () => {
+            const h: Harness = makeHarness()
+            const created = h.create({
+                sessionId: h.sessionId, kind: 'repeat', items: ['ping'], intervalMs: 10 * MINUTE, maxRuns: null, nextRunAt: T0
+            })
+            const held = new Set<string>()
+            ;(h.runner as unknown as { deps: { promptHeld?: (localId: string) => boolean } }).deps.promptHeld = (localId) => held.has(localId)
+            held.add(buildSessionTaskMessageLocalId(created.id, 1))
+
+            // Due, but the prompt it would send is one the hub still asks a CLI about: nothing goes out, nothing changes.
+            await h.runner.tick()
+            expect(h.sent).toHaveLength(0)
+            expect(h.task(created.id)).toMatchObject({ runCount: 0, pendingLocalId: null, nextRunAt: T0 })
+            expect(h.runs()).toHaveLength(0)
+
+            // Settled: the next tick sends it.
+            held.clear()
+            await h.runner.tick()
+            expect(h.sent.map((prompt) => prompt.localId)).toEqual([buildSessionTaskMessageLocalId(created.id, 1)])
+        })
+
         it('deletes itself once its last prompt is taken', async () => {
             const h: Harness = makeHarness()
             const created = h.create({

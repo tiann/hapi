@@ -32,13 +32,21 @@ function stubEngine(store: Store, sessions: Map<string, FakeSession>) {
     }
     internals.machineCache = { expireInactive: () => undefined }
     internals.historyActionsInFlight = new Set<string>()
-    internals.eventPublisher = { emit: (event: SyncEvent) => { events.push(event) } }
+    /** The toasts the engine sends (what a user is told when the hub itself finds something out). */
+    const toasts: Array<{ namespace: string } & Record<string, unknown>> = []
+    internals.eventPublisher = {
+        emit: (event: SyncEvent) => { events.push(event) },
+        sendToast: (namespace: string, event: { data: Record<string, unknown> }) => {
+            toasts.push({ namespace, ...event.data })
+            return Promise.resolve(1)
+        }
+    }
     internals.openCodeRewindPending = () => false
     internals.reconcileOpenCodeClears = async () => undefined
     internals.reconcileDerivedToolWork = () => undefined
     // The 5s tick asks for mature scheduled messages; none in these tests.
     internals.messageService = { releaseMatureScheduledMessages: () => [] }
-    return { engine, events, internals }
+    return { engine, events, internals, toasts }
 }
 
 function makeSession(store: Store, tag: string, metadata?: Record<string, unknown>): FakeSession {
@@ -50,7 +58,7 @@ function harness(tag = 'tasks') {
     const store = new Store(':memory:')
     const session = makeSession(store, tag)
     const sessions = new Map<string, FakeSession>([[session.id, session]])
-    const { engine, events, internals } = stubEngine(store, sessions)
+    const { engine, events, internals, toasts } = stubEngine(store, sessions)
     const sent: Array<{ sessionId: string; text: string; localId: string; sentFrom?: string }> = []
     ;(engine as unknown as { sendMessage: (id: string, payload: { text: string; localId: string; sentFrom?: string }) => Promise<void> }).sendMessage = async (id, payload) => {
         sent.push({ sessionId: id, ...payload })
@@ -71,7 +79,7 @@ function harness(tag = 'tasks') {
         store.messages.deleteQueuedMessageById(id, localId)
         return { status: 'cancelled', localId }
     }
-    return { store, session, sessions, engine, events, internals, sent, cancelled, cancelOptions }
+    return { store, session, sessions, engine, events, internals, sent, cancelled, cancelOptions, toasts }
 }
 
 /** A test's own stand-in for `SyncEngine.cancelQueuedMessage` (the harness installs one that confirms). */
@@ -921,6 +929,88 @@ describe('SyncEngine session tasks', () => {
             await settle()
             expect(runsOf(h, localId)).toEqual([['sent', true, null]])
             expect(h.store.sessionTasks.listRuns(h.session.id, 50).find((run) => run.localId === localId)?.takenAt).toBeGreaterThan(0)
+            // The user believed that prompt cancelled: say that the agent got it after all.
+            expect(h.toasts).toEqual([{
+                namespace: 'default',
+                title: 'Deleted task prompt was taken',
+                body: 'A prompt of a task you deleted reached the agent after all: its process still held the copy when the task was deleted. Check the session.',
+                sessionId: h.session.id,
+                url: `/sessions/${h.session.id}`
+            }])
+        })
+
+        it('the two minutes count from the first tick on which a CLI is in the room', async () => {
+            const h = harness()
+            const { task, localId } = await pendingPrompt(h)
+            const cli = withCliSocket(h, 'removed')
+            setCancel(h, async (id, prompt) => {
+                h.store.messages.deleteQueuedMessageById(id, prompt)
+                return { status: 'cancelled', localId: prompt, unconfirmed: true }
+            })
+            await h.engine.deleteSessionTask(h.session.id, task.id)
+
+            // An hour with no CLI in the room: nothing is given up, the row keeps its marker.
+            const realNow = Date.now
+            try {
+                Date.now = () => realNow() + HOUR
+                tick(h.engine)
+                await settle()
+                expect(cli.probes).toEqual([])
+                expect(runsOf(h, localId)).toEqual([['cancelled', false, SESSION_TASK_RUN_CANCEL_UNCONFIRMED]])
+
+                // The CLI comes back, however late: asked, and settled.
+                cli.connected = true
+                tick(h.engine)
+                await settle()
+            } finally {
+                Date.now = realNow
+            }
+            expect(cli.probes).toHaveLength(1)
+            expect(runsOf(h, localId)).toEqual([['cancelled', false, null]])
+        })
+
+        it('forgets a prompt whose session is gone', async () => {
+            const h = harness()
+            const { task, localId } = await pendingPrompt(h)
+            const cli = withCliSocket(h, 'removed')
+            cli.connected = true
+            setCancel(h, async (id, prompt) => {
+                h.store.messages.deleteQueuedMessageById(id, prompt)
+                return { status: 'cancelled', localId: prompt, unconfirmed: true }
+            })
+            await h.engine.deleteSessionTask(h.session.id, task.id)
+            // The session is deleted: its rows and the process that could hold the prompt go with it.
+            ;(h.store as unknown as { db: { exec(sql: string): void } }).db.exec(`DELETE FROM sessions WHERE id = '${h.session.id}'`)
+
+            tick(h.engine)
+            await settle()
+            expect(cli.probes).toEqual([])
+        })
+
+        it('a prompt the runner took back before its send was counted gets a run row, so the ask outlives a restart', async () => {
+            const h = harness()
+            const task = taskOf(h.engine.createSessionTask(h.session.id, { kind: 'queue', items: [{ text: 'a' }, { text: 'b' }], intervalMs: 60_000, startAt: Date.now() + HOUR }))
+            await settle()
+            const localId = `${SESSION_TASK_MESSAGE_LOCAL_ID_PREFIX}${task.id}:1`
+            const cli = withCliSocket(h, 'removed')
+            // The task was deleted while the insert was under way, and no CLI is in the room to ask.
+            setCancel(h, async (id, prompt) => {
+                h.store.messages.deleteQueuedMessageById(id, prompt)
+                return { status: 'cancelled', localId: prompt, unconfirmed: true }
+            })
+            const stored = h.store.sessionTasks.getById(task.id)
+            if (!stored) throw new Error('the task is missing')
+            const takeBack = (h.engine as unknown as { takeBackUntrackedPrompt(task: unknown, sessionId: string, localId: string): Promise<void> }).takeBackUntrackedPrompt
+            await takeBack.call(h.engine, stored, h.session.id, localId)
+            expect(h.store.sessionTasks.listRuns(h.session.id, 50).map((run) => [run.runNumber, run.outcome, run.detail, run.preview])).toEqual([
+                [1, 'cancelled', SESSION_TASK_RUN_CANCEL_UNCONFIRMED, 'a']
+            ])
+
+            cli.connected = true
+            tick(h.engine)
+            await settle()
+            expect(cli.probes).toEqual([[h.session.id, localId, localId, 2000]])
+            expect(h.store.sessionTasks.listRuns(h.session.id, 50).map((run) => run.detail)).toEqual([null])
         })
 
         it('keeps asking on timeout, in-flight and indeterminate, and gives up after two minutes', async () => {
@@ -1177,22 +1267,112 @@ describe('SyncEngine session tasks', () => {
             expect(h.engine.listSessionTasks(h.session.id)[0]).toMatchObject({ state: 'paused', pending: true, runCount: 1, lastError: 'prompt_indeterminate' })
         })
 
-        it('a pause with no CLI in the room leaves the prompt to the task as well', async () => {
+        /** The hub removed its row itself (no CLI was in the room to ask). */
+        const cancelWithNoCli = (h: Harness) => setCancel(h, async (id, prompt) => {
+            h.store.messages.deleteQueuedMessageById(id, prompt)
+            return { status: 'cancelled', localId: prompt, unconfirmed: true }
+        })
+
+        it('a pause with no CLI in the room takes the prompt back as well, and asks the CLI to drop its copy once it is there', async () => {
             const h = harness()
             const { task, localId } = await pendingTask(h)
-            // The hub removed its row (nobody to ask); the task keeps the prompt.
-            setCancel(h, async (id, prompt) => {
-                h.store.messages.deleteQueuedMessageById(id, prompt)
-                return { status: 'cancelled', localId: prompt, unconfirmed: true }
-            })
+            const cli = withCliSocket(h, 'removed')
+            cancelWithNoCli(h)
 
             const paused = taskOf(await h.engine.updateSessionTask(h.session.id, task.id, { paused: true }))
-            expect(paused).toMatchObject({ state: 'paused', pending: true, runCount: 1 })
-            expect(h.store.sessionTasks.listRuns(h.session.id, 50)[0]?.detail).toBeNull()
-            // The runner settles the gone row as a cancel, as it does for a prompt discarded from the bar.
+            expect(paused).toMatchObject({ state: 'paused', pending: false, runCount: 0 })
+            expect(h.store.sessionTasks.listRuns(h.session.id, 50).map((run) => [run.outcome, run.detail])).toEqual([['cancelled', SESSION_TASK_RUN_CANCEL_UNCONFIRMED]])
+
+            // However late the CLI comes back, it is asked then; until it answers the row keeps its marker.
+            const realNow = Date.now
+            try {
+                Date.now = () => realNow() + 10 * 60_000
+                tick(h.engine)
+                await settle()
+                expect(cli.probes).toEqual([])
+                cli.connected = true
+                tick(h.engine)
+                await settle()
+            } finally {
+                Date.now = realNow
+            }
+            expect(cli.probes).toEqual([[h.session.id, localId, localId, 2000]])
+            expect(h.store.sessionTasks.listRuns(h.session.id, 50).map((run) => [run.outcome, run.detail])).toEqual([['cancelled', null]])
+
+            // Resume sends that same prompt again, under the same localId.
+            await h.engine.updateSessionTask(h.session.id, task.id, { paused: false })
+            await settle()
+            expect(h.sent.map((prompt) => [prompt.text, prompt.localId])).toEqual([['a', localId], ['a', localId]])
+            expect(h.toasts).toEqual([])
+        })
+
+        it('resumed before the CLI answered: the prompt goes out again only once the CLI has dropped its copy', async () => {
+            const h = harness()
+            const { task, localId } = await pendingTask(h)
+            const cli = withCliSocket(h, 'removed')
+            cancelWithNoCli(h)
+            await h.engine.updateSessionTask(h.session.id, task.id, { paused: true })
+            const resumed = taskOf(await h.engine.updateSessionTask(h.session.id, task.id, { paused: false }))
+            expect(resumed).toMatchObject({ state: 'active', pending: false, runCount: 0 })
+            await settle()
+            // Due, but an earlier copy may still sit in the wrapper: sent now, the CLI would hold two copies
+            // under one localId, and the ask about the first would drop them both.
+            expect(h.sent).toHaveLength(1)
+            expect(h.engine.listSessionTasks(h.session.id)[0]).toMatchObject({ state: 'active', pending: false, runCount: 0 })
+
+            cli.connected = true
             tick(h.engine)
             await settle()
+            expect(cli.probes).toHaveLength(1)
+            expect(h.sent.map((prompt) => [prompt.text, prompt.localId])).toEqual([['a', localId], ['a', localId]])
+            expect(h.engine.listSessionTasks(h.session.id)[0]).toMatchObject({ state: 'active', pending: true, runCount: 1 })
+        })
+
+        it('a CLI that then reports the agent took the prompt makes it count again, and the user hears of it', async () => {
+            const h = harness()
+            const { task, localId } = await pendingTask(h)
+            const cli = withCliSocket(h, 'consumed')
+            cancelWithNoCli(h)
+            await h.engine.updateSessionTask(h.session.id, task.id, { paused: true })
+
+            cli.connected = true
+            tick(h.engine)
+            await settle()
+            expect(h.store.sessionTasks.listRuns(h.session.id, 50).map((run) => [run.outcome, run.takenAt !== null, run.detail])).toEqual([['sent', true, null]])
+            // The agent has that prompt: it counts again, so a resume goes on after it instead of sending it twice.
             expect(h.engine.listSessionTasks(h.session.id)[0]).toMatchObject({ state: 'paused', pending: false, runCount: 1 })
+            expect(h.toasts).toEqual([{
+                namespace: 'default',
+                title: 'Paused task prompt was taken',
+                body: 'The prompt that was pulled back when you paused the task reached the agent after all: its process still held the copy. The task does not send it again.',
+                sessionId: h.session.id,
+                url: `/sessions/${h.session.id}`
+            }])
+
+            await h.engine.updateSessionTask(h.session.id, task.id, { paused: false })
+            await settle()
+            expect(h.sent.map((prompt) => prompt.text)).toEqual(['a', 'b'])
+        })
+
+        it('resumed, then found taken: the task goes on one interval after that take', async () => {
+            const h = harness()
+            const { task, localId } = await pendingTask(h)
+            const cli = withCliSocket(h, 'consumed')
+            cancelWithNoCli(h)
+            await h.engine.updateSessionTask(h.session.id, task.id, { paused: true })
+            await h.engine.updateSessionTask(h.session.id, task.id, { paused: false })
+            await settle()
+            expect(h.sent).toHaveLength(1)
+
+            cli.connected = true
+            const before = Date.now()
+            tick(h.engine)
+            await settle()
+            const after = h.engine.listSessionTasks(h.session.id)[0]
+            expect(after).toMatchObject({ state: 'active', pending: false, runCount: 1 })
+            expect(after?.nextRunAt).toBeGreaterThanOrEqual(before + 60_000)
+            expect(after?.nextRunAt).toBeLessThanOrEqual(Date.now() + 60_000)
+            expect(h.sent).toHaveLength(1)
         })
 
         it('does not let the runner settle the task while the pull-back is in flight', async () => {

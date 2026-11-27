@@ -474,11 +474,11 @@ export class SessionTaskStore {
 
     /**
      * The task's waiting prompt was pulled back (the user paused the task and
-     * the CLI confirmed the cancel): the task is as before the send. The
-     * prompt is not counted, so a resumed queue sends it again and a repeat
-     * task does not count a prompt that never reached the agent. Nothing else
-     * moves: the task is paused, or was resumed in the meantime, in which
-     * case the caller schedules it.
+     * the hub's row for the prompt is gone): the task is as before the send.
+     * The prompt is not counted, so a resumed queue sends it again and a
+     * repeat task does not count a prompt that never reached the agent.
+     * Nothing else moves: the task is paused, or was resumed in the
+     * meantime, in which case the caller schedules it.
      */
     unsentPending(taskId: string, localId: string, now: number): boolean {
         const result = prepareCached(this.db,
@@ -493,6 +493,27 @@ export class SessionTaskStore {
                  updated_at = ?
              WHERE id = ? AND pending_local_id = ?`
         ).run(now, taskId, localId)
+        return result.changes > 0
+    }
+
+    /**
+     * A prompt that `unsentPending` took back reached the agent after all (a
+     * pause cancelled it while no CLI could confirm, and the CLI then
+     * reported the take): it counts as sent again, so that the task goes on
+     * after it instead of sending it twice. Only a task that is still as the
+     * pause left it (that run not counted, nothing pending) changes.
+     */
+    recountUnsent(taskId: string, runNumber: number, now: number): boolean {
+        const result = prepareCached(this.db,
+            `UPDATE session_tasks
+             SET run_count = ?,
+                 last_run_at = (
+                     SELECT MAX(recorded_at) FROM session_task_runs
+                     WHERE task_id = session_tasks.id AND outcome = 'sent'
+                 ),
+                 updated_at = ?
+             WHERE id = ? AND run_count = ? - 1 AND pending_local_id IS NULL`
+        ).run(runNumber, now, taskId, runNumber)
         return result.changes > 0
     }
 

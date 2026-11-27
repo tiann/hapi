@@ -38,6 +38,7 @@ import type { SSEManager } from '../sse/sseManager'
 import { CursorLegacyMigrator, type CursorLegacyMigratorOptions } from '../cursor/cursorLegacyMigrator'
 import { toAttachedJob } from '../store/sessionJobs'
 import {
+    sessionTaskRunPreview,
     toSessionTask,
     toSessionTaskRun,
     type SessionTaskStore,
@@ -46,6 +47,7 @@ import {
 } from '../store/sessionTasks'
 import {
     SESSION_TASK_MAX_ACTIVE_PER_SESSION,
+    SESSION_TASK_MESSAGE_LOCAL_ID_PREFIX,
     type CreateSessionTaskRequest,
     type SessionTask,
     type SessionTaskDeleteResponse,
@@ -249,17 +251,19 @@ export const SESSION_TASK_CANCEL_PROBE_MS = 3000
 /** The follow-up of an unconfirmed cancel asks a CLI that is there now with this budget. */
 export const SESSION_TASK_CANCEL_FOLLOW_UP_PROBE_MS = 2000
 /**
- * How long the hub keeps asking about a prompt a task cancelled without a
- * CLI's confirmation. After that the history row keeps its marker and
- * nothing more is asked.
+ * How long the hub keeps asking a CLI that is in the room about a prompt a
+ * task cancelled without its confirmation. The time counts from the first
+ * tick on which a CLI is there: one that is away (its machine is offline,
+ * its socket is down) is asked when it comes back, however long that takes.
+ * After that the history row keeps its marker and nothing more is asked.
  */
 export const SESSION_TASK_CANCEL_FOLLOW_UP_MS = 2 * 60_000
 
 /**
  * A task prompt cancelled without a CLI confirming it holds no copy. The hub
  * asks again on its tick while a CLI is in the room, until the CLI answers
- * or `until` passes. The run row carries `cancel_unconfirmed` meanwhile, so
- * the list survives a hub restart.
+ * or has been there for `SESSION_TASK_CANCEL_FOLLOW_UP_MS`. The run row
+ * carries `cancel_unconfirmed` meanwhile, so the list survives a hub restart.
  */
 type CancelFollowUp = {
     /** The task's session: the run row lives there, and the change is announced to it. */
@@ -267,9 +271,21 @@ type CancelFollowUp = {
     /** Where the prompt lives (an unfinished OpenCode /clear may have redirected it). */
     promptSessionId: string
     localId: string
-    until: number
+    /** When a CLI was first seen in the room; null until then. */
+    cliSeenAt: number | null
     /** A probe is under way: the tick leaves it alone. */
     probing: boolean
+}
+
+/** The task and the run a task prompt's localId names (`hapi-task:<taskId>:<n>`). */
+function taskPromptOf(localId: string): { taskId: string; runNumber: number } | null {
+    if (!localId.startsWith(SESSION_TASK_MESSAGE_LOCAL_ID_PREFIX)) return null
+    const rest = localId.slice(SESSION_TASK_MESSAGE_LOCAL_ID_PREFIX.length)
+    const separator = rest.lastIndexOf(':')
+    const runNumber = Number(rest.slice(separator + 1))
+    const taskId = rest.slice(0, separator)
+    if (separator <= 0 || taskId === '' || !Number.isInteger(runNumber) || runNumber < 1) return null
+    return { taskId, runNumber }
 }
 
 /** What became of a task's waiting prompt when the hub asked the CLI to drop it. */
@@ -1481,9 +1497,11 @@ export class SyncEngine {
             getSession: (sessionId) => this.wakeableSession(sessionId),
             wake: (sessionId) => this.deliveryWakeGate.wake(sessionId),
             sendMessage: (sessionId, payload) => this.sendMessage(sessionId, { ...payload, sentFrom: 'webapp' }),
-            cancelMessage: async (sessionId, localId) => {
-                await this.cancelQueuedMessage(sessionId, localId)
-            },
+            // A prompt the runner inserted whose task stopped counting it (deleted or paused while the insert
+            // was under way). The ask is as patient as any task's cancel, and when no CLI confirms it, the
+            // hub keeps asking: nobody else tracks that prompt any more.
+            cancelMessage: (sessionId, localId, task) => this.takeBackUntrackedPrompt(task, sessionId, localId),
+            promptHeld: (localId) => this.promptHeld(localId),
             onTasksChanged: (sessionId) => this.emitSessionTasksChanged(sessionId),
             log: (message, detail) => console.warn(message, detail)
         })
@@ -1515,44 +1533,83 @@ export class SyncEngine {
     }
 
     private loadCancelFollowUps(): CancelFollowUp[] {
-        const now = Date.now()
-        return this.store.sessionTasks.listRunsCancelUnconfirmed().flatMap((run) => (run.localId === null ? [] : [{
-            sessionId: run.sessionId,
-            promptSessionId: this.store.resolveMessageTarget(run.sessionId) ?? run.sessionId,
-            localId: run.localId,
-            until: now + SESSION_TASK_CANCEL_FOLLOW_UP_MS,
-            probing: false
-        }]))
+        const list: CancelFollowUp[] = []
+        for (const run of this.store.sessionTasks.listRunsCancelUnconfirmed()) {
+            if (run.localId === null) continue
+            list.push({
+                sessionId: run.sessionId,
+                promptSessionId: this.store.resolveMessageTarget(run.sessionId) ?? run.sessionId,
+                localId: run.localId,
+                cliSeenAt: null,
+                probing: false
+            })
+        }
+        return list
     }
 
-    /** The hub removed a task prompt without a CLI confirming it holds no copy: say so on the run row, and ask again while there is time. */
-    private registerCancelFollowUp(task: StoredSessionTask, promptSessionId: string, localId: string): void {
-        this.store.sessionTasks.markRunCancelUnconfirmed(task.sessionId, localId)
+    /** The hub removed a task prompt without a CLI confirming it holds no copy: say so on the run row, and ask again when a CLI is there. */
+    private registerCancelFollowUp(task: StoredSessionTask, promptSessionId: string, localId: string, uncountedRun?: number): void {
+        const runs = this.store.sessionTasks
+        if (!runs.markRunCancelUnconfirmed(task.sessionId, localId) && uncountedRun !== undefined) {
+            // No run row remembers the prompt: its send was never counted (the task stopped while the
+            // insert was under way). Write one, so that the ask outlives a hub restart.
+            runs.recordRun({
+                sessionId: task.sessionId,
+                taskId: task.id,
+                taskKind: task.kind,
+                runNumber: uncountedRun,
+                localId,
+                outcome: 'cancelled',
+                scheduledFor: task.nextRunAt,
+                preview: sessionTaskRunPreview(task.items[task.runCount] ?? task.items[0] ?? '')
+            }, Date.now())
+            runs.markRunCancelUnconfirmed(task.sessionId, localId)
+        }
         if (this.cancelFollowUps.some((followUp) => followUp.sessionId === task.sessionId && followUp.localId === localId)) return
         this.cancelFollowUps.push({
             sessionId: task.sessionId,
             promptSessionId,
             localId,
-            until: Date.now() + SESSION_TASK_CANCEL_FOLLOW_UP_MS,
+            cliSeenAt: null,
             probing: false
         })
     }
 
-    /** One pass on the tick: give up on what is past its time, and ask every CLI that is in a room now. */
+    /** Whether a CLI has yet to confirm it dropped an earlier copy of this prompt. The run that would send it waits until then. */
+    private promptHeld(localId: string): boolean {
+        return this.cancelFollowUps.some((followUp) => followUp.localId === localId)
+    }
+
+    /**
+     * One pass on the tick: forget what no session holds any more, note the
+     * CLIs that are there, give up on what they have had their time for, and
+     * ask the rest.
+     */
     private async followUpCancels(): Promise<void> {
         const now = Date.now()
         const list = this.cancelFollowUps
+        const asking: CancelFollowUp[] = []
         for (const followUp of [...list]) {
-            if (!followUp.probing && followUp.until <= now) {
+            if (followUp.probing) continue
+            // The runs of a merged-away session moved to its survivor: follow them.
+            followUp.sessionId = this.store.resolveMessageTarget(followUp.sessionId) ?? followUp.sessionId
+            if (!this.store.sessions.getSession(followUp.sessionId)) {
+                // The session is gone, and with it its runs and the process that held the prompt.
+                this.dropCancelFollowUp(followUp)
+                continue
+            }
+            if (followUp.cliSeenAt === null && this.messageService.hasCliSocket(followUp.promptSessionId)) followUp.cliSeenAt = now
+            if (followUp.cliSeenAt !== null && now - followUp.cliSeenAt >= SESSION_TASK_CANCEL_FOLLOW_UP_MS) {
                 this.dropCancelFollowUp(followUp)
                 console.warn('[session-task] gave up asking the CLI about a cancelled prompt', {
                     sessionId: followUp.sessionId,
                     localId: followUp.localId
                 })
+                continue
             }
+            if (followUp.cliSeenAt !== null) asking.push(followUp)
         }
-        const probing = list.filter((followUp) => !followUp.probing && this.messageService.hasCliSocket(followUp.promptSessionId))
-        await Promise.all(probing.map(async (followUp) => {
+        await Promise.all(asking.map(async (followUp) => {
             followUp.probing = true
             try {
                 await this.probeCancelledPrompt(followUp)
@@ -1603,8 +1660,8 @@ export class SyncEngine {
             }
         }
         if (settled === null) {
-            // In flight, indeterminate, or no answer: the next tick asks again, until the time is up.
-            if (followUp.until <= Date.now()) this.dropCancelFollowUp(followUp)
+            // In flight, indeterminate, or no answer: the next tick asks again, until the CLI has had its time.
+            if (followUp.cliSeenAt !== null && Date.now() - followUp.cliSeenAt >= SESSION_TASK_CANCEL_FOLLOW_UP_MS) this.dropCancelFollowUp(followUp)
             return
         }
         this.dropCancelFollowUp(followUp)
@@ -1612,7 +1669,49 @@ export class SyncEngine {
         if (settled === 'removed') runs.markRunCancelled(sessionId, localId)
         else runs.markRunTaken(sessionId, localId, takenAt)
         runs.clearRunCancelUnconfirmed(sessionId, localId)
+        if (settled === 'consumed') this.reportTakenPrompt(sessionId, localId)
         this.emitSessionTasksChanged(sessionId)
+        // A run may have waited for this answer (see `promptHeld`): it does not wait for the next tick.
+        this.runSessionTaskTick()
+    }
+
+    /**
+     * A CLI reports that the agent took a prompt whose cancel it never
+     * confirmed. When a pause had taken that prompt back from a task that is
+     * still there, that task would send it again: the prompt counts as sent
+     * after all, and the task goes on after it. The user hears of it either
+     * way, through a toast.
+     */
+    private reportTakenPrompt(sessionId: string, localId: string): void {
+        const runs = this.store.sessionTasks
+        const prompt = taskPromptOf(localId)
+        const task = prompt === null ? null : runs.getById(prompt.taskId)
+        const pulledBack = prompt !== null && task !== null && task.pendingLocalId === null
+            && task.runCount === prompt.runNumber - 1
+            && runs.recountUnsent(task.id, prompt.runNumber, Date.now())
+        if (pulledBack && prompt !== null) {
+            const after = runs.getById(prompt.taskId)
+            // Resumed since the pause: nothing else is pending, so the task goes on one interval after this take.
+            if (after !== null && after.state === 'active') {
+                const now = Date.now()
+                runs.update(after.id, { state: { paused: false, nextRunAt: now + after.intervalMs } }, now)
+            }
+        }
+        const session = this.getSession(sessionId)
+        if (!session) return
+        void this.eventPublisher
+            .sendToast(session.namespace, {
+                type: 'toast',
+                data: {
+                    title: pulledBack ? 'Paused task prompt was taken' : 'Deleted task prompt was taken',
+                    body: pulledBack
+                        ? 'The prompt that was pulled back when you paused the task reached the agent after all: its process still held the copy. The task does not send it again.'
+                        : 'A prompt of a task you deleted reached the agent after all: its process still held the copy when the task was deleted. Check the session.',
+                    sessionId,
+                    url: `/sessions/${sessionId}`
+                }
+            })
+            .catch(() => undefined)
     }
 
     /**
@@ -1822,12 +1921,31 @@ export class SyncEngine {
     }
 
     /**
+     * The runner inserted a prompt and then found its task deleted or paused
+     * in the meantime, so the send was never counted: the prompt goes back.
+     * The ask is as patient as any task's cancel. When no CLI confirms it,
+     * the hub keeps asking on its tick, and since the send wrote no run row,
+     * one is written to remember the prompt by.
+     */
+    private async takeBackUntrackedPrompt(task: StoredSessionTask, promptSessionId: string, localId: string): Promise<void> {
+        const outcome = await this.cancelWaitingPrompt(promptSessionId, localId)
+        if (outcome.type === 'cancelled' && outcome.confirmed) return
+        const runNumber = taskPromptOf(localId)?.runNumber
+        this.registerCancelFollowUp(task, promptSessionId, localId, runNumber)
+        if (outcome.type === 'cancelled') this.emitSessionTasksChanged(task.sessionId)
+    }
+
+    /**
      * The pause of a task with a prompt waiting (the task is held for the
-     * runner meanwhile). When the CLI confirms the cancel, the task is as
-     * before the send: the prompt is not counted, its run row is cancelled,
-     * the wake count is forgotten, and a resumed queue sends that same prompt
-     * again. A prompt the agent took first stays counted (the runner settles
-     * it on its next tick). A prompt the CLI could not be asked about stays
+     * runner meanwhile). When the hub's row is gone, the task is as before
+     * the send: the prompt is not counted, its run row is cancelled, the wake
+     * count is forgotten, and a resumed queue sends that same prompt again.
+     * With no CLI in the room nobody confirmed the cancel: a wrapper that is
+     * alive may still hold the prompt in memory, so it is asked to drop it
+     * when it shows up (`cancelFollowUps`), and until it has, the task does
+     * not send that prompt again (`promptHeld`). A prompt the agent took
+     * first stays counted (the runner settles it on its next tick). A prompt
+     * the CLI could not be asked about, with its row still there, stays
      * pending as before the request: the task still owns it, so nothing is
      * followed up here. Null once the task was deleted while the cancel was
      * on its way.
@@ -1842,15 +1960,18 @@ export class SyncEngine {
             if (outcome.type === 'invoked') store.markRunTaken(paused.sessionId, localId, outcome.invokedAt)
             return null
         }
-        if (outcome.type === 'cancelled' && outcome.confirmed) {
+        if (outcome.type === 'cancelled') {
             store.markRunCancelled(paused.sessionId, localId)
-            store.unsentPending(paused.id, localId, Date.now())
-            this.sessionTaskRunner.forgetPrompt(localId)
-            // Resumed in the meantime: with nothing pending the task runs now, as a resume of such a task does.
-            const after = store.getById(paused.id) ?? current
-            if (after.state === 'active' && after.pendingLocalId === null) {
-                const now = Date.now()
-                store.update(paused.id, { state: { paused: false, nextRunAt: resumeRunAt(after, after.intervalMs, now) } }, now)
+            if (store.unsentPending(paused.id, localId, Date.now())) {
+                this.sessionTaskRunner.forgetPrompt(localId)
+                if (!outcome.confirmed) this.registerCancelFollowUp(paused, promptSessionId, localId)
+                // Resumed in the meantime: with nothing pending the task runs now, as a resume of such a task does,
+                // unless the prompt it would send is still waiting for a CLI to confirm it dropped the earlier copy.
+                const after = store.getById(paused.id) ?? current
+                if (after.state === 'active' && after.pendingLocalId === null && !this.promptHeld(localId)) {
+                    const now = Date.now()
+                    store.update(paused.id, { state: { paused: false, nextRunAt: resumeRunAt(after, after.intervalMs, now) } }, now)
+                }
             }
         } else if (outcome.type === 'invoked') {
             store.markRunTaken(paused.sessionId, localId, outcome.invokedAt)

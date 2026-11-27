@@ -50,8 +50,20 @@ export type SessionTaskRunnerDeps = {
     /** Resume the session if it is not active; the result says whether it is running now, and if not, why. */
     wake: (sessionId: string) => Promise<SessionWakeResult>
     sendMessage: (sessionId: string, payload: { text: string; localId: string }) => Promise<void>
-    /** Remove a prompt the runner inserted but no task tracks any more. */
-    cancelMessage: (sessionId: string, localId: string) => Promise<void>
+    /**
+     * Remove a prompt the runner inserted but the task no longer counts (it
+     * was deleted or paused while the insert was under way). The task says
+     * which run the prompt is, so the hub can go on asking about it when no
+     * CLI confirms that it dropped its copy.
+     */
+    cancelMessage: (sessionId: string, localId: string, task: StoredSessionTask) => Promise<void>
+    /**
+     * Whether an earlier copy of the prompt a run would send is still
+     * unaccounted for (cancelled while no CLI could confirm it): that run
+     * waits until it is. Sending it would hand the CLI a second copy under
+     * the same localId, and the ask about the first would drop them both.
+     */
+    promptHeld?: (localId: string) => boolean
     onTasksChanged: (sessionId: string) => void
     now?: () => number
     /** How long to wait before retrying a run whose send threw. */
@@ -186,6 +198,9 @@ export class SessionTaskRunner {
                 return
             }
             if (task.state !== 'active' || task.nextRunAt === null || task.nextRunAt > now) return
+            // The prompt goes out under the localId of its run number: while an earlier copy of it is still
+            // unaccounted for (see `promptHeld`), the run waits for the next tick.
+            if (this.deps.promptHeld?.(buildSessionTaskMessageLocalId(task.id, task.runCount + 1))) return
             await this.deliver(task)
         } catch (error) {
             this.retryAt.set(task.id, this.now() + (this.deps.retryDelayMs ?? 15_000))
@@ -370,10 +385,10 @@ export class SessionTaskRunner {
         this.changed(task)
     }
 
-    /** Remove a prompt the runner inserted but no active task tracks: it lives where the redirect put it. */
+    /** Remove a prompt the runner inserted but no active task counts: it lives where the redirect put it. */
     private async takeBack(task: StoredSessionTask, localId: string): Promise<void> {
         try {
-            await this.deps.cancelMessage(this.promptSessionId(task), localId)
+            await this.deps.cancelMessage(this.promptSessionId(task), localId, task)
         } catch (error) {
             this.log('could not take back an untracked prompt', error, task)
         }
