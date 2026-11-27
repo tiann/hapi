@@ -1575,13 +1575,16 @@ export class SyncEngine {
                 nextRunAt: patch.paused ? null : resumeRunAt(task, patch.intervalMs ?? task.intervalMs, now)
             }
         }
-        // A new interval re-anchors a task that may run (it is active, or this
-        // request resumes it), has nothing pending and has already run: the
-        // next prompt goes out one interval from now. A paused task keeps its
-        // pause; an edit of the interval alone never resumes it.
+        // A new interval re-anchors a task that may run after this request (it
+        // stays active, or the request resumes it), has nothing pending and has
+        // already run: the next prompt goes out one interval from now. A task
+        // the request pauses cannot run after it, so the pause stands; a
+        // paused task keeps its pause; an edit of the interval alone never
+        // resumes it.
+        const activeAfter = patch.paused === undefined ? task.state === 'active' : !patch.paused
         if (
             changes.intervalMs !== undefined
-            && (task.state === 'active' || resuming)
+            && activeAfter
             && task.pendingLocalId === null
             && task.runCount > 0
         ) {

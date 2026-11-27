@@ -338,6 +338,34 @@ describe('SyncEngine session tasks', () => {
             expect(resumed.nextRunAt).toBeLessThanOrEqual(Date.now() + 10 * 60_000)
         })
 
+        it('keeps the pause when the same request re-anchors the task', async () => {
+            const h = harness()
+            const now = Date.now()
+            /** A task that has run once, with its prompt taken: nothing is pending. */
+            function afterOneRun(request: CreateSessionTaskRequest) {
+                const task = createLater(h, request)
+                const queue = task.kind === 'queue'
+                // As the runner does it: a repeat task keeps its grid on the send, a queue task is scheduled at the acknowledgement.
+                h.store.sessionTasks.markSent(task.id, { localId: `hapi-task:${task.id}:1`, nextRunAt: queue ? null : now + 60_000, now })
+                h.store.sessionTasks.settlePending(task.id, { consumedAt: now, nextRunAt: queue ? now + 60_000 : undefined, now })
+                return task
+            }
+            const repeat = afterOneRun({ kind: 'repeat', text: 'ping', intervalMs: 60_000 })
+            const queue = afterOneRun({ kind: 'queue', items: [{ text: 'a' }, { text: 'b' }], intervalMs: 60_000 })
+
+            // Pausing and changing the interval in one request: the task cannot run
+            // after it, so there is nothing to re-anchor and the pause stays.
+            for (const task of [repeat, queue]) {
+                const paused = taskOf(h.engine.updateSessionTask(h.session.id, task.id, { paused: true, intervalMs: 120_000 }))
+                expect(paused).toMatchObject({ id: task.id, state: 'paused', nextRunAt: null, intervalMs: 120_000, runCount: 1, pending: false })
+            }
+            // The same request on a task that is paused already only changes the interval.
+            const edited = taskOf(h.engine.updateSessionTask(h.session.id, repeat.id, { paused: true, intervalMs: 180_000 }))
+            expect(edited).toMatchObject({ state: 'paused', nextRunAt: null, intervalMs: 180_000 })
+            await settle()
+            expect(h.sent).toEqual([])
+        })
+
         it('does not resume a paused task when only its interval is edited', async () => {
             const h = harness()
             const now = Date.now()
