@@ -197,6 +197,14 @@ export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLi
             void cleanupAndExit()
         })
 
+        // SIGUSR2 from the runner daemon relays the hub's 'session-wake':
+        // messages are queued for this session but its socket to the hub is
+        // not connected. Force an immediate reconnect attempt instead of
+        // waiting out the socket.io reconnection backoff.
+        process.on('SIGUSR2', () => {
+            options.session.wake()
+        })
+
         process.on('uncaughtException', (error) => {
             markCrash(error)
             void cleanupAndExit(1)

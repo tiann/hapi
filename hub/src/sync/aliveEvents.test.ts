@@ -21,7 +21,8 @@ describe('alive incremental events', () => {
         const emitted: Array<{ body?: { t?: string; message?: { localId?: string | null } } }> = []
         const io = {
             of: () => ({
-                to: () => ({ emit: (_event: string, payload: unknown) => emitted.push(payload as typeof emitted[number]) })
+                to: () => ({ emit: (_event: string, payload: unknown) => emitted.push(payload as typeof emitted[number]) }),
+                adapter: { rooms: { get: () => undefined } }
             })
         }
         const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
@@ -154,7 +155,8 @@ describe('alive incremental events', () => {
                     emit: (_event: string, payload: unknown) => {
                         emittedSocketUpdates.push(payload)
                     }
-                })
+                }),
+                adapter: { rooms: { get: () => undefined } }
             })
         }
         const engine = new SyncEngine(
@@ -261,7 +263,8 @@ describe('alive incremental events', () => {
         const store = new Store(':memory:')
         const io = {
             of: () => ({
-                to: () => ({ emit() {} })
+                to: () => ({ emit() {} }),
+                adapter: { rooms: { get: () => undefined } }
             })
         }
         const engine = new SyncEngine(
@@ -306,7 +309,8 @@ describe('alive incremental events', () => {
         const store = new Store(':memory:')
         const io = {
             of: () => ({
-                to: () => ({ emit() {} })
+                to: () => ({ emit() {} }),
+                adapter: { rooms: { get: () => undefined } }
             })
         }
         const engine = new SyncEngine(
