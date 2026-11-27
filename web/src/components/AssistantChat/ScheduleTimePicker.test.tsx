@@ -403,6 +403,18 @@ describe('ScheduleTimePicker task modes', () => {
         expect(picker.onClose).toHaveBeenCalledTimes(1)
     })
 
+    it('gives the queue editor\'s row buttons a finger-sized target under a coarse pointer', () => {
+        renderPicker({ drafts: { repeat: EMPTY_REPEAT_DRAFT, queue: { items: ['first', 'second'], interval: { value: '10', unit: 'minutes' }, firstRunAt: null } } })
+        fireEvent.click(screen.getByRole('button', { name: 'Queue' }))
+        // jsdom applies no media query, so the classes are what is checked: 24 px by default, 32 px under
+        // (pointer: coarse), like the task row's own buttons.
+        for (const name of ['Move message 2 up', 'Move message 1 down', 'Remove message 2']) {
+            expect(screen.getByRole('button', { name }).className.split(/\s+/), name).toEqual(
+                expect.arrayContaining(['h-6', 'w-6', 'pointer-coarse:h-8', 'pointer-coarse:w-8'])
+            )
+        }
+    })
+
     it('refuses an empty queue and stops adding rows at the hub\'s limit of 50', async () => {
         const picker = renderPicker()
         fireEvent.click(screen.getByRole('button', { name: 'Queue' }))
@@ -602,6 +614,28 @@ describe('ScheduleTimePicker task modes', () => {
         fireEvent.keyDown(document.activeElement!, { key: 'Escape' })
         expect(picker.onClose).toHaveBeenCalledTimes(1)
         expect(document.activeElement).toBe(clock)
+    })
+
+    it('moves focus only once the panel is on screen: a browser ignores focus() inside a hidden box', () => {
+        // The panel is `visibility: hidden` until its first measure places it, which is a later render.
+        // jsdom focuses anything, so the browser's rule is put in by hand; without it this cannot tell
+        // a focus that lands from one that is dropped while the panel is still hidden.
+        const focus = HTMLElement.prototype.focus
+        HTMLElement.prototype.focus = function (this: HTMLElement, options?: FocusOptions) {
+            for (let element: HTMLElement | null = this; element !== null; element = element.parentElement) {
+                if (element.style.visibility === 'hidden') return
+            }
+            focus.call(this, options)
+        }
+        try {
+            renderPicker()
+            const dialog = screen.getByRole('dialog', { name: 'Schedule send' })
+            expect(dialog.style.visibility).not.toBe('hidden')
+            expect(dialog.contains(document.activeElement)).toBe(true)
+            expect(document.activeElement).toBe(within(dialog).getAllByRole('button')[0])
+        } finally {
+            HTMLElement.prototype.focus = focus
+        }
     })
 
     it('closes on Escape from a prompt field, keeping the typed draft', () => {

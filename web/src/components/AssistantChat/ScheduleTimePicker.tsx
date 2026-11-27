@@ -228,10 +228,16 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
     // Keyboard users step into the panel; wherever focus was when the panel
     // closes, it goes back to the clock button (so Tab does not restart at the
     // top of the page after a create unmounts the form).
+    // The panel is `visibility: hidden` until its first measure places it, and a
+    // browser does not focus an element inside a hidden box, so the move waits
+    // for that: it runs once the panel is placed, or has become the mobile sheet.
+    const focusMovedRef = useRef(false)
     useEffect(() => {
-        if (!prefersKeyboardFocus()) return
+        if (focusMovedRef.current || !prefersKeyboardFocus()) return
+        if (!isMobilePanel && pos === null) return
+        focusMovedRef.current = true
         panelRef.current?.querySelector<HTMLElement>('button')?.focus()
-    }, [])
+    }, [pos, isMobilePanel])
     const close = useCallback(() => {
         const panel = panelRef.current
         if (panel && document.activeElement !== null && panel.contains(document.activeElement)) {

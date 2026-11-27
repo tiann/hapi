@@ -241,7 +241,8 @@ export function moveQueueItem(items: string[], from: number, to: number): string
     return next
 }
 
-const ROW_BUTTON_CLASS = 'flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-border)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-40'
+/** 24 px here, 32 px where a finger does the tapping, like the task row's icon buttons. */
+const ROW_BUTTON_CLASS = 'flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-border)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-40 pointer-coarse:h-8 pointer-coarse:w-8'
 
 /**
  * The prompts of a queue, one auto-growing field each, with add, remove and
