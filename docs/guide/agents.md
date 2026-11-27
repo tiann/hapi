@@ -38,7 +38,7 @@ Steer, effort and history controls apply to sessions under remote control. The w
 |-------|:-----:|:-------------:|:-------------:|:------:|:--------------------:|
 | Claude Code | ✓ | ✓ | Fork current point | ✓ | ✓ |
 | Codex | ✓ | ✓ (reasoning effort) | Fork (no rewind) | ✓ | ✓ |
-| Cursor Agent | ✓ (ACP sessions) | ✓ (model variants) | — | ✓ | ✓ (ACP attach) |
+| Cursor Agent | ✓ (ACP sessions) | ✓ (model variants) | [Runner support](./conversation-history.md#which-agents-support-what) | [Eligible sessions](./conversation-history.md#branch-with-options) | ✓ (ACP attach) |
 | Grok Build | — | ✓ | Probed | — | — |
 | GitHub Copilot | — | ✓ | — | — | — |
 | Kimi | — | ✓ | — | — | — |
