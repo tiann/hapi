@@ -679,7 +679,8 @@ class ChatViewModelInteractionTest {
         harness.api.hubSettingsResult = HubSettingsResponse(followUpDefault = "steer")
         harness.viewModel.start()
 
-        harness.viewModel.composer.first { it.canChooseFollowUpMode && it.followUpDefaultIsSteer }
+        harness.viewModel.composer.first { it.canChooseFollowUpMode }
+        harness.viewModel.hubSettings.first { it.followUpDefault == "steer" }
         assertFalse(harness.viewModel.inputTranslationAvailable.value)
 
         harness.viewModel.setComposerText("send this next")
@@ -687,7 +688,7 @@ class ChatViewModelInteractionTest {
         val (_, request) = harness.api.sendCalls.first { it.isNotEmpty() }.single()
         assertEquals(FollowUpIntent.Queue, request.followUpIntent)
         assertNull(request.deliveryMode)
-        assertTrue(harness.viewModel.composer.value.followUpDefaultIsSteer)
+        assertEquals("steer", harness.viewModel.hubSettings.value.followUpDefault)
     }
 
     @Test

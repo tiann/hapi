@@ -1332,6 +1332,7 @@ function SessionChatInner(props: SessionChatProps) {
         queryFn: () => props.api.getHubSettings(),
         enabled: canSteerFollowUp,
         staleTime: 30_000,
+        refetchOnWindowFocus: true,
         retry: false,
     })
     const inputTranslationToggle = inputTranslation.toggle

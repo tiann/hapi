@@ -193,7 +193,6 @@ data class ComposerUiState(
      */
     val caretPosition: Int = -1,
     val canChooseFollowUpMode: Boolean = false,
-    val followUpDefaultIsSteer: Boolean = false,
 )
 
 data class ShareImportFailure(val fileId: String, val status: SharedFileStatus)
@@ -574,7 +573,8 @@ class ChatViewModel(
      */
     val inputTranslationAvailable: StateFlow<Boolean> = mutableInputTranslationAvailable.asStateFlow()
 
-    private val hubSettings = MutableStateFlow(HubSettingsResponse())
+    private val mutableHubSettings = MutableStateFlow(HubSettingsResponse())
+    val hubSettings: StateFlow<HubSettingsResponse> = mutableHubSettings.asStateFlow()
     private val translateInputByDefault = combine(hubSettings, inputTranslationAvailable) { settings, available ->
         available && settings.translateInputByDefault
     }
@@ -644,8 +644,6 @@ class ChatViewModel(
             caretPosition = draft.selectionEnd,
             canChooseFollowUpMode = session.canChooseFollowUpMode,
         )
-    }.combine(hubSettings) { state, settings ->
-        state.copy(followUpDefaultIsSteer = settings.followUpDefault == "steer")
     }.stateIn(scope, SharingStarted.Eagerly, ComposerUiState(text = "", isSending = false, canSteer = false))
 
     /** Uninvoked sends for the queued bar, ordered like the web (immediate first, then scheduled). */
@@ -1550,7 +1548,7 @@ class ChatViewModel(
 
     private suspend fun loadHubSettings() {
         try {
-            hubSettings.value = api.getHubSettings()
+            mutableHubSettings.value = api.getHubSettings()
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (_: Exception) {

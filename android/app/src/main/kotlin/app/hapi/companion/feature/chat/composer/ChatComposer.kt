@@ -111,6 +111,7 @@ fun ChatComposer(
     onSend: (FollowUpIntent) -> Unit,
     onAbort: () -> Unit,
     modifier: Modifier = Modifier,
+    followUpDefaultIsSteer: Boolean = false,
     attachments: List<ComposerAttachmentUi> = emptyList(),
     onAddAttachment: (() -> Unit)? = null,
     onAttachmentRetry: (String) -> Unit = {},
@@ -322,6 +323,7 @@ fun ChatComposer(
                                 gate = gate,
                                 onSend = onSend,
                                 hasSchedule = hasSchedule,
+                                followUpDefaultIsSteer = followUpDefaultIsSteer,
                                 onAbort = onAbort,
                                 modifier = Modifier.padding(end = 3.dp),
                             )
@@ -365,6 +367,7 @@ fun ChatComposer(
                                 gate = gate,
                                 onSend = onSend,
                                 hasSchedule = hasSchedule,
+                                followUpDefaultIsSteer = followUpDefaultIsSteer,
                                 onAbort = onAbort,
                             )
                         }
@@ -838,6 +841,7 @@ private fun PrimaryActionButton(
     gate: ComposerSendGate,
     onSend: (FollowUpIntent) -> Unit,
     hasSchedule: Boolean,
+    followUpDefaultIsSteer: Boolean,
     onAbort: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -904,7 +908,7 @@ private fun PrimaryActionButton(
             DropdownMenu(expanded = followUpMenuOpen, onDismissRequest = { followUpMenuOpen = false }) {
                 DropdownMenuItem(
                     text = {
-                        Text(if (state.followUpDefaultIsSteer) queueLabel else stringResource(R.string.chat_send_default, queueLabel))
+                        Text(if (followUpDefaultIsSteer) queueLabel else stringResource(R.string.chat_send_default, queueLabel))
                     },
                     onClick = {
                         followUpMenuOpen = false
@@ -913,7 +917,7 @@ private fun PrimaryActionButton(
                 )
                 DropdownMenuItem(
                     text = {
-                        Text(if (state.followUpDefaultIsSteer) stringResource(R.string.chat_send_default, steerLabel) else steerLabel)
+                        Text(if (followUpDefaultIsSteer) stringResource(R.string.chat_send_default, steerLabel) else steerLabel)
                     },
                     onClick = {
                         followUpMenuOpen = false

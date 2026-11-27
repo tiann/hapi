@@ -479,12 +479,13 @@ struct ChatInteractorTests {
     }
 
     /// The canonical send body for one `preparedShot` upload.
-    private func attachmentSendBody(text: String, filename: String = "shot.jpg") -> String {
+    private func attachmentSendBody(text: String, filename: String = "shot.jpg", isRetry: Bool = false) -> String {
         let preview = AttachmentPolicy.dataUrl(mimeType: "image/jpeg", bytes: Data([7, 7]))
+        let delivery = isRetry ? #""deliveryMode":"queue""# : #""followUpIntent":"default""#
         return "{\"attachments\":[{\"filename\":\"\(filename)\",\"id\":\"att-1\","
             + "\"mimeType\":\"image/jpeg\",\"path\":\"/uploads/\(filename)\","
             + "\"previewUrl\":\"\(preview)\",\"size\":3}],"
-            + "\"followUpIntent\":\"default\",\"localId\":\"local-1\",\"text\":\"\(text)\"}"
+            + "\(delivery),\"localId\":\"local-1\",\"text\":\"\(text)\"}"
     }
 
     @Test func inactiveAttachmentResumesAndRetriesEvenWithStaleActiveState() async throws {
@@ -714,11 +715,12 @@ struct ChatInteractorTests {
         })
 
         let sends = await harness.performer.bodies("POST", pathSuffix: "/api/sessions/sess-1/messages")
-        #expect(sends.count == 2)
-        // Attachments round-tripped through the optimistic row's wire JSON —
-        // the retry body is byte-identical (canonical sorted keys).
-        #expect(sends[0] == sends[1])
-        #expect(sends[1].contains("/uploads/shot.jpg"))
+        // The retry preserves the original text, local ID and attachment. It
+        // explicitly queues because the original active turn may have ended.
+        #expect(sends == [
+            attachmentSendBody(text: "try again"),
+            attachmentSendBody(text: "try again", isRetry: true),
+        ])
     }
 
     @Test func removingAReadyChipDeletesTheHubUploadAndDiscardDropsTheRest() async throws {

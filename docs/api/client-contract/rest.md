@@ -126,7 +126,7 @@ Source: `hub/src/web/routes/messages.ts`; schemas `MessagesQuerySchema`, `SendMe
 
 The hub stamps `sentFrom: 'webapp'` on REST-sent messages server-side; the request body has no such field.
 
-Interactive composers use `followUpIntent: 'default' | 'queue' | 'steer'`. The Hub resolves `default` from `followUpDefault`. A nonempty `agentState.followUpSteerTurnId` advertises a turn eligible for a Steer attempt. The Hub saves the row before attempting delivery, so `{ok: true}` confirms the send, and SSE reports delivery. A retry with the same `localId` keeps the original row. Scheduled messages queue and exclude attachments. Requests without `followUpIntent` use the existing `deliveryMode: 'queue' | 'steer'` contract, which rejects explicit Steer on scheduled messages.
+Interactive composers use `followUpIntent: 'default' | 'alternate' | 'queue' | 'steer'`. The Hub reads `followUpDefault` for `default` and uses the other mode for `alternate`. A nonempty `agentState.followUpSteerTurnId` advertises a turn eligible for a Steer attempt. The Hub saves the row before attempting delivery, so `{ok: true}` confirms the send, and SSE reports delivery. A retry with the same `localId` keeps the original row. Scheduled messages queue and exclude attachments. Requests without `followUpIntent` use the existing `deliveryMode: 'queue' | 'steer'` contract, which rejects explicit Steer on scheduled messages.
 
 ### Permissions
 

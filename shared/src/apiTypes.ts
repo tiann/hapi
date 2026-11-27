@@ -798,7 +798,8 @@ export const MessagesQuerySchema = z.object({
 
 export type MessagesQuery = z.infer<typeof MessagesQuerySchema>
 
-export type FollowUpIntent = 'default' | MessageDeliveryMode
+const FollowUpIntentSchema = z.enum(['default', 'alternate', ...MessageDeliveryModeSchema.options])
+export type FollowUpIntent = z.infer<typeof FollowUpIntentSchema>
 
 export const SendMessageRequestSchema = z.object({
     text: z.string(),
@@ -806,7 +807,7 @@ export const SendMessageRequestSchema = z.object({
     attachments: z.array(AttachmentMetadataSchema).optional(),
     scheduledAt: z.number().int().positive().nullable().optional(),
     deliveryMode: MessageDeliveryModeSchema.optional(),
-    followUpIntent: z.enum(['default', ...MessageDeliveryModeSchema.options]).optional()
+    followUpIntent: FollowUpIntentSchema.optional()
 }).refine(
     (data) => data.scheduledAt == null || typeof data.localId === 'string',
     { message: 'scheduledAt requires localId', path: ['localId'] }

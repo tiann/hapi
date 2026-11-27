@@ -32,6 +32,7 @@
       "<uuid:1>:ripgrep",
       "<uuid:1>:set-session-config",
       "<uuid:1>:statFiles",
+      "<uuid:1>:steer-follow-up-message",
       "<uuid:1>:steer-queued-message",
       "<uuid:1>:switch",
       "<uuid:1>:uploadAbort",
@@ -792,6 +793,7 @@
           {
             "agentState": {
               "controlledByUser": false,
+              "followUpSteerTurnId": "<uuid:7>",
               "startingMode": "remote",
               "steeringActive": true
             },
@@ -804,6 +806,7 @@
           {
             "agentState": {
               "controlledByUser": false,
+              "followUpSteerTurnId": "<uuid:7>",
               "startingMode": "remote",
               "steeringActive": true
             },
@@ -917,7 +920,7 @@
                   "timestamp": "<ts>",
                   "type": "system",
                   "userType": "external",
-                  "uuid": "<uuid:7>",
+                  "uuid": "<uuid:8>",
                   "version": "0.0.0"
                 },
                 "type": "output"
@@ -942,7 +945,7 @@
                 "data": {
                   "type": "ready"
                 },
-                "id": "<uuid:8>",
+                "id": "<uuid:9>",
                 "type": "event"
               },
               "role": "agent"
@@ -1013,7 +1016,7 @@
               "claudeSessionId": "<uuid:4>",
               "conversationHistoryEntryIds": {
                 "local-1": "<uuid:6>",
-                "local-2": "<uuid:9>"
+                "local-2": "<uuid:10>"
               },
               "conversationHistoryPoints": {
                 "local-1": true,
@@ -1064,7 +1067,7 @@
               "claudeSessionId": "<uuid:4>",
               "conversationHistoryEntryIds": {
                 "local-1": "<uuid:6>",
-                "local-2": "<uuid:9>"
+                "local-2": "<uuid:10>"
               },
               "conversationHistoryPoints": {
                 "local-1": true,
@@ -1116,7 +1119,7 @@
               "claudeSessionId": "<uuid:4>",
               "conversationHistoryEntryIds": {
                 "local-1": "<uuid:6>",
-                "local-2": "<uuid:9>"
+                "local-2": "<uuid:10>"
               },
               "conversationHistoryPoints": {
                 "local-1": true,
@@ -1171,7 +1174,7 @@
               "claudeSessionId": "<uuid:4>",
               "conversationHistoryEntryIds": {
                 "local-1": "<uuid:6>",
-                "local-2": "<uuid:9>"
+                "local-2": "<uuid:10>"
               },
               "conversationHistoryPoints": {
                 "local-1": true,
@@ -1219,6 +1222,7 @@
           {
             "agentState": {
               "controlledByUser": false,
+              "followUpSteerTurnId": null,
               "startingMode": "remote",
               "steeringActive": false
             },
@@ -1231,6 +1235,7 @@
           {
             "agentState": {
               "controlledByUser": false,
+              "followUpSteerTurnId": null,
               "startingMode": "remote",
               "steeringActive": false
             },
@@ -1307,7 +1312,7 @@
               "claudeSessionId": "<uuid:4>",
               "conversationHistoryEntryIds": {
                 "local-1": "<uuid:6>",
-                "local-2": "<uuid:9>"
+                "local-2": "<uuid:10>"
               },
               "conversationHistoryPoints": {
                 "local-1": true,
@@ -1364,7 +1369,7 @@
               "claudeSessionId": "<uuid:4>",
               "conversationHistoryEntryIds": {
                 "local-1": "<uuid:6>",
-                "local-2": "<uuid:9>"
+                "local-2": "<uuid:10>"
               },
               "conversationHistoryPoints": {
                 "local-1": true,
@@ -1547,7 +1552,7 @@
             "role": "user"
           },
           "type": "user",
-          "uuid": "<uuid:9>"
+          "uuid": "<uuid:10>"
         }
       ]
     }

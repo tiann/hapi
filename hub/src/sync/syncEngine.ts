@@ -2059,7 +2059,7 @@ export class SyncEngine {
         const session = this.sessionCache.getSession(sessionId)
         const expectedFollowUpTurnId = session?.active && payload.scheduledAt == null
             && !payload.text.trimStart().startsWith('/')
-            && (payload.followUpIntent === 'default' || payload.followUpIntent === 'steer')
+            && (payload.followUpIntent === 'default' || payload.followUpIntent === 'alternate' || payload.followUpIntent === 'steer')
             ? session.agentState?.followUpSteerTurnId
             : null
         if (!session?.thinking) {
@@ -2080,19 +2080,20 @@ export class SyncEngine {
         this.sessionCache.markMessageQueued(actualSessionId, Date.now(), activeTurnStartedAt)
         this.sessionCache.recordSessionActivity(actualSessionId, Date.now())
         if (insertedMessageId && expectedFollowUpTurnId && actualSessionId === sessionId
-            && (payload.followUpIntent === 'steer' || await this.isFollowUpSteerDefault())) {
+            && (payload.followUpIntent === 'steer'
+                || await this.matchesFollowUpDefault(payload.followUpIntent === 'alternate' ? 'queue' : 'steer'))) {
             // The durable send is complete even if the runner takes time to confirm steering.
             void this.steerQueuedMessage(sessionId, insertedMessageId, expectedFollowUpTurnId)
                 .catch((error) => console.warn('[follow-up] Failed to attempt steer:', error))
         }
     }
 
-    private async isFollowUpSteerDefault(): Promise<boolean> {
+    private async matchesFollowUpDefault(expected: MessageDeliveryMode): Promise<boolean> {
         const dataDir = this.resolveSettingsDataDir()
-        if (!dataDir) return false
+        if (!dataDir) return expected === 'queue'
         try {
             const settings = await readSettingsOrThrowCached(getSettingsFile(dataDir))
-            return settings.followUpDefault === 'steer'
+            return (settings.followUpDefault === 'steer' ? 'steer' : 'queue') === expected
         } catch {
             return false
         }

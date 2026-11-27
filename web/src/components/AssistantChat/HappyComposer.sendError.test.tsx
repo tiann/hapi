@@ -569,9 +569,9 @@ describe('HappyComposer send intent gestures', () => {
         expect(runtime.pendingSendIntentRef?.current).toBe('default')
     })
 
-    it.each([['queue', 'steer'], ['steer', 'queue']] as const)(
-        'uses the opposite of the %s default for one Alt/Option+Enter send',
-        (followUpDefault, expected) => {
+    it.each(['queue', 'steer'] as const)(
+        'asks the Hub for the alternate mode with %s shown as default',
+        (followUpDefault) => {
             renderComposer('follow-up', null, true, 'newline', followUpDefault)
 
             fireEvent.keyDown(input(), { key: 'Enter', shiftKey: true })
@@ -579,7 +579,7 @@ describe('HappyComposer send intent gestures', () => {
             expect(runtime.sentIntents).toEqual([])
 
             fireEvent.keyDown(input(), { key: 'Enter', altKey: true })
-            expect(runtime.sentIntents).toEqual([expected])
+            expect(runtime.sentIntents).toEqual(['alternate'])
             expect(runtime.pendingSendIntentRef?.current).toBe('default')
         },
     )

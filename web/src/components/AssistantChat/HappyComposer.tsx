@@ -1400,7 +1400,7 @@ export function HappyComposer(props: {
         if (key === 'Enter' && e.altKey && !e.ctrlKey && !e.metaKey && followUpDefault) {
             e.preventDefault()
             if (!e.repeat) {
-                flushAndSend(followUpDefault === 'queue' ? 'steer' : 'queue')
+                flushAndSend('alternate')
                 setShowContinueHint(false)
             }
             return

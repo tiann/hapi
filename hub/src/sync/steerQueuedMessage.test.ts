@@ -40,11 +40,14 @@ describe('composer follow-up delivery', () => {
             expect(steer).not.toHaveBeenCalled()
             await engine.sendMessage(session.id, { text: 'steer on purpose', localId: 'override', followUpIntent: 'steer' })
             expect(steer).toHaveBeenCalledWith(session.id, 'override', 'turn-1')
+            await engine.sendMessage(session.id, { text: 'other mode', localId: 'opposite-queue', followUpIntent: 'alternate' })
+            expect(steer).toHaveBeenLastCalledWith(session.id, 'opposite-queue', 'turn-1')
             steer.mockClear()
             await updateSettings(getSettingsFile(dataDir), current => ({
                 settings: { ...current, followUpDefault: 'steer' }, result: undefined
             }))
             await engine.sendMessage(session.id, { text: 'queued on purpose', localId: 'queue', followUpIntent: 'queue' })
+            await engine.sendMessage(session.id, { text: 'other mode', localId: 'opposite-steer', followUpIntent: 'alternate' })
             await engine.sendMessage(session.id, { text: 'legacy client', localId: 'legacy' })
             await engine.sendMessage(session.id, { text: '/compact', localId: 'command', followUpIntent: 'default' })
             expect(steer).not.toHaveBeenCalled()
