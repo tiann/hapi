@@ -23,6 +23,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
+import app.hapi.companion.feature.chat.displayPath
 import app.hapi.companion.feature.chat.terminalCommand
 import app.hapi.companion.ui.components.DiffView
 import app.hapi.companion.ui.markdown.Markdown
@@ -71,7 +72,7 @@ internal fun ToolCallBody(tool: ChatToolCall, basePath: String?, modifier: Modif
             if (planProposalShowsResult(tool)) ToolResultSection(tool)
         } else {
             SectionLabel(stringResource(R.string.settings_usage_input))
-            ToolInputSection(tool)
+            ToolInputSection(tool, basePath)
             ToolResultSection(tool)
         }
         var sourceExpanded by rememberSaveable(tool.id) { mutableStateOf(false) }
@@ -127,7 +128,7 @@ private fun QuestionToolBody(tool: ChatToolCall) {
 // ------------------------------------------------------------------ input --
 
 @Composable
-private fun ToolInputSection(tool: ChatToolCall) {
+private fun ToolInputSection(tool: ChatToolCall, basePath: String?) {
     val input = tool.input
     val name = toolPresentationName(tool.name)
     when {
@@ -143,7 +144,20 @@ private fun ToolInputSection(tool: ChatToolCall) {
 
         name == "CodexPatch" -> {
             val patch = toolSourceInput(input, listOf("patch", "input", "command"))
-            if (patch != null) ToolTextContent(code = patch, language = "diff") else GenericJsonInput(input)
+            val changes = remember(input) { codexPatchFiles(input) }
+            when {
+                patch != null -> ToolTextContent(code = patch, language = "diff")
+                changes.isEmpty() -> GenericJsonInput(input)
+                else -> changes.forEach { change ->
+                    val path = displayPath(change.path, basePath)
+                    val diff = change.diff
+                    val file = remember(path, diff) { diff?.takeIf { fitsToolPage(it) }?.let { codexPatchDiff(it, path) } }
+                    if (file != null) DiffView(file = file) else {
+                        Text(text = path)
+                        if (!diff.isNullOrEmpty()) ToolTextContent(code = diff, language = "diff")
+                    }
+                }
+            }
         }
 
         name == "Edit" -> {
@@ -363,6 +377,9 @@ internal fun resultRendering(tool: ChatToolCall): ResultRendering? {
 }
 
 // ---------------------------------------------------------------- helpers --
+
+internal fun codexPatchDiff(text: String, path: String): DiffFile? = UnifiedDiffParser.parse(text)
+    .singleOrNull()?.takeIf { it.hunks.isNotEmpty() }?.copy(oldPath = path, newPath = path)
 
 private val DIFF_MARKER = Regex("(^|\n)@@ -\\d")
 private val DIFF_HEADER = Regex("(^|\n)(diff --git |--- )")
