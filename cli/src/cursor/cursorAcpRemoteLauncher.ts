@@ -31,6 +31,7 @@ import {
     applyCursorAcpModel,
     isCursorAutoReviewMode,
     resolveCursorModeAfterPlanApproval,
+    setCursorModelOption,
     wireIdForCursorSessionState
 } from './utils/cursorModeConfig';
 import { CURSOR_AUTO_MODEL_ID, cursorSpawnModelId, isCursorAutoModelId } from '@hapi/protocol';
@@ -2337,11 +2338,18 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 (option) => option.value.trim().toLowerCase() === CURSOR_AUTO_MODEL_ID
             )?.value;
             let appliedLive = false;
-            if (modelOption && autoWire && backend.setConfigOption) {
+            if (modelOption && autoWire) {
                 try {
-                    await backend.setConfigOption(acpSessionId, modelOption.id, autoWire);
-                    backend.pinSessionModelWireId(acpSessionId, autoWire);
-                    appliedLive = true;
+                    const actual = await setCursorModelOption(backend, acpSessionId, modelOption, autoWire);
+                    appliedLive = actual.trim().toLowerCase() === CURSOR_AUTO_MODEL_ID;
+                    if (appliedLive) {
+                        backend.pinSessionModelWireId(acpSessionId, autoWire);
+                    } else {
+                        this.spawnedWithCliAuto = false;
+                        this.currentBackendModel = actual;
+                        previousSetModel(actual);
+                        this.session.pushKeepAlive();
+                    }
                 } catch (error) {
                     logger.debug('[cursor-acp] Failed to set auto model via ACP', error);
                     // Fall through to in-place relaunch with CLI `--model auto`.
@@ -2361,7 +2369,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                             `Cursor Auto relaunch with --model auto failed: ${detail}`
                         );
                     }
-                    return previousModel;
+                    return this.currentBackendModel ?? previousModel;
                 }
             }
             previousSetModel(CURSOR_AUTO_MODEL_ID);
@@ -2388,7 +2396,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             this.spawnedWithCliAuto = false;
         }
         if (!result.applied || !result.resolvedWireId) {
-            const message = `Cursor model is not available via ACP: ${requested}`;
+            const message = `Cursor model is not available via ACP: ${requested}`
+                + (result.partiallyAppliedWireId ? `. Active selection: ${result.partiallyAppliedWireId}` : '');
             logger.warn(`[cursor-acp] ${message}`);
 
             if (result.partiallyAppliedWireId) {

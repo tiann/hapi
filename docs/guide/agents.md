@@ -184,6 +184,10 @@ Verify installation:
 agent --version
 ```
 
+### Cursor model changes
+
+When the running Cursor session exposes thinking, context, speed or effort as separate options, HAPI applies the selected model variant through those options. If Cursor accepts only part of a change, HAPI reports the error and the last known active selection. Switching to Auto on a CLI without a live Auto option requires an idle session so HAPI can restart Cursor with `--model auto` and resume the conversation.
+
 ### Usage
 
 ```bash

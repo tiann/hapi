@@ -114,7 +114,10 @@ export function wireIdForCursorSessionState(requested: string, resolved: string)
         if (legacyBase !== cursorModelBaseId(trimmedRequested)) {
             return trimmedResolved || trimmedRequested;
         }
-        return trimmedRequested;
+        const actualParams = parseCursorWireParams(trimmedResolved);
+        const requestedParams = Object.entries(parseCursorWireParams(trimmedRequested));
+        return requestedParams.every(([key, value]) => actualParams[key] === value)
+            ? trimmedRequested : trimmedResolved || trimmedRequested;
     }
 
     return trimmedResolved || trimmedRequested;
@@ -150,14 +153,12 @@ function optionHasValue(option: ConfigOption | undefined, value: string): boolea
     return Boolean(option?.options?.some((entry) => entry.value === value));
 }
 
-function fastHintForCursorSkuOrWire(modelId: string): 'false' | 'true' {
-    const lower = modelId.trim().toLowerCase();
-    const fastMatch = lower.match(/[\[,](?:\s*)fast=(true|false)(?:\s*)[\],]/)
-        ?? lower.match(/\[\s*fast=(true|false)\s*\]/);
-    if (fastMatch?.[1] === 'true' || fastMatch?.[1] === 'false') {
-        return fastMatch[1];
-    }
-    return lower.includes('-fast') ? 'true' : 'false';
+/** ACP acknowledgements may be empty. Only use values explicitly refreshed by this request. */
+export async function setCursorModelOption(
+    backend: AcpSdkBackend, sessionId: string, option: ConfigOption, value: string
+): Promise<string> {
+    const receipt = await backend.setConfigOption(sessionId, option.id, value);
+    return receipt?.find((entry) => entry.id === option.id)?.currentValue ?? value;
 }
 
 function cursorRequestBaseId(modelId: string, modelOption?: ConfigOption): string {
@@ -182,14 +183,6 @@ const EFFORT_OPTION_VALUES: Readonly<Record<string, readonly string[]>> = {
 
 /** Cursor exposes the effort axis under different ids per model family. */
 const EFFORT_OPTION_IDS = ['effort', 'reasoning', 'reasoning_effort'] as const;
-
-function effortHintForCursorSkuOrWire(modelId: string): string | null {
-    const params = modelId.includes('[')
-        ? parseCursorWireParams(modelId)
-        : parseCursorSkuParamHints(modelId);
-    const hint = params.effort ?? params.reasoning ?? params.reasoning_effort;
-    return hint?.trim() || null;
-}
 
 function resolveOptionValue(option: ConfigOption | undefined, candidates: readonly string[]): string | null {
     if (!option?.options?.length) {
@@ -236,42 +229,62 @@ async function applyParameterizedCursorModel(
     }
 
     const baseModel = cursorRequestBaseId(requested, modelOption);
-    const fast = fastHintForCursorSkuOrWire(requested);
+    const explicitWire = requested.includes('[');
+    const params = explicitWire ? parseCursorWireParams(requested) : parseCursorSkuParamHints(requested);
     // Parameterized sessions advertise bare bases. A model option holding complete
     // wires belongs to the non-parameterized path, which applies the wire as-is.
     if (!optionHasValue(modelOption, baseModel)) {
         return 'unsupported';
     }
 
+    const knownKeys = ['thinking', 'context', 'fast', ...EFFORT_OPTION_IDS];
+    if (Object.keys(params).some((key) => !knownKeys.includes(key))) return 'failed';
+
     let partiallyAppliedWireId: string | undefined;
     try {
-        await backend.setConfigOption(sessionId, modelOption.id, baseModel);
-        partiallyAppliedWireId = baseModel;
-
-        // Selecting the base refreshes Cursor's per-model config options. Re-read them so
-        // the parameters are applied against the model that is now active, and skipped
-        // for models that do not expose that axis.
-        const appliedParams: string[] = [];
-        const activeFast = findConfigOption(backend, sessionId, 'fast');
-        if (activeFast && optionHasValue(activeFast, fast)) {
-            await backend.setConfigOption(sessionId, activeFast.id, fast);
-            appliedParams.push(`fast=${fast}`);
-            partiallyAppliedWireId = `${baseModel}[${appliedParams.join(',')}]`;
+        const activeBase = await setCursorModelOption(backend, sessionId, modelOption, baseModel);
+        partiallyAppliedWireId = activeBase;
+        if (activeBase !== baseModel) {
+            throw new Error(`Cursor reported model ${activeBase} after requesting ${baseModel}`);
         }
 
-        const effortHint = effortHintForCursorSkuOrWire(requested);
-        const effort = effortHint ? findEffortConfigOption(backend, sessionId, effortHint) : null;
-        if (effort) {
-            await backend.setConfigOption(sessionId, effort.option.id, effort.value);
-            appliedParams.push(`${effort.option.id}=${effort.value}`);
-            partiallyAppliedWireId = `${baseModel}[${appliedParams.join(',')}]`;
+        // Selecting a base can replace its option list. Resolve each dimension on the
+        // active model, including changes caused by an earlier dimension in this request.
+        const effort = params.effort ?? params.reasoning ?? params.reasoning_effort;
+        const dimensions: Array<[string, string | undefined]> = [
+            ['thinking', params.thinking], ['context', params.context], ['fast', params.fast], ['effort', effort]
+        ];
+        const appliedParams = new Map<string, string>();
+        for (const [key, wanted] of dimensions) {
+            if (wanted === undefined) continue;
+            const choice = key === 'effort' ? findEffortConfigOption(backend, sessionId, wanted) : null;
+            const option = key === 'effort' ? choice?.option : findConfigOption(backend, sessionId, key);
+            const value = choice?.value ?? wanted;
+            if (!optionHasValue(option, value) || !option) {
+                // CLI SKUs assume normal speed, including on models without a speed switch.
+                if (!explicitWire && key === 'fast' && wanted === 'false') continue;
+                throw new Error(`Cursor model ${baseModel} does not offer ${key}=${wanted}`);
+            }
+            const receipt = await backend.setConfigOption(sessionId, option.id, value);
+            appliedParams.set(option.id, value);
+            // A later setting can reset an earlier one. Prefer fresh readback for every
+            // dimension we set, while permitting older agents to acknowledge without it.
+            const confirmedBase = receipt?.find((entry) => entry.id === modelOption.id)?.currentValue ?? baseModel;
+            if (confirmedBase !== baseModel) {
+                partiallyAppliedWireId = confirmedBase;
+                throw new Error(`Cursor changed the active model to ${confirmedBase}`);
+            }
+            let matches = true;
+            const confirmedParams: string[] = [];
+            for (const [id, requestedValue] of appliedParams) {
+                const actual = receipt?.find((entry) => entry.id === id)?.currentValue ?? requestedValue;
+                confirmedParams.push(`${id}=${actual}`);
+                if (actual !== requestedValue) matches = false;
+            }
+            partiallyAppliedWireId = `${baseModel}[${confirmedParams.join(',')}]`;
+            if (!matches) throw new Error(`Cursor confirmed different parameters: ${partiallyAppliedWireId}`);
         }
-
-        // Only parameters that were actually applied belong in the pinned wire; a model
-        // that exposes neither axis stays on its bare base.
-        const resolved = appliedParams.length > 0
-            ? `${baseModel}[${appliedParams.join(',')}]`
-            : baseModel;
+        const resolved = partiallyAppliedWireId;
         backend.pinSessionModelWireId(sessionId, resolved);
         return { applied: true, resolvedWireId: resolved, requestedWireId: requested };
     } catch (error) {
@@ -332,23 +345,16 @@ export async function applyCursorAcpModel(
         return { applied: false };
     }
 
-    const trySetConfigOption = async (): Promise<boolean> => {
-        if (!modelOption || !backend.setConfigOption) {
-            return false;
-        }
-        try {
-            await backend.setConfigOption(sessionId, modelOption.id, resolved);
-            return true;
-        } catch (error) {
-            logger.debug('[cursor-acp] session/set_config_option failed, trying set_model', error);
-            return false;
-        }
-    };
+    if (!modelOption || !backend.setConfigOption) return { applied: false };
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
-        if (await trySetConfigOption()) {
-            backend.pinSessionModelWireId(sessionId, resolved);
+        try {
+            const actual = await setCursorModelOption(backend, sessionId, modelOption, resolved);
+            backend.pinSessionModelWireId(sessionId, actual);
+            if (actual !== resolved) return { applied: false, partiallyAppliedWireId: actual };
             return { applied: true, resolvedWireId: resolved, requestedWireId: trimmed };
+        } catch (error) {
+            logger.debug('[cursor-acp] session/set_config_option failed for model', error);
         }
         if (attempt === 0) {
             await new Promise((resolve) => setTimeout(resolve, 150));

@@ -676,7 +676,7 @@ export class AcpSdkBackend implements AgentBackend {
         sessionId: string,
         configId: string,
         value: string
-    ): Promise<void> {
+    ): Promise<AcpConfigOptionDescriptor[] | undefined> {
         if (!this.transport) {
             throw new Error('ACP transport not initialized');
         }
@@ -688,7 +688,10 @@ export class AcpSdkBackend implements AgentBackend {
             configId,
             value
         });
+        const previous = this.sessionConfigOptions.get(sessionId);
         this.captureSessionMetadata(sessionId, response);
+        const captured = this.sessionConfigOptions.get(sessionId);
+        return captured === previous ? undefined : captured;
     }
 
     /**

@@ -339,6 +339,17 @@ describe('AcpSdkBackend', () => {
         ]);
     });
 
+    it('returns only model options confirmed by the current config response', async () => {
+        const backend = new AcpSdkBackend({ command: 'cursor-agent' });
+        const option = { id: 'fast', currentValue: 'false', options: [{ value: 'false' }] };
+        const sendRequest = vi.fn().mockResolvedValueOnce({ configOptions: [option] }).mockResolvedValueOnce({});
+        Object.assign(backend, { transport: { sendRequest } });
+
+        expect(await backend.setConfigOption('session-1', 'fast', 'true')).toMatchObject([option]);
+        expect(await backend.setConfigOption('session-1', 'fast', 'true')).toBeUndefined();
+        expect(backend.getSessionConfigOptions('session-1')).toMatchObject([option]);
+    });
+
     it('uses session/set_config_option when flavor is opencode and captures thought_level', async () => {
         const backend = new AcpSdkBackend({ command: 'opencode' });
         const calls: Array<{ method: string; params: unknown }> = [];
