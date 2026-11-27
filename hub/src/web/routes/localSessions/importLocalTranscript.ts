@@ -566,6 +566,12 @@ export async function importLocalTranscript(options: {
     request?: LocalImportRequestContext
     existingSession?: StoredSession | null
 }): Promise<LocalImportOutcome> {
+    if (options.transcript.loadError) {
+        return {
+            sessionId: options.transcript.id,
+            error: { code: 'transcript_load_failed', message: options.transcript.loadError }
+        }
+    }
     const lockKey = `${options.namespace}:${options.machine.id}:${options.source.flavor}:${options.transcript.id}`
     const prior = importLocks.get(lockKey) ?? Promise.resolve()
     let release!: () => void

@@ -51,6 +51,7 @@ vi.mock('../modules/common/opencodeSessions', () => ({
 }))
 
 import { ListCodexSessionsRpcResponseSchema } from '@hapi/protocol/apiTypes'
+import { ListLocalSessionsRpcResponseSchema } from '@hapi/protocol/localTranscript'
 import { ApiMachineClient, normalizeWindowsDriveRoot } from './apiMachine'
 import { registerLocalSessionSource } from '../modules/common/localSessions/registry'
 import { codexLocalSessionSource } from '../modules/common/localSessions/sources/codex'
@@ -713,23 +714,40 @@ describe('ApiMachineClient Codex transcript handlers', () => {
         }
     })
 
-    it('returns incomplete Codex fork history as an RPC error response', async () => {
+    it('returns incomplete Codex fork history alongside valid transcripts in both RPCs', async () => {
         writeCodexTranscript(codexHome, 'fork.jsonl', {
             id: 'fork-session-id',
             cwd: workspaceRoot,
             history_base: { thread_id: 'missing-parent-rollout', end_ordinal_exclusive: 2 }
         }, 'later prompt')
 
+        writeCodexTranscript(codexHome, 'valid.jsonl', {
+            id: 'valid-session-id',
+            cwd: workspaceRoot
+        }, 'valid prompt')
+
         const machine = makeMachine('codex-machine-fork')
         const client = new ApiMachineClient('cli-token', machine, [workspaceRoot])
 
         try {
-            const result = await callListCodexSessions(client, machine.id, { sessionIds: ['fork-session-id'] })
-
-            expect(ListCodexSessionsRpcResponseSchema.parse(result)).toEqual({
-                success: false,
-                error: 'Codex fork history is incomplete: parent rollout missing-parent-rollout not found'
-            })
+            const sessionIds = ['valid-session-id', 'fork-session-id']
+            const legacy = await callListCodexSessions(client, machine.id, { sessionIds })
+            const generic = await callListLocalSessions(client, machine.id, { flavor: 'codex', sessionIds })
+            for (const result of [ListCodexSessionsRpcResponseSchema.parse(legacy), ListLocalSessionsRpcResponseSchema.parse(generic)]) {
+                expect(result).toMatchObject({
+                    success: true,
+                    sessions: expect.arrayContaining([
+                        expect.objectContaining({ id: 'valid-session-id', messages: [expect.any(Object)] }),
+                        expect.objectContaining({
+                            id: 'fork-session-id',
+                            loadError: 'Codex fork history is incomplete: parent rollout missing-parent-rollout not found'
+                        })
+                    ])
+                })
+                if (result.success) {
+                    expect(result.sessions.find((session) => session.id === 'fork-session-id')).not.toHaveProperty('messages')
+                }
+            }
         } finally {
             client.shutdown()
         }

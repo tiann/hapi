@@ -603,6 +603,33 @@ describe('Codex Desktop import routes', () => {
         }
     })
 
+    it('preserves sessions imported before a fork with incomplete history', async () => {
+        const store = new Store(':memory:')
+        const cwd = '/home/user/workspace/project'
+        const loadError = 'Codex fork history is incomplete: parent rollout not found'
+        const engine = createImportSyncEngine(store, [createMachine('machine-1', ['/home/user/workspace'])], () => [
+            codexThreadFixture('last', [codexUserMessage('later standalone transcript')], { cwd }),
+            { id: 'fork', title: 'Incomplete fork', file: 'fork.jsonl', cwd, modifiedAt: 1, loadError },
+            codexThreadFixture('first', [codexUserMessage('first standalone transcript')], { cwd })
+        ])
+
+        try {
+            const result = await importSelectedCodexSessions({
+                codexSessionIds: ['first', 'fork', 'last'],
+                store,
+                namespace: 'default',
+                getSyncEngine: () => engine
+            })
+
+            expect(result).toMatchObject({ success: false, syncedCount: 1, error: loadError })
+            const sessions = store.sessions.getSessionsByNamespace('default')
+            expect(sessions).toHaveLength(1)
+            expect(sessions[0].metadata).toMatchObject({ codexSessionId: 'first' })
+        } finally {
+            store.close()
+        }
+    })
+
     it('binds the sync to the unique online machine that owns the cwd', async () => {
         const store = new Store(':memory:')
         const codexSessionId = '22222222-2222-4222-8222-222222222222'

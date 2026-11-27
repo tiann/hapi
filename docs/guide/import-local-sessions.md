@@ -71,7 +71,7 @@ In the session list, sessions from these four agents are de-duplicated per machi
 
 - The picker lists at most the **200** most recent sessions per agent on a machine.
 - One import request accepts at most **200** sessions; more is rejected.
-- For Codex, a batch stops at the first failed session. For Claude, OpenCode and Pi, failures are reported per session and the rest continue.
+- For Codex, a batch stops at the first failed session and keeps the sessions imported before it. A fork whose inherited history cannot be loaded is reported as a failure. For Claude, OpenCode and Pi, failures are reported per session and the rest continue.
 - Token usage recorded in imported transcripts is not counted in the [token usage dashboard](./usage-and-quotas.md#token-usage-dashboard).
 
 ## Codex: import vs. shared sessions
