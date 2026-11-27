@@ -107,6 +107,55 @@ describe('Cursor native history', () => {
         expect(f.engine.getSession(f.id)?.metadata?.cursorSessionId).toBe('original')
     })
 
+    it.each(['rollback', 'lost prepare reply'])('releases the matching prepared rewind after %s and permits a retry', async failure => {
+        f = fixture()
+        const calls: string[] = []
+        let preparedOperation: string | undefined
+        let firstAttempt = true
+        f.rpc.rewindConversation = async (_, params) => {
+            if (params.cursorAbortOperationId) {
+                expect(preparedOperation).toBe(params.cursorAbortOperationId)
+                expect(f.rows()).toEqual(['first', 'second'])
+                expect(f.store.sessions.getSession(f.id)?.metadata).toMatchObject({ cursorSessionId: 'original' })
+                calls.push('abort')
+                preparedOperation = undefined
+            } else if (params.cursorCommittedSessionId) {
+                calls.push('activate')
+            } else {
+                expect(preparedOperation).toBeUndefined()
+                expect(params.cursorPrepareOperationId).toEqual(expect.any(String))
+                preparedOperation = params.cursorPrepareOperationId
+                calls.push('prepare')
+                if (failure === 'lost prepare reply' && firstAttempt) throw new Error('lost reply')
+            }
+            return { success: true, truncateFromLocalId: 'second', nativeSessionId: 'copy' }
+        }
+        const cut = f.store.messages.truncateMessagesFromLocalId.bind(f.store.messages)
+        f.store.messages.truncateMessagesFromLocalId = (...args) => {
+            if (firstAttempt) throw new Error('synthetic failed history cut')
+            return cut(...args)
+        }
+        expect(await f.rewind()).toMatchObject({ type: 'error', message: expect.stringContaining(failure === 'rollback' ? 'synthetic failed history cut' : 'lost reply') })
+        expect(calls).toEqual(['prepare', 'abort'])
+        firstAttempt = false
+        expect(await f.rewind()).toEqual({ type: 'success' })
+        expect(calls).toEqual(['prepare', 'abort', 'prepare', 'activate'])
+        expect(f.rows()).toEqual(['first'])
+    })
+
+    it('never releases a prepared runner when the database binding changed unexpectedly', async () => {
+        f = fixture()
+        const calls: string[] = []
+        f.rpc.rewindConversation = async (_, params) => {
+            calls.push(params.cursorAbortOperationId ? 'abort' : 'prepare')
+            const src = f.engine.getSession(f.id)!
+            f.store.sessions.updateSessionMetadata(f.id, { ...src.metadata, cursorSessionId: 'another' }, src.metadataVersion, 'default')
+            throw new Error('lost reply')
+        }
+        expect((await f.rewind()).type).toBe('error')
+        expect(calls).toEqual(['prepare'])
+    })
+
     it('preserves the committed cut when activation loses its reply', async () => {
         f = fixture()
         f.rpc.rewindConversation = async (_, params) => {

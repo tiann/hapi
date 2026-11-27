@@ -3683,11 +3683,12 @@ export class SyncEngine {
         const sessionId = session.id
         const version = session.metadataVersion
         const transcript = JSON.stringify(this.store.messages.getAllMessages(sessionId))
+        const operationId = randomUUID()
         let childId: string
         try {
             // Preparation loads an independent native copy and fences prompt dispatch.
             // Until the transaction commits, restarting the runner resumes the original.
-            const prepared = await this.rpcGateway.rewindConversation(sessionId, { messageLocalId: localId, cursorSourceSessionId: sourceId })
+            const prepared = await this.rpcGateway.rewindConversation(sessionId, { messageLocalId: localId, cursorSourceSessionId: sourceId, cursorPrepareOperationId: operationId })
             if (!prepared?.success) return { type: 'error', message: prepared?.error ?? 'Cursor rewind preparation failed' }
             if (!prepared.nativeSessionId || prepared.nativeSessionId === sourceId || prepared.truncateFromLocalId !== localId) {
                 throw new Error('Cursor did not verify the requested native checkpoint')
@@ -3707,7 +3708,19 @@ export class SyncEngine {
                 this.store.sessions.replaceSessionTodos(sessionId, todos, namespace)
             })
         } catch (error) {
-            return { type: 'error', message: `${error instanceof Error ? error.message : String(error)}. Resume the session if its runner is waiting for rewind confirmation.` }
+            const reason = error instanceof Error ? error.message : String(error)
+            // A lost prepare reply can still leave a loaded candidate. Only cancel
+            // this operation, and only if SQLite still selects the original source.
+            try {
+                const current = this.store.sessions.getSessionByNamespace(sessionId, namespace)?.metadata as Session['metadata']
+                if (current?.cursorSessionId === sourceId && current.cursorSessionProtocol === 'acp') {
+                    const released = await this.rpcGateway.rewindConversation(sessionId, {
+                        messageLocalId: localId, cursorAbortOperationId: operationId
+                    })
+                    if (released?.success) return { type: 'error', message: reason }
+                }
+            } catch { /* An unreachable runner or an unreadable binding cannot be reconciled here. */ }
+            return { type: 'error', message: `${reason}. If input is still blocked, stop the active runner session and resume it from the saved binding.` }
         }
 
         this.sessionCache.refreshSession(sessionId)
@@ -3716,7 +3729,7 @@ export class SyncEngine {
             const ack = await this.rpcGateway.rewindConversation(sessionId, { messageLocalId: localId, cursorCommittedSessionId: childId })
             if (ack?.success && ack.truncateFromLocalId === localId) return { type: 'success' }
         } catch { /* The durable cut is authoritative even if the worker disconnected. */ }
-        return { type: 'error', message: 'Cursor rewind committed. Resume the session to continue from the verified checkpoint.' }
+        return { type: 'error', message: 'Cursor rewind committed. If input is blocked, stop the active runner session and resume it from the verified checkpoint.' }
     }
 
     private openCodeRewindPending(sessionId: string): boolean {
