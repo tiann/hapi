@@ -46,7 +46,12 @@ describe('FcmNotificationChannel', () => {
         expect(toasts).toHaveLength(0)
     })
 
-    it('includes requestId on permission-request payloads', async () => {
+    it.each([
+        { scopes: undefined, quickAllow: true },
+        { scopes: { allow_once: 'Allow this time' }, quickAllow: true },
+        { scopes: { allow_always: 'Remember' }, quickAllow: false },
+        { scopes: {}, quickAllow: false }
+    ])('offers quick approval only for a supported one-time grant', async ({ scopes, quickAllow }) => {
         const sent: FcmSendPayload[] = []
         const channel = new FcmNotificationChannel(
             {
@@ -65,14 +70,14 @@ describe('FcmNotificationChannel', () => {
         await channel.sendPermissionRequest(createSession({
             agentState: {
                 requests: {
-                    'req-42': { tool: 'Bash', arguments: {} }
+                    'req-42': { tool: 'Bash', arguments: {}, acpAllowOptions: scopes as Record<string, string> | undefined }
                 }
             }
         }))
 
         expect(sent).toHaveLength(1)
         expect(sent[0].data.type).toBe('permission-request')
-        expect(sent[0].data.requestId).toBe('req-42')
+        expect(sent[0].data.requestId).toBe(quickAllow ? 'req-42' : undefined)
         expect(sent[0].data.contractVersion).toBe('1')
     })
 

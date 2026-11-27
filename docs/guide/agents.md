@@ -55,7 +55,7 @@ Source: `STEERING_SUPPORTED_FLAVORS` in `shared/src/modes.ts`, `shared/src/flavo
 
 ## Common concepts
 
-For ACP tool approval requests, HAPI shows the grant scopes offered by the agent for that particular action. Older clients that request an unavailable scope receive an error and can retry the pending request.
+For ACP tool approval requests, HAPI shows the grant scopes offered by the agent for that particular action. A notification offers quick approval only when the request allows a one-time grant. Older clients that request an unavailable scope receive an error and can retry the pending request.
 
 ### ACP
 

@@ -10,7 +10,7 @@ import { formatModelErrorBody, formatModelErrorTitle } from '../notifications/mo
 import type { SSEManager } from '../sse/sseManager'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
 import type { PushPayload, PushService } from './pushService'
-import { composeInputRequestNotification, getFirstPendingRequest } from '../notifications/inputRequest'
+import { composeInputRequestNotification, getFirstPendingRequest, supportsQuickAllow } from '../notifications/inputRequest'
 
 export class PushNotificationChannel implements NotificationChannel {
     constructor(
@@ -51,7 +51,7 @@ export class PushNotificationChannel implements NotificationChannel {
                 type: inputNotification?.type ?? 'permission-request',
                 sessionId: session.id,
                 url: this.buildSessionPath(session.id),
-                requestId
+                requestId: supportsQuickAllow(request) ? requestId : undefined
             }
         }
 
