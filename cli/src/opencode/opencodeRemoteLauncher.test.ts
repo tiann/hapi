@@ -101,6 +101,9 @@ const harness = vi.hoisted(() => ({
     promptRequestInFlight: null as null | boolean,
     // v2-compat harness: flavor detection + port/password discovery stubs.
     detectedVersion: null as null | 'v1' | 'v2',
+    discoverV2Rest: true,
+    advertisesCompact: true,
+    onAvailableCommandsUpdate: null as null | ((sessionId: string) => void),
     loopbackListeners: [] as number[],
     discoveredPort: null as null | number,
     discoveredPassword: null as null | string,
@@ -171,7 +174,9 @@ vi.mock('./utils/opencodeBackend', () => ({
                 harness.thoughtLevelOption = { ...harness.thoughtLevelOption, currentValue: value };
             }
         }),
-        prompt: vi.fn(async (_sessionId: string, content: PromptContent[], onMessage?: (message: unknown) => void) => {
+        prompt: vi.fn(async (_sessionId: string, content: PromptContent[], onMessage?: (message: unknown) => void,
+            options?: { shouldSend?: () => boolean }) => {
+            if (options?.shouldSend?.() === false) return false;
             harness.promptOnMessage = onMessage ?? null;
             harness.promptContents.push(content);
             harness.events.push('prompt:start');
@@ -186,6 +191,7 @@ vi.mock('./utils/opencodeBackend', () => ({
                 await new Promise<void>((resolve) => setImmediate(resolve));
             }
             harness.events.push('prompt:end');
+            return true;
         }),
         isPromptRequestInFlight: vi.fn(() =>
             // The override models the real backend's window where ACP already
@@ -228,6 +234,10 @@ vi.mock('./utils/opencodeBackend', () => ({
             }
         }),
         getSessionModelsMetadata: vi.fn(() => harness.sessionModelsMetadata),
+        hasAvailableCommand: vi.fn((_id: string, command: string) => command === 'compact' && harness.advertisesCompact),
+        setAvailableCommandsUpdateListener: vi.fn((listener: (sessionId: string) => void) => {
+            harness.onAvailableCommandsUpdate = listener;
+        }),
         getThoughtLevelConfigOption: vi.fn(() => {
             harness.thoughtLevelLookups.push(harness.events.length);
             return harness.thoughtLevelOption ?? undefined;
@@ -240,6 +250,7 @@ vi.mock('./utils/opencodeBackend', () => ({
         getProcessPid: vi.fn(() => harness.backendPid)
         };
     }),
+    shouldDiscoverOpencodeV2Rest: () => harness.discoverV2Rest,
     listChildPids: vi.fn(async () => []),
     detectOpencodeFlavorVersion: vi.fn(async () => harness.detectedVersion ?? 'v1'),
     listLoopbackListeners: vi.fn(async () => new Set(harness.loopbackListeners)),
@@ -790,6 +801,9 @@ afterEach(async () => {
     harness.abortSoftSteersCalls = 0;
     harness.promptRequestInFlight = null;
     harness.detectedVersion = null;
+    harness.discoverV2Rest = true;
+    harness.advertisesCompact = true;
+    harness.onAvailableCommandsUpdate = null;
     harness.loopbackListeners = [];
     harness.discoveredPort = null;
     harness.discoveredPassword = null;
@@ -9071,5 +9085,124 @@ describe('opencodeRemoteLauncher v2 compact verification and discovery notice', 
         const notice = sessionEvents.find((event) => String((event as { message?: string }).message ?? '').includes('OpenCode v2 internal API discovery failed'));
         expect(notice).toBeDefined();
         expect(String((notice as { message?: string }).message)).toContain('upstream retry status and /compact are unavailable');
+    });
+});
+
+describe('OpenCode v2 ACP on Windows', () => {
+    function useWindowsAcp() {
+        harness.detectedVersion = 'v2';
+        harness.discoverV2Rest = false;
+        return (sessionId: string, update: unknown) => {
+            const handler = harness.createBackendArgs[0]?.onSessionUpdate as (id: string, update: unknown) => void;
+            handler(sessionId, update);
+        };
+    }
+
+    it('skips REST discovery and reports only current-session ACP retries and the verified compact summary', async () => {
+        const notify = useWindowsAcp();
+        const retry = (pending: unknown, sessionId = 'acp-session-1') => notify(sessionId, {
+            sessionUpdate: 'session_info_update', _meta: { 'opencode/retry': pending }
+        });
+        const compact = (compactionId: string, status: string, text?: string) => ({
+            sessionUpdate: 'compaction_update', compactionId, status, summary: [{ type: 'text', text }]
+        });
+        const firstRetry = { attempt: 2, error: { message: 'Rate limited', response: { body: 'private fixture data' } } };
+        harness.promptImpl = async () => {
+            if (harness.promptCount === 1) {
+                retry(firstRetry, 'another-session');
+                retry(firstRetry);
+                retry(firstRetry);
+                retry(null);
+                retry(firstRetry);
+                return;
+            }
+            notify('acp-session-1', compact('old', 'completed', 'old summary'));
+            notify('acp-session-1', compact('current', 'in_progress'));
+            notify('another-session', compact('current', 'completed', 'foreign summary'));
+            notify('acp-session-1', compact('current', 'completed', 'native summary'));
+        };
+        const { session, claudeSessionMessages, sentAgentMessages } = createSessionStub([
+            { message: 'hello', mode: createMode(), localId: 'prompt' },
+            { message: '', mode: createCompactMode(), localId: 'compact' }
+        ]);
+        const availability: boolean[] = [];
+
+        await opencodeRemoteLauncher(session as never, { onCompactAvailabilityChange: value => availability.push(value) });
+
+        expect(availability).toContain(true);
+        expect(harness.v2DiscoveryCalls).toHaveLength(0);
+        expect(harness.v2PasswordCalls).toHaveLength(0);
+        expect(harness.eventStreamOptions).toHaveLength(0);
+        expect(harness.promptContents.at(-1)).toEqual([{ type: 'text', text: '/compact' }]);
+        expect(claudeSessionMessages).toEqual(Array.from({ length: 2 }, () => expect.objectContaining({
+            subtype: 'api_error', retryAttempt: 1, error: { message: 'Rate limited (attempt 1)' }
+        })));
+        expect(sentAgentMessages.filter(message => (message as { type: string }).type === 'compact-summary'))
+            .toEqual([{ type: 'compact-summary', summary: 'native summary' }]);
+    });
+
+    it('accepts native provider compaction without a text summary', async () => {
+        const notify = useWindowsAcp();
+        harness.promptImpl = async () => {
+            const update = { sessionUpdate: 'compaction_update', compactionId: 'native' };
+            notify('acp-session-1', { ...update, status: 'in_progress' });
+            notify('acp-session-1', { ...update, status: 'completed', summary: null });
+        };
+        const { session, sentAgentMessages } = createSessionStub([{ message: '', mode: createCompactMode() }]);
+        await opencodeRemoteLauncher(session as never);
+        expect(sentAgentMessages).toContainEqual({ type: 'compact-summary', summary: '' });
+    });
+
+    it('does not send compact as a prompt when the agent did not advertise it', async () => {
+        useWindowsAcp();
+        harness.advertisesCompact = false;
+        const availability: boolean[] = [];
+        const { session } = createSessionStub([{ message: '', mode: createCompactMode() }]);
+        await opencodeRemoteLauncher(session as never, { onCompactAvailabilityChange: value => availability.push(value) });
+        expect(availability).not.toContain(true);
+        expect(harness.promptContents).toHaveLength(0);
+    });
+
+    it('enables compact when the current session advertises it after startup', async () => {
+        useWindowsAcp();
+        harness.advertisesCompact = false;
+        const availability: boolean[] = [];
+        const { session } = createSessionStub([], { keepOpen: true });
+        const run = opencodeRemoteLauncher(session as never, { onCompactAvailabilityChange: value => availability.push(value) });
+        try {
+            await vi.waitFor(() => expect(availability).toEqual([false]));
+            harness.advertisesCompact = true;
+            harness.onAvailableCommandsUpdate?.('another-session');
+            expect(availability).toEqual([false]);
+            harness.onAvailableCommandsUpdate?.('acp-session-1');
+            expect(availability).toEqual([false, true]);
+        } finally {
+            session.queue.close();
+            await run;
+        }
+    });
+
+    it('keeps a stopped compact result out of the timeline', async () => {
+        const notify = useWindowsAcp();
+        const { session, rpcHandlers, sentAgentMessages } = createSessionStub([
+            { message: '', mode: createCompactMode(), localId: 'compact' }
+        ], { keepOpen: true });
+        harness.hangPrompt = true;
+        const run = opencodeRemoteLauncher(session as never);
+        try {
+            await vi.waitFor(() => expect(harness.resolvePrompt).toBeTypeOf('function'));
+            notify('acp-session-1', { sessionUpdate: 'compaction_update', compactionId: 'stopped', status: 'in_progress' });
+            await rpcHandlers.get('abort')!({});
+            expect(harness.cancelPrompt).toHaveBeenCalledWith('acp-session-1');
+            notify('acp-session-1', {
+                sessionUpdate: 'compaction_update', compactionId: 'stopped', status: 'completed',
+                summary: [{ type: 'text', text: 'late summary' }]
+            });
+        } finally {
+            harness.resolvePrompt?.();
+            session.queue.close();
+            await run;
+        }
+        expect(sentAgentMessages).not.toContainEqual({ type: 'compact-summary', summary: 'late summary' });
     });
 });
