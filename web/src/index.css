@@ -468,11 +468,15 @@ html:has(.chat-scroll-y) #root {
 }
 
 @media (hover: hover) and (pointer: fine) {
-    .session-list-item:hover,
-    .session-list-row:hover > .session-list-item,
+    .session-list-row:hover,
     .session-list-new-button:hover {
         background-color: var(--app-subtle-bg);
     }
+}
+
+.session-list-row:has(> .session-list-item[aria-current="page"]) {
+    background-color: color-mix(in srgb, var(--app-fg) 16%, var(--app-bg));
+    --app-hint: color-mix(in srgb, var(--app-fg) 75%, var(--app-bg));
 }
 
 /* Row quick actions (unpin, archive): replace the time/progress cluster on
@@ -568,28 +572,6 @@ html:has(.chat-scroll-y) #root {
 /* Match fixed sidebar controls to the space reserved for the left scrollbar. */
 .session-list-scrollbar-offset {
     padding-left: 8px;
-}
-
-/*
- * Open-session position mark on the left scrollbar gutter.
- * Visual-only: a tiny hover target for the native title tooltip, not a jump
- * button — the scrollbar beside it stays the seek surface. Sits in the
- * outer 3px of the 10px rail so it never hides under the thumb (left 3px, 4px
- * wide). Sibling of the scroll container inside the relative session-list
- * shell, so `top` maps onto the visible rail.
- */
-.session-list-open-tick {
-    position: absolute;
-    left: 0;
-    z-index: 10;
-    width: 3px;
-    height: 6px;
-    margin-top: -3px;
-    pointer-events: auto;
-    border-radius: 1px;
-    background: var(--app-link);
-    opacity: 0.9;
-    box-shadow: 0 0 0 1px var(--app-bg);
 }
 
 /* Desktop sidebar: use custom width from CSS variable.

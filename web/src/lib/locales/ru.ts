@@ -97,7 +97,6 @@ export default {
   'sessions.view.fueTitle': 'Новое: сортировка и фильтр',
   'sessions.view.fueBody': 'Здесь можно изменить порядок сортировки, отфильтровать по статусу или показывать активные/непрочитанные сессии в начале списка. Выбор сохраняется.',
   'sessions.toolbar.more': 'Другие действия списка сессий',
-  'sessions.openTick.tooltip': 'Положение открытой сессии — перетащите полосу прокрутки к этой метке',
   'sessions.filter.scratchlist': 'Только с черновиками',
   'sessions.filter.date': 'Дата обновления',
   'sessions.timeFilter.label': 'Фильтр сессий по дате обновления',
