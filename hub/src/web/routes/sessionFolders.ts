@@ -24,11 +24,15 @@ export function createSessionFoldersRoutes(
         if (!parsed.success) return c.json({ error: 'Invalid folder name or parent' }, 400)
 
         const namespace = c.get('namespace')
-        const folder = folders.create(namespace, parsed.data)
-        if (!folder) return c.json({ error: 'Parent folder not found' }, 404)
+        const result = folders.create(namespace, parsed.data)
+        if (result.status !== 'created') {
+            return result.status === 'duplicate-name'
+                ? c.json({ error: 'A folder with that name already exists here.' }, 409)
+                : c.json({ error: 'Parent folder not found' }, 404)
+        }
 
         notify(namespace)
-        return c.json({ folder }, 201)
+        return c.json({ folder: result.folder }, 201)
     })
 
     app.delete('/session-folders/:id', (c) => {

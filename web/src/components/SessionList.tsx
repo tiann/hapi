@@ -2610,13 +2610,15 @@ export function SessionList(props: {
         () => allMachineFilteredSessions.filter(matchesFolder),
         [allMachineFilteredSessions, matchesFolder]
     )
+    // The root keeps priority rows visible even when their sessions are filed.
+    const prioritySessions = folderId === null ? allMachineFilteredSessions : machineFilteredSessions
     const globalPinnedSessions = useMemo(() => {
-        const pinned = machineFilteredSessions.filter((session) => Boolean(session.globalPinned))
+        const pinned = prioritySessions.filter((session) => Boolean(session.globalPinned))
         if (searchScoreIndex && hasTextQuery) {
             return sortSessionsBySearchRelevance(pinned, searchScoreIndex)
         }
         return [...pinned].sort(listComparator)
-    }, [machineFilteredSessions, searchScoreIndex, hasTextQuery, listComparator])
+    }, [prioritySessions, searchScoreIndex, hasTextQuery, listComparator])
     const runningSessions = useMemo(() => {
         const byRelevanceOrRecent = (a: SessionSummary, b: SessionSummary) => {
             if (searchScoreIndex && hasTextQuery) {
@@ -2624,8 +2626,8 @@ export function SessionList(props: {
             }
             return listComparator(a, b)
         }
-        return bucketRunningSessions(machineFilteredSessions, effectivePinInProgressMode, byRelevanceOrRecent, api?.hubClock?.now())
-    }, [api, listClockTick, machineFilteredSessions, effectivePinInProgressMode, searchScoreIndex, hasTextQuery, listComparator])
+        return bucketRunningSessions(prioritySessions, effectivePinInProgressMode, byRelevanceOrRecent, api?.hubClock?.now())
+    }, [api, listClockTick, prioritySessions, effectivePinInProgressMode, searchScoreIndex, hasTextQuery, listComparator])
     // Stopped rows show their stop time only where the list orders them by it:
     // Active first, and no text query (which orders rows by relevance or, for
     // project rows in either search mode, by the legacy comparator).

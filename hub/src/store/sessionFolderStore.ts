@@ -47,16 +47,27 @@ export class SessionFolderStore {
         })()
     }
 
-    create(namespace: string, { name, parentId }: CreateSessionFolderRequest): SessionFolder | null {
-        const id = randomUUID()
-        const result = this.db.query(`
-            INSERT INTO session_folders (namespace, id, name, parent_id)
-            SELECT $namespace, $id, $name, $parentId
-            WHERE $parentId IS NULL OR EXISTS (
-                SELECT 1 FROM session_folders WHERE namespace = $namespace AND id = $parentId
-            )
-        `).run({ namespace, id, name, parentId })
-        return result.changes ? { id, name, parentId } : null
+    create(namespace: string, { name, parentId }: CreateSessionFolderRequest):
+        { status: 'created'; folder: SessionFolder } | { status: 'duplicate-name' | 'parent-not-found' } {
+        return this.db.transaction(() => {
+            const duplicate = this.db.query(`
+                SELECT 1 FROM session_folders
+                WHERE namespace = $namespace AND parent_id IS $parentId AND name = $name
+            `).get({ namespace, name, parentId })
+            if (duplicate) return { status: 'duplicate-name' } as const
+
+            const id = randomUUID()
+            const result = this.db.query(`
+                INSERT INTO session_folders (namespace, id, name, parent_id)
+                SELECT $namespace, $id, $name, $parentId
+                WHERE $parentId IS NULL OR EXISTS (
+                    SELECT 1 FROM session_folders WHERE namespace = $namespace AND id = $parentId
+                )
+            `).run({ namespace, id, name, parentId })
+            return result.changes
+                ? { status: 'created', folder: { id, name, parentId } } as const
+                : { status: 'parent-not-found' } as const
+        }).immediate()
     }
 
     delete(namespace: string, id: string): boolean {

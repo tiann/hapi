@@ -1,5 +1,6 @@
 import { useId, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
 import type { SessionFolder } from '@hapi/protocol/apiTypes'
+import { apiErrorMessage } from '@/api/client'
 import { ArrowLeftIcon, FolderIcon, PlusCircleIcon, TrashIcon } from '@/components/icons'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -94,7 +95,7 @@ type FolderDialogProps = {
     onSubmit: (folderId: string | null) => Promise<void>
 })
 
-function getFolderOptions(folders: SessionFolder[]) {
+function getFolderOptions(folders: SessionFolder[], noFolderLabel: string) {
     const kidsByParent = new Map<string | null, SessionFolder[]>()
     for (const folder of folders) {
         const kids = kidsByParent.get(folder.parentId) ?? []
@@ -105,7 +106,8 @@ function getFolderOptions(folders: SessionFolder[]) {
     const options: { id: string; path: string }[] = []
     const append = (parentId: string | null, parentPath: string) => {
         for (const folder of kidsByParent.get(parentId) ?? []) {
-            const path = parentPath ? `${parentPath} / ${folder.name}` : folder.name
+            const name = folder.name === noFolderLabel || /[\/"]/.test(folder.name) ? JSON.stringify(folder.name) : folder.name
+            const path = parentPath ? `${parentPath} / ${name}` : name
             options.push({ id: folder.id, path })
             append(folder.id, path)
         }
@@ -136,7 +138,7 @@ export function SessionFolderDialog(props: FolderDialogProps) {
             else await props.onSubmit(value || null)
             props.onClose()
         } catch (err) {
-            setError(err instanceof Error ? err.message : t('dialog.error.default'))
+            setError(apiErrorMessage(err, t('dialog.error.default')))
         } finally {
             setBusy(false)
         }
@@ -173,7 +175,7 @@ export function SessionFolderDialog(props: FolderDialogProps) {
                                 onChange={event => setValue(event.target.value)}
                             >
                                 <option value="">{t('sessions.folders.none')}</option>
-                                {getFolderOptions(props.folders).map(option => (
+                                {getFolderOptions(props.folders, t('sessions.folders.none')).map(option => (
                                     <option key={option.id} value={option.id}>{option.path}</option>
                                 ))}
                             </select>

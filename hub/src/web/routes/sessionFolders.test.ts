@@ -70,6 +70,8 @@ it('persists nested folders and keeps their chats when removing a folder from an
         const child = await create('Current', parent.id)
         const other = await create('Personal', null)
         expect(parent.name).toBe('Work')
+        expect((await request('/session-folders', 'POST', { name: 'Work', parentId: null })).status).toBe(409)
+        expect((await request('/session-folders', 'POST', { name: 'Current', parentId: parent.id })).status).toBe(409)
         expect((await request('/session-folders', 'POST', { name: 'Foreign', parentId: parent.id }, 'bob')).status).toBe(404)
         expect((await request(`/session-folders/${parent.id}`, 'DELETE', undefined, 'bob')).status).toBe(404)
         expect((await assign(alice.id, parent.id, 'bob')).status).toBe(403)
@@ -96,6 +98,8 @@ it('persists nested folders and keeps their chats when removing a folder from an
         expect(store.sessions.getSession(alice.id)).not.toBeNull()
         expect(store.messages.getMessageById(alice.id, message.id)?.content).toEqual(message.content)
         expect(events).toEqual(Array.from({ length: 8 }, () => ({ type: 'session-folders-updated', namespace: 'alice' })))
+        await create('Personal', other.id)
+        expect((await request('/session-folders', 'POST', { name: 'Personal', parentId: null }, 'bob')).status).toBe(201)
     } finally {
         engine.stop()
         store.close()
@@ -111,8 +115,11 @@ it.each([false, true])('preserves placement when merging sessions (target filed:
     try {
         const source = cache.getOrCreateSession('source', { path: '/chat', host: 'host' }, null, 'alice')
         const target = cache.getOrCreateSession('target', { path: '/chat', host: 'host' }, null, 'alice')
-        const sourceFolder = store.sessionFolders.create('alice', { name: 'Source', parentId: null })!
-        const targetFolder = store.sessionFolders.create('alice', { name: 'Target', parentId: null })!
+        const sourceResult = store.sessionFolders.create('alice', { name: 'Source', parentId: null })
+        const targetResult = store.sessionFolders.create('alice', { name: 'Target', parentId: null })
+        if (sourceResult.status !== 'created' || targetResult.status !== 'created') throw new Error('Failed to create folders')
+        const sourceFolder = sourceResult.folder
+        const targetFolder = targetResult.folder
         expect(store.sessionFolders.setAssignment('alice', source.id, sourceFolder.id)).toBe(true)
         if (targetFiled) {
             expect(store.sessionFolders.setAssignment('alice', target.id, targetFolder.id)).toBe(true)

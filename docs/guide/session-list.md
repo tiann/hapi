@@ -70,8 +70,9 @@ choose **Move to folder** and select a destination. Choose **No folder** to
 return the session to its regular list grouping.
 
 The Hub saves folders and assignments for the current namespace. Search can
-find sessions across folders. Deleting a folder removes its subfolders and
-returns their sessions to the regular list.
+find sessions across folders. Filed sessions still appear in the root
+**Pinned sessions** and **In progress** sections when they qualify. Deleting
+a folder removes its subfolders and returns their sessions to the regular list.
 
 ## Text search
 
