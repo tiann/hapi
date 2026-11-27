@@ -758,4 +758,110 @@ describe('SessionTasksBar', () => {
         expect(screen.queryByRole('alert')).toBeNull()
         expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
     })
+
+    it('offers Run now, Edit and History only once the hub has said whether it has the history route', async () => {
+        const hub = fakeHub({ tasks: [task()] })
+        let answerHistory!: () => void
+        hub.api.listSessionTaskRuns.mockImplementation(() => new Promise((resolve) => {
+            answerHistory = () => resolve({ runs: [] })
+        }))
+        mount(hub)
+        // The task list is in while the history request is still out: the row shows, without the controls that need the route.
+        const row = await screen.findByRole('listitem')
+        expect(within(row).getByRole('button', { name: 'Pause task' })).toBeTruthy()
+        expect(within(row).getByRole('button', { name: 'Delete task' })).toBeTruthy()
+        expect(within(row).queryByRole('button', { name: 'Run now' })).toBeNull()
+        expect(within(row).queryByRole('button', { name: 'Edit task' })).toBeNull()
+        expect(screen.queryByRole('button', { name: 'History' })).toBeNull()
+
+        // Shown at once, they would appear and vanish again on a hub without the route; a hub that has it gets them once.
+        await act(async () => {
+            answerHistory()
+            await Promise.resolve()
+        })
+        await waitFor(() => expect(within(row).getByRole('button', { name: 'Run now' })).toBeTruthy())
+        expect(within(row).getByRole('button', { name: 'Edit task' })).toBeTruthy()
+        expect(screen.getByRole('button', { name: 'History' })).toBeTruthy()
+    })
+
+    it('never shows Run now, Edit or History on a hub that answers the history request with 404, not even for a frame', async () => {
+        const hub = fakeHub({ tasks: [task()] })
+        let refuseHistory!: () => void
+        hub.api.listSessionTaskRuns.mockImplementation(() => new Promise((_resolve, reject) => {
+            refuseHistory = () => reject(new ApiError('HTTP 404 Not Found: {"error":"Not Found"}', 404))
+        }))
+        mount(hub)
+        const row = await screen.findByRole('listitem')
+        expect(within(row).queryByRole('button', { name: 'Run now' })).toBeNull()
+        expect(within(row).queryByRole('button', { name: 'Edit task' })).toBeNull()
+        expect(screen.queryByRole('button', { name: 'History' })).toBeNull()
+
+        await act(async () => {
+            refuseHistory()
+            await Promise.resolve()
+        })
+        await act(async () => { await Promise.resolve() })
+        expect(within(row).queryByRole('button', { name: 'Run now' })).toBeNull()
+        expect(screen.queryByRole('button', { name: 'History' })).toBeNull()
+        expect(within(row).getByRole('button', { name: 'Pause task' })).toBeTruthy()
+    })
+
+    it('keeps Run now, Edit and History hidden on a hub without the route while its history is asked for again', async () => {
+        const notFound = new ApiError('HTTP 404 Not Found: {"error":"Not Found"}', 404)
+        const hub = fakeHub({ tasks: [task()], historyError: notFound })
+        const { queryClient } = mount(hub)
+        await screen.findByRole('listitem')
+        await waitFor(() => expect(hub.api.listSessionTaskRuns).toHaveBeenCalled())
+        await waitFor(() => expect(screen.queryByRole('button', { name: 'History' })).toBeNull())
+
+        // Every task change and SSE resync asks again. The refetch clears the query's error until the
+        // answer comes, which must not bring the controls back for that moment.
+        let refuseAgain!: () => void
+        hub.api.listSessionTaskRuns.mockImplementation(() => new Promise((_resolve, reject) => {
+            refuseAgain = () => reject(notFound)
+        }))
+        await act(async () => {
+            void queryClient.invalidateQueries({ queryKey: ['session-tasks', 'session-1'] })
+            await Promise.resolve()
+        })
+        await waitFor(() => expect(hub.api.listSessionTaskRuns).toHaveBeenCalledTimes(2))
+        expect(screen.queryByRole('button', { name: 'History' })).toBeNull()
+        expect(within(screen.getByRole('listitem')).queryByRole('button', { name: 'Edit task' })).toBeNull()
+
+        await act(async () => {
+            refuseAgain()
+            await Promise.resolve()
+        })
+        expect(screen.queryByRole('button', { name: 'History' })).toBeNull()
+    })
+
+    it('says why when the hub refuses to resume a task because the session already holds too many active tasks', async () => {
+        const refused = new ApiError('HTTP 400 Bad Request', 400, 'too_many_tasks', '{"error":"A session may hold at most 20 active tasks","code":"too_many_tasks"}')
+        setup({ tasks: [task({ state: 'paused', nextRunAt: null })], updateError: refused })
+        await screen.findByRole('listitem')
+        fireEvent.click(screen.getByRole('button', { name: 'Resume task' }))
+        await waitFor(() => expect(screen.getByTestId('toasts').textContent).toBe('This session already has 20 active tasks; pause or delete one first.'))
+        await waitFor(() => expect(screen.getByRole('listitem').textContent).toContain('Paused'))
+    })
+
+    it('says why when the hub refuses "run now" because the session already holds too many active tasks', async () => {
+        const refused = new ApiError('HTTP 409 Conflict', 409, 'too_many_tasks', '{"error":"A session may hold at most 20 active tasks","code":"too_many_tasks"}')
+        const { api } = setup({ tasks: [task({ state: 'paused', nextRunAt: null })], runError: refused })
+        await screen.findByRole('listitem')
+        fireEvent.click(screen.getByRole('button', { name: 'Run now' }))
+        await waitFor(() => expect(api.runSessionTask).toHaveBeenCalled())
+        await waitFor(() => expect(screen.getByTestId('toasts').textContent).toBe('This session already has 20 active tasks; pause or delete one first.'))
+        await waitFor(() => expect(screen.getByRole('listitem').textContent).toContain('Paused'))
+    })
+
+    it.each<[string, Parameters<typeof setup>[0]]>([
+        ['resume', { tasks: [task({ state: 'paused', nextRunAt: null })], updateError: new ApiError('HTTP 400 Bad Request', 400, undefined, '{"error":"The session is read-only"}') }],
+        ['run now', { tasks: [task()], runError: new ApiError('HTTP 400 Bad Request', 400, undefined, '{"error":"The session is read-only"}') }]
+    ])('shows the hub\'s own sentence for any other refusal of a %s', async (action, options) => {
+        setup(options)
+        await screen.findByRole('listitem')
+        fireEvent.click(screen.getByRole('button', { name: action === 'resume' ? 'Resume task' : 'Run now' }))
+        await waitFor(() => expect(screen.getByTestId('toasts').textContent).toBe('The session is read-only'))
+    })
+
 })

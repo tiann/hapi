@@ -245,6 +245,68 @@ describe('useSessionTasks', () => {
         await waitFor(() => expect(result.current.unsupported).toBe(true))
         expect(result.current.error).toBeNull()
     })
+
+    it('says whether the hub has answered the history request at all, so the controls that need the route can wait for it', async () => {
+        const hub = setupHub()
+        const answer = deferred<{ runs: SessionTaskRun[] }>()
+        hub.api.listSessionTaskRuns.mockImplementation(() => answer.promise)
+        const { result } = renderHook(() => useSessionTaskHistory(hub.api as unknown as ApiClient, 's1', true), { wrapper: hub.wrapper })
+        await waitFor(() => expect(hub.api.listSessionTaskRuns).toHaveBeenCalledTimes(1))
+        // Asked, not yet answered: nothing is known about the route, so `unsupported` is not yet a verdict.
+        expect(result.current.answered).toBe(false)
+        expect(result.current.unsupported).toBe(false)
+
+        await act(async () => { answer.resolve({ runs: [run()] }) })
+        await waitFor(() => expect(result.current.answered).toBe(true))
+        expect(result.current.unsupported).toBe(false)
+    })
+
+    it('keeps a 404 of the history known while the history is asked for again', async () => {
+        const hub = setupHub()
+        hub.api.listSessionTaskRuns.mockRejectedValue(new ApiError('HTTP 404 Not Found: {"error":"Not Found"}', 404))
+        const { result } = renderHook(() => useSessionTaskHistory(hub.api as unknown as ApiClient, 's1', true), { wrapper: hub.wrapper })
+        await waitFor(() => expect(result.current.unsupported).toBe(true))
+
+        // A refetch clears the query's error until its answer comes; the hub has not gained the route in the meantime.
+        const answer = deferred<{ runs: SessionTaskRun[] }>()
+        hub.api.listSessionTaskRuns.mockImplementation(() => answer.promise)
+        await act(async () => {
+            void hub.queryClient.invalidateQueries({ queryKey: queryKeys.sessionTasks('s1') })
+            await Promise.resolve()
+        })
+        await waitFor(() => expect(hub.api.listSessionTaskRuns).toHaveBeenCalledTimes(2))
+        expect(result.current.isLoading).toBe(true)
+        expect(result.current.answered).toBe(true)
+        expect(result.current.unsupported).toBe(true)
+
+        await act(async () => { answer.reject(new ApiError('HTTP 404 Not Found: {"error":"Not Found"}', 404)) })
+        await waitFor(() => expect(result.current.isLoading).toBe(false))
+        expect(result.current.unsupported).toBe(true)
+    })
+
+    it('keeps a 404 of the task list known while the list is asked for again, so the panel does not offer tasks on such a hub', async () => {
+        const hub = setupHub({ listRefetch: new ApiError('HTTP 404 Not Found: {"error":"Not Found"}', 404) })
+        const { result } = renderHook(() => useSessionTasks(hub.api as unknown as ApiClient, 's1'), { wrapper: hub.wrapper })
+        await waitFor(() => expect(result.current.tasks).toHaveLength(2))
+        await act(async () => {
+            void hub.queryClient.invalidateQueries({ queryKey: queryKeys.sessionTasks('s1') })
+        })
+        await waitFor(() => expect(result.current.unsupported).toBe(true))
+
+        const answer = deferred<{ tasks: SessionTask[] }>()
+        hub.api.listSessionTasks.mockImplementation(() => answer.promise)
+        await act(async () => {
+            void hub.queryClient.invalidateQueries({ queryKey: queryKeys.sessionTasks('s1') })
+            await Promise.resolve()
+        })
+        await waitFor(() => expect(hub.api.listSessionTasks).toHaveBeenCalledTimes(3))
+        expect(result.current.unsupported).toBe(true)
+
+        // Only the window is papered over: a hub that answers after all has the routes after all.
+        await act(async () => { answer.resolve({ tasks: [task('1')] }) })
+        await waitFor(() => expect(result.current.tasks.map((entry) => entry.id)).toEqual(['1']))
+        expect(result.current.unsupported).toBe(false)
+    })
 })
 
 describe('useSessionTaskMutations', () => {

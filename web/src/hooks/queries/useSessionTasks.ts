@@ -1,3 +1,4 @@
+import { useRef } from 'react'
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import type {
     CreateSessionTaskRequest,
@@ -21,6 +22,19 @@ export function shouldRetrySessionTasksQuery(failureCount: number, error: unknow
 
 export function isSessionTasksUnsupported(error: unknown): boolean {
     return error instanceof ApiError && error.status === 404
+}
+
+/**
+ * A 404 stays known while a request is out after it. A background refetch of
+ * an errored query clears its error until the answer comes (the query is
+ * pending again), so without this the UI a 404 hides would show for that
+ * moment on every refetch. Once the hub answers again, its answer counts.
+ */
+function useUnsupportedOnceSeen(error: unknown, pending: boolean): boolean {
+    const seen = useRef(false)
+    const unsupported = isSessionTasksUnsupported(error)
+    if (unsupported) seen.current = true
+    return unsupported || (seen.current && pending)
 }
 
 /** The hub refused a change to one task because it no longer exists (finished, or deleted elsewhere). */
@@ -92,12 +106,13 @@ export function useSessionTasks(api: ApiClient | null, sessionId: string): {
         retry: shouldRetrySessionTasksQuery
     })
 
+    const unsupported = useUnsupportedOnceSeen(query.error, query.isPending)
     return {
         tasks: query.data?.tasks ?? [],
         error: query.error instanceof Error && !isSessionTasksUnsupported(query.error)
             ? query.error.message
             : null,
-        unsupported: isSessionTasksUnsupported(query.error),
+        unsupported,
         refetch: () => query.refetch()
     }
 }
@@ -106,6 +121,8 @@ export function useSessionTasks(api: ApiClient | null, sessionId: string): {
 export function useSessionTaskHistory(api: ApiClient | null, sessionId: string, enabled: boolean): {
     runs: SessionTaskRun[]
     isLoading: boolean
+    /** The hub has answered the history request at least once (a failed attempt being retried counts), so `unsupported` is known; until then, the controls that need the route stay hidden. */
+    answered: boolean
     /** Set when the runs could not be loaded on a hub that has the route. */
     error: string | null
     /** The hub predates the history route (and with it, editing and "run now"), so their UI stays hidden. */
@@ -124,11 +141,15 @@ export function useSessionTaskHistory(api: ApiClient | null, sessionId: string, 
         staleTime: 15_000,
         retry: shouldRetrySessionTasksQuery
     })
+    // A failed attempt that is being retried counts as an answer too: only the wait for the very first one hides the controls.
+    const answered = query.isFetched || query.failureCount > 0
+    const unsupported = useUnsupportedOnceSeen(query.error, query.isPending)
     return {
         runs: query.data?.runs ?? [],
         isLoading: query.isFetching && query.data === undefined,
+        answered,
         error: query.error instanceof Error && !isSessionTasksUnsupported(query.error) ? query.error.message : null,
-        unsupported: isSessionTasksUnsupported(query.error),
+        unsupported,
         refetch: () => query.refetch()
     }
 }

@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import type { SessionTask, UpdateSessionTaskRequest } from '@hapi/protocol'
-import { ApiError, type ApiClient } from '@/api/client'
+import type { ApiClient } from '@/api/client'
 import { isSessionTaskGone, useSessionTaskHistory, useSessionTaskMutations, useSessionTasks } from '@/hooks/queries/useSessionTasks'
 import { formatTaskInterval, taskStatus } from '@/lib/sessionTasks'
 import { useOptionalAddToast } from '@/lib/toast-context'
 import { useTranslation } from '@/lib/use-translation'
 import { SessionTaskHistory } from './SessionTaskHistory'
 import { SessionTaskInlineEditor } from './SessionTaskInlineEditor'
-import { TEXT_BUTTON_CLASS } from './SessionTaskFields'
+import { taskRequestErrorMessage, TEXT_BUTTON_CLASS } from './SessionTaskFields'
 
 /** The "next run" line counts down; re-render often enough for it to stay honest. */
 const COUNTDOWN_TICK_MS = 30_000
@@ -83,11 +83,6 @@ export function displayedSessionTaskPrompt(task: SessionTask): string {
     return task.items[Math.min(Math.max(index, 0), task.items.length - 1)]?.text ?? ''
 }
 
-/** The hub kept the task as it was because one of its prompts is still waiting to be taken. */
-export function isPromptPendingError(error: unknown): boolean {
-    return error instanceof ApiError && error.code === 'prompt_pending'
-}
-
 /** `Every 10 minutes` for a repeat task; `Gap 10 minutes` for a queue, whose clock starts when the agent takes a prompt. */
 export function taskCadenceLabel(task: SessionTask, t: Translate): string {
     const interval = formatTaskInterval(task.intervalMs, t)
@@ -146,7 +141,8 @@ function SessionTaskRow({ task, mutations, editing, onEditChange, hasRunHistory 
     }
     const runNow = () => {
         mutations.runNow.mutate(task.id, {
-            onError: (error) => toast(t(isPromptPendingError(error) ? 'composer.taskPromptPending' : 'composer.taskRunFailed'))
+            // The row comes back as it was; the hub's reason is said out loud (a prompt still pending, or the task cap).
+            onError: (error) => toast(taskRequestErrorMessage(error, t, 'composer.taskRunFailed'))
         })
     }
     const save = async (request: UpdateSessionTaskRequest) => {
@@ -243,9 +239,11 @@ function SessionTaskRow({ task, mutations, editing, onEditChange, hasRunHistory 
                             title={t(paused ? 'tasks.resume' : 'tasks.pause')}
                             disabled={busy}
                             onClick={() => mutations.setPaused.mutate({ taskId: task.id, paused: !paused }, {
-                                // A refusal flips the row back; say so. A 404 means the task is gone, which the row shows by leaving.
+                                // A refusal flips the row back; say so, with the hub's reason where it gave one
+                                // (a resume counts against the cap, and can be refused as too_many_tasks).
+                                // A 404 means the task is gone, which the row shows by leaving.
                                 onError: (error) => {
-                                    if (!isSessionTaskGone(error)) toast(t(paused ? 'tasks.resumeFailed' : 'tasks.pauseFailed'))
+                                    if (!isSessionTaskGone(error)) toast(taskRequestErrorMessage(error, t, paused ? 'tasks.resumeFailed' : 'tasks.pauseFailed'))
                                 }
                             })}
                             onMouseDown={(e) => e.preventDefault()}
@@ -317,8 +315,9 @@ export function SessionTasksBar({ api, sessionId }: { api: ApiClient | null; ses
     // The runs outlive their tasks: once the last task finishes and goes, the
     // history is the only place that says what it did, so the bar stays for it.
     const history = useSessionTaskHistory(api, sessionId, true)
-    // A hub that answers 404 for the runs has none of the later controls either.
-    const hasRunHistory = !history.unsupported
+    // A hub that answers 404 for the runs has none of the later controls either. Until it has answered
+    // at all, they stay hidden: shown at once, they would appear and vanish again on such a hub.
+    const hasRunHistory = history.answered && !history.unsupported
     const mutations = useSessionTaskMutations(api, sessionId)
     const [editingTaskId, setEditingTaskId] = useState<string | null>(null)
     const [historyOpen, setHistoryOpen] = useState(false)
