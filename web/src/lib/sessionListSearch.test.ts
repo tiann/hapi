@@ -29,6 +29,8 @@ function makeSession(overrides: Partial<SessionSummary> & { id: string }): Sessi
         backgroundTaskCount: 0,
         futureScheduledMessageCount: 0,
         nextScheduledAt: null,
+        activeTaskCount: 0,
+        nextTaskRunAt: null,
         model: null,
         effort: null,
         attachedJob: null,
