@@ -1009,6 +1009,8 @@ export default {
   'tasks.nextRun': '下次 {when}',
   'tasks.nextRunAt': '下次 {when}',
   'tasks.dueNow': '已到时间，即将发送',
+  // The session list's: the hub reports a due but blocked task as due now too, so this is no promise of a send.
+  'tasks.tooltipDueNow': '已到时间',
   'tasks.starting': '正在启动…',
   'tasks.progress': '已发送 {done}/{total}',
   'tasks.paused': '已暂停',

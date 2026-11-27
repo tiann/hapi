@@ -1011,6 +1011,8 @@ export default {
   'tasks.nextRun': 'Next {when}',
   'tasks.nextRunAt': 'Next {when}',
   'tasks.dueNow': 'Due now; sending next',
+  // The session list's: the hub reports a due but blocked task as due now too, so this is no promise of a send.
+  'tasks.tooltipDueNow': 'Due now',
   'tasks.starting': 'Starting…',
   'tasks.progress': '{done}/{total} sent',
   'tasks.paused': 'Paused',

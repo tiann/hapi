@@ -966,6 +966,8 @@ export default {
   'tasks.nextRun': '次回 {when}',
   'tasks.nextRunAt': '次回 {when}',
   'tasks.dueNow': '時間になりました。次に送信します',
+  // The session list's: the hub reports a due but blocked task as due now too, so this is no promise of a send.
+  'tasks.tooltipDueNow': '時間になりました',
   'tasks.starting': '開始中…',
   'tasks.progress': '{done}/{total} 送信済み',
   'tasks.paused': '一時停止中',

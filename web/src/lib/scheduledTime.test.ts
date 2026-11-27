@@ -21,7 +21,7 @@ const t = (key: string, params?: Record<string, string | number>) => {
         'tasks.countOne': '1 task',
         'tasks.count': '{count} tasks',
         'tasks.nextRun': 'Next {when}',
-        'tasks.dueNow': 'Due now; sending next',
+        'tasks.tooltipDueNow': 'Due now',
         'tasks.tooltipWaiting': 'Waiting for the agent to take a prompt',
     }
     let out = table[key] ?? key
@@ -97,9 +97,12 @@ describe('task tooltip', () => {
         expect(formatTaskTooltipDetail({ nextTaskRunAt: null }, t)).toBe('Waiting for the agent to take a prompt')
     })
 
-    it('says a due task is being sent instead of naming a time that has passed', () => {
-        // A task the hub keeps due while it is held up has a next run in the past.
+    it('says a task the hub keeps due is due now, not that it is being sent', () => {
+        // The hub clamps a due but blocked task (its machine offline, its session archived) to now, and the
+        // list cannot tell that from a send under way. The bar's own "Due now; sending next" is a promise
+        // the hub is not keeping here; a missing key would come back as its own name.
         const overdue = Date.now() - 5 * 60_000
-        expect(formatTaskTooltipDetail({ nextTaskRunAt: overdue }, t)).toBe('Due now; sending next')
+        expect(formatTaskTooltipDetail({ nextTaskRunAt: overdue }, t)).toBe('Due now')
+        expect(formatTaskTooltipDetail({ nextTaskRunAt: Date.now() }, t)).toBe('Due now')
     })
 })

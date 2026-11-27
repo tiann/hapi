@@ -987,4 +987,45 @@ describe('SessionRowSummary task indicator', () => {
         )
         expect(screen.queryByLabelText(/^\d+ tasks?$/)).toBeNull()
     })
+
+    /** The nested bubble of one indicator (its id ends in the indicator's name); jsdom keeps hidden bubbles in the tree. */
+    function bubbleOf(indicator: string): HTMLElement {
+        const bubble = screen.getAllByRole('tooltip', { hidden: true }).find((candidate) => candidate.id.endsWith(`-${indicator}`))
+        expect(bubble, indicator).toBeTruthy()
+        return bubble as HTMLElement
+    }
+
+    it('grows the task bubble and the clock bubble leftwards from their icons, so neither runs past the sidebar\'s edge', () => {
+        renderWithI18n(
+            <SessionRowSummary
+                session={makeSummary({ activeTaskCount: 1, nextTaskRunAt: Date.now() + 20 * 60_000, futureScheduledMessageCount: 1, nextScheduledAt: Date.now() + 3_600_000 })}
+                showDetailedStatus
+            />
+        )
+        // jsdom lays nothing out, so the class is what is checked. Both icons sit after the name, toward the
+        // row's right: a bubble that started at the icon would be cut by the sidebar's edge (the longest
+        // task sentence lost half of it), so both end at the icon, as the PR chip's bubble does.
+        for (const indicator of ['tasks', 'schedule']) {
+            const classes = bubbleOf(indicator).className.split(/\s+/)
+            expect(classes, indicator).toContain('right-0')
+            expect(classes, indicator).not.toContain('left-0')
+        }
+        expect(bubbleOf('tasks')).toHaveTextContent('Next in 20m')
+    })
+
+    it('says a task the hub keeps due is due now, without the send the task bar promises for it', () => {
+        // The hub never reports a next run in the past: a task that is due but held up (its machine is
+        // offline, its session archived) reads as due now. The list cannot tell that from a send under way,
+        // so it must not say "sending next", which the bar says only when the hub is really sending.
+        renderWithI18n(
+            <SessionRowSummary
+                session={makeSummary({ activeTaskCount: 1, nextTaskRunAt: Date.now() - 5 * 60_000 })}
+                showDetailedStatus
+            />
+        )
+        const tooltip = bubbleOf('tasks')
+        expect(tooltip).toHaveTextContent('1 task')
+        expect(tooltip).toHaveTextContent('Due now')
+        expect(tooltip).not.toHaveTextContent('sending next')
+    })
 })
