@@ -814,6 +814,34 @@ class ModelErrorRecoveryTest {
     }
 
     @Test
+    fun lostAcknowledgementResponseReconcilesAnAlreadyDismissedEvent() = runTest {
+        val f = Fixture(this, session())
+        runCurrent()
+        f.recovery.dismiss(event.eventId)
+        runCurrent()
+        f.store.detailToLoad = session(event.copy(acknowledgedAt = 2))
+        f.api.dismissReply.completeExceptionally(java.io.IOException("response lost"))
+        runCurrent()
+        assertEquals(null, f.recovery.state.value.error)
+        assertEquals(null, f.recovery.state.value.failureReason)
+        assertEquals(1, f.api.dismissals.size)
+    }
+
+    @Test
+    fun failedBridgeReadbackKeepsTheOriginalRequestFailure() = runTest {
+        val f = Fixture(this, session())
+        runCurrent()
+        f.recovery.bridge(event.eventId)
+        runCurrent()
+        f.store.failDetailLoad = true
+        f.api.bridgeReply.completeExceptionally(java.io.IOException("bridge response lost"))
+        runCurrent()
+        assertEquals("bridge response lost", f.recovery.state.value.failureReason)
+        assertEquals(event.eventId, f.recovery.state.value.error?.eventId)
+        assertEquals(1, f.api.bridges.size)
+    }
+
+    @Test
     fun `duplicate taps submit one bridge and admission waits for readback`() = runTest {
         val f = Fixture(this, session())
         runCurrent()

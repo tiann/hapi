@@ -114,6 +114,8 @@ internal class ModelErrorRecovery(
         } catch (e: Exception) {
             if (request === operation) fail(eventId, e.message)
         }
+        // A lost response can hide an accepted write; a stale-event rejection can
+        // also mean a newer error replaced it. Refresh without sending the action again.
         try {
             store.scheduleRefresh()
             val detail = withContext(io) { store.loadSessionDetail(sessionId) }
