@@ -133,16 +133,17 @@ Source: `hub/src/web/routes/sessionTasks.ts`; schemas `CreateSessionTaskRequestS
 | Method & path | Request | Response |
 |---|---|---|
 | `GET /api/sessions/:id/tasks` | — | `{tasks: SessionTask[]}`, oldest first |
-| `POST /api/sessions/:id/tasks` | `repeat`: `{kind: 'repeat', text, intervalMs, startAt?, maxRuns?}` · `queue`: `{kind: 'queue', items: [{text}], intervalMs, startAt?}` — `intervalMs` 1 minute to 30 days, 1–50 prompts of up to 20 000 characters, `startAt` at most 366 days ahead | `{task: SessionTask}` |
-| `PATCH /api/sessions/:id/tasks/:taskId` | `{paused: boolean}` | `{task: SessionTask}`, or 404 when the task is not in this session |
-| `DELETE /api/sessions/:id/tasks/:taskId` | — | `{ok: true}`, or 404. A prompt the agent has not taken yet is cancelled with the task |
+| `POST /api/sessions/:id/tasks` | `repeat`: `{kind: 'repeat', text, intervalMs, startAt?, maxRuns?}` · `queue`: `{kind: 'queue', items: [{text}], intervalMs, startAt?}` — `intervalMs` 1 minute to 30 days, 1–50 prompts of up to 20 000 characters, `maxRuns` 1–10 000, `startAt` at most 60 s in the past and 366 days ahead. Body ≤ 1 MB (413) | `{task: SessionTask}` |
+| `PATCH /api/sessions/:id/tasks/:taskId` | `{paused: boolean}` — body ≤ 1 MB (413) | `{task: SessionTask}`, or 404 when the task is not in this session |
+| `DELETE /api/sessions/:id/tasks/:taskId` | — | `{ok: true, prompt: 'none' \| 'cancelled' \| 'taken' \| 'unconfirmed'}`, or 404. A prompt the agent has not taken yet is cancelled with the task; `prompt` says what became of it: `none` (there was none), `cancelled`, `taken` (the agent got it first), or `unconfirmed` (the cancel could not be confirmed — the row stays indeterminate in the queued-message bar, where the user retries or discards it) |
 
 - `repeat` sends the same prompt on a fixed grid from `startAt` (default: now) and stops after `maxRuns` sends when set. A slot that comes due while the previous prompt is still waiting to be taken is skipped, so a busy agent never has two of the task's prompts queued.
 - `queue` sends its prompts in order, each `intervalMs` after the agent took the previous one.
-- A task has at most one prompt outstanding (`pending: true`). `nextRunAt` is `null` while paused and while a `queue` task waits for its last prompt to be taken.
+- A task has at most one prompt outstanding (`pending: true`). `nextRunAt` is `null` while paused, and from the moment a `queue` prompt is sent until the agent takes it (the next prompt is then scheduled `intervalMs` after that acknowledgement).
+- `startAt` is kept on the task. Resuming a task that has not sent anything yet keeps its first run (`nextRunAt` = `startAt`, or now if that is past); one that has already run resumes to now, except that a `queue` task keeps its spacing from when its last prompt was taken.
 - A finished task (every prompt sent, or `maxRuns` reached, and taken) deletes itself. Pausing keeps a prompt already sent in the queue.
-- The hub resumes an inactive session before sending. Until the machine is online the task stays due with `lastError: 'machine_offline'`; a session that cannot be resumed pauses the task with `lastError: 'session_unavailable'`.
-- Every change emits [`session-tasks-changed`](./sse.md). An older hub answers 404 on these routes.
+- The hub resumes an inactive session before sending (at most 3 resumes at once across the hub; the rest are retried on later ticks). An archived session is never resumed and its scheduled messages are not released: a task on it stays due with `lastError: 'session_archived'` and runs by itself once the session is reopened. No error pauses a task — `machine_offline` and `session_unavailable` keep it due, paced by the wake backoff; `prompt_indeterminate` and `prompt_not_taken` describe a prompt that went out but is not progressing (the agent taking it, or Retry/Discard in the queued-message bar, moves the task on).
+- Every change — including a task that moved into the session through a merge or an OpenCode `/clear` — emits [`session-tasks-changed`](./sse.md). An older hub answers 404 on these routes.
 
 ### Permissions
 

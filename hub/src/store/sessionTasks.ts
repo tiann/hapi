@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { Database } from 'bun:sqlite'
+import type { Database, SQLQueryBindings } from 'bun:sqlite'
 import type {
     SessionTask,
     SessionTaskErrorCode,
@@ -35,6 +35,8 @@ export type StoredSessionTask = {
     nextRunAt: number | null
     /** localId of the prompt this task inserted and the CLI has not acknowledged. */
     pendingLocalId: string | null
+    /** When the task was meant to run first. Resuming a task that has not run yet keeps it. */
+    startAt: number
     lastRunAt: number | null
     lastConsumedAt: number | null
     lastError: SessionTaskErrorCode | null
@@ -56,12 +58,18 @@ type DbTaskRow = {
     last_run_at: number | null
     last_consumed_at: number | null
     last_error: string | null
+    start_at: number
     created_at: number
     updated_at: number
 }
 
-const TASK_COLUMNS = `id, session_id, kind, state, items, interval_ms, max_runs, run_count, next_run_at, pending_local_id, last_run_at, last_consumed_at, last_error, created_at, updated_at`
+const TASK_COLUMNS = `id, session_id, kind, state, items, interval_ms, max_runs, run_count, next_run_at, pending_local_id, last_run_at, last_consumed_at, last_error, start_at, created_at, updated_at`
 
+/**
+ * v37 created the table without `start_at`; the v37→v38 step adds the column
+ * to such databases (see Store.migrateFromV37ToV38). A fresh database gets
+ * the final shape here.
+ */
 export const SESSION_TASKS_TABLE_SQL = `
     CREATE TABLE IF NOT EXISTS session_tasks (
         id TEXT PRIMARY KEY,
@@ -77,13 +85,15 @@ export const SESSION_TASKS_TABLE_SQL = `
         last_run_at INTEGER,
         last_consumed_at INTEGER,
         last_error TEXT,
+        start_at INTEGER NOT NULL,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_session_tasks_session
         ON session_tasks(session_id, created_at ASC);
-    -- The 5s scheduler tick reads this instead of walking every task.
+    -- The 5s scheduler tick reads the two partial indexes below (one query
+    -- each, see findRunnable) instead of walking every task.
     CREATE INDEX IF NOT EXISTS idx_session_tasks_active_due
         ON session_tasks(next_run_at)
         WHERE state = 'active' AND next_run_at IS NOT NULL;
@@ -114,6 +124,7 @@ function toStored(row: DbTaskRow): StoredSessionTask {
         runCount: row.run_count,
         nextRunAt: row.next_run_at,
         pendingLocalId: row.pending_local_id,
+        startAt: row.start_at,
         lastRunAt: row.last_run_at,
         lastConsumedAt: row.last_consumed_at,
         lastError: row.last_error as SessionTaskErrorCode | null,
@@ -136,6 +147,7 @@ export function toSessionTask(task: StoredSessionTask): SessionTask {
         totalRuns: task.kind === 'queue' ? task.items.length : task.maxRuns,
         nextRunAt: task.nextRunAt,
         pending: task.pendingLocalId !== null,
+        startAt: task.startAt,
         lastRunAt: task.lastRunAt,
         lastError: task.lastError,
         createdAt: task.createdAt,
@@ -172,19 +184,43 @@ export class SessionTaskStore {
         return row ? toStored(row) : null
     }
 
+    /** Active (not paused) tasks of a session; the create cap is checked against this. */
+    countActive(sessionId: string): number {
+        const row = prepareCached(this.db,
+            `SELECT COUNT(*) AS count FROM session_tasks WHERE session_id = ? AND state = 'active'`
+        ).get(sessionId) as { count: number }
+        return row.count
+    }
+
     /**
      * Tasks the scheduler must look at on a tick: one whose prompt is still
-     * waiting to be taken, or an active task whose next run is due. Oldest
-     * due first.
+     * waiting to be taken, or an active task whose next run is due. Each half
+     * is one query over its partial index (a single OR would scan the whole
+     * table); the merge is ordered by next run (a task with nothing scheduled
+     * sorts last), then by age and id, so the order never depends on SQLite.
      */
     findRunnable(now: number): StoredSessionTask[] {
-        const rows = prepareCached(this.db,
+        const pending = prepareCached(this.db,
             `SELECT ${TASK_COLUMNS} FROM session_tasks
-             WHERE pending_local_id IS NOT NULL
-                OR (state = 'active' AND next_run_at IS NOT NULL AND next_run_at <= ?)
-             ORDER BY COALESCE(next_run_at, 9223372036854775807) ASC, created_at ASC`
+             WHERE pending_local_id IS NOT NULL`
+        ).all() as DbTaskRow[]
+        const due = prepareCached(this.db,
+            `SELECT ${TASK_COLUMNS} FROM session_tasks
+             WHERE state = 'active' AND next_run_at IS NOT NULL AND next_run_at <= ?`
         ).all(now) as DbTaskRow[]
-        return rows.map(toStored)
+        const seen = new Set<string>()
+        const merged: StoredSessionTask[] = []
+        // A task with a prompt pending that is also due is in both halves: keep the pending row.
+        for (const row of [...pending, ...due]) {
+            if (seen.has(row.id)) continue
+            seen.add(row.id)
+            merged.push(toStored(row))
+        }
+        return merged.sort((a, b) => {
+            const aAt = a.nextRunAt ?? Number.MAX_SAFE_INTEGER
+            const bAt = b.nextRunAt ?? Number.MAX_SAFE_INTEGER
+            return (aAt - bAt) || (a.createdAt - b.createdAt) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+        })
     }
 
     create(input: {
@@ -193,6 +229,7 @@ export class SessionTaskStore {
         items: string[]
         intervalMs: number
         maxRuns: number | null
+        startAt: number
         nextRunAt: number
         now?: number
     }): StoredSessionTask {
@@ -204,8 +241,8 @@ export class SessionTaskStore {
         prepareCached(this.db,
             `INSERT INTO session_tasks
                 (id, session_id, kind, state, items, interval_ms, max_runs, run_count,
-                 next_run_at, pending_local_id, last_run_at, last_consumed_at, last_error, created_at, updated_at)
-             VALUES (?, ?, ?, 'active', ?, ?, ?, 0, ?, NULL, NULL, NULL, NULL, ?, ?)`
+                 next_run_at, pending_local_id, last_run_at, last_consumed_at, last_error, start_at, created_at, updated_at)
+             VALUES (?, ?, ?, 'active', ?, ?, ?, 0, ?, NULL, NULL, NULL, NULL, ?, ?, ?)`
         ).run(
             id,
             input.sessionId,
@@ -214,12 +251,46 @@ export class SessionTaskStore {
             input.intervalMs,
             input.maxRuns,
             input.nextRunAt,
+            input.startAt,
             now,
             now
         )
         const created = this.getById(id)
         if (!created) throw new Error('createSessionTask: row missing after insert')
         return created
+    }
+
+    /**
+     * Apply an edit. `state` carries the pause or resume (the caller computes
+     * the next run); the other fields replace what is stored.
+     */
+    update(taskId: string, changes: {
+        items?: string[]
+        intervalMs?: number
+        maxRuns?: number | null
+        state?: { paused: boolean; nextRunAt: number | null }
+    }, now: number): StoredSessionTask | null {
+        const sets: string[] = ['updated_at = ?']
+        const values: SQLQueryBindings[] = [now]
+        if (changes.items !== undefined) {
+            sets.push('items = ?')
+            values.push(JSON.stringify(changes.items))
+        }
+        if (changes.intervalMs !== undefined) {
+            sets.push('interval_ms = ?')
+            values.push(changes.intervalMs)
+        }
+        if (changes.maxRuns !== undefined) {
+            sets.push('max_runs = ?')
+            values.push(changes.maxRuns)
+        }
+        if (changes.state !== undefined) {
+            sets.push('state = ?', 'next_run_at = ?', 'last_error = NULL')
+            values.push(changes.state.paused ? 'paused' : 'active', changes.state.nextRunAt)
+        }
+        values.push(taskId)
+        prepareCached(this.db, `UPDATE session_tasks SET ${sets.join(', ')} WHERE id = ?`).run(...values)
+        return this.getById(taskId)
     }
 
     /**
@@ -273,30 +344,11 @@ export class SessionTaskStore {
         return result.changes > 0
     }
 
-    setPaused(taskId: string, paused: boolean, nextRunAt: number | null, now: number): StoredSessionTask | null {
-        prepareCached(this.db,
-            `UPDATE session_tasks
-             SET state = ?, next_run_at = ?, last_error = NULL, updated_at = ?
-             WHERE id = ?`
-        ).run(paused ? 'paused' : 'active', nextRunAt, now, taskId)
-        return this.getById(taskId)
-    }
-
     /** True when the stored error changed (callers use it to avoid redundant events). */
     setError(taskId: string, error: SessionTaskErrorCode | null, now: number): boolean {
         const result = prepareCached(this.db,
             `UPDATE session_tasks SET last_error = ?, updated_at = ? WHERE id = ? AND last_error IS NOT ?`
         ).run(error, now, taskId, error)
-        return result.changes > 0
-    }
-
-    /** Pause a task whose session cannot be resumed; the error explains why. */
-    pauseWithError(taskId: string, error: SessionTaskErrorCode, now: number): boolean {
-        const result = prepareCached(this.db,
-            `UPDATE session_tasks
-             SET state = 'paused', next_run_at = NULL, last_error = ?, updated_at = ?
-             WHERE id = ?`
-        ).run(error, now, taskId)
         return result.changes > 0
     }
 

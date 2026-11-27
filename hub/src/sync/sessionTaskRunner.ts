@@ -5,7 +5,7 @@ import {
 } from '@hapi/protocol'
 import type { Store } from '../store'
 import type { StoredSessionTask } from '../store/sessionTasks'
-import { NON_RETRYABLE_WAKE_CODES, type SessionWakeFailure, type WakeableSession } from './sessionWakeGate'
+import type { SessionWakeResult, WakeableSession } from './sessionWakeGate'
 
 /**
  * Drives session tasks on the hub's 5s tick.
@@ -21,13 +21,16 @@ import { NON_RETRYABLE_WAKE_CODES, type SessionWakeFailure, type WakeableSession
  * skips that slot, so a busy agent never has a second prompt stacked on it.
  */
 
+/** Times the hub wakes a session for one pending prompt before it stops and reports `prompt_not_taken`. */
+export const SESSION_TASK_MAX_PENDING_WAKE_ATTEMPTS = 3
 export type SessionTaskRunnerDeps = {
-    store: Pick<Store, 'sessionTasks' | 'messages'>
+    store: Pick<Store, 'sessionTasks' | 'messages' | 'resolveMessageTarget'>
     getSession: (sessionId: string) => WakeableSession | null
-    /** Resume the session if it is not active; false when that could not be done now. */
-    wake: (sessionId: string) => Promise<boolean>
-    wakeFailure: (sessionId: string) => SessionWakeFailure | undefined
+    /** Resume the session if it is not active; the result says whether it is running now, and if not, why. */
+    wake: (sessionId: string) => Promise<SessionWakeResult>
     sendMessage: (sessionId: string, payload: { text: string; localId: string }) => Promise<void>
+    /** Remove a prompt the runner inserted but no task tracks any more. */
+    cancelMessage: (sessionId: string, localId: string) => Promise<void>
     onTasksChanged: (sessionId: string) => void
     now?: () => number
     /** How long to wait before retrying a run whose send threw. */
@@ -35,9 +38,27 @@ export type SessionTaskRunnerDeps = {
     log?: (message: string, detail: Record<string, unknown>) => void
 }
 
+/** The task error that a wake failure leaves on a task. */
+function taskErrorCodeFor(wakeCode: string): SessionTaskErrorCode {
+    switch (wakeCode) {
+        case 'no_machine_online':
+            return 'machine_offline'
+        case 'session_archived':
+            return 'session_archived'
+        case 'resume_unavailable':
+        case 'session_not_found':
+        case 'access_denied':
+            return 'session_unavailable'
+        default:
+            return 'send_failed'
+    }
+}
+
 export class SessionTaskRunner {
     private readonly inFlight = new Set<string>()
     private readonly retryAt = new Map<string, number>()
+    /** Wake attempts so far, per pending prompt localId. */
+    private readonly pendingWakeAttempts = new Map<string, number>()
 
     constructor(private readonly deps: SessionTaskRunnerDeps) {}
 
@@ -68,41 +89,47 @@ export class SessionTaskRunner {
     private async run(task: StoredSessionTask, now: number): Promise<void> {
         try {
             if (task.pendingLocalId !== null) {
-                this.settle(task, now)
+                await this.settle(task, now)
                 return
             }
             if (task.state !== 'active' || task.nextRunAt === null || task.nextRunAt > now) return
             await this.deliver(task)
         } catch (error) {
             this.retryAt.set(task.id, this.now() + (this.deps.retryDelayMs ?? 15_000))
-            this.deps.log?.('[session-task] run failed', {
-                taskId: task.id,
-                sessionId: task.sessionId,
-                error: error instanceof Error ? error.message : String(error)
-            })
+            this.log('run failed', error, task)
             this.changed(task, this.deps.store.sessionTasks.setError(task.id, 'send_failed', this.now()))
         }
     }
 
+    /** The session a prompt of this task lives in: an unfinished OpenCode /clear redirects new messages to the replacement. */
+    private promptSessionId(task: StoredSessionTask): string {
+        return this.deps.store.resolveMessageTarget(task.sessionId) ?? task.sessionId
+    }
+
     /** The pending prompt was taken (or cancelled): step the task forward. */
-    private settle(task: StoredSessionTask, now: number): void {
+    private async settle(task: StoredSessionTask, now: number): Promise<void> {
         const store = this.deps.store.sessionTasks
+        const localId = task.pendingLocalId as string
         const session = this.deps.getSession(task.sessionId)
         const lookup = session
-            ? this.deps.store.messages.lookupQueuedMessage(session.id, task.pendingLocalId as string)
+            ? this.deps.store.messages.lookupQueuedMessage(this.promptSessionId(task), localId)
             : ({ status: 'absent' } as const)
 
         if (lookup.status === 'invoked' || lookup.status === 'absent') {
             const consumedAt = lookup.status === 'invoked' ? (lookup.message.invokedAt ?? now) : now
-            this.completeSend(task, consumedAt, now)
+            this.completeSend(task, localId, consumedAt, now)
+            return
+        }
+        if (lookup.status === 'indeterminate') {
+            // Whether the agent took the prompt is unknown. Only the queued-message
+            // bar's Retry (the row is queued again) or Discard (the row is gone) moves
+            // the task on; waking the session would not deliver an indeterminate row.
+            if (store.setError(task.id, 'prompt_indeterminate', now)) this.changed(task)
             return
         }
 
-        // Still queued. Wake an inactive session so the prompt is replayed to it.
-        if (session && !session.active) {
-            void this.deps.wake(session.id).catch(() => undefined)
-        }
-        // A repeat task came due again while its previous prompt waits: skip the slot.
+        // Still queued (or being dispatched). A repeat task that came due again
+        // while its previous prompt waits: skip the slot.
         if (
             task.kind === 'repeat'
             && task.state === 'active'
@@ -112,10 +139,17 @@ export class SessionTaskRunner {
             const nextRunAt = nextRepeatRunAt(task.nextRunAt, task.intervalMs, now)
             this.changed(task, store.skipDueSlot(task.id, nextRunAt, now))
         }
+
+        // The prompt is still waiting on a session that is not running: wake it
+        // so the prompt is replayed to the agent, a bounded number of times.
+        if (session && !session.active) {
+            await this.wakeForPendingPrompt(task, localId, session.id, now)
+        }
     }
 
-    private completeSend(task: StoredSessionTask, consumedAt: number, now: number): void {
+    private completeSend(task: StoredSessionTask, localId: string, consumedAt: number, now: number): void {
         const store = this.deps.store.sessionTasks
+        this.pendingWakeAttempts.delete(localId)
         const finished = task.kind === 'queue'
             ? task.runCount >= task.items.length
             : task.maxRuns !== null && task.runCount >= task.maxRuns
@@ -145,23 +179,41 @@ export class SessionTaskRunner {
         }
 
         if (!session.active) {
-            const awake = await this.deps.wake(session.id)
-            if (!awake) {
-                this.recordWakeFailure(task, session.id)
+            const outcome = await this.deps.wake(session.id)
+            if (outcome.type === 'refused') {
+                this.recordWakeFailure(task, outcome)
                 return
             }
+            if (outcome.type !== 'active') return
         }
 
+        // The wake took time, and may have moved the task to a new session row
+        // (a resume that rotated the id merges the old row away). Work from the
+        // task as it is now, and send nothing once it was deleted or paused, or
+        // another run already sent, in the meantime.
+        const current = store.getById(task.id)
+        if (!current || current.state !== 'active' || current.pendingLocalId !== null) return
+        const target = this.deps.getSession(current.sessionId)
+        if (!target) {
+            this.changed(current, store.delete(current.id))
+            return
+        }
+        await this.send(current, target)
+    }
+
+    private async send(task: StoredSessionTask, session: WakeableSession): Promise<void> {
+        const store = this.deps.store.sessionTasks
         const runNumber = task.runCount + 1
         const text = task.kind === 'queue' ? task.items[task.runCount] : task.items[0]
         if (text === undefined) {
-            this.changed(task, store.pauseWithError(task.id, 'send_failed', this.now()))
+            // No prompt left: the queue is over. (Runs normally delete the task on the last acknowledgement.)
+            this.changed(task, store.delete(task.id))
             return
         }
         const localId = buildSessionTaskMessageLocalId(task.id, runNumber)
         // A previous hub process may have inserted this prompt and stopped
         // before recording it. The localId makes that insert idempotent.
-        if (this.deps.store.messages.lookupQueuedMessage(session.id, localId).status === 'absent') {
+        if (this.deps.store.messages.lookupQueuedMessage(this.promptSessionId(task), localId).status === 'absent') {
             await this.deps.sendMessage(session.id, { text, localId })
         }
 
@@ -169,26 +221,50 @@ export class SessionTaskRunner {
         const nextRunAt = task.kind === 'repeat'
             ? nextRepeatRunAt(task.nextRunAt as number, task.intervalMs, sentAt)
             : null
-        this.changed(task, store.markSent(task.id, { localId, nextRunAt, now: sentAt }))
-    }
-
-    private recordWakeFailure(task: StoredSessionTask, sessionId: string): void {
-        const store = this.deps.store.sessionTasks
-        const failure = this.deps.wakeFailure(sessionId)
-        const now = this.now()
-        if (failure && NON_RETRYABLE_WAKE_CODES.has(failure.code)) {
-            // Archived or deleted sessions do not come back by waiting.
-            this.changed(task, store.pauseWithError(task.id, 'session_unavailable', now))
+        if (!store.markSent(task.id, { localId, nextRunAt, now: sentAt })) {
+            // The task was deleted or paused while the prompt was on its way, or
+            // another run counted this send. An untracked prompt must not go out
+            // on its own: take it back.
+            try {
+                await this.deps.cancelMessage(session.id, localId)
+            } catch (error) {
+                this.log('could not take back an untracked prompt', error, task)
+            }
             return
         }
-        const code: SessionTaskErrorCode = failure?.code === 'no_machine_online'
-            ? 'machine_offline'
-            : 'send_failed'
-        this.changed(task, store.setError(task.id, code, now))
+        this.changed(task)
     }
 
-    private changed(task: StoredSessionTask, storeChanged: boolean): void {
+    private async wakeForPendingPrompt(task: StoredSessionTask, localId: string, sessionId: string, now: number): Promise<void> {
+        const attempts = this.pendingWakeAttempts.get(localId) ?? 0
+        if (attempts >= SESSION_TASK_MAX_PENDING_WAKE_ATTEMPTS) {
+            // Woken that many times and the agent never took the prompt: stop
+            // waking, show why, and let the user decide.
+            if (this.deps.store.sessionTasks.setError(task.id, 'prompt_not_taken', now)) this.changed(task)
+            return
+        }
+        const outcome = await this.deps.wake(sessionId)
+        if (outcome.type === 'active') {
+            this.pendingWakeAttempts.set(localId, attempts + 1)
+        } else if (outcome.type === 'refused') {
+            this.recordWakeFailure(task, outcome)
+        }
+    }
+
+    /** Put the wake failure on the task. The task stays due (nothing here pauses it): the gate's backoff paces the retries. */
+    private recordWakeFailure(task: StoredSessionTask, outcome: Extract<SessionWakeResult, { type: 'refused' }>): void {
+        this.changed(task, this.deps.store.sessionTasks.setError(task.id, taskErrorCodeFor(outcome.failure.code), this.now()))
+    }
+
+    private changed(task: StoredSessionTask, storeChanged: boolean = true): void {
         if (storeChanged) this.deps.onTasksChanged(task.sessionId)
+    }
+
+    private log(message: string, error: unknown, task?: StoredSessionTask): void {
+        this.deps.log?.(`[session-task] ${message}`, {
+            ...(task ? { taskId: task.id, sessionId: task.sessionId } : {}),
+            error: error instanceof Error ? error.message : String(error)
+        })
     }
 
     private now(): number {

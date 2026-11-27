@@ -2096,6 +2096,12 @@ export class SessionCache {
                 this.store.sessionJobs.getPrimaryRunning(fromSessionId)
             )
         }
+        if (movedJobs.tasksMoved > 0) this.emitSessionTasksChanged(toSessionId)
+    }
+
+    /** Repeat/queue tasks moved into this session: an open task bar must refetch them. */
+    private emitSessionTasksChanged(sessionId: string): void {
+        this.publisher.emit({ type: 'session-tasks-changed', sessionId })
     }
 
     async mergeSessions(oldSessionId: string, newSessionId: string, namespace: string): Promise<void> {
@@ -2206,6 +2212,7 @@ export class SessionCache {
                 )
             }
         }
+        if (movedJobs.tasksMoved > 0) this.emitSessionTasksChanged(newSessionId)
         if (movedScratchlist.moved > 0) {
             // Attachment hub paths embed the old session id. Re-key files +
             // metadata so quota/resolve stay correct on the consolidated id.
@@ -2425,17 +2432,18 @@ export class SessionCache {
      * A crash or failed metadata write after `sessionJobs.transfer()` used to
      * leave the supervisor on the old `$HAPI_SESSION_ID` hitting an emptied
      * source (404 / frozen meter). In-memory refresh happens after commit.
+     * Repeat/queue tasks (and their run history) follow their session the
+     * same way, in the same commit; the result says how many moved.
      */
     private persistAttachedJobRedirects(
         fromSessionId: string,
         toSessionId: string,
         namespace: string,
         targetWasRedirectedToSource: boolean
-    ): TransferSessionJobsResult {
+    ): TransferSessionJobsResult & { tasksMoved: number } {
         return this.store.runInTransaction(() => {
             const moved = this.store.sessionJobs.transfer(fromSessionId, toSessionId)
-            // Repeat/queue tasks follow their session the same way, in the same commit.
-            this.store.sessionTasks.transfer(fromSessionId, toSessionId)
+            const tasksMoved = this.store.sessionTasks.transfer(fromSessionId, toSessionId)
             if (
                 targetWasRedirectedToSource
                 && !this.clearJobsTransferredToSession(toSessionId, namespace)
@@ -2454,7 +2462,7 @@ export class SessionCache {
             ) {
                 throw new Error('Failed to persist attached-job redirects')
             }
-            return moved
+            return { ...moved, tasksMoved }
         })
     }
 

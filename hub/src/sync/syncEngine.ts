@@ -37,10 +37,16 @@ import { clearAgentTerminalBuffer } from '../socket/agentTerminalBuffer'
 import type { SSEManager } from '../sse/sseManager'
 import { CursorLegacyMigrator, type CursorLegacyMigratorOptions } from '../cursor/cursorLegacyMigrator'
 import { toAttachedJob } from '../store/sessionJobs'
-import { toSessionTask } from '../store/sessionTasks'
-import type { CreateSessionTaskRequest, SessionTask, UpdateSessionTaskRequest } from '@hapi/protocol'
+import { toSessionTask, type StoredSessionTask } from '../store/sessionTasks'
+import type {
+    CreateSessionTaskRequest,
+    SessionTask,
+    SessionTaskDeleteResponse,
+    UpdateSessionTaskRequest
+} from '@hapi/protocol'
 import { SessionTaskRunner } from './sessionTaskRunner'
-import { SessionWakeGate } from './sessionWakeGate'
+import type { DeleteSessionTaskResult, UpdateSessionTaskResult } from './sessionTaskTypes'
+import { SessionWakeGate, type WakeableSession } from './sessionWakeGate'
 import {
     buildJobTerminalWakePrompt,
     buildJobWakeLocalId,
@@ -184,6 +190,19 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     return value !== null && typeof value === 'object' && !Array.isArray(value)
         ? value as Record<string, unknown>
         : null
+}
+
+/**
+ * When a resumed task runs next. A task with a prompt pending is scheduled by
+ * the acknowledgement instead (null). Otherwise now, except that a task
+ * which has not run yet keeps its first-run time and a `queue` task keeps
+ * its spacing from when the agent took its last prompt.
+ */
+function resumeRunAt(task: StoredSessionTask, intervalMs: number, now: number): number | null {
+    if (task.pendingLocalId !== null) return null
+    if (task.runCount === 0) return Math.max(now, task.startAt)
+    if (task.kind === 'queue' && task.lastConsumedAt !== null) return Math.max(now, task.lastConsumedAt + intervalMs)
+    return now
 }
 
 function normalizeUserMessageText(value: string): string | undefined {
@@ -1351,10 +1370,22 @@ export class SyncEngine {
     private wakeGate: SessionWakeGate | null = null
     private taskRunner: SessionTaskRunner | null = null
 
+    /** A session as the wake gate and the task scheduler see it: an archived one is never resumed. */
+    private wakeableSession(sessionId: string): WakeableSession | null {
+        const session = this.sessionCache.getSession(sessionId)
+        if (!session) return null
+        return {
+            id: session.id,
+            namespace: session.namespace,
+            active: session.active,
+            archived: session.metadata?.lifecycleState === 'archived'
+        }
+    }
+
     /** Lazily built: `resumeSession` and `sessionCache` are only wired after construction. */
     private get deliveryWakeGate(): SessionWakeGate {
         this.wakeGate ??= new SessionWakeGate({
-            getSession: (sessionId) => this.sessionCache.getSession(sessionId) ?? null,
+            getSession: (sessionId) => this.wakeableSession(sessionId),
             resumeSession: (sessionId, namespace) => this.resumeSession(sessionId, namespace),
             log: (message, detail) => console.warn(message, detail)
         })
@@ -1364,10 +1395,12 @@ export class SyncEngine {
     private get sessionTaskRunner(): SessionTaskRunner {
         this.taskRunner ??= new SessionTaskRunner({
             store: this.store,
-            getSession: (sessionId) => this.sessionCache.getSession(sessionId) ?? null,
+            getSession: (sessionId) => this.wakeableSession(sessionId),
             wake: (sessionId) => this.deliveryWakeGate.wake(sessionId),
-            wakeFailure: (sessionId) => this.deliveryWakeGate.lastFailure(sessionId),
             sendMessage: (sessionId, payload) => this.sendMessage(sessionId, { ...payload, sentFrom: 'webapp' }),
+            cancelMessage: async (sessionId, localId) => {
+                await this.cancelQueuedMessage(sessionId, localId)
+            },
             onTasksChanged: (sessionId) => this.emitSessionTasksChanged(sessionId),
             log: (message, detail) => console.warn(message, detail)
         })
@@ -1378,7 +1411,7 @@ export class SyncEngine {
         this.eventPublisher.emit({ type: 'session-tasks-changed', sessionId })
     }
 
-    /** Run due tasks now instead of waiting for the next 5s tick (after create / resume). */
+    /** Run due tasks now instead of waiting for the next 5s tick (after create / resume / run now). */
     private runSessionTaskTick(): void {
         if (!this.store) return
         void this.sessionTaskRunner.tick().catch((error) => {
@@ -1404,14 +1437,16 @@ export class SyncEngine {
 
     createSessionTask(sessionId: string, request: CreateSessionTaskRequest): SessionTask {
         const now = Date.now()
+        const startAt = request.startAt ?? now
         const task = this.store.sessionTasks.create({
             sessionId,
             kind: request.kind,
             items: request.kind === 'queue' ? request.items.map((item) => item.text) : [request.text],
             intervalMs: request.intervalMs,
             maxRuns: request.kind === 'repeat' ? (request.maxRuns ?? null) : null,
+            startAt,
             // A first run that is already past (within the route's grace) goes out now.
-            nextRunAt: Math.max(request.startAt ?? now, now)
+            nextRunAt: Math.max(startAt, now)
         })
         this.emitSessionTasksChanged(sessionId)
         this.runSessionTaskTick()
@@ -1421,52 +1456,58 @@ export class SyncEngine {
     /**
      * Pause stops scheduling; a prompt the task already sent stays in the
      * queue and is still tracked. Resume runs a task that has nothing
-     * pending now, except a queue task that keeps its spacing from when the
+     * pending now, except that a task which has not run yet keeps its
+     * first-run time and a `queue` task keeps its spacing from when the
      * agent took its last prompt.
      */
-    updateSessionTask(sessionId: string, taskId: string, patch: UpdateSessionTaskRequest): SessionTask | null {
-        const task = this.store.sessionTasks.get(sessionId, taskId)
-        if (!task) return null
+    updateSessionTask(sessionId: string, taskId: string, patch: UpdateSessionTaskRequest): UpdateSessionTaskResult {
+        const store = this.store.sessionTasks
+        const task = store.get(sessionId, taskId)
+        if (!task) return { type: 'not-found' }
         const now = Date.now()
-        let nextRunAt = task.nextRunAt
-        if (patch.paused) {
-            nextRunAt = null
-        } else if (task.state === 'paused') {
-            // Resuming a task that has nothing pending runs it now, except a
-            // queue task that keeps its spacing from when the agent took its
-            // last prompt. One with a prompt pending is scheduled by the
-            // acknowledgement instead.
-            nextRunAt = task.pendingLocalId !== null
-                ? null
-                : task.kind === 'queue' && task.runCount > 0 && task.lastConsumedAt !== null
-                    ? Math.max(now, task.lastConsumedAt + task.intervalMs)
-                    : now
-        }
-        const updated = this.store.sessionTasks.setPaused(taskId, patch.paused, nextRunAt, now)
+        const resuming = patch.paused === false && task.state === 'paused'
+        const updated = store.update(taskId, {
+            state: { paused: patch.paused as boolean, nextRunAt: patch.paused ? null : resumeRunAt(task, task.intervalMs, now) }
+        }, now)
+        if (!updated) return { type: 'not-found' }
         this.emitSessionTasksChanged(sessionId)
-        if (!patch.paused && task.state === 'paused') this.runSessionTaskTick()
-        return updated ? toSessionTask(updated) : null
+        if (resuming) this.runSessionTaskTick()
+        return { type: 'updated', task: toSessionTask(updated) }
     }
 
-    async deleteSessionTask(sessionId: string, taskId: string): Promise<boolean> {
-        const task = this.store.sessionTasks.get(sessionId, taskId)
-        if (!task) return false
-        const deleted = this.store.sessionTasks.delete(taskId)
-        if (task.pendingLocalId !== null) {
-            // The prompt is already in the session's queue; deleting the task
-            // must not leave it to go out on its own.
-            try {
-                await this.cancelQueuedMessage(sessionId, task.pendingLocalId)
-            } catch (error) {
-                console.warn('[session-task] could not cancel the pending prompt', {
-                    sessionId,
-                    taskId,
-                    error: error instanceof Error ? error.message : error
-                })
-            }
-        }
+    /**
+     * Delete a task. A prompt it sent that the agent has not taken yet is
+     * cancelled so it cannot go out on its own; the answer says what became
+     * of it (`unconfirmed` when the cancel could not be confirmed — the row
+     * stays indeterminate in the queued-message bar, where the user retries
+     * or discards it).
+     */
+    async deleteSessionTask(sessionId: string, taskId: string): Promise<DeleteSessionTaskResult> {
+        const store = this.store.sessionTasks
+        const task = store.get(sessionId, taskId)
+        if (!task) return { type: 'not-found' }
+        if (!store.delete(taskId)) return { type: 'not-found' }
+        const prompt = task.pendingLocalId !== null ? await this.cancelTaskPrompt(task) : 'none'
         this.emitSessionTasksChanged(sessionId)
-        return deleted
+        return { type: 'deleted', prompt }
+    }
+
+    /** The prompt may sit in a replacement session an unfinished OpenCode /clear redirected it to. */
+    private async cancelTaskPrompt(task: StoredSessionTask): Promise<SessionTaskDeleteResponse['prompt']> {
+        const localId = task.pendingLocalId as string
+        const promptSessionId = this.store.resolveMessageTarget(task.sessionId) ?? task.sessionId
+        try {
+            const result = await this.cancelQueuedMessage(promptSessionId, localId)
+            if (result.status === 'cancelled') return 'cancelled'
+            if (result.status === 'invoked') return 'taken'
+        } catch (error) {
+            console.warn('[session-task] could not cancel the pending prompt', {
+                sessionId: promptSessionId,
+                taskId: task.id,
+                error: error instanceof Error ? error.message : error
+            })
+        }
+        return 'unconfirmed'
     }
 
     /** Move outliving jobs + redirects onto another session (pre-delete). */
@@ -2016,7 +2057,11 @@ export class SyncEngine {
         // Piggybacked on the inactivity tick; not a logical part of expireInactive
         // but shares its 5s cadence (avoids a second timer).
         const held = new Set(this.historyActionsInFlight)
-        for (const session of this.sessionCache.getSessions()) if (this.openCodeRewindPending(session.id)) held.add(session.id)
+        for (const session of this.sessionCache.getSessions()) {
+            if (this.openCodeRewindPending(session.id)) held.add(session.id)
+            // An archived session is neither released into nor woken (SessionWakeGate refuses it too).
+            if (session.metadata?.lifecycleState === 'archived') held.add(session.id)
+        }
         const maturedSessionIds = this.messageService.releaseMatureScheduledMessages(Date.now(), held)
         this.wakeSessionsWithMatureMessages(maturedSessionIds ?? [])
         // Same cadence as the scheduled-message scan above: one hub timer drives both.

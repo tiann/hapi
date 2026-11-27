@@ -38,7 +38,7 @@ describe('schema migration v36 to v37', () => {
             "SELECT name, type FROM sqlite_master WHERE tbl_name = 'session_tasks' AND name NOT LIKE 'sqlite_%' ORDER BY name"
         ).all() as Array<{ name: string; type: string }>
 
-        expect(version.user_version).toBe(37)
+        expect(version.user_version).toBe(38)
         expect(objects).toEqual([
             { name: 'idx_session_tasks_active_due', type: 'index' },
             { name: 'idx_session_tasks_pending', type: 'index' },
@@ -54,6 +54,7 @@ describe('schema migration v36 to v37', () => {
             items: ['a'],
             intervalMs: 60_000,
             maxRuns: null,
+            startAt: 1,
             nextRunAt: 1
         })
         migrated.sessions.deleteSession(sessionId, 'default')
@@ -70,6 +71,7 @@ describe('schema migration v36 to v37', () => {
             items: ['a'],
             intervalMs: 60_000,
             maxRuns: null,
+            startAt: 1,
             nextRunAt: 1
         })
         const internalDb = (store as unknown as { db: Database }).db

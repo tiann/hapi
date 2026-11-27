@@ -63,7 +63,7 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 37
+const SCHEMA_VERSION: number = 38
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -238,6 +238,23 @@ export class Store {
         })()
     }
 
+    /**
+     * Where a message sent to `sessionId` lands: the session itself, or the
+     * replacement an unfinished OpenCode /clear redirects new messages to.
+     * Null when the session does not exist.
+     */
+    resolveMessageTarget(sessionId: string): string | null {
+        const row = this.db.prepare('SELECT metadata FROM sessions WHERE id = ?').get(sessionId) as { metadata: string | null } | undefined
+        if (!row) return null
+        if (!row.metadata) return sessionId
+        const metadata = JSON.parse(row.metadata) as { opencodeClearOperation?: { replacementSessionId?: string; state?: string }, supersededBySessionId?: string }
+        return metadata.supersededBySessionId
+            ?? (metadata.opencodeClearOperation?.state !== 'aborted'
+                ? metadata.opencodeClearOperation?.replacementSessionId
+                : undefined)
+            ?? sessionId
+    }
+
     /** Resolve a durable OpenCode clear reservation and insert in one SQLite transaction. */
     addMessageForCurrentSession(
         sessionId: string,
@@ -246,17 +263,9 @@ export class Store {
         scheduledAt?: number | null
     ): { sessionId: string; message: StoredMessage; inserted: boolean } {
         return this.db.transaction(() => {
-            const row = this.db.prepare('SELECT namespace, metadata FROM sessions WHERE id = ?').get(sessionId) as { namespace: string; metadata: string | null } | undefined
+            const row = this.db.prepare('SELECT namespace FROM sessions WHERE id = ?').get(sessionId) as { namespace: string } | undefined
             if (!row) throw new Error('Message source session not found')
-            let targetSessionId = sessionId
-            if (row?.metadata) {
-                const metadata = JSON.parse(row.metadata) as { opencodeClearOperation?: { replacementSessionId?: string; state?: string }, supersededBySessionId?: string }
-                targetSessionId = metadata.supersededBySessionId
-                    ?? (metadata.opencodeClearOperation?.state !== 'aborted'
-                        ? metadata.opencodeClearOperation?.replacementSessionId
-                        : undefined)
-                    ?? sessionId
-            }
+            const targetSessionId = this.resolveMessageTarget(sessionId) as string
             if (targetSessionId !== sessionId) {
                 const target = this.db.prepare('SELECT 1 FROM sessions WHERE id = ? AND namespace = ?')
                     .get(targetSessionId, row.namespace)
@@ -401,7 +410,7 @@ export class Store {
             // #1489 wake-on-terminal at v33→v34; session_redirects at v34→v35;
             // passkey_credentials at v35→v36
             // (jobs remapped again after upstream took 28/29/30).
-            // session_tasks (repeat/queue schedules) at v36→v37.
+            // session_tasks (repeat/queue schedules) at v36→v37; start_at at v37→v38.
             21: () => this.migrateFromV21ToV22(),
             22: () => this.migrateFromV22ToV23(),
             23: () => this.migrateFromV23ToV24(),
@@ -418,6 +427,7 @@ export class Store {
             34: () => this.migrateFromV34ToV35(),
             35: () => this.migrateFromV35ToV36(),
             36: () => this.migrateFromV36ToV37(),
+            37: () => this.migrateFromV37ToV38(),
         })
 
         if (currentVersion === 0) {
@@ -463,6 +473,7 @@ export class Store {
             this.migrateFromV34ToV35()
             this.migrateFromV35ToV36()
             this.migrateFromV36ToV37()
+            this.migrateFromV37ToV38()
             this.ensureUsageScanParserVersion()
             this.setUserVersion(SCHEMA_VERSION)
             return
@@ -1415,6 +1426,24 @@ export class Store {
      */
     private migrateFromV36ToV37(): void {
         this.db.exec(SESSION_TASKS_TABLE_SQL)
+    }
+
+    /**
+     * v37→v38: `start_at` on session_tasks, so a task that has not run yet
+     * keeps its first-run time across a pause. A database that got the table
+     * from the v36→v37 step of this build already carries the column. Rows
+     * written before the column exists are dated from their creation, which
+     * is when phase 1 ran a task first. Idempotent.
+     * Rollback: `ALTER TABLE session_tasks DROP COLUMN start_at; PRAGMA user_version = 37;`
+     */
+    private migrateFromV37ToV38(): void {
+        const columns = this.db.prepare('PRAGMA table_info(session_tasks)').all() as Array<{ name: string }>
+        if (!columns.some((col) => col.name === 'start_at')) {
+            this.db.exec(`
+                ALTER TABLE session_tasks ADD COLUMN start_at INTEGER NOT NULL DEFAULT 0;
+                UPDATE session_tasks SET start_at = created_at;
+            `)
+        }
     }
 
     private ensureUsageScanParserVersion(): void {

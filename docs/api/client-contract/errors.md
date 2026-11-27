@@ -28,10 +28,11 @@ When no `code` is present, branch on status alone and treat the failure generica
 | 400 | — | All routes with Zod bodies (`{error: 'Invalid body'}`, some with `issues`) | Client bug — fix the request; do not retry |
 | 400 | — | Flavor gates (`sessions.ts`: wrong-flavor model/mode endpoints) | Hide the control for this flavor |
 | 400 | `scratchlist_attachment_invalid`, `scratchlist_entry_empty`, attachment-limit codes from `validateScratchlistAttachmentsForWrite` | `sessions.ts` scratchlist routes | Surface validation message |
+| 400 | `invalid_start_at` | `sessionTasks.ts` create | `startAt` is more than 60 s in the past or more than 366 days ahead — fix the first-run time |
 | 401 | — | Middleware (`middleware/auth.ts`) and `POST /api/auth` (`routes/auth.ts`) | See [Auth → 401 bodies](./auth.md#401-error-bodies); middleware 401 → silent re-auth once, `/api/auth` 401 → re-pair |
 | 403 | — | `guards.ts` (`Session access denied`, `Machine access denied`); owner-only routes (`usage.ts`, `storage.ts`, `hubSettings.ts`, `voice.ts`) | Namespace mismatch / not hub owner — hide the surface, don't retry |
 | 403 | `access_denied` | RPC-flow results mapped in `sessions.ts` (resume/reopen/cursor-chat-store) | Same as above |
-| 404 | — | `guards.ts` (`Session not found`, `Machine not found`); `permissions.ts` (`Request not found`); scratchlist entry/attachment; `events.ts` visibility (`Subscription not found`) | Stale reference — refresh the parent list |
+| 404 | — | `guards.ts` (`Session not found`, `Machine not found`); `permissions.ts` (`Request not found`); scratchlist entry/attachment; `events.ts` visibility (`Subscription not found`); `sessionTasks.ts` (`Task not found` — deleted or finished) | Stale reference — refresh the parent list (for a task: refetch `GET /api/sessions/:id/tasks`) |
 | 404 | `session_not_found`, `machine_not_found` | Coded variants from resume/reopen/restart-runner result mapping | Same |
 | 409 | `session_inactive` | `guards.ts` `requireSession(requireActive)` — send/steer/abort/approve/deny/config on an inactive session | Offer **Reopen** (the web router does exactly this on this code) |
 | 409 | `scratchlist_at_cap` | `sessions.ts` scratchlist create (200-entry cap) | Show cap notice; do not retry |
@@ -42,7 +43,7 @@ When no `code` is present, branch on status alone and treat the failure generica
 | 409 | `control_mode_not_applicable` | `sessions.ts` switch | Concurrent clients do not use ownership switching; hide takeover controls |
 | 409 | — (version conflict) | `sessions.ts` PATCH rename/summary, `machines.ts` PATCH rename — message mentions `version`/`concurrently`; **no code** | Concurrent edit — refetch and reapply |
 | 409 | — | `sessions.ts` delete-while-active, archive of plain inactive row, fork/rewind refusals, remote-only config on terminal-controlled sessions (`controlledByUser`) | Surface message; refresh session state |
-| 413 | — | `sessions.ts` upload (> 50 MB decoded), export too large (`{error, count, limit}`); `voice.ts` transcription (`Audio file too large`, 25 MB audio / ~26 MB body) | Reduce payload |
+| 413 | — | `sessions.ts` upload (> 50 MB decoded), export too large (`{error, count, limit}`); `voice.ts` transcription (`Audio file too large`, 25 MB audio / ~26 MB body); `sessionTasks.ts` create/PATCH (`Task request too large`, 1 MB) | Reduce payload |
 | 413 | `scratchlist_attachment_too_large` | `sessions.ts` scratchlist upload | Reduce attachment |
 | 422 | — | `sessions.ts` reopen with incomplete metadata (`{error, missing[]}`); title-suggestion pass-through (`TitleSuggestionError`, statuses 422/429/500/503) | Not reopenable / feature unavailable |
 | 429 | — | Title suggestion (provider rate limit) | Back off |
