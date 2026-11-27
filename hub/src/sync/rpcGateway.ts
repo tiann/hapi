@@ -686,13 +686,16 @@ export class RpcGateway {
     async prepareCursorImportForMachine(
         machineId: string,
         uuid: string,
-        workspacePath?: string | null
+        workspacePath?: string | null,
+        legacyResume?: { knownMessageCount: number }
     ): Promise<PrepareCursorImportRpcResponse> {
         // ACP verify can take tens of seconds; reuse the long list timeout.
         const result = await this.machineRpc(
             machineId,
             RPC_METHODS.PrepareCursorImport,
-            { uuid, workspacePath: workspacePath ?? null },
+            legacyResume
+                ? { legacyResume: { uuid, workspacePath, knownMessageCount: legacyResume.knownMessageCount } }
+                : { uuid, workspacePath: workspacePath ?? null },
             MODEL_LIST_RPC_TIMEOUT_MS
         )
         return PrepareCursorImportRpcResponseSchema.parse(result)

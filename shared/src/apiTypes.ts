@@ -414,16 +414,30 @@ export const ClaudeLocalSessionWithMessagesSchema = ClaudeLocalSessionSummarySch
 export type ClaudeLocalSessionSummary = z.infer<typeof ClaudeLocalSessionSummarySchema>
 export type ClaudeLocalSessionWithMessages = z.infer<typeof ClaudeLocalSessionWithMessagesSchema>
 
-export const PrepareCursorImportRpcRequestSchema = z.object({
+const cursorImportRequest = z.object({
     uuid: z.string().min(1),
     workspacePath: z.string().nullable().optional()
 })
+
+// A nested request has no top-level UUID, so older runners reject it
+// before their generic import handler can select or copy an unrelated store.
+export const PrepareCursorImportRpcRequestSchema = z.union([
+    z.object({
+        legacyResume: z.object({
+            uuid: z.string().min(1),
+            workspacePath: z.string().min(1),
+            knownMessageCount: z.number().int().nonnegative()
+        })
+    }).transform(({ legacyResume }) => legacyResume),
+    cursorImportRequest
+])
 
 export const PrepareCursorImportRpcResponseSchema = z.union([
     z.object({
         success: z.literal(true),
         uuid: z.string().min(1),
         sourceFormat: z.enum(['acp', 'legacy']),
+        verifiedLegacyCopy: z.literal(true).optional(),
         workspacePath: z.string().min(1),
         title: z.string(),
         hostName: z.string(),

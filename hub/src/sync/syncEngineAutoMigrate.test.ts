@@ -1,10 +1,11 @@
-import { describe, expect, it, beforeEach, afterEach } from 'bun:test'
+import { describe, expect, it, beforeEach, afterEach, spyOn } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Session } from '@hapi/protocol/types'
 import { Store } from '../store'
 import { RpcRegistry } from '../socket/rpcRegistry'
+import type { RpcGateway } from './rpcGateway'
 import { SyncEngine } from './syncEngine'
 
 /**
@@ -65,6 +66,8 @@ describe('SyncEngine.maybeAutoMigrateLegacyCursorSession', () => {
     })
 
     afterEach(() => {
+        engine.stop()
+        store.close()
         if (originalEnvFlag === undefined) {
             delete process.env.HAPI_CURSOR_LEGACY_AUTO_MIGRATE
         } else {
@@ -182,6 +185,126 @@ describe('SyncEngine.maybeAutoMigrateLegacyCursorSession', () => {
         })
         const out = await callHelper(session)
         expect(out).toBe(session)
+    })
+
+    describe('cold resume on a different host', () => {
+        const machineId = 'owner'
+        const host = 'remote.example.invalid'
+        const workspacePath = '/remote/project'
+        const uuid = '018c0000-0000-7000-a000-000000000001'
+        const verified = {
+            success: true as const, uuid, workspacePath, hostName: host, title: '', durationMs: 1,
+            sourceFormat: 'legacy' as const, verifiedLegacyCopy: true as const
+        }
+        function setup(metadata = {}, machineNamespace = 'default') {
+            const session = engine.getOrCreateSession('legacy', {
+                flavor: 'cursor', host, path: workspacePath, machineId, homeDir: '/home/owner', cursorSessionId: uuid,
+                cursorSessionProtocol: 'stream-json', ...metadata
+            }, null, 'default')
+            store.messages.addMessage(session.id, { role: 'user', content: 'synthetic history' })
+            engine.getOrCreateMachine(machineId, { host, homeDir: '/home/owner', platform: 'linux', happyCliVersion: '0.1.0' }, null, machineNamespace)
+            engine.handleMachineAlive({ machineId, time: Date.now() })
+
+            const gateway = (engine as unknown as { rpcGateway: RpcGateway }).rpcGateway
+            const prepare = spyOn(gateway, 'prepareCursorImportForMachine').mockResolvedValue(verified)
+            spyOn(gateway, 'getCursorChatStoreStatus').mockResolvedValue({ onDisk: true, store: 'legacy' })
+            const protocol = () => engine.getSession(session.id)?.metadata?.cursorSessionProtocol
+            let protocolAtSpawn: ReturnType<typeof protocol>
+            const spawn = spyOn(gateway, 'spawnSession').mockImplementation(async () => {
+                protocolAtSpawn = protocol()
+                return { type: 'success', sessionId: session.id }
+            })
+            spyOn(engine, 'waitForSessionActive').mockResolvedValue(true)
+            const resume = () => engine.resumeSession(session.id, 'default')
+            return { session, prepare, spawn, resume, protocol, protocolAtSpawn: () => protocolAtSpawn }
+        }
+
+        it('resumes the same native thread on its owner with ACP after verifying the copy', async () => {
+            const f = setup()
+            expect(await f.resume()).toEqual({ type: 'success', sessionId: f.session.id })
+            expect(f.prepare.mock.calls).toEqual([[machineId, uuid, workspacePath, { knownMessageCount: 1 }]])
+            expect(f.protocolAtSpawn()).toBe('acp')
+            const [args] = f.spawn.mock.calls
+            expect([args?.[0], args?.[1], args?.[8], args?.[12]]).toEqual([machineId, workspacePath, uuid, f.session.id])
+        })
+
+        it.each([
+            ['old runner response', { verifiedLegacyCopy: undefined }],
+            ['existing ACP destination', { sourceFormat: 'acp' as const }],
+            ['different native thread', { uuid: 'other-thread' }],
+            ['different workspace', { workspacePath: '/other' }],
+            ['different host', { hostName: 'other.example.invalid' }]
+        ] as const)('resumes with stream-json for %s', async (_label, change) => {
+            const f = setup()
+            f.prepare.mockResolvedValue({ ...verified, ...change })
+            expect((await f.resume()).type).toBe('success')
+            expect(f.prepare).toHaveBeenCalledTimes(1)
+            expect(f.protocolAtSpawn()).toBe('stream-json')
+            expect(engine.getSession(f.session.id)?.metadata?.cursorMigrationState).toBeUndefined()
+        })
+
+        it('can resume on an old runner without the prepare handler', async () => {
+            const f = setup()
+            f.prepare.mockRejectedValue(new Error('Unknown RPC method'))
+            expect((await f.resume()).type).toBe('success')
+            expect(f.protocolAtSpawn()).toBe('stream-json')
+        })
+
+        it.each([
+            ['missing owning id', { machineId: undefined }, 'default'],
+            ['wrong owning id', { machineId: 'elsewhere' }, 'default'],
+            ['owner in another namespace', {}, 'other'],
+            ['recorded home differs from owner', { homeDir: '/home/other' }, 'default'],
+            ['recorded host differs from owner', { host: 'elsewhere.example.invalid' }, 'default']
+        ] as const)('skips import for %s', async (_label, metadata, machineNamespace) => {
+            const f = setup(metadata, machineNamespace)
+            await f.resume()
+            expect(f.prepare).not.toHaveBeenCalled()
+            expect(f.protocol()).toBe('stream-json')
+        })
+
+        it('leaves an active remote session running', async () => {
+            const f = setup()
+            engine.handleSessionAlive({ sid: f.session.id, time: Date.now() })
+            expect((await f.resume()).type).toBe('success')
+            expect(f.prepare).not.toHaveBeenCalled()
+            expect(f.spawn).not.toHaveBeenCalled()
+            expect(f.protocol()).toBe('stream-json')
+        })
+
+        it('skips the flip and spawn if the session becomes active during prepare', async () => {
+            const f = setup()
+            f.prepare.mockImplementation(async () => {
+                engine.handleSessionAlive({ sid: f.session.id, time: Date.now() })
+                return verified
+            })
+            expect((await f.resume()).type).toBe('success')
+            expect(f.prepare).toHaveBeenCalledTimes(1)
+            expect(f.spawn).not.toHaveBeenCalled()
+            expect(f.protocol()).toBe('stream-json')
+        })
+
+        it('honors the opt-out on the remote cold-resume path', async () => {
+            process.env.HAPI_CURSOR_LEGACY_AUTO_MIGRATE = 'off'
+            const f = setup()
+            expect((await f.resume()).type).toBe('success')
+            expect(f.prepare).not.toHaveBeenCalled()
+            expect(f.protocolAtSpawn()).toBe('stream-json')
+        })
+
+        it('discards a verified reply if the workspace moved during prepare', async () => {
+            const f = setup()
+            f.prepare.mockImplementation(async () => {
+                const row = engine.getSession(f.session.id)!
+                store.sessions.updateSessionMetadata(row.id, { ...row.metadata!, path: '/moved' }, row.metadataVersion, 'default')
+                engine.handleRealtimeEvent({ type: 'session-updated', sessionId: row.id, namespace: 'default' })
+                return verified
+            })
+            await f.resume()
+            expect(f.prepare).toHaveBeenCalledTimes(1)
+            expect(engine.getSession(f.session.id)?.metadata?.path).toBe('/moved')
+            expect(f.protocol()).toBe('stream-json')
+        })
     })
 
     /**
