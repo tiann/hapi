@@ -19,6 +19,10 @@ import {
     type LaunchEffort,
     type NewSessionServiceTier
 } from './types'
+import { isYoloStylePermissionMode } from '@/lib/permissionModes'
+
+// Lives in the lib so the chat can warn about it too, without importing the New Session form.
+export { isYoloStylePermissionMode }
 
 const AGENT_STORAGE_KEY = 'hapi:newSession:agent'
 const YOLO_STORAGE_KEY = 'hapi:newSession:yolo'
@@ -36,17 +40,6 @@ export type PreferredLaunchSettings = {
 // Only launchable flavors are valid defaults; a stale 'gemini' preference
 // (no longer creatable) falls back to 'claude'.
 const VALID_AGENTS = CREATABLE_AGENT_FLAVORS
-
-const YOLO_STYLE_PERMISSION_MODES: ReadonlySet<PermissionMode> = new Set([
-    'yolo',
-    'safe-yolo',
-    'bypassPermissions',
-    'always-proceed'
-])
-
-export function isYoloStylePermissionMode(mode: PermissionMode): boolean {
-    return YOLO_STYLE_PERMISSION_MODES.has(mode)
-}
 
 /**
  * Map hub Settings → General peerSpawnDefaults into New Session form seeds

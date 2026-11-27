@@ -1,6 +1,6 @@
 import { ComposerPrimitive, useAui } from '@assistant-ui/react'
 import type { ConversationStatus } from '@/realtime/types'
-import type { CreateSessionTaskRequest } from '@hapi/protocol'
+import type { CreateSessionTaskRequest, PermissionMode } from '@hapi/protocol'
 import { useTranslation } from '@/lib/use-translation'
 import { ScheduleIcon } from '@/components/icons'
 import { AttachmentPicker } from './AttachmentPicker'
@@ -823,6 +823,8 @@ export function ComposerButtons(props: {
         composerDraft: string
         /** Empties the composer once its text became a task, when it still holds that text. */
         onComposerDraftConsumed: (text: string) => void
+        /** The session's stored permission mode, which a task's prompts run with. */
+        permissionMode?: PermissionMode
     }
     // The backend rejects scheduled-send + attachment combinations (the per-CLI
     // upload directory is torn down before a mature emit could read the files).
@@ -1122,7 +1124,8 @@ export function ComposerButtons(props: {
                                     createTask: props.sessionTasks.createTask,
                                     consumeComposerDraft: props.sessionTasks.onComposerDraftConsumed,
                                     drafts: taskDrafts,
-                                    onDraftsChange: setTaskDrafts
+                                    onDraftsChange: setTaskDrafts,
+                                    permissionMode: props.sessionTasks.permissionMode
                                 } : undefined}
                             />
                         )}

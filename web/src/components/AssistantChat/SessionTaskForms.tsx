@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { CreateSessionTaskRequest } from '@hapi/protocol'
+import type { CreateSessionTaskRequest, PermissionMode } from '@hapi/protocol'
 import { useTranslation } from '@/lib/use-translation'
 import {
     buildQueueRequest,
@@ -18,6 +18,7 @@ import {
     QueueHints,
     RunLimitField,
     TaskFormError,
+    TaskPermissionHint,
     TaskPromptTextarea,
     useMountedFlag,
     type TaskFailure
@@ -36,7 +37,7 @@ export type CreateTaskFromForm = (
  * `createTask`. A create that completes after the form is gone (the panel
  * closed) still consumes the composer text it used, but touches nothing else.
  */
-export function RepeatTaskForm({ draft, onDraftChange, composerDraft, createTask, onCreated }: {
+export function RepeatTaskForm({ draft, onDraftChange, composerDraft, createTask, onCreated, permissionMode }: {
     draft: RepeatTaskDraft
     onDraftChange: (next: RepeatTaskDraft) => void
     /** The composer's text; it is the message until the user types their own. */
@@ -44,6 +45,8 @@ export function RepeatTaskForm({ draft, onDraftChange, composerDraft, createTask
     createTask: CreateTaskFromForm
     /** Called once the task exists, while the form is still on screen. */
     onCreated: () => void
+    /** The session's stored permission mode, which the task's prompts run with. */
+    permissionMode: PermissionMode | undefined
 }) {
     const { t } = useTranslation()
     const [failure, setFailure] = useState<TaskFailure | null>(null)
@@ -94,6 +97,7 @@ export function RepeatTaskForm({ draft, onDraftChange, composerDraft, createTask
             <p className="text-xs text-[var(--app-hint)]">{t('composer.taskHintSkip')}</p>
             <FirstRunField id="repeat-task-first-run" value={draft.firstRunAt} onChange={(firstRunAt) => update({ firstRunAt })} disabled={busy} />
             <RunLimitField id="repeat-task-runs" value={draft.stopAfterRuns} onChange={(stopAfterRuns) => update({ stopAfterRuns })} disabled={busy} />
+            <TaskPermissionHint permissionMode={permissionMode} />
             <TaskFormError failure={failure} fallbackKey="composer.taskCreateFailed" />
             <button
                 type="button"
@@ -107,7 +111,7 @@ export function RepeatTaskForm({ draft, onDraftChange, composerDraft, createTask
     )
 }
 
-export function QueueTaskForm({ draft, onDraftChange, composerDraft, createTask, onCreated }: {
+export function QueueTaskForm({ draft, onDraftChange, composerDraft, createTask, onCreated, permissionMode }: {
     draft: QueueTaskDraft
     onDraftChange: (next: QueueTaskDraft) => void
     /** The composer's text; it is the first prompt until the user types one. */
@@ -115,6 +119,8 @@ export function QueueTaskForm({ draft, onDraftChange, composerDraft, createTask,
     createTask: CreateTaskFromForm
     /** Called once the task exists, while the form is still on screen. */
     onCreated: () => void
+    /** The session's stored permission mode, which the task's prompts run with. */
+    permissionMode: PermissionMode | undefined
 }) {
     const { t } = useTranslation()
     const [failure, setFailure] = useState<TaskFailure | null>(null)
@@ -162,6 +168,7 @@ export function QueueTaskForm({ draft, onDraftChange, composerDraft, createTask,
             <IntervalField id="queue-task-interval" label="composer.taskGap" value={draft.interval} onChange={(interval) => update({ interval })} disabled={busy} />
             <FirstRunField id="queue-task-first-run" value={draft.firstRunAt} onChange={(firstRunAt) => update({ firstRunAt })} disabled={busy} />
             <p className="text-xs text-[var(--app-hint)]">{t('composer.taskHintWake')}</p>
+            <TaskPermissionHint permissionMode={permissionMode} />
             <TaskFormError failure={failure} fallbackKey="composer.taskCreateFailed" />
             <button
                 type="button"

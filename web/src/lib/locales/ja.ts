@@ -927,6 +927,7 @@ export default {
   'composer.taskCreateRepeat': '繰り返しタスクを作成',
   'composer.taskHintSkip': '実行時刻にエージェントがまだ作業中なら、その回はスキップされます。',
   'composer.taskHintWake': 'セッションが動いていなければ、hub がまず再開します。',
+  'composer.taskHintPermissionMode': 'このセッションの権限モード（{mode}）で実行され、確認を求めずに進みます。',
   'composer.taskQueueMessages': 'メッセージ',
   'composer.taskQueuePrompt': 'メッセージ {n}',
   'composer.taskQueueHint': 'この順序で 1 件ずつ送信します。',

@@ -93,6 +93,8 @@ How the hub runs them:
 
 In the queued-message bar, a prompt a task sent is marked **From task**. It offers **Skip this message** (the task moves on to the next one and records the skip) and, when its delivery is uncertain, **Retry** — but not **Edit** or **Steer**: the task tracks that row. Once it has gone out, the message keeps the **From task** mark in the conversation, so it does not read as something you typed.
 
+Tasks run with the session's permission mode. Where that mode does not ask before it acts, the Repeat and Queue forms say so.
+
 Tasks are text-only and have no 7-day limit. The iOS and Android apps cannot create them yet; prompts a task sends show up in their threads like any other message (without the **From task** mark), and the session list there does not mark them yet.
 
 ## Model and effort

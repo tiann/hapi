@@ -841,6 +841,7 @@ export default {
   'composer.taskCreateRepeat': 'Создать задачу повтора',
   'composer.taskHintSkip': 'Если агент всё ещё занят в момент запуска, этот запуск пропускается.',
   'composer.taskHintWake': 'Если сессия не запущена, hub сначала возобновит её.',
+  'composer.taskHintPermissionMode': 'Выполняется с режимом разрешений этой сессии ({mode}), не спрашивая подтверждения.',
   'composer.taskQueueMessages': 'Сообщения',
   'composer.taskQueuePrompt': 'Сообщение {n}',
   'composer.taskQueueHint': 'Отправляются по одному в этом порядке.',

@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useEffect, useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { PERMISSION_MODE_LABELS } from '@hapi/protocol'
 import { ApiError } from '@/api/client'
 import { I18nProvider } from '@/lib/i18n-context'
 import { EMPTY_QUEUE_DRAFT, EMPTY_REPEAT_DRAFT } from '@/lib/sessionTasks'
@@ -107,7 +108,8 @@ describe('ScheduleTimePicker task modes', () => {
                                 createTask,
                                 consumeComposerDraft,
                                 drafts,
-                                onDraftsChange: setDrafts
+                                onDraftsChange: setDrafts,
+                                permissionMode: options?.permissionMode
                             }}
                         />
                     ) : null}
@@ -161,6 +163,36 @@ describe('ScheduleTimePicker task modes', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Queue' }))
         expect(screen.getByRole('dialog', { name: 'Queue' })).toBeTruthy()
     })
+
+    it.each(['yolo', 'bypassPermissions', 'always-proceed', 'safe-yolo'] as const)(
+        'says in the Repeat and Queue forms that a task runs with a %s permission mode, which does not ask first',
+        (permissionMode) => {
+            renderPicker({ permissionMode })
+            fireEvent.click(screen.getByRole('button', { name: 'Repeat' }))
+            const hint = screen.getByText(`Runs with this session's permission mode (${PERMISSION_MODE_LABELS[permissionMode]}), which acts without asking first.`)
+            expect(hint).toHaveClass('text-[var(--app-warning-text)]')
+            // Not a validation error: nothing was submitted.
+            expect(screen.queryByRole('alert')).toBeNull()
+            fireEvent.click(screen.getByRole('button', { name: 'Queue' }))
+            expect(screen.getByText(`Runs with this session's permission mode (${PERMISSION_MODE_LABELS[permissionMode]}), which acts without asking first.`)).toBeTruthy()
+            // Scheduled send has no such line: it is not a form that hands prompts to the hub on its own.
+            fireEvent.click(screen.getByRole('button', { name: 'Send later' }))
+            expect(screen.queryByText(/permission mode/)).toBeNull()
+        }
+    )
+
+    it.each([undefined, 'default', 'acceptEdits', 'plan'] as const)(
+        'says nothing about permissions in the task forms with a %s permission mode',
+        (permissionMode) => {
+            renderPicker({ permissionMode })
+            fireEvent.click(screen.getByRole('button', { name: 'Repeat' }))
+            expect(screen.getByRole('dialog', { name: 'Repeat' })).toBeTruthy()
+            expect(screen.queryByText(/permission mode/)).toBeNull()
+            fireEvent.click(screen.getByRole('button', { name: 'Queue' }))
+            expect(screen.getByRole('dialog', { name: 'Queue' })).toBeTruthy()
+            expect(screen.queryByText(/permission mode/)).toBeNull()
+        }
+    )
 
     it('associates the form\'s labels and groups with their fields', () => {
         renderPicker({ composerDraft: 'check progress' })

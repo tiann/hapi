@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
-import type { CreateSessionTaskRequest } from '@hapi/protocol'
+import type { CreateSessionTaskRequest, PermissionMode } from '@hapi/protocol'
 import { useTranslation } from '@/lib/use-translation'
 import {
     EMPTY_QUEUE_DRAFT,
@@ -28,6 +28,8 @@ export type SessionTaskPickerBridge = {
     drafts: SessionTaskDrafts
     /** Takes an updater, so resetting one mode's draft never overwrites the other's. */
     onDraftsChange: (update: (previous: SessionTaskDrafts) => SessionTaskDrafts) => void
+    /** The session's stored permission mode, which the task's prompts run with; the forms say so where it does not ask first. */
+    permissionMode?: PermissionMode
 }
 
 /** Desktop keyboards get focus moved into the panel; a finger never opened a keyboard to begin with. */
@@ -504,6 +506,7 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
                             onDraftChange={(repeat) => tasks.onDraftsChange((previous) => ({ ...previous, repeat }))}
                             composerDraft={tasks.composerDraft}
                             createTask={createTask}
+                            permissionMode={tasks.permissionMode}
                             onCreated={() => {
                                 tasks.onDraftsChange((previous) => ({ ...previous, repeat: EMPTY_REPEAT_DRAFT }))
                                 close()
@@ -515,6 +518,7 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
                             composerDraft={tasks.composerDraft}
                             onDraftChange={(queue) => tasks.onDraftsChange((previous) => ({ ...previous, queue }))}
                             createTask={createTask}
+                            permissionMode={tasks.permissionMode}
                             onCreated={() => {
                                 tasks.onDraftsChange((previous) => ({ ...previous, queue: EMPTY_QUEUE_DRAFT }))
                                 close()

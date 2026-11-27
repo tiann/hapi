@@ -1,12 +1,15 @@
 import { useEffect, useLayoutEffect, useRef, type KeyboardEvent } from 'react'
 import {
+    getPermissionModeLabel,
     SESSION_TASK_MAX_ACTIVE_PER_SESSION,
     SESSION_TASK_MAX_INTERVAL_MS,
     SESSION_TASK_MAX_ITEMS,
     SESSION_TASK_MAX_START_OFFSET_MS,
-    SESSION_TASK_MAX_TEXT_LENGTH
+    SESSION_TASK_MAX_TEXT_LENGTH,
+    type PermissionMode
 } from '@hapi/protocol'
 import { ApiError, apiErrorMessage } from '@/api/client'
+import { isYoloStylePermissionMode } from '@/lib/permissionModes'
 import {
     formatTaskIntervalCount,
     maxDateTimeLocal,
@@ -399,6 +402,21 @@ export function TaskFormError({ failure, fallbackKey }: { failure: TaskFailure |
     if (!failure) return null
     return (
         <p role="alert" className="text-xs text-red-500">{taskFailureText(failure, t, fallbackKey)}</p>
+    )
+}
+
+/**
+ * A task sends its prompts with the session's stored permission mode, which
+ * the hub also resumes the session with. Said in the forms only where that
+ * mode does not ask before it acts: one the web calls YOLO.
+ */
+export function TaskPermissionHint({ permissionMode }: { permissionMode: PermissionMode | undefined }) {
+    const { t } = useTranslation()
+    if (!permissionMode || !isYoloStylePermissionMode(permissionMode)) return null
+    return (
+        <p className="text-xs text-[var(--app-warning-text)]">
+            {t('composer.taskHintPermissionMode', { mode: getPermissionModeLabel(permissionMode) })}
+        </p>
     )
 }
 

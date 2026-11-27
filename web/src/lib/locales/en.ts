@@ -972,6 +972,7 @@ export default {
   'composer.taskCreateRepeat': 'Create repeat task',
   'composer.taskHintSkip': 'If the agent is still busy when a run is due, that run is skipped.',
   'composer.taskHintWake': 'If the session is not running, the hub resumes it first.',
+  'composer.taskHintPermissionMode': 'Runs with this session\'s permission mode ({mode}), which acts without asking first.',
   'composer.taskQueueMessages': 'Messages',
   'composer.taskQueuePrompt': 'Message {n}',
   'composer.taskQueueHint': 'Sent one at a time, in this order.',

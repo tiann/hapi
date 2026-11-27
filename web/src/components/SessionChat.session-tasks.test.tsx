@@ -25,14 +25,14 @@ if (typeof Element.prototype.scrollTo !== 'function') {
     Element.prototype.scrollTo = function scrollTo() {}
 }
 
-function makeSession(): Session {
+function makeSession(permissionMode: Session['permissionMode'] = 'default'): Session {
     return {
         id: 'ses-1',
         active: true,
         thinking: false,
         activeTurnStartedAt: null,
         metadata: { flavor: 'claude', path: '/repo', host: 'machine' },
-        permissionMode: 'default'
+        permissionMode
     } as unknown as Session
 }
 
@@ -41,7 +41,7 @@ const rows: DecryptedMessage[] = [
         content: { role: 'user', content: { type: 'text', text: 'first question' } } }
 ]
 
-function shell(api: Record<string, unknown>) {
+function shell(api: Record<string, unknown>, permissionMode: Session['permissionMode'] = 'default') {
     api.fetchTranscriptionProviders = vi.fn(async () => [])
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     return (
@@ -50,7 +50,7 @@ function shell(api: Record<string, unknown>) {
                 <ToastProvider>
                     <SessionChat
                         api={api as unknown as ApiClient}
-                        session={makeSession()}
+                        session={makeSession(permissionMode)}
                         messages={rows}
                         messagesWarning={null}
                         hasMoreMessages={false}
@@ -113,5 +113,25 @@ describe('session tasks in the chat', () => {
         // No task bar, and no error text leaked into the chat.
         expect(screen.queryByText('Tasks')).toBeNull()
         expect(screen.queryByRole('alert')).toBeNull()
+    })
+
+    it('says in the Repeat and Queue forms that a task runs with the session\'s stored permission mode, when that mode does not ask first', async () => {
+        const api = { listSessionTasks: vi.fn(async () => ({ tasks: [] })) }
+        render(shell(api, 'bypassPermissions'))
+        fireEvent.click(await screen.findByRole('button', { name: 'Schedule and tasks' }))
+        const hint = "Runs with this session's permission mode (Yolo), which acts without asking first."
+        fireEvent.click(await screen.findByRole('button', { name: 'Repeat' }))
+        expect(await screen.findByText(hint)).toBeTruthy()
+        fireEvent.click(screen.getByRole('button', { name: 'Queue' }))
+        expect(await screen.findByText(hint)).toBeTruthy()
+    })
+
+    it('says nothing about permissions in the task forms of a session that asks before it acts', async () => {
+        const api = { listSessionTasks: vi.fn(async () => ({ tasks: [] })) }
+        render(shell(api, 'acceptEdits'))
+        fireEvent.click(await screen.findByRole('button', { name: 'Schedule and tasks' }))
+        fireEvent.click(await screen.findByRole('button', { name: 'Repeat' }))
+        expect(await screen.findByRole('dialog', { name: 'Repeat' })).toBeTruthy()
+        expect(screen.queryByText(/permission mode/)).toBeNull()
     })
 })

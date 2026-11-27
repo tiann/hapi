@@ -2574,7 +2574,9 @@ export function HappyComposer(props: {
                                     // Only the text that became the task; anything typed since is a new message.
                                     onComposerDraftConsumed: (text) => {
                                         if (api.composer().getState().text === text) setComposerText('')
-                                    }
+                                    },
+                                    // A task's prompts run with the session's permission mode; the forms warn where it does not ask first.
+                                    permissionMode
                                 } : undefined}
                                 hasAttachments={blocksScheduling}
                                 attachmentsEnabled={props.attachmentsEnabled}

@@ -970,6 +970,7 @@ export default {
   'composer.taskCreateRepeat': '创建循环任务',
   'composer.taskHintSkip': '如果到点时代理仍在忙，该次执行会被跳过。',
   'composer.taskHintWake': '如果会话未在运行，hub 会先把它恢复。',
+  'composer.taskHintPermissionMode': '按会话当前的权限模式（{mode}）运行，不会先征求确认。',
   'composer.taskQueueMessages': '消息',
   'composer.taskQueuePrompt': '第 {n} 条消息',
   'composer.taskQueueHint': '按这个顺序逐条发送。',
