@@ -1,6 +1,6 @@
 import { HubClock } from '@/lib/hubClock'
 import type { AttachedJob } from '@hapi/protocol'
-import type { BranchConversationRequest, BranchConversationResponse, CreateSessionFolderResponse, SessionFolder, SessionFoldersResponse } from '@hapi/protocol/apiTypes'
+import { SessionFoldersResponseSchema, type BranchConversationRequest, type BranchConversationResponse, type CreateSessionFolderResponse, type SessionFolder, type SessionFoldersResponse } from '@hapi/protocol/apiTypes'
 import { isAuthRejectionStatus } from '@/lib/authConnection'
 import type {
     AttachmentMetadata,
@@ -440,7 +440,7 @@ export class ApiClient {
     }
 
     async getSessionFolders(): Promise<SessionFoldersResponse> {
-        return this.request('/api/session-folders')
+        return SessionFoldersResponseSchema.parse(await this.request('/api/session-folders'))
     }
 
     async createSessionFolder(name: string, parentId: string | null): Promise<SessionFolder> {

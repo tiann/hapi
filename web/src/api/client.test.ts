@@ -40,6 +40,11 @@ describe('ApiClient error mapping', () => {
         expect(apiErrorMessage(undefined, 'fallback')).toBe('fallback')
     })
 
+    it('rejects a generic response from a Hub without the session folders endpoint', async () => {
+        fetchMock.mockResolvedValueOnce(Response.json({ success: true }))
+        await expect(new ApiClient('test-token').getSessionFolders()).rejects.toHaveProperty('name', 'ZodError')
+    })
+
     it('passes an optional maxBytes bound to session file reads', async () => {
         fetchMock.mockResolvedValueOnce(
             new Response(JSON.stringify({ success: true, content: '' }), { status: 200 })

@@ -145,10 +145,18 @@ export type AuthResponse = {
 }
 
 export type SessionsResponse = { sessions: SessionSummary[]; serverTime?: number }
-export type SessionFolder = { id: string; name: string; parentId: string | null }
-export type SessionFoldersResponse = { folders: SessionFolder[]; assignments: Record<string, string> }
-
 const SessionFolderIdSchema = z.string().uuid()
+const SessionFolderSchema = z.object({
+    id: SessionFolderIdSchema,
+    name: z.string(),
+    parentId: SessionFolderIdSchema.nullable()
+})
+export type SessionFolder = z.infer<typeof SessionFolderSchema>
+export const SessionFoldersResponseSchema = z.object({
+    folders: z.array(SessionFolderSchema),
+    assignments: z.record(z.string(), SessionFolderIdSchema)
+})
+export type SessionFoldersResponse = z.infer<typeof SessionFoldersResponseSchema>
 export const CreateSessionFolderRequestSchema = z.object({
     name: z.string().trim().min(1).max(100),
     parentId: SessionFolderIdSchema.nullable()
