@@ -14,7 +14,7 @@ This page covers the web app and PWA, plus the iOS and Android apps where they d
 
 A message you send while the agent is mid-turn is **queued**. It is not lost or dropped — it waits in a small bar above the composer and is delivered when the current turn ends.
 
-Each queued row has:
+Each queued row has (a prompt sent by a repeat or queue task is the exception, see [Repeat and queue tasks](#repeat-and-queue-tasks)):
 
 - **Edit** — cancels the queued message and puts its text (and schedule, if any) back in the composer.
 - **Cancel** — removes it.
@@ -63,25 +63,37 @@ Scheduled send is available on web, iOS (clock menu with the same presets plus *
 
 ## Repeat and queue tasks
 
-The same clock panel has two more modes on the web app. Both hand a schedule to the hub, which then sends the prompts into the conversation on its own, as if you had typed them.
+The same clock button (**Schedule and tasks**) has two more modes on the web app. Both hand a schedule to the hub, which then sends the prompts into the conversation on its own, as if you had typed them.
 
-- **Repeat**: one message, sent on a fixed interval (at least one minute). It starts now or at a time you pick, and runs until you pause or delete it — or, if you set a number of runs, until it has run that many times.
-- **Queue**: a list of messages, one per line, sent in order. The first goes out at once (or at the time you pick); each following one goes out one interval after the agent took the previous one.
+- **Repeat**: one message, sent on a fixed interval (at least one minute, at most 30 days). It starts now or at a time you pick (within a year), and runs until you pause or delete it — or, if you set a number of runs, until it has run that many times.
+- **Queue**: a list of messages, sent in order. The first goes out at once (or at the time you pick); each following one goes out one interval after the agent **took** the previous one, so the gap is measured from the agent, not from the send.
 
-A **Repeat** task uses what is already in the composer as its message until you type something else in the panel.
+A **Repeat** task uses what is already in the composer as its message until you type something else in the panel. A **Queue** offers the composer's text as its first message the same way: the first row shows it as a placeholder, and the composer is emptied once the queue exists.
 
-Tasks are listed in the **Tasks** bar above the composer, with what runs next and a **Pause / Resume** and **Delete** button per task. The prompts themselves appear in the thread and in the queued-message bar like any message you send.
+The queue editor has one field per message with **Add message**, and remove, move up and move down per row. A message may span several lines — lists, code, several paragraphs — because **Enter inserts a line break** in a prompt field (the task is created by its button, or with Ctrl/Cmd+Enter). Blank rows are ignored; a queue needs at least one message and holds at most 50.
+
+Tasks are listed in the **Tasks** bar above the composer, with what runs next and these actions per task:
+
+- **Pause / Resume** stops new prompts or continues. A prompt already sent stays in the queue and still counts.
+- **Run now** sends the next prompt at once, also on a paused task (which then stays paused). It is withheld while one of the task's prompts is still waiting for the agent: a task never has more than one prompt out.
+- **Edit** opens the task's fields under the row — the same fields as the clock panel's form. For a **Repeat** task: the message, the interval and the run limit. For a **Queue**: only the messages not sent yet, and the gap; the ones already sent stay as they are. **Save changes** sends only what you changed; **Escape** closes the editor.
+- **Delete** asks first (**Keep task / Delete**), because the messages not sent yet exist only in the task. Deleting also cancels a prompt the agent has not taken yet; if that cancel could not be confirmed, a note says so and the row stays in the queued-message bar for you to retry or discard.
+
+**History** in the bar's header shows what the tasks did: every prompt sent (and whether the agent took it), every skipped slot, every failed run with its reason, and prompts cancelled. Runs stay after their task is gone, so a finished queue or repeat task can still be looked up there; the bar stays for the history alone.
+
+In the session list, a session with active tasks shows a repeat symbol next to the scheduled-message clock, with the task count and the next run on hover.
 
 How the hub runs them:
 
-- A task never has more than one prompt waiting. A **Repeat** task that comes due while its previous prompt is still queued skips that slot instead of stacking a second one on a busy agent.
+- A task never has more than one prompt waiting. A **Repeat** task that comes due while its previous prompt is still queued skips that slot instead of stacking a second one on a busy agent. The skipped slot shows in the history.
+- Each message goes out one interval after the agent took the previous one. If the session is not running when a task is due, the hub resumes it first; an archived session is never woken, and its tasks wait until it is reopened.
 - A hub restart loses nothing: a run that was missed while the hub was down goes out once when it is back, and a **Repeat** task then returns to its original grid.
-- **Pause** stops new prompts. One already sent stays in the queue and still counts.
-- **Delete** also cancels a prompt the agent has not taken yet.
-- If the session's machine is offline, the task waits and shows **Sends once the machine is back online**. If the session cannot be resumed, the task pauses itself and says so.
-- A finished task removes itself from the list; its prompts stay in the conversation.
+- If the session's machine is offline, the task waits and shows **Sends once the machine is back online**. Other reasons are shown the same way — the session cannot be resumed right now, the session is archived, the prompt was sent but whether the agent took it is unknown (retry or discard it in the queued messages), the agent has not taken the prompt, or the send failed. None of these pauses the task: it stays due and goes on by itself once the cause is gone.
+- A finished task removes itself from the list; its prompts stay in the conversation and its runs in the history. A session may hold at most 20 active tasks.
 
-Tasks are text-only and have no 7-day limit. The iOS and Android apps cannot create them yet; prompts a task sends show up in their threads like any other message.
+In the queued-message bar, a prompt a task sent is marked **From task**. It offers **Skip this message** (the task moves on to the next one and records the skip) and, when its delivery is uncertain, **Retry** — but not **Edit** or **Steer**: the task tracks that row.
+
+Tasks are text-only and have no 7-day limit. The iOS and Android apps cannot create them yet; prompts a task sends show up in their threads like any other message, and the session list there does not mark them yet.
 
 ## Model and effort
 

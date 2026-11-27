@@ -954,3 +954,37 @@ describe('SessionRowSummary model-error + attention', () => {
         expect(screen.queryByLabelText(/Model error/i)).toBeNull()
     })
 })
+
+describe('SessionRowSummary task indicator', () => {
+    it('marks a session that has active tasks, next to the scheduled-message clock', () => {
+        renderWithI18n(
+            <SessionRowSummary
+                session={makeSummary({ activeTaskCount: 3, nextTaskRunAt: Date.now() + 20 * 60_000, futureScheduledMessageCount: 1 })}
+                showDetailedStatus
+                nestedTooltips={false}
+            />
+        )
+        const tasks = screen.getByLabelText('3 tasks')
+        expect(tasks.tagName).toBe('SPAN')
+        expect(screen.getByLabelText('Scheduled message pending')).toBeTruthy()
+        // Both sit in the same indicator cluster.
+        expect(tasks.parentElement).toBe(screen.getByLabelText('Scheduled message pending').parentElement)
+    })
+
+    it('uses the singular for one task and shows nothing without tasks', () => {
+        const view = renderWithI18n(
+            <SessionRowSummary
+                session={makeSummary({ activeTaskCount: 1, nextTaskRunAt: null })}
+                showDetailedStatus
+                nestedTooltips={false}
+            />
+        )
+        expect(screen.getByLabelText('1 task')).toBeTruthy()
+        view.rerender(
+            <I18nProvider>
+                <SessionRowSummary session={makeSummary({ activeTaskCount: 0 })} showDetailedStatus nestedTooltips={false} />
+            </I18nProvider>
+        )
+        expect(screen.queryByLabelText(/^\d+ tasks?$/)).toBeNull()
+    })
+})

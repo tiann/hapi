@@ -3,7 +3,9 @@ import {
     formatFutureRelativeTime,
     formatScheduledFireLabel,
     formatScheduledTime,
-    formatScheduledTooltipDetail
+    formatScheduledTooltipDetail,
+    formatTaskTooltipDetail,
+    formatTaskTooltipLabel
 } from './scheduledTime'
 
 const t = (key: string, params?: Record<string, string | number>) => {
@@ -16,6 +18,10 @@ const t = (key: string, params?: Record<string, string | number>) => {
         'session.tooltip.scheduled.body': 'Will fire when due.',
         'session.tooltip.scheduled.fires': 'Fires {when}',
         'session.tooltip.scheduled.next': 'Next {when} · +{more} more',
+        'tasks.countOne': '1 task',
+        'tasks.count': '{count} tasks',
+        'tasks.nextRun': 'Next {when}',
+        'tasks.tooltipWaiting': 'Waiting for the agent to take a prompt',
     }
     let out = table[key] ?? key
     if (params) {
@@ -73,5 +79,20 @@ describe('formatScheduledTooltipDetail', () => {
             futureScheduledMessageCount: 1,
             nextScheduledAt: null
         }, t)).toBe('Will fire when due.')
+    })
+})
+
+describe('task tooltip', () => {
+    it('counts the tasks with the right plural and names the next run', () => {
+        expect(formatTaskTooltipLabel({ activeTaskCount: 1 }, t)).toBe('1 task')
+        expect(formatTaskTooltipLabel({ activeTaskCount: 3 }, t)).toBe('3 tasks')
+        const at = Date.now() + 20 * 60_000
+        const body = formatTaskTooltipDetail({ nextTaskRunAt: at }, t)
+        expect(body).toContain('Next in 20m')
+        expect(body).toContain(formatScheduledTime(at))
+    })
+
+    it('says every task is waiting on a prompt when none has a next run', () => {
+        expect(formatTaskTooltipDetail({ nextTaskRunAt: null }, t)).toBe('Waiting for the agent to take a prompt')
     })
 })

@@ -60,6 +60,7 @@ class FakeEventSource {
 
 function renderUseSSE(options?: {
     onDisconnect?: (reason: string) => void
+    scope?: 'global' | 'full'
 }) {
     const queryClient = new QueryClient()
     const wrapper = ({ children }: { children: ReactNode }) =>
@@ -69,6 +70,7 @@ function renderUseSSE(options?: {
         token: 'test-token',
         baseUrl: 'http://hub.test',
         subscription: { all: true },
+        scope: options?.scope,
         onEvent: () => {},
         onDisconnect: options?.onDisconnect
     }), { wrapper })
@@ -189,6 +191,37 @@ describe('useSSE scratchlist status invalidation', () => {
         vi.useRealTimers()
     })
 
+    it.each(['global', 'full'] as const)('refetches the tasks (and, by prefix, their history) and the session list on session-tasks-changed under scope %s', (scope) => {
+        const { unmount, queryClient } = renderUseSSE({ scope })
+        const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries').mockResolvedValue(undefined)
+
+        act(() => {
+            FakeEventSource.instances[0]?.simulateMessage({ type: 'session-tasks-changed', sessionId: 'session-1' })
+            vi.advanceTimersByTime(20)
+        })
+
+        // The tasks key covers the run history, which is keyed under it.
+        expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.sessionTasks('session-1') })
+        expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.sessions })
+        expect(invalidateQueries).not.toHaveBeenCalledWith({ queryKey: queryKeys.session('session-1') })
+        unmount()
+    })
+
+    it('keeps a session row\'s task count and next run when a full session record arrives without them', () => {
+        const { queryClient, unmount } = renderUseSSE()
+        queryClient.setQueryData(queryKeys.sessions, { sessions: [makeSummary({ id: 'session-1', activeTaskCount: 2, nextTaskRunAt: 123_456 })] })
+        act(() => FakeEventSource.instances[0]?.simulateMessage({
+            type: 'session-updated', sessionId: 'session-1',
+            data: {
+                ...makeSummary({ activeTaskCount: 0, nextTaskRunAt: null }), id: 'session-1', namespace: 'default', seq: 1,
+                createdAt: 1, agentState: null, thinkingAt: 0
+            }
+        }))
+        const data = queryClient.getQueryData<{ sessions: SessionSummary[] }>(queryKeys.sessions)
+        expect(data?.sessions[0]).toMatchObject({ activeTaskCount: 2, nextTaskRunAt: 123_456 })
+        unmount()
+    })
+
     it('invalidates both the session scratchlist and batch status queries', () => {
         const { unmount, queryClient } = renderUseSSE()
         const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries').mockResolvedValue(undefined)
@@ -226,6 +259,8 @@ function makeSummary(overrides: Partial<SessionSummary> = {}): SessionSummary {
         backgroundTaskCount: 0,
         futureScheduledMessageCount: 0,
         nextScheduledAt: null,
+        activeTaskCount: 0,
+        nextTaskRunAt: null,
         attachedJob: null,
         attachedJobUpdatedAt: 0,
         model: null,
@@ -258,6 +293,14 @@ describe('isNewerVersionedPatch (PR #897 review, HAPI Bot 2026-06-16 Major)', ()
 })
 
 describe('useSSE scope handling', () => {
+    it('refreshes the session list for a task change on every connection scope, and only there besides ownership', () => {
+        expect(shouldInvalidateSessionListForEvent('global', 'session-tasks-changed')).toBe(true)
+        expect(shouldInvalidateSessionListForEvent('full', 'session-tasks-changed')).toBe(true)
+        expect(shouldInvalidateSessionListForEvent('global', 'messages-invalidated')).toBe(true)
+        expect(shouldInvalidateSessionListForEvent('full', 'messages-invalidated')).toBe(false)
+        expect(shouldInvalidateSessionListForEvent('global', 'session-updated')).toBe(false)
+    })
+
     it('invalidates the global session list when message ownership changes', () => {
         expect(shouldInvalidateSessionListForEvent('global', 'messages-invalidated')).toBe(true)
         expect(shouldInvalidateSessionListForEvent('full', 'messages-invalidated')).toBe(false)
