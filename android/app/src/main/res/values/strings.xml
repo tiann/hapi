@@ -164,6 +164,16 @@
 
     <!-- Usage dashboard -->
     <string name="settings_usage">Usage</string>
+    <string name="quota_title">CLI account quotas</string>
+    <string name="quota_empty">No online machines with installed CLI accounts.</string>
+    <string name="quota_runner">Update the runner on this machine to view CLI account quotas.</string>
+    <string name="quota_remaining">%1$d%% remaining (%2$d%% used)</string>
+    <string name="quota_resets">Resets %1$s</string>
+    <string name="quota_unauthenticated">Not signed in</string>
+    <string name="quota_custom_provider">Custom endpoint / API key</string>
+    <string name="quota_error">Quota unavailable</string>
+    <string name="quota_older_hub">Update the hub to view CLI account quotas.</string>
+    <string name="quota_stale">Refresh failed. Showing previously loaded quotas.</string>
     <string name="settings_usage_range_7d">7 days</string>
     <string name="settings_usage_range_30d">30 days</string>
     <string name="settings_usage_range_all">All time</string>

@@ -449,6 +449,29 @@ class HapiApiTest {
     }
 
     @Test
+    fun `usage quotas decode arbitrary agents and force refresh only on request`() {
+        val response = """
+            {"machines":[{"machineId":"m","machineName":"runner","supported":true,"accounts":[
+              {"agent":"future-cli","status":"ok","available":true,"creditsLabel":"USD 10","buckets":[
+                {"label":"Monthly","remainingPercent":42.75,"usedPercent":57.25,"resetsAt":1789000000000}
+              ]}
+            ]}]}
+        """.trimIndent()
+        for (refresh in listOf(false, true)) {
+            server.enqueue(ok(response))
+            val quotas = runBlocking { session.api.getUsageQuotas(refresh) }
+            val request = server.takeRequest()
+            assertEquals("/api/usage/quotas" + if (refresh) "?refresh=1" else "", request.path)
+            assertEquals("Bearer $jwt", request.getHeader("Authorization"))
+            val account = quotas.machines.single().accounts.single()
+            assertEquals("future-cli", account.agent)
+            assertEquals("USD 10", account.creditsLabel)
+            assertEquals(42.75, account.buckets.single().remainingPercent)
+            assertEquals(1789000000000L, account.buckets.single().resetsAt)
+        }
+    }
+
+    @Test
     fun `sqlite storage usage decodes and a 403 surfaces as coded ApiError`() {
         server.enqueue(
             ok("""{"path":"/x/hapi.db","databaseBytes":100,"walBytes":20,"shmBytes":4,"totalBytes":124}""")
