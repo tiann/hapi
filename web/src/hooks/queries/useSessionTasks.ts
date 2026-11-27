@@ -106,7 +106,11 @@ export function useSessionTasks(api: ApiClient | null, sessionId: string): {
 export function useSessionTaskHistory(api: ApiClient | null, sessionId: string, enabled: boolean): {
     runs: SessionTaskRun[]
     isLoading: boolean
+    /** Set when the runs could not be loaded on a hub that has the route. */
     error: string | null
+    /** The hub predates the history route (and with it, editing and "run now"), so their UI stays hidden. */
+    unsupported: boolean
+    refetch: () => unknown
 } {
     const query = useQuery({
         queryKey: queryKeys.sessionTaskHistory(sessionId),
@@ -123,7 +127,9 @@ export function useSessionTaskHistory(api: ApiClient | null, sessionId: string, 
     return {
         runs: query.data?.runs ?? [],
         isLoading: query.isFetching && query.data === undefined,
-        error: query.error instanceof Error && !isSessionTasksUnsupported(query.error) ? query.error.message : null
+        error: query.error instanceof Error && !isSessionTasksUnsupported(query.error) ? query.error.message : null,
+        unsupported: isSessionTasksUnsupported(query.error),
+        refetch: () => query.refetch()
     }
 }
 

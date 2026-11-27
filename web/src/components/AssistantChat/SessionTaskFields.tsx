@@ -21,6 +21,8 @@ export const FIELD_CLASS = 'rounded-lg border border-[var(--app-border)] bg-[var
 export const LABEL_CLASS = 'mb-1 block text-xs text-[var(--app-hint)]'
 export const PRIMARY_BUTTON_CLASS = 'w-full rounded-lg bg-blue-500 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-40'
 export const SECONDARY_BUTTON_CLASS = 'rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm font-medium text-[var(--app-fg)] transition-colors hover:bg-[var(--app-secondary-bg)] disabled:cursor-not-allowed disabled:opacity-40'
+/** A small text action: the task row's buttons, and Retry next to a failed load. */
+export const TEXT_BUTTON_CLASS = 'rounded-md px-2 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 

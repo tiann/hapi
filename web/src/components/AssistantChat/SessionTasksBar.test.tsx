@@ -721,6 +721,41 @@ describe('SessionTasksBar', () => {
         cleanup()
         setup({ tasks: [task()], historyError: new ApiError('HTTP 502 Bad Gateway', 502) })
         fireEvent.click(await screen.findByRole('button', { name: 'History' }))
-        expect((await screen.findByRole('alert', {}, { timeout: 6000 })).textContent).toBe('The history could not be loaded.')
+        const alert = await screen.findByRole('alert', {}, { timeout: 6000 })
+        expect(within(alert).getByText('The history could not be loaded.')).toBeTruthy()
+        expect(screen.queryByText('No runs recorded yet.')).toBeNull()
+    })
+
+    it('retries a failed history load, like a failed task list', async () => {
+        const { api } = setup({ tasks: [task()], historyError: new ApiError('HTTP 502 Bad Gateway', 502) })
+        fireEvent.click(await screen.findByRole('button', { name: 'History' }))
+        const alert = await screen.findByRole('alert', {}, { timeout: 6000 })
+        // The query's own policy tried the 5xx twice more before the bar gave up.
+        expect(api.listSessionTaskRuns).toHaveBeenCalledTimes(3)
+
+        vi.mocked(api.listSessionTaskRuns).mockResolvedValue({ runs: [run()] })
+        fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
+        const history = await screen.findByRole('list', { name: 'History' })
+        expect(within(history).getAllByRole('listitem')).toHaveLength(1)
+        expect(history.textContent).toContain('first prompt')
+        expect(screen.queryByRole('alert')).toBeNull()
+        expect(api.listSessionTaskRuns).toHaveBeenCalledTimes(4)
+    })
+
+    it('offers neither History, Edit nor Run now on a hub that has no history route', async () => {
+        const { api } = setup({ tasks: [task()], historyError: new ApiError('HTTP 404 Not Found: {"error":"Not Found"}', 404) })
+        await waitFor(() => expect(api.listSessionTaskRuns).toHaveBeenCalled())
+        await waitFor(() => expect(screen.queryByRole('button', { name: 'History' })).toBeNull())
+        const row = screen.getByRole('listitem')
+        // The three controls that need the later routes are not offered where they cannot work...
+        expect(within(row).queryByRole('button', { name: 'Edit task' })).toBeNull()
+        expect(within(row).queryByRole('button', { name: 'Run now' })).toBeNull()
+        // ...while the task and its pause and delete stay.
+        expect(row.textContent).toContain('check progress')
+        expect(within(row).getByRole('button', { name: 'Pause task' })).toBeTruthy()
+        expect(within(row).getByRole('button', { name: 'Delete task' })).toBeTruthy()
+        // Not an error: there is nothing to retry, and nothing to say.
+        expect(screen.queryByRole('alert')).toBeNull()
+        expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
     })
 })

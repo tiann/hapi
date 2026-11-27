@@ -7,13 +7,13 @@ import { useOptionalAddToast } from '@/lib/toast-context'
 import { useTranslation } from '@/lib/use-translation'
 import { SessionTaskHistory } from './SessionTaskHistory'
 import { SessionTaskInlineEditor } from './SessionTaskInlineEditor'
+import { TEXT_BUTTON_CLASS } from './SessionTaskFields'
 
 /** The "next run" line counts down; re-render often enough for it to stay honest. */
 const COUNTDOWN_TICK_MS = 30_000
 
 /** 28 px here, a full 32 px where a finger does the tapping. */
 const ICON_BUTTON_CLASS = 'flex h-7 w-7 shrink-0 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-border)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-40 pointer-coarse:h-8 pointer-coarse:w-8'
-const TEXT_BUTTON_CLASS = 'rounded-md px-2 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40'
 
 type Translate = (key: string, params?: Record<string, string | number>) => string
 
@@ -94,12 +94,14 @@ export function taskCadenceLabel(task: SessionTask, t: Translate): string {
     return t(task.kind === 'queue' ? 'tasks.gap' : 'tasks.every', { interval })
 }
 
-function SessionTaskRow({ task, mutations, editing, onEditChange }: {
+function SessionTaskRow({ task, mutations, editing, onEditChange, hasRunHistory }: {
     task: SessionTask
     mutations: ReturnType<typeof useSessionTaskMutations>
     editing: boolean
     /** Names the row to edit, or none. Only one editor is open at a time. */
     onEditChange: (taskId: string | null) => void
+    /** The hub has the history route, and with it "Run now" and "Edit"; a hub without them gets neither. */
+    hasRunHistory: boolean
 }) {
     const { t } = useTranslation()
     const addToast = useOptionalAddToast()
@@ -251,30 +253,34 @@ function SessionTaskRow({ task, mutations, editing, onEditChange }: {
                         >
                             {paused ? <PlayIcon /> : <PauseIcon />}
                         </button>
-                        <button
-                            type="button"
-                            aria-label={t('tasks.runNow')}
-                            title={runNowTitle}
-                            disabled={busy || task.pending}
-                            onClick={runNow}
-                            onMouseDown={(e) => e.preventDefault()}
-                            className={ICON_BUTTON_CLASS}
-                        >
-                            <RunNowIcon />
-                        </button>
-                        <button
-                            ref={editButtonRef}
-                            type="button"
-                            aria-label={t('tasks.edit')}
-                            title={t('tasks.edit')}
-                            aria-expanded={editing}
-                            disabled={busy}
-                            onClick={() => (editing ? stopEditing(false) : onEditChange(task.id))}
-                            onMouseDown={(e) => e.preventDefault()}
-                            className={ICON_BUTTON_CLASS}
-                        >
-                            <EditIcon />
-                        </button>
+                        {hasRunHistory ? (
+                            <>
+                                <button
+                                    type="button"
+                                    aria-label={t('tasks.runNow')}
+                                    title={runNowTitle}
+                                    disabled={busy || task.pending}
+                                    onClick={runNow}
+                                    onMouseDown={(e) => e.preventDefault()}
+                                    className={ICON_BUTTON_CLASS}
+                                >
+                                    <RunNowIcon />
+                                </button>
+                                <button
+                                    ref={editButtonRef}
+                                    type="button"
+                                    aria-label={t('tasks.edit')}
+                                    title={t('tasks.edit')}
+                                    aria-expanded={editing}
+                                    disabled={busy}
+                                    onClick={() => (editing ? stopEditing(false) : onEditChange(task.id))}
+                                    onMouseDown={(e) => e.preventDefault()}
+                                    className={ICON_BUTTON_CLASS}
+                                >
+                                    <EditIcon />
+                                </button>
+                            </>
+                        ) : null}
                         <button
                             ref={deleteButtonRef}
                             type="button"
@@ -290,7 +296,7 @@ function SessionTaskRow({ task, mutations, editing, onEditChange }: {
                     </div>
                 )}
             </div>
-            {editing ? (
+            {editing && hasRunHistory ? (
                 <SessionTaskInlineEditor task={task} save={save} onCancel={stopEditing} />
             ) : null}
         </li>
@@ -302,7 +308,8 @@ function SessionTaskRow({ task, mutations, editing, onEditChange }: {
  * runs next, pause / resume, run now, edit and delete per task, and the runs
  * behind a History toggle. Renders nothing on a hub without task routes, or
  * when the session has neither tasks nor runs; a failed load says so and
- * offers a retry.
+ * offers a retry. "Run now", Edit and History came with the history route, so
+ * a hub without it shows the bar without them.
  */
 export function SessionTasksBar({ api, sessionId }: { api: ApiClient | null; sessionId: string }) {
     const { t } = useTranslation()
@@ -310,6 +317,8 @@ export function SessionTasksBar({ api, sessionId }: { api: ApiClient | null; ses
     // The runs outlive their tasks: once the last task finishes and goes, the
     // history is the only place that says what it did, so the bar stays for it.
     const history = useSessionTaskHistory(api, sessionId, true)
+    // A hub that answers 404 for the runs has none of the later controls either.
+    const hasRunHistory = !history.unsupported
     const mutations = useSessionTaskMutations(api, sessionId)
     const [editingTaskId, setEditingTaskId] = useState<string | null>(null)
     const [historyOpen, setHistoryOpen] = useState(false)
@@ -338,15 +347,17 @@ export function SessionTasksBar({ api, sessionId }: { api: ApiClient | null; ses
                     <RepeatIcon />
                     <span id={headingId}>{t('tasks.title')}</span>
                     <span className="flex-1" />
-                    <button
-                        type="button"
-                        aria-pressed={historyOpen}
-                        aria-controls={historyId}
-                        onClick={() => setHistoryOpen((open) => !open)}
-                        className={`${TEXT_BUTTON_CLASS} text-[var(--app-hint)] hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)]`}
-                    >
-                        {t('tasks.history')}
-                    </button>
+                    {hasRunHistory ? (
+                        <button
+                            type="button"
+                            aria-pressed={historyOpen}
+                            aria-controls={historyId}
+                            onClick={() => setHistoryOpen((open) => !open)}
+                            className={`${TEXT_BUTTON_CLASS} text-[var(--app-hint)] hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)]`}
+                        >
+                            {t('tasks.history')}
+                        </button>
+                    ) : null}
                 </div>
                 {error ? (
                     <p role="alert" className="mb-1.5 flex items-center gap-2 text-xs text-[var(--app-warning-text)]">
@@ -369,15 +380,21 @@ export function SessionTasksBar({ api, sessionId }: { api: ApiClient | null; ses
                                 mutations={mutations}
                                 editing={editingTaskId === task.id}
                                 onEditChange={setEditingTaskId}
+                                hasRunHistory={hasRunHistory}
                             />
                         ))}
                     </ul>
                 ) : null}
                 {hasRepeat ? <p className="mt-1 text-xs text-[var(--app-hint)]">{t('composer.taskHintSkip')}</p> : null}
                 {tasks.length > 0 ? <p className="mt-0.5 text-xs text-[var(--app-hint)]">{t('composer.taskHintWake')}</p> : null}
-                {historyOpen ? (
+                {historyOpen && hasRunHistory ? (
                     <div id={historyId} className="mt-1.5 max-h-64 overflow-y-auto pb-1">
-                        <SessionTaskHistory runs={history.runs} isLoading={history.isLoading} error={history.error} />
+                        <SessionTaskHistory
+                            runs={history.runs}
+                            isLoading={history.isLoading}
+                            error={history.error}
+                            onRetry={() => { void history.refetch() }}
+                        />
                     </div>
                 ) : null}
             </div>

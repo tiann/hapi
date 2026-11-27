@@ -2,6 +2,7 @@ import { formatScheduledTime } from '@/lib/scheduledTime'
 import { taskRunLabel, taskRunOutcome } from '@/lib/sessionTasks'
 import type { SessionTaskRun } from '@hapi/protocol'
 import { useTranslation } from '@/lib/use-translation'
+import { TEXT_BUTTON_CLASS } from './SessionTaskFields'
 
 /** `<time>` with an absolute, locale-formatted stamp that survives the minute tick. */
 export function TaskRunTime({ at }: { at: number }) {
@@ -13,15 +14,28 @@ export function TaskRunTime({ at }: { at: number }) {
  * it skipped and every run that could not go out, with the reason. Finished
  * tasks are gone from the list above, but their runs stay readable here.
  */
-export function SessionTaskHistory({ runs, isLoading, error }: {
+export function SessionTaskHistory({ runs, isLoading, error, onRetry }: {
     runs: SessionTaskRun[]
     isLoading: boolean
     error: string | null
+    /** Asks for the runs again; a failed load is not a state the user is left in, as with the task list. */
+    onRetry: () => void
 }) {
     const { t } = useTranslation()
 
     if (error) {
-        return <p role="alert" className="text-xs text-red-500">{t('tasks.historyFailed')}</p>
+        return (
+            <p role="alert" className="mb-1 flex items-center gap-2 text-xs text-[var(--app-warning-text)]">
+                <span>{t('tasks.historyFailed')}</span>
+                <button
+                    type="button"
+                    onClick={onRetry}
+                    className={`${TEXT_BUTTON_CLASS} text-[var(--app-link)] hover:bg-[var(--app-secondary-bg)]`}
+                >
+                    {t('tasks.retry')}
+                </button>
+            </p>
+        )
     }
     if (isLoading) {
         return <p className="text-xs text-[var(--app-hint)]">{t('loading')}</p>

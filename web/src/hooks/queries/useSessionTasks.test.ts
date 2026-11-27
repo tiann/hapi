@@ -2,7 +2,7 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
 import { describe, expect, it, vi, type Mock } from 'vitest'
-import type { SessionTask, SessionTaskDeleteResponse, UpdateSessionTaskRequest } from '@hapi/protocol'
+import type { SessionTask, SessionTaskDeleteResponse, SessionTaskRun, UpdateSessionTaskRequest } from '@hapi/protocol'
 import { ApiError, type ApiClient } from '@/api/client'
 import { queryKeys } from '@/lib/query-keys'
 import {
@@ -36,6 +36,23 @@ function task(id: string, overrides: Partial<SessionTask> = {}): SessionTask {
         lastError: null,
         createdAt: Number(id),
         updatedAt: 1,
+        ...overrides
+    }
+}
+
+function run(overrides: Partial<SessionTaskRun> = {}): SessionTaskRun {
+    return {
+        id: 'r1',
+        sessionId: 's1',
+        taskId: '1',
+        taskKind: 'repeat',
+        runNumber: null,
+        outcome: 'sent',
+        scheduledFor: 1_000,
+        recordedAt: 1_000,
+        takenAt: null,
+        detail: null,
+        preview: 'ping',
         ...overrides
     }
 }
@@ -141,7 +158,7 @@ function setupHub(options: { list?: SessionTask[]; listRefetch?: unknown } = {})
             current = current.filter((item) => item.id !== taskId)
             return { ok: true, prompt: 'cancelled' }
         }),
-        listSessionTaskRuns: vi.fn(async () => ({ runs: [] })),
+        listSessionTaskRuns: vi.fn(async (): Promise<{ runs: SessionTaskRun[] }> => ({ runs: [] })),
     }
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
     const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client: queryClient }, children)
@@ -207,6 +224,26 @@ describe('useSessionTasks', () => {
         await waitFor(() => expect(hub.api.listSessionTaskRuns).toHaveBeenCalledWith('s1', 50))
         await waitFor(() => expect(opened.result.current.isLoading).toBe(false))
         expect(opened.result.current.error).toBeNull()
+        expect(opened.result.current.unsupported).toBe(false)
+    })
+
+    it('tells a hub without the history route from a failed load, and can be asked again', async () => {
+        const hub = setupHub()
+        hub.api.listSessionTaskRuns.mockRejectedValue(new ApiError('HTTP 502 Bad Gateway', 502))
+        const { result } = renderHook(() => useSessionTaskHistory(hub.api as unknown as ApiClient, 's1', true), { wrapper: hub.wrapper })
+        // The query's own policy retries a 5xx twice before the hook gives up.
+        await waitFor(() => expect(result.current.error).toBe('HTTP 502 Bad Gateway'), { timeout: 6000 })
+        expect(result.current.unsupported).toBe(false)
+
+        hub.api.listSessionTaskRuns.mockResolvedValue({ runs: [run()] })
+        await act(async () => { await result.current.refetch() })
+        await waitFor(() => expect(result.current.runs).toHaveLength(1))
+        expect(result.current.error).toBeNull()
+
+        hub.api.listSessionTaskRuns.mockRejectedValue(new ApiError('HTTP 404 Not Found: {"error":"Not Found"}', 404))
+        await act(async () => { await result.current.refetch() })
+        await waitFor(() => expect(result.current.unsupported).toBe(true))
+        expect(result.current.error).toBeNull()
     })
 })
 
