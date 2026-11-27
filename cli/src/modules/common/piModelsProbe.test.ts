@@ -3,10 +3,16 @@ import { homedir } from 'node:os'
 import { parse } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { spawnMock, killMock } = vi.hoisted(() => ({
+const { spawnMock, killMock, launchMock } = vi.hoisted(() => ({
     spawnMock: vi.fn(),
     killMock: vi.fn(),
+    launchMock: vi.fn(),
 }))
+
+vi.mock('@/agent/agentLaunchCommand', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/agent/agentLaunchCommand')>()
+    return { ...actual, resolveNodeCliLaunch: launchMock }
+})
 
 vi.mock('node:child_process', async (importOriginal) => {
     const actual = await importOriginal<typeof import('node:child_process')>()
@@ -47,6 +53,8 @@ beforeEach(() => {
     spawnMock.mockReset()
     spawnMock.mockImplementation(() => child)
     killMock.mockReset()
+    launchMock.mockReset()
+    launchMock.mockImplementation((command: string) => ({ command, args: [] }))
 })
 
 afterEach(() => {
@@ -54,6 +62,28 @@ afterEach(() => {
 })
 
 describe('runPiModelsProbe spawn', () => {
+    it('runs the resolved Windows launcher script ahead of the probe args, without a shell', async () => {
+        killMock.mockResolvedValue(true)
+        launchMock.mockReturnValue({ command: 'C:\\nodejs\\node.exe', args: ['C:\\npm\\pi\\cli.js'] })
+
+        const pending = listPiModelsForMachine()
+        child.emitModelsResponse([{ id: 'm1', provider: 'p1' }])
+        await pending
+
+        const [command, args, options] = spawnMock.mock.calls[0]
+        expect(command).toBe('C:\\nodejs\\node.exe')
+        expect(args[0]).toBe('C:\\npm\\pi\\cli.js')
+        expect(args.slice(1)).toContain('rpc')
+        expect(options).not.toHaveProperty('shell')
+    })
+
+    it('reports Pi missing without spawning when no launcher resolves', async () => {
+        launchMock.mockReturnValue(null)
+
+        await expect(listPiModelsForMachine()).rejects.toThrow('not found')
+        expect(spawnMock).not.toHaveBeenCalled()
+    })
+
     it('probes from the runner cwd so project-local providers stay visible', async () => {
         // A runner started inside a project must keep seeing that project's
         // .pi/extensions providers, which the replaced --list-models probe

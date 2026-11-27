@@ -1,5 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { resolveNodeCliLaunch } from '@/agent/agentLaunchCommand';
 import { logger } from '@/ui/logger';
+import { isWindows, killProcessByChildProcess } from '@/utils/process';
 import { JsonLineParser } from '@/utils/jsonLineParser';
 import { PiAgentEventSchema } from './schemas';
 import type { PiAgentEvent, PiRpcCommand } from './types';
@@ -10,6 +12,8 @@ export interface PiTransportOptions {
     cwd: string;
     env?: NodeJS.ProcessEnv;
 }
+
+const PI_NOT_FOUND_MESSAGE = 'Pi was not found on PATH. Please install Pi and retry.';
 
 export class PiTransport extends JsonLineParser {
     private process: ChildProcessWithoutNullStreams | null = null;
@@ -34,12 +38,21 @@ export class PiTransport extends JsonLineParser {
         }
         this.started = true;
 
-        logger.debug(`[pi] Starting Pi process: ${this.options.command} ${this.options.args.join(' ')}`);
+        const launch = resolveNodeCliLaunch(this.options.command, this.options.env ?? process.env);
+        if (!launch) {
+            this.exited = true;
+            process.nextTick(() => this.errorHandler?.(new Error(PI_NOT_FOUND_MESSAGE)));
+            return;
+        }
+        const args = [...launch.args, ...this.options.args];
 
-        this.process = spawn(this.options.command, this.options.args, {
+        logger.debug(`[pi] Starting Pi process: ${launch.command} ${args.join(' ')}`);
+
+        this.process = spawn(launch.command, args, {
             cwd: this.options.cwd,
             stdio: ['pipe', 'pipe', 'pipe'],
-            env: this.options.env
+            env: this.options.env,
+            windowsHide: isWindows()
         }) as ChildProcessWithoutNullStreams;
 
         this.process.stdout.setEncoding('utf8');
@@ -67,9 +80,7 @@ export class PiTransport extends JsonLineParser {
         this.process.on('error', (err) => {
             const nodeErr = err as NodeJS.ErrnoException;
             if (nodeErr.code === 'ENOENT') {
-                this.errorHandler?.(new Error(
-                    `Pi was not found on PATH. Please install Pi and retry.`
-                ));
+                this.errorHandler?.(new Error(PI_NOT_FOUND_MESSAGE));
             } else {
                 this.errorHandler?.(new Error(
                     `Failed to start Pi: ${nodeErr.message}`
@@ -107,10 +118,29 @@ export class PiTransport extends JsonLineParser {
         this.errorHandler = handler;
     }
 
-    kill(): void {
-        if (!this.process || this.killed) return;
+    /** Resolves once the stop attempt is over, so callers can await it before exiting. */
+    async kill(): Promise<void> {
+        const child = this.process;
+        if (!child || this.killed) return;
         this.killed = true;
-        this.process.kill('SIGTERM');
+        // Once Pi has exited its PID may be reused; never signal it again.
+        if (this.exited || child.exitCode != null || child.signalCode != null) return;
+        if (!isWindows()) {
+            child.kill('SIGTERM');
+            return;
+        }
+        // Windows has no SIGTERM for Pi to clean up on: child.kill() would
+        // terminate Pi alone and orphan the tools it started.
+        let treeStopped = false;
+        try {
+            treeStopped = await killProcessByChildProcess(child, true);
+        } catch (error) {
+            logger.warn(`[pi] Failed to stop Pi process tree (pid ${child.pid}): ${error}`);
+        }
+        if (treeStopped) return;
+        logger.warn(`[pi] Pi process tree (pid ${child.pid}) not confirmed stopped; its tools may still be running`);
+        // The handle stays bound to this process, unlike its PID.
+        if (child.exitCode == null && child.signalCode == null) child.kill();
     }
 
     protected handleLine(line: string): void {

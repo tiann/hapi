@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand'
+import { getAgentLaunchCommand, resolveNodeCliLaunch } from '@/agent/agentLaunchCommand'
 import { homedir } from 'node:os'
 import { parse } from 'node:path'
 import type { PiModelSummary, PiModelsResponse } from '@hapi/protocol/apiTypes'
@@ -121,13 +121,17 @@ export function resolveProbeCwd(): string {
 
 function runPiModelsProbe(): Promise<ListPiModelsForMachineResponse> {
     return new Promise((resolve, reject) => {
-        const child = spawn(getAgentLaunchCommand('pi'), [...PI_PROBE_ARGS], {
+        const launch = resolveNodeCliLaunch(getAgentLaunchCommand('pi'))
+        if (!launch) {
+            reject(new Error('Pi was not found on PATH'))
+            return
+        }
+        const child = spawn(launch.command, [...launch.args, ...PI_PROBE_ARGS], {
             env: process.env,
             // Probe from the runner's cwd, falling back to home at a
             // filesystem root (see resolveProbeCwd).
             cwd: resolveProbeCwd(),
             stdio: ['pipe', 'pipe', 'pipe'],
-            shell: process.platform === 'win32',
             windowsHide: process.platform === 'win32',
         })
         let stdoutBuffer = ''
@@ -141,8 +145,8 @@ function runPiModelsProbe(): Promise<ListPiModelsForMachineResponse> {
             // The probe child has no further use once the response (or a
             // failure) landed; never leave an interactive pi process behind.
             // killProcessByChildProcess tears down the whole tree (taskkill /T
-            // on Windows, where shell:true makes `child` the shell; tree kill
-            // on Unix) and returns false when something survived.
+            // on Windows, tree kill on Unix) and returns false when something
+            // survived.
             //
             // A surviving process must not be ignored: the Windows graceful
             // path is `taskkill /T` without /F and escalates nothing on its
