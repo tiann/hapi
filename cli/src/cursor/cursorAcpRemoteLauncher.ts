@@ -166,7 +166,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private promptInFlight = false;
     private history: CursorConversationHistory | null = null;
     private processingBatch = false;
-    private historyGate: PromiseWithResolvers<void> | null = null;
+    private historyGate: ReturnType<typeof Promise.withResolvers<void>> | null = null;
     private preparedRewind: { id: string; localId: string; backend: AcpSdkBackend } | null = null;
     /**
      * Set in handleAbort before session/cancel. Cursor often rejects the
