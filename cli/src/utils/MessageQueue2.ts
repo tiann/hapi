@@ -63,6 +63,8 @@ export class MessageQueue2<T> {
     private waiter: ((hasMessages: boolean) => void) | null = null;
     private closed = false;
     private onMessageHandler: ((message: string, mode: T) => void) | null = null;
+    /** Wake a consumer parked on a rejected, cancellable batch. */
+    onPendingRemoval: (() => void) | null = null;
     onBatchConsumed: ((localIds: string[]) => void) | null = null;
     /** Optional synchronous admission, before removing or acknowledging a batch. */
     beforeDequeue: (() => void) | null = null;
@@ -403,6 +405,7 @@ export class MessageQueue2<T> {
         const idx = this.queue.findIndex(item => item.localId === localId);
         if (idx !== -1) {
             this.queue.splice(idx, 1);
+            this.onPendingRemoval?.();
             return true;
         }
         if (this.inFlightLocalIds.has(localId)) {
@@ -621,6 +624,7 @@ export class MessageQueue2<T> {
     reset(options?: { preserveDispatchingReservations?: boolean }): void {
         logger.debug(`[MessageQueue2] reset() called. Clearing ${this.queue.length} messages`);
         this.queue = [];
+        this.onPendingRemoval?.();
         this.inFlightLocalIds.clear();
         this.cancelReservations(options?.preserveDispatchingReservations === true);
         this.closed = false;
@@ -668,6 +672,7 @@ export class MessageQueue2<T> {
             }
         }
         this.queue = kept;
+        if (removed > 0) this.onPendingRemoval?.();
         return removed;
     }
 
@@ -677,6 +682,7 @@ export class MessageQueue2<T> {
     close(): void {
         logger.debug(`[MessageQueue2] close() called`);
         this.closed = true;
+        this.onPendingRemoval?.();
         this.inFlightLocalIds.clear();
         this.cancelReservations();
 

@@ -212,7 +212,7 @@ hapi cursor --cursor-add-dir ../shared     # Extra workspace root (repeatable)
 | `autoReview` | Auto (Smart Auto) - allowlist/sandbox/classifier instead of full YOLO |
 | `yolo` | Bypass approval prompts |
 
-Use `--plan`, `--mode`, `--permission-mode` or `--auto-review` at launch. Change a remote ACP session's permission mode between turns from the web UI or with `hapi set-mode`. HAPI waits for Cursor to acknowledge the ACP mode. Smart Auto uses a launch flag or a queued `/auto-review` command, so changing modes in a running process may still leave its native Smart Auto policy in place. For an active terminal session, change modes in Cursor or hand off to HAPI first. A legacy stream-json session uses the new mode for messages queued after the change.
+Use `--plan`, `--mode`, `--permission-mode` or `--auto-review` at launch. Change a remote ACP session's permission mode between turns from the web UI or with `hapi set-mode`. HAPI waits for Cursor to acknowledge the ACP mode. Remote Smart Auto requires Cursor ACP to advertise the policy and confirm the transition. The remote `/auto-review` command uses the same checked switch. If the installed ACP version does not offer Smart Auto, choose another remote mode or use the native Cursor terminal, where `/auto-review on`, `/auto-review off` and `/auto-review status` select and inspect the policy. For an active terminal session, change modes in Cursor or hand off to HAPI first. A legacy stream-json session uses the new mode for messages queued after the change.
 
 ### Cursor-native worktree & multi-root
 
