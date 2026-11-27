@@ -845,6 +845,19 @@ describe('QueuedMessagesBar prompts inserted by a task', () => {
         expect(screen.getByRole('button', { name: 'Steer queued message' })).toBeTruthy()
         expect(screen.getByRole('button', { name: 'Cancel queued message' })).toBeTruthy()
     })
+
+    it('gives the row buttons a 32 px target and a wider gap under a coarse pointer only', () => {
+        const api = { steerMessage: mocks.steerMessage } as unknown as ApiClient
+        renderQueuedMessage(null, null, 0, true, api)
+        // jsdom applies no media query, so the classes are what is checked: 24 px and gap 1 by default,
+        // 32 px and gap 1.5 under (pointer: coarse), like the task bar.
+        const group = screen.getByRole('button', { name: 'Cancel queued message' }).parentElement as HTMLElement
+        expect(group.className.split(/\s+/)).toEqual(expect.arrayContaining(['gap-1', 'pointer-coarse:gap-1.5']))
+        for (const name of ['Edit queued message', 'Steer queued message', 'Cancel queued message']) {
+            const classes = screen.getByRole('button', { name }).className.split(/\s+/)
+            expect(classes, name).toEqual(expect.arrayContaining(['h-6', 'w-6', 'pointer-coarse:h-8', 'pointer-coarse:w-8']))
+        }
+    })
 })
 
 describe('QueuedMessagesBar steer action', () => {

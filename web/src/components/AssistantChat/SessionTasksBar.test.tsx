@@ -864,4 +864,16 @@ describe('SessionTasksBar', () => {
         await waitFor(() => expect(screen.getByTestId('toasts').textContent).toBe('The session is read-only'))
     })
 
+    it('gives the icon buttons a 32 px target and a wider gap under a coarse pointer only', async () => {
+        setup({ tasks: [task()] })
+        const row = await screen.findByRole('listitem')
+        // jsdom applies no media query, so the classes are what is checked: 28 px and gap 1 by default,
+        // 32 px and gap 1.5 under (pointer: coarse).
+        const group = within(row).getByRole('button', { name: 'Pause task' }).parentElement as HTMLElement
+        expect(group.className.split(/\s+/)).toEqual(expect.arrayContaining(['gap-1', 'pointer-coarse:gap-1.5']))
+        for (const name of ['Pause task', 'Run now', 'Edit task', 'Delete task']) {
+            const classes = within(row).getByRole('button', { name }).className.split(/\s+/)
+            expect(classes, name).toEqual(expect.arrayContaining(['h-7', 'w-7', 'pointer-coarse:h-8', 'pointer-coarse:w-8']))
+        }
+    })
 })

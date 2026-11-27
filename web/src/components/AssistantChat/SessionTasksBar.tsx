@@ -12,8 +12,9 @@ import { taskRequestErrorMessage, TEXT_BUTTON_CLASS } from './SessionTaskFields'
 /** The "next run" line counts down; re-render often enough for it to stay honest. */
 const COUNTDOWN_TICK_MS = 30_000
 
-/** 28 px here, a full 32 px where a finger does the tapping. */
+/** 28 px here, a full 32 px where a finger does the tapping; the row's icon group widens its gap to match. */
 const ICON_BUTTON_CLASS = 'flex h-7 w-7 shrink-0 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-border)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-40 pointer-coarse:h-8 pointer-coarse:w-8'
+const ICON_GROUP_CLASS = 'flex shrink-0 items-center gap-1 pointer-coarse:gap-1.5'
 
 type Translate = (key: string, params?: Record<string, string | number>) => string
 
@@ -232,7 +233,7 @@ function SessionTaskRow({ task, mutations, editing, onEditChange, hasRunHistory 
                         </button>
                     </div>
                 ) : (
-                    <div className="flex shrink-0 items-center gap-1">
+                    <div className={ICON_GROUP_CLASS}>
                         <button
                             type="button"
                             aria-label={t(paused ? 'tasks.resume' : 'tasks.pause')}

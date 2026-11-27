@@ -26,6 +26,10 @@ import {
     subscribeQueuedOperation,
 } from '@/lib/queued-edit-recovery'
 
+/** 24 px here, a full 32 px where a finger does the tapping; the group widens its gap to match. */
+const ROW_BUTTON_CLASS = 'flex h-6 w-6 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-border)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-40 pointer-coarse:h-8 pointer-coarse:w-8'
+const ROW_BUTTON_GROUP_CLASS = 'flex shrink-0 items-center gap-1 pointer-coarse:gap-1.5'
+
 function ClockIcon() {
     return (
         <svg
@@ -575,7 +579,7 @@ export function QueuedMessagesBar({
                                         </div>
                                     )}
                                 </div>
-                                <div className="flex shrink-0 items-center gap-1">
+                                <div className={ROW_BUTTON_GROUP_CLASS}>
                                     {needsResolution && !waitingForCompaction ? (
                                         <button
                                             type="button"
@@ -584,7 +588,7 @@ export function QueuedMessagesBar({
                                             disabled={!canCancel || retryPending}
                                             onClick={handleRetry}
                                             onMouseDown={(e) => e.preventDefault()}
-                                            className="flex h-6 w-6 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-border)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-40"
+                                            className={ROW_BUTTON_CLASS}
                                         >
                                             <span aria-hidden="true">↻</span>
                                         </button>
@@ -597,7 +601,7 @@ export function QueuedMessagesBar({
                                             disabled={steerPending}
                                             onClick={handleSteer}
                                             onMouseDown={(e) => e.preventDefault()}
-                                            className="flex h-6 w-6 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-border)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-40"
+                                            className={ROW_BUTTON_CLASS}
                                         >
                                             <SteerIcon />
                                         </button>
@@ -609,7 +613,7 @@ export function QueuedMessagesBar({
                                             disabled={!canEdit}
                                             onClick={handleEdit}
                                             onMouseDown={(e) => e.preventDefault()}
-                                            className="flex h-6 w-6 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-border)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-40"
+                                            className={ROW_BUTTON_CLASS}
                                         >
                                             <svg
                                                 viewBox="0 0 16 16"
@@ -634,7 +638,7 @@ export function QueuedMessagesBar({
                                         disabled={!canCancel}
                                         onClick={handleCancel}
                                         onMouseDown={(e) => e.preventDefault()}
-                                        className="flex h-6 w-6 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-border)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-40"
+                                        className={ROW_BUTTON_CLASS}
                                     >
                                         <svg
                                             viewBox="0 0 16 16"
