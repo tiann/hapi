@@ -254,6 +254,11 @@ describe('taskToDraft', () => {
         // Only the prompts still to send.
         expect(taskToDraft(queueTask)).toEqual({ items: ['b', 'c'], interval: { value: '1', unit: 'minutes' }, firstRunAt: null })
     })
+
+    it('keeps one blank row for a queue that has sent every prompt', () => {
+        // The last prompt is out and still waiting: the task is listed, so its editor needs a row to show.
+        expect(taskToDraft({ ...queueTask, runCount: 3, pending: true })).toEqual({ items: [''], interval: { value: '1', unit: 'minutes' }, firstRunAt: null })
+    })
 })
 
 describe('buildRepeatEditRequest', () => {
@@ -296,6 +301,19 @@ describe('buildQueueEditRequest', () => {
 
     it('refuses an empty list', () => {
         expect(buildQueueEditRequest(queueTask, { ...EMPTY_QUEUE_DRAFT, items: [''] })).toEqual({ error: 'queue' })
+    })
+
+    it('lets a queue that has sent every prompt change its gap, with nothing typed in the blank row', () => {
+        const same = { value: '1', unit: 'minutes' } as const
+        const sentOut: SessionTask = { ...queueTask, runCount: 3, pending: true }
+        expect(buildQueueEditRequest(sentOut, { ...EMPTY_QUEUE_DRAFT, items: [''], interval: { value: '2', unit: 'hours' } })).toEqual({
+            request: { intervalMs: 2 * HOUR },
+            changed: true
+        })
+        // Nothing typed and the same gap: there is nothing to save, but nothing wrong either.
+        expect(buildQueueEditRequest(sentOut, { ...EMPTY_QUEUE_DRAFT, items: ['', '  '], interval: same })).toEqual({ request: {}, changed: false })
+        // A prompt typed into that row goes after the ones already sent.
+        expect(buildQueueEditRequest(sentOut, { ...EMPTY_QUEUE_DRAFT, items: ['d'], interval: same })).toEqual({ request: { items: [{ text: 'd' }] }, changed: true })
     })
 })
 

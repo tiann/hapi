@@ -990,6 +990,7 @@ export default {
   'composer.taskErrorMessage': 'Enter a message to send.',
   'composer.taskErrorMessageTooLong': 'A message cannot exceed {count} characters.',
   'composer.taskErrorQueue': 'Enter at least one message.',
+  'composer.taskErrorQueueStale': 'The queue sent a prompt meanwhile, so the rows were refreshed. Review them and save again.',
   'composer.taskErrorTooMany': 'At most {count} messages.',
   'composer.taskErrorFirstRun': 'The first run must be in the future.',
   'composer.taskErrorFirstRunTooFar': 'The first run cannot be more than {count} days ahead.',

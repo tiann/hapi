@@ -988,6 +988,7 @@ export default {
   'composer.taskErrorMessage': '请填写要发送的内容。',
   'composer.taskErrorMessageTooLong': '单条消息不能超过 {count} 个字符。',
   'composer.taskErrorQueue': '请至少填写一条消息。',
+  'composer.taskErrorQueueStale': '队列在此期间发送了一条消息，各行已刷新。请检查后重新保存。',
   'composer.taskErrorTooMany': '最多 {count} 条消息。',
   'composer.taskErrorFirstRun': '首次执行时间必须在未来。',
   'composer.taskErrorFirstRunTooFar': '首次执行不能晚于 {count} 天之后。',

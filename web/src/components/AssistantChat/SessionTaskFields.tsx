@@ -34,7 +34,8 @@ const ERROR_KEY: Record<TaskDraftError, string> = {
     firstRun: 'composer.taskErrorFirstRun',
     firstRunTooFar: 'composer.taskErrorFirstRunTooFar',
     runs: 'composer.taskErrorRuns',
-    runsBelowSent: 'composer.taskErrorRunsBelowSent'
+    runsBelowSent: 'composer.taskErrorRunsBelowSent',
+    queueStale: 'composer.taskErrorQueueStale'
 }
 
 /** Why a form submission did not go through: the draft itself, or the hub's refusal. */

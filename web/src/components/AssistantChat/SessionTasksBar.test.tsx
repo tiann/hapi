@@ -577,6 +577,62 @@ describe('SessionTasksBar', () => {
         await waitFor(() => expect(screen.queryByRole('group', { name: 'Edit task' })).toBeNull())
     })
 
+    it('refreshes the rows of an open queue editor when the queue sends a prompt meanwhile, instead of queueing it twice', async () => {
+        const queue = (runCount: number, pending: boolean) => task({
+            kind: 'queue',
+            items: [{ text: 'a' }, { text: 'b' }, { text: 'c' }],
+            runCount,
+            totalRuns: 3,
+            pending,
+            nextRunAt: pending ? null : Date.now() + MINUTE
+        })
+        const { api, queryClient } = setup({ tasks: [queue(1, false)] })
+        await screen.findByRole('listitem')
+        fireEvent.click(screen.getByRole('button', { name: 'Edit task' }))
+        await screen.findByRole('group', { name: 'Edit task' })
+        expect((screen.getByLabelText('Message 1') as HTMLTextAreaElement).value).toBe('b')
+
+        // The hub sends "b" while the editor is open; the row above shows it waiting, the editor's rows do not move.
+        vi.mocked(api.listSessionTasks).mockResolvedValue({ tasks: [queue(2, true)] })
+        await refetchTasks(queryClient)
+        // (The editor's own rows are list items too, so the task row is the one the Tasks list holds.)
+        await waitFor(() => expect(screen.getByRole('list', { name: 'Tasks' }).querySelector('[data-task-id]')?.textContent).toContain('Sent, waiting'))
+        const editor = screen.getByRole('group', { name: 'Edit task' })
+        expect((within(editor).getByLabelText('Message 1') as HTMLTextAreaElement).value).toBe('b')
+        fireEvent.change(within(editor).getByLabelText('Message 1'), { target: { value: 'b edited' } })
+        fireEvent.click(within(editor).getByRole('button', { name: 'Save changes' }))
+
+        // Nothing is sent: "b" is already out, and the stale rows would have put it in the queue a second time.
+        expect(api.updateSessionTask).not.toHaveBeenCalled()
+        expect((await screen.findByRole('alert')).textContent).toBe('The queue sent a prompt meanwhile, so the rows were refreshed. Review them and save again.')
+        expect(within(editor).queryByLabelText('Message 2')).toBeNull()
+        expect((within(editor).getByLabelText('Message 1') as HTMLTextAreaElement).value).toBe('c')
+        expect(within(editor).getByRole('button', { name: 'Save changes' })).toBeDisabled()
+
+        // A change made after that is saved against what the queue has left.
+        fireEvent.change(within(editor).getByLabelText('Message 1'), { target: { value: 'c edited' } })
+        fireEvent.click(within(editor).getByRole('button', { name: 'Save changes' }))
+        await waitFor(() => expect(api.updateSessionTask).toHaveBeenCalledWith('session-1', 'task-1', { items: [{ text: 'c edited' }] }))
+    })
+
+    it('lets a queue that has sent every prompt change its gap, with one blank row for a prompt to add', async () => {
+        const { api } = setup({ tasks: [task({ kind: 'queue', items: [{ text: 'a' }, { text: 'b' }], runCount: 2, totalRuns: 2, pending: true, nextRunAt: null })] })
+        await screen.findByRole('listitem')
+        fireEvent.click(screen.getByRole('button', { name: 'Edit task' }))
+        const editor = await screen.findByRole('group', { name: 'Edit task' })
+        expect(within(editor).getAllByRole('textbox')).toHaveLength(1)
+        expect((within(editor).getByLabelText('Message 1') as HTMLTextAreaElement).value).toBe('')
+        expect(within(editor).getByRole('button', { name: 'Save changes' })).toBeDisabled()
+
+        fireEvent.change(within(editor).getByLabelText('Gap'), { target: { value: '5' } })
+        fireEvent.click(within(editor).getByRole('button', { name: 'Save changes' }))
+        // The gap alone goes out: no message list, so the hub is not asked to replace anything.
+        await waitFor(() => expect(api.updateSessionTask).toHaveBeenCalledWith('session-1', 'task-1', { intervalMs: 5 * MINUTE }))
+        await waitFor(() => expect(screen.queryByRole('group', { name: 'Edit task' })).toBeNull())
+        expect(screen.getByRole('listitem').textContent).toContain('Gap 5 minutes')
+        expect(screen.queryByRole('alert')).toBeNull()
+    })
+
     it('drops the row when the edit answers 404, and restores it on any other refusal', async () => {
         const view = setup({ tasks: [task()], updateError: new ApiError('HTTP 400 Bad Request: {"code":"wrong_task_kind"}', 400, 'wrong_task_kind') })
         await screen.findByRole('listitem')

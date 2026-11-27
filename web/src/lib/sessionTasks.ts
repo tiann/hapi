@@ -45,6 +45,8 @@ export type TaskDraftError =
     | 'firstRunTooFar'
     | 'runs'
     | 'runsBelowSent'
+    /** The queue sent a prompt while its editor was open; the rows shown are no longer what is left. */
+    | 'queueStale'
 
 export type RepeatTaskDraft = {
     text: string
@@ -228,13 +230,24 @@ export function buildQueueRequest(
     }
 }
 
+/** The prompts a queue has not sent yet: the only ones its editor may change. */
+export function unsentQueueItems(task: SessionTask): string[] {
+    return task.items.slice(task.runCount).map((item) => item.text)
+}
+
+/** The rows of a queue's editor: its unsent prompts, or one blank row once it has sent them all. */
+export function queueEditorRows(task: SessionTask): string[] {
+    const remaining = unsentQueueItems(task)
+    return remaining.length > 0 ? remaining : ['']
+}
+
 /** The form fields of an existing task, for the inline editor under its row. The editor does not offer a first run. */
 export function taskToDraft(task: SessionTask): RepeatTaskDraft | QueueTaskDraft {
     const described = describeIntervalMs(task.intervalMs)
     const interval: IntervalInput = { value: String(described.value), unit: described.unit }
     if (task.kind === 'queue') {
         // Only the prompts still to send can change; the ones already sent stay as they are.
-        return { items: task.items.slice(task.runCount).map((item) => item.text), interval, firstRunAt: null }
+        return { items: queueEditorRows(task), interval, firstRunAt: null }
     }
     return {
         text: task.items[0]?.text ?? '',
@@ -278,12 +291,13 @@ export function buildQueueEditRequest(
     if (intervalMs === 'long') return { error: 'intervalTooLong' }
     if (typeof intervalMs !== 'number') return { error: 'interval' }
     const prompts = queueItems(draft.items)
-    if (prompts.length === 0) return { error: 'queue' }
+    const current = unsentQueueItems(task)
+    // A queue that still has prompts to send keeps at least one; one that sent them all has only its gap left to change.
+    if (prompts.length === 0 && current.length > 0) return { error: 'queue' }
     if (prompts.length > SESSION_TASK_MAX_ITEMS) return { error: 'tooMany' }
     if (prompts.some((text) => text.length > SESSION_TASK_MAX_TEXT_LENGTH)) return { error: 'messageTooLong' }
     const request: UpdateSessionTaskRequest = {}
-    const current = task.items.slice(task.runCount).map((item) => item.text)
-    if (current.length !== prompts.length || current.some((text, index) => text !== prompts[index])) {
+    if (prompts.length > 0 && (current.length !== prompts.length || current.some((text, index) => text !== prompts[index]))) {
         request.items = prompts.map((text) => ({ text }))
     }
     if (intervalMs !== task.intervalMs) request.intervalMs = intervalMs

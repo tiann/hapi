@@ -944,6 +944,7 @@ export default {
   'composer.taskErrorMessage': '送信する内容を入力してください。',
   'composer.taskErrorMessageTooLong': '1 メッセージは {count} 文字以内にしてください。',
   'composer.taskErrorQueue': 'メッセージを 1 件以上入力してください。',
+  'composer.taskErrorQueueStale': 'その間にキューがメッセージを送信したため、行を更新しました。確認してもう一度保存してください。',
   'composer.taskErrorTooMany': 'メッセージは最大 {count} 件です。',
   'composer.taskErrorFirstRun': '初回実行は未来の時刻にしてください。',
   'composer.taskErrorFirstRunTooFar': '初回実行は {count} 日以内にしてください。',

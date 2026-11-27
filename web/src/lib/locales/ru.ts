@@ -858,6 +858,7 @@ export default {
   'composer.taskErrorMessage': 'Введите сообщение.',
   'composer.taskErrorMessageTooLong': 'Сообщение не может быть длиннее {count} символов.',
   'composer.taskErrorQueue': 'Введите хотя бы одно сообщение.',
+  'composer.taskErrorQueueStale': 'За это время очередь отправила сообщение, поэтому строки обновлены. Проверьте их и сохраните ещё раз.',
   'composer.taskErrorTooMany': 'Не больше {count} сообщений.',
   'composer.taskErrorFirstRun': 'Первый запуск должен быть в будущем.',
   'composer.taskErrorFirstRunTooFar': 'Первый запуск не может быть дальше чем через {count} дн.',

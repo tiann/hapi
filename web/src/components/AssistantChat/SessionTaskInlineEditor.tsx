@@ -4,6 +4,7 @@ import { useTranslation } from '@/lib/use-translation'
 import {
     buildQueueEditRequest,
     buildRepeatEditRequest,
+    queueEditorRows,
     readIntervalMs,
     taskToDraft,
     type QueueTaskDraft,
@@ -41,6 +42,10 @@ export function SessionTaskInlineEditor({ task, save, onCancel }: {
     const [busy, setBusy] = useState(false)
     const mounted = useMountedFlag()
     const rootRef = useRef<HTMLDivElement | null>(null)
+    // A queue's rows are its unsent prompts as they were when the editor opened. The hub may send one of
+    // them meanwhile; the row above then moves on, but these rows would still list it, and saving them
+    // would put that prompt in the queue a second time. The count is what tells the two apart.
+    const runCountAtOpen = useRef(task.runCount)
     // Keyboard users come in from the Edit button; a finger did not open a keyboard to begin with.
     useEffect(() => {
         if (!window.matchMedia('(pointer: fine)').matches) return
@@ -62,6 +67,13 @@ export function SessionTaskInlineEditor({ task, save, onCancel }: {
     }
 
     const submit = async () => {
+        if (!isRepeat && task.runCount !== runCountAtOpen.current) {
+            // Nothing is sent. The rows become what the queue has left, so the user reviews and saves again.
+            runCountAtOpen.current = task.runCount
+            setDraft((previous) => ('text' in previous ? previous : { ...previous, items: queueEditorRows(task) }))
+            setFailure({ draft: 'queueStale' })
+            return
+        }
         if ('error' in built) {
             setFailure({ draft: built.error, sent: task.runCount })
             return
