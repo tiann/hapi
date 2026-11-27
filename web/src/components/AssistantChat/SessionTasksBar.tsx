@@ -198,7 +198,7 @@ function SessionTaskRow({ task, mutations, editing, onEditChange }: {
                         aria-label={t('tasks.confirmDelete')}
                         className="flex shrink-0 items-center gap-1"
                         onKeyDown={(event) => {
-                            if (event.key !== 'Escape') return
+                            if (event.key !== 'Escape' || event.defaultPrevented || event.nativeEvent.isComposing) return
                             event.preventDefault()
                             event.stopPropagation()
                             keepTask()

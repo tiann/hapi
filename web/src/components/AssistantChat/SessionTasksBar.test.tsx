@@ -533,6 +533,29 @@ describe('SessionTasksBar', () => {
         expect(screen.getByRole('listitem').textContent).toContain('check progress')
     })
 
+    it('keeps the editor and the delete question open on the Escape that dismisses an IME candidate list', async () => {
+        setup({ tasks: [task()] })
+        await screen.findByRole('listitem')
+        fireEvent.click(screen.getByRole('button', { name: 'Edit task' }))
+        const editor = await screen.findByRole('group', { name: 'Edit task' })
+        const message = within(editor).getByLabelText('Message')
+        fireEvent.change(message, { target: { value: '進捗を確認' } })
+        message.focus()
+        // While a candidate list is up, Chrome reports keydown Escape with isComposing set.
+        fireEvent.keyDown(message, { key: 'Escape', isComposing: true })
+        expect(screen.getByRole('group', { name: 'Edit task' })).toBeTruthy()
+        expect(document.activeElement).toBe(message)
+        fireEvent.keyDown(message, { key: 'Escape' })
+        await waitFor(() => expect(screen.queryByRole('group', { name: 'Edit task' })).toBeNull())
+
+        fireEvent.click(screen.getByRole('button', { name: 'Delete task' }))
+        const keep = within(screen.getByRole('group', { name: /Delete this task/ })).getByRole('button', { name: 'Keep task' })
+        fireEvent.keyDown(keep, { key: 'Escape', isComposing: true })
+        expect(screen.getByRole('group', { name: /Delete this task/ })).toBeTruthy()
+        fireEvent.keyDown(keep, { key: 'Escape' })
+        expect(screen.queryByRole('group', { name: /Delete this task/ })).toBeNull()
+    })
+
     it('edits the prompts a queue has not sent yet, as rows, and keeps the sent ones', async () => {
         const { api } = setup({ tasks: [task({ kind: 'queue', items: [{ text: 'a' }, { text: 'b' }, { text: 'c' }], runCount: 1, totalRuns: 3 })] })
         await screen.findByRole('listitem')

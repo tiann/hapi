@@ -238,7 +238,8 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
         onClose()
     }, [anchorRef, onClose])
     const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-        if (event.key !== 'Escape') return
+        // The Escape that dismisses an IME's candidate list is not the one that closes the panel.
+        if (event.key !== 'Escape' || event.defaultPrevented || event.nativeEvent.isComposing) return
         event.preventDefault()
         event.stopPropagation()
         close()

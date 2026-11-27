@@ -583,6 +583,23 @@ describe('ScheduleTimePicker task modes', () => {
         expect(document.activeElement).toBe(picker.controls.anchor)
     })
 
+    it('stays open on the Escape that dismisses an IME candidate list', () => {
+        const picker = renderPicker({ composerDraft: 'ping' })
+        fireEvent.click(screen.getByRole('button', { name: 'Repeat' }))
+        const message = screen.getByLabelText('Message')
+        fireEvent.change(message, { target: { value: '進捗を確認' } })
+        message.focus()
+        // While a candidate list is up, Chrome reports keydown Escape with isComposing set.
+        fireEvent.keyDown(message, { key: 'Escape', isComposing: true })
+        expect(picker.onClose).not.toHaveBeenCalled()
+        expect(screen.getByRole('dialog', { name: 'Repeat' })).toBeTruthy()
+        expect(document.activeElement).toBe(message)
+        // The Escape after the composition is the one that closes.
+        fireEvent.keyDown(message, { key: 'Escape' })
+        expect(picker.onClose).toHaveBeenCalledTimes(1)
+        expect(picker.controls.drafts().repeat.text).toBe('進捗を確認')
+    })
+
     it('lifts the mobile sheet above the software keyboard', () => {
         const fine = window.matchMedia
         window.matchMedia = ((query: string) => ({

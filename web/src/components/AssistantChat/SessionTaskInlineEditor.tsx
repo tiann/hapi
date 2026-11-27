@@ -89,7 +89,8 @@ export function SessionTaskInlineEditor({ task, save, onCancel }: {
             role="group"
             aria-label={t('tasks.edit')}
             onKeyDown={(event) => {
-                if (event.key !== 'Escape') return
+                // Not the Escape that dismisses an IME's candidate list: typing a prompt in Chinese or Japanese needs it.
+                if (event.key !== 'Escape' || event.defaultPrevented || event.nativeEvent.isComposing) return
                 event.preventDefault()
                 event.stopPropagation()
                 cancel()
