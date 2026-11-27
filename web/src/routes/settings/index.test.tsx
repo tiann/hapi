@@ -424,7 +424,7 @@ describe('responsive settings pages', () => {
     it('keeps the session status description visible with its choice group', () => {
         renderPage(<SettingsDisplayPage />)
 
-        const description = screen.getByText('Choose which status hints appear in the session list. Basic shows runtime state; Extended also shows permission, input, background-task, new-activity, and scheduled-message hints (clock icon).')
+        const description = screen.getByText('Choose which status hints appear in the session list. Basic shows runtime state; Extended also shows permission, input, background-task, new-activity, scheduled-message (clock icon) and repeat or queue task (repeat icon) hints.')
         const choices = screen.getByRole('radiogroup', { name: 'Session list status hints' })
         expect(screen.getByRole('radio', { name: 'Basic' })).toBeInTheDocument()
         expect(screen.getByRole('radio', { name: 'Extended' })).toBeInTheDocument()

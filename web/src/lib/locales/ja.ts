@@ -1272,7 +1272,7 @@ export default {
   'settings.display.sessionListStatus': 'セッション一覧のステータスヒント',
   'settings.display.sessionListStatus.standard': '基本',
   'settings.display.sessionListStatus.detailed': '拡張',
-  'settings.display.sessionListStatus.detailedDescription': 'セッション一覧に表示するステータスヒントを選択します。「基本」は実行状態を表示し、「拡張」はさらに権限、入力、バックグラウンドタスク、新しいアクティビティ、予約メッセージ（時計アイコン）のヒントも表示します。',
+  'settings.display.sessionListStatus.detailedDescription': 'セッション一覧に表示するステータスヒントを選択します。「基本」は実行状態を表示し、「拡張」はさらに権限、入力、バックグラウンドタスク、新しいアクティビティ、予約メッセージ（時計アイコン）、繰り返し・キューのタスク（繰り返しアイコン）のヒントも表示します。',
   'settings.display.sessionHeader': 'セッションヘッダー',
   'settings.display.sessionHeader.description': 'セッションタイトルの下に表示する詳細を選択します。モバイルでは、エージェントと、利用可能な最も優先度の高い詳細を表示します。',
   'settings.display.sessionHeader.showLabels': 'フィールドのラベルを表示',

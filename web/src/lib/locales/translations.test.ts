@@ -24,6 +24,17 @@ function translate(dict: Dict) {
 const locales: [string, Dict][] = [['en', en], ['zh-CN', zhCN], ['ja', ja], ['ru', ru]]
 
 describe('session task strings', () => {
+    it('says in the Extended session-list hints setting that it adds the task indicator', () => {
+        // Only Extended mode marks a session that has tasks, so the setting's description must name it.
+        const repeatIcon: Record<string, string> = { 'zh-CN': '循环图标', ja: '繰り返しアイコン', ru: 'иконка повтора' }
+        expect(en['settings.display.sessionListStatus.detailedDescription']).toContain('repeat icon')
+        expect(en['settings.display.sessionListStatus.detailedDescription']).toContain('clock icon')
+        for (const [locale, dict] of locales.slice(1)) {
+            const description = dict['settings.display.sessionListStatus.detailedDescription']
+            expect(description, locale).toContain(repeatIcon[locale])
+        }
+    })
+
     it('ship every task key in every locale', () => {
         const keys = Object.keys(en).filter((key) => key.startsWith('tasks.') || key.startsWith('composer.task') || key === 'composer.scheduleAndTasks' || key === 'queuedMessages.fromTask' || key === 'queuedMessages.skipTaskPrompt')
         expect(keys.length).toBeGreaterThan(60)

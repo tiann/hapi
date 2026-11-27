@@ -91,7 +91,7 @@ How the hub runs them:
 - If the session's machine is offline, the task waits and shows **Sends once the machine is back online**. Other reasons are shown the same way — the session cannot be resumed right now, the session is archived, the prompt was sent but whether the agent took it is unknown (retry or discard it in the queued messages), the agent has not taken the prompt, or the send failed. None of these pauses the task: it stays due and goes on by itself once the cause is gone.
 - A finished task removes itself from the list; its prompts stay in the conversation and its runs in the history. A session may hold at most 20 active tasks.
 
-In the queued-message bar, a prompt a task sent is marked **From task**. It offers **Skip this message** (the task moves on to the next one and records the skip) and, when its delivery is uncertain, **Retry** — but not **Edit** or **Steer**: the task tracks that row. Once it has gone out, the message keeps the **From task** mark in the conversation, so it does not read as something you typed.
+In the queued-message bar, a prompt a task sent is marked **From task**. It offers **Skip this message** (the prompt is cancelled, which the history lists as **Cancelled**, and the task moves on: a queue sends its next message one gap after the skip, a repeat task keeps its grid) and, when its delivery is uncertain, **Retry** — but not **Edit** or **Steer**: the task tracks that row. Once it has gone out, the message keeps the **From task** mark in the conversation, so it does not read as something you typed.
 
 Tasks run with the session's permission mode. Where that mode does not ask before it acts, the Repeat and Queue forms say so.
 

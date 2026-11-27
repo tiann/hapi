@@ -1176,7 +1176,7 @@ export default {
   'settings.display.sessionListStatus': 'Подсказки статуса в списке сессий',
   'settings.display.sessionListStatus.standard': 'Базовые',
   'settings.display.sessionListStatus.detailed': 'Расширенные',
-  'settings.display.sessionListStatus.detailedDescription': 'Выберите, какие подсказки статуса показывать в списке сессий. Базовые показывают состояние выполнения; расширенные также показывают подсказки о разрешениях, вводе, фоновых задачах, новой активности и отложенных сообщениях (иконка часов).',
+  'settings.display.sessionListStatus.detailedDescription': 'Выберите, какие подсказки статуса показывать в списке сессий. Базовые показывают состояние выполнения; расширенные также показывают подсказки о разрешениях, вводе, фоновых задачах, новой активности, отложенных сообщениях (иконка часов) и задачах повтора или очереди (иконка повтора).',
   'settings.display.sessionHeader': 'Шапка сессии',
   'settings.display.sessionHeader.description': 'Выберите, какие детали показывать под названием сессии. На мобильных показывается агент плюс самая приоритетная доступная деталь.',
   'settings.display.sessionHeader.showLabels': 'Показывать подписи полей',

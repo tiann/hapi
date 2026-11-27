@@ -389,7 +389,8 @@ export function QueuedMessagesBar({
                         // Edit/Cancel, and never offered for future-scheduled rows
                         // (the hub rejects those).
                         // A prompt a task inserted cannot be edited into a manual message or
-                        // steered: the task tracks that row, and treats its removal as a skip.
+                        // steered: the task tracks that row. Cancelling it is the task's "Skip": the
+                        // task moves on, and the history lists the prompt as cancelled.
                         const fromTask = isSessionTaskMessageLocalId(msg.localId)
                         const canSteerRow = Boolean(
                             canSteer
