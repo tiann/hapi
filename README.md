@@ -45,6 +45,7 @@ For self-hosted options (Cloudflare Tunnel, Tailscale), see [Installation](docs/
 
 - [Native apps (iOS / Android)](docs/guide/native-apps.md)
 - [Web / PWA](docs/guide/pwa.md)
+- [VS Code](https://marketplace.visualstudio.com/items?itemName=3ndetz.hapi-chat)
 - [How it Works](docs/guide/how-it-works.md)
 - [Supported Agents](docs/guide/agents.md)
 - [Voice Assistant](docs/guide/voice-assistant.md)
