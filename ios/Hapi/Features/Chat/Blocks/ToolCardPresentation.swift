@@ -352,7 +352,7 @@ func toolCardPresentation(_ tool: ChatToolCall, basePath: String?) -> ToolCardPr
     case "CursorTask":
         return ToolCardPresentation(
             icon: ToolIcon.agent,
-            title: chatInputString(input, ["title", "description"]) ?? "Task",
+            title: chatInputString(input, ["title", "description"]) ?? String(localized: "Launch Agent"),
             subtitle: chatInputString(input, ["prompt"]).map { chatTruncate($0, 120) }
         )
 

@@ -767,6 +767,7 @@ function SessionChatInner(props: SessionChatProps) {
     const [historyActionPending, setHistoryActionPending] = useState(false)
     const [branchPoint, setBranchPoint] = useState<{ messageLocalId?: string; messageId?: string } | null>(null)
     const branchAgent = BranchConversationAgentSchema.safeParse(props.session.metadata?.flavor ?? 'claude').data
+    const branchSourceDirectory = resolveBranchSourceDirectory(props.session.metadata)
     const [rewindForkFallback, setRewindForkFallback] = useState<string | null>(null)
     const forkFlow = useForkFlow({
         session: props.session,
@@ -2453,11 +2454,11 @@ function SessionChatInner(props: SessionChatProps) {
                                 ? <p role="status">{t('branch.uncertain')}</p> : null}
                         </div>
                     ) : null}
-                    {branchPoint && branchAgent && props.session.metadata?.machineId ? <BranchConversationDialog
+                    {branchPoint && branchAgent && branchSourceDirectory && props.session.metadata?.machineId ? <BranchConversationDialog
                         api={props.api}
                         machineId={props.session.metadata.machineId}
                         sourceAgent={branchAgent}
-                        sourceDirectory={resolveBranchSourceDirectory(props.session.metadata)}
+                        sourceDirectory={branchSourceDirectory}
                         messageLocalId={branchPoint.messageLocalId}
                         messageId={branchPoint.messageId}
                         onClose={() => setBranchPoint(null)}
@@ -2488,7 +2489,7 @@ function SessionChatInner(props: SessionChatProps) {
                         onRetryMessage={props.onRetryMessage}
                         onContinuePlan={() => focusComposerRef.current?.()}
                         historyActionPending={forkFlow.loading || historyActionPending}
-                        onBranchConversation={Boolean(props.session.metadata?.machineId) && (!props.session.active || !controlledByUser) && branchAgent
+                        onBranchConversation={Boolean(props.session.metadata?.machineId) && (!props.session.active || !controlledByUser) && branchAgent && branchSourceDirectory
                             ? (messageLocalId, messageId) => setBranchPoint({ messageLocalId, messageId }) : undefined}
                         onForkConversation={controlledByUser && !sessionInactive ? undefined : onForkConversation}
                         onRewindConversation={controlledByUser ? undefined : onRewindConversation}
