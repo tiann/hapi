@@ -160,6 +160,24 @@ final class ChatModel {
             ?? hub.sessionStore.sessions.first { $0.id == sessionId }?.active
     }
 
+    var cursorModelError: SessionModelError? {
+        hub.sessionStore.detail(for: sessionId)?.visibleCursorModelError
+    }
+
+    func performModelErrorAction(_ action: ModelErrorAction, eventId: String) async throws {
+        guard let error = cursorModelError, error.eventId == eventId,
+              action != .bridge || error.canBridge(sessionActive: sessionIsActive == true) else { throw CancellationError() }
+        do {
+            try await hub.api.performModelErrorAction(action, sessionId: sessionId, eventId: eventId)
+        } catch {
+            // A 409 can mean a newer turn or a replacement error won the race.
+            if (error as? APIError)?.status == 409, cursorModelError?.eventId == eventId {
+                await loadDetail()
+            }
+            throw error
+        }
+    }
+
     // MARK: Wiring
 
     private let hub: HubSession

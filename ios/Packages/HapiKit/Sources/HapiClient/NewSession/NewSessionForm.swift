@@ -24,9 +24,9 @@ public struct NewSessionForm: Codable, Equatable, Sendable {
     public var effort: String
     /// Codex reasoning effort or opencode variant; `'default'` = omit.
     public var modelReasoningEffort: String
-    /// Native permission mode for grok + codex-family flavors.
+    /// Native permission mode for flavors with a permission picker.
     public var permissionMode: PermissionMode
-    /// HAPI YOLO preference for the remaining flavors (claude/agy/cursor/pi).
+    /// HAPI YOLO preference for flavors with a toggle.
     public var yolo: Bool
     public var sessionType: SpawnSessionType
     public var worktreeName: String
@@ -92,6 +92,10 @@ public struct NewSessionForm: Codable, Equatable, Sendable {
         permissionMode = try container.decodeIfPresent(PermissionMode.self, forKey: .permissionMode)
             ?? .default
         yolo = try container.decodeIfPresent(Bool.self, forKey: .yolo) ?? false
+        // Older Cursor drafts encoded a default placeholder alongside the YOLO toggle.
+        if agent == .cursor, permissionMode == .default, yolo {
+            permissionMode = .yolo
+        }
         sessionType = try container.decodeIfPresent(SpawnSessionType.self, forKey: .sessionType)
             ?? .simple
         worktreeName = try container.decodeIfPresent(String.self, forKey: .worktreeName) ?? ""
@@ -127,7 +131,7 @@ public enum NewSessionLogic {
     /// through the same native select (web `usesNativePermissionSelect`,
     /// `web/src/lib/codexFamilyPermissionAgents.ts`).
     public static func usesNativePermissionSelect(_ flavor: AgentFlavor) -> Bool {
-        flavor == .claude || flavor == .grok || usesCodexFamilyPermissionModes(flavor)
+        flavor == .claude || flavor == .grok || flavor == .cursor || usesCodexFamilyPermissionModes(flavor)
     }
 
     /// `resolveHapiYoloPermissionMode` (`shared/src/agentConfig.ts`) — the
@@ -160,13 +164,10 @@ public enum NewSessionLogic {
     /// - `copilotAgentMode` always for copilot;
     /// - `startingMode` omitted = the runner's `'remote'` default (v1 fixes
     ///   remote; pty is deferred, matching the web create form).
-    ///
-    /// Unlike web, iOS has no persistent YOLO preference to migrate: the
-    /// toggle only lives in the in-memory form / a draft that is deleted on
-    /// success, so there is nothing to bridge into `permissionMode` here.
     public static func buildSpawnRequest(
         form: NewSessionForm,
-        codexFastTierVisible: Bool
+        codexFastTierVisible: Bool,
+        cursorCatalog: CursorModelCatalog? = nil
     ) -> SpawnRequest {
         let agent = form.agent
         let hasModelPicker = agent == .claude || agent == .codex
@@ -174,7 +175,7 @@ public enum NewSessionLogic {
         let trimmedModel = form.model.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedModel: String?
         if agent == .cursor {
-            resolvedModel = trimmedModel.isEmpty ? "auto" : trimmedModel
+            resolvedModel = cursorCatalog?.contains(form.model) == true ? form.model : "auto"
         } else {
             resolvedModel = hasModelPicker && trimmedModel != "auto" && !trimmedModel.isEmpty
                 ? trimmedModel
@@ -217,6 +218,10 @@ public enum NewSessionLogic {
         let agent = form.agent
         guard AgentModelCatalog.scope(for: agent) != nil else { return form }
         var next = form
+        if agent == .cursor {
+            if !CursorModelCatalog(response: response).contains(next.model) { next.model = "auto" }
+            return next
+        }
         let models = AgentModelCatalog.newSessionModelOptions(flavor: agent, response: response)
         if !models.contains(where: { $0.value == next.model }) {
             next.model = "auto"

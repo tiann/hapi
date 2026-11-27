@@ -132,8 +132,12 @@ presets and Codex the machine catalog; agy, cursor, dsh and pi load
 probe the same route with `cwd` once the directory exists. Grok efforts, Pi
 thinking levels and OpenCode variants follow the selected model; a restored
 selection the catalog no longer offers falls back to Default, and Create waits
-while a non-default selection is still being validated. Cursor lists ACP model
-ids flat (no web-style variant drill-down) and always sends `model`.
+while a non-default selection is still being validated.
+
+Cursor uses the same model controls in Create and chat. Changing effort, thinking,
+context or fast mode selects a complete advertised ACP ID or CLI SKU. Catalogs
+with coupled settings offer complete variants. Create sends `auto` explicitly.
+The permission menu offers Default, Plan Mode, Ask Mode, Debug Mode, Auto and Yolo.
 `AgentModelCatalogTests` covers the option builders and reconciliation.
 
 ## Pairing
@@ -577,8 +581,15 @@ kimi offer a Default/Auto row; opencode, agy and pi switch between listed
 models only, and Pi switches with a `{provider, modelId}` reference. Grok and
 OpenCode efforts come from their `*-reasoning-effort-options` routes (OpenCode
 hides options that still describe the previous model); Pi shows the current
-model's thinking levels. On regular-width windows the
-production toolbar button anchors an iPad popover; compact windows adapt that
+model's thinking levels. Cursor distinguishes a reported account Default from an
+explicit Auto selection. If a config update and reload both fail, the settings
+revert the rejected edit while preserving other session changes.
+
+Cursor chat shows the current model error from the Hub. Dismiss acknowledges the
+specific event. Bridge & retry queues a manual retry for eligible transient
+errors. The Hub reports the eventual recovery or failure.
+
+On regular-width windows the toolbar button anchors an iPad popover; compact windows adapt that
 same presenter to a medium/large sheet (large for accessibility text).
 
 Run the configuration and real-presentation tests on both phone and tablet:

@@ -1068,6 +1068,47 @@ struct ChatInteractorTests {
         #expect(detailLoads >= 2)
     }
 
+    @Test(arguments: [false, true])
+    func failedConfigAndRefreshPreserveConcurrentDetailChanges(replaced: Bool) async throws {
+        let harness = try await ChatInteractionHarness(detail: chatDetail(model: "sonnet"), activate: false)
+        await harness.performer.script("POST", "/api/sessions/sess-1/model", status: 409)
+        await harness.performer.script("GET", "/api/sessions/sess-1", status: 503)
+        harness.interactor.setModel("opus")
+        #expect(harness.store.detail(for: chatSessionID)?.model == "opus")
+        // Same main-actor turn as the optimistic update, before the request can settle.
+        harness.store.updateDetailLocal(chatSessionID) {
+            $0.permissionMode = .plan
+            if replaced { $0.model = "server-choice" }
+        }
+        #expect(await eventually { !harness.interactor.configOpPending })
+        #expect(harness.store.detail(for: chatSessionID)?.model == (replaced ? "server-choice" : "sonnet"))
+        #expect(harness.store.detail(for: chatSessionID)?.permissionMode == .plan)
+    }
+
+    @Test func cursorAcceptsOnlyAdvertisedIdsAndExplicitAuto() async throws {
+        var detail = chatDetail(flavor: "cursor", model: "default[]")
+        detail.metadata?.machineId = "runner"
+        let harness = try await ChatInteractionHarness(detail: detail, activate: false)
+        await harness.performer.serve("GET", "/api/sessions/sess-1/cursor-models",
+            json: #"{"success":true,"availableModels":[{"modelId":"gpt[fast=true]"}]}"#)
+        await harness.performer.serve("GET", "/api/machines/runner/cursor-models",
+            json: #"{"success":true,"cliModelSkus":[{"modelId":"gpt-high-fast"}]}"#)
+        let interactor = harness.interactor
+        interactor.loadModelOptions()
+        #expect(await eventually { interactor.config.modelOptions?.contains { $0.value == "gpt-high-fast" } == true })
+        #expect(interactor.config.model == "default[]")
+        interactor.setModel("gpt-high")
+        interactor.setModel(nil)
+        for wire in ["auto", "gpt[fast=true]", "gpt-high-fast"] {
+            interactor.setModel(wire)
+            #expect(interactor.config.model == wire)
+            #expect(await eventually { !interactor.configOpPending })
+        }
+        #expect(await harness.performer.bodies("POST", pathSuffix: "/model") == [
+            #"{"model":"auto"}"#, #"{"model":"gpt[fast=true]"}"#, #"{"model":"gpt-high-fast"}"#,
+        ])
+    }
+
     @Test func modelAndEffortSwitchesRoutePerFlavor() async throws {
         let harness = try await ChatInteractionHarness(
             detail: chatDetail(flavor: "claude", model: "sonnet", effort: nil)

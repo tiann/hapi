@@ -185,7 +185,7 @@ struct AgentSessionConfigTests {
         #expect(AgentModelCatalog.sessionModelOptions(flavor: .cursor, response: response, currentModel: "auto").first
             == CatalogOption(value: "auto", label: "Auto"))
         #expect(AgentModelCatalog.sessionCurrentModel(flavor: .cursor, response: response, sessionModel: "default[]", piSelectedModel: nil)
-            == "auto")
+            == "default[]")
         #expect(AgentModelCatalog.sessionCurrentModel(flavor: .opencode, response: response, sessionModel: nil, piSelectedModel: nil)
             == "b")
     }

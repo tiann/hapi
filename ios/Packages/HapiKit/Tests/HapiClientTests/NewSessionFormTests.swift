@@ -70,7 +70,7 @@ struct NewSessionSpawnBodyTests {
         """)
     }
 
-    @Test func grokSendsPermissionModeNotYoloCursorSendsYoloNotPermissionMode() throws {
+    @Test func grokSendsPermissionModeNotYolo() throws {
         let grok = try canonicalBody(
             NewSessionForm(directory: "/repo", agent: .grok, permissionMode: .auto, yolo: true),
             codexFastTierVisible: false
@@ -78,22 +78,45 @@ struct NewSessionSpawnBodyTests {
         #expect(grok == """
         {"agent":"grok","directory":"/repo","permissionMode":"auto","sessionType":"simple"}
         """)
+    }
 
-        // Cursor always sends its model (`cursorSpawnModelId`), Auto included.
-        let cursor = try canonicalBody(
-            NewSessionForm(directory: "/repo", agent: .cursor, model: "sonic", yolo: true),
-            codexFastTierVisible: false
+    @Test func cursorSpawnCarriesEachNativeModeAndTheExactAdvertisedModel() throws {
+        let wire = "sonic[reasoning=high,fast=true]"
+        let sku = "sonic-high-fast"
+        let response = AgentModelsResponse(
+            success: true, availableModels: [.init(modelId: wire)], cliModelSkus: [.init(modelId: sku)]
         )
-        #expect(cursor == """
-        {"agent":"cursor","directory":"/repo","model":"sonic","sessionType":"simple","yolo":true}
-        """)
-        let cursorAuto = try canonicalBody(
-            NewSessionForm(directory: "/repo", agent: .cursor, yolo: false),
-            codexFastTierVisible: false
-        )
-        #expect(cursorAuto == """
-        {"agent":"cursor","directory":"/repo","model":"auto","sessionType":"simple","yolo":false}
-        """)
+        let catalog = CursorModelCatalog(response: response)
+        #expect(NewSessionLogic.usesNativePermissionSelect(.cursor))
+        #expect(AgentFlavor.cursor.permissionModes == [.default, .plan, .ask, .debug, .autoReview, .yolo])
+        for mode in AgentFlavor.cursor.permissionModes {
+            for model in [wire, sku, "auto", "sonic[reasoning=low]", "sonic-low"] {
+                let form = NewSessionForm(directory: "/repo", agent: .cursor, model: model, permissionMode: mode)
+                let restored = NewSessionLogic.reconcileAgentModelSelections(form, response: response, variants: nil)
+                let request = NewSessionLogic.buildSpawnRequest(form: form, codexFastTierVisible: false, cursorCatalog: catalog)
+                let expectedModel = model == wire || model == sku ? model : "auto"
+                #expect(restored.model == expectedModel)
+                #expect(request.model == expectedModel)
+                #expect(request.permissionMode == mode)
+                #expect(request.yolo == nil)
+            }
+        }
+        // A saved choice cannot be verified while discovery is unavailable.
+        let form = NewSessionForm(directory: "/repo", agent: .cursor, model: sku)
+        #expect(NewSessionLogic.buildSpawnRequest(form: form, codexFastTierVisible: false).model == "auto")
+    }
+
+    @Test func cursorDraftMigratesLegacyYoloAndKeepsAnExplicitNativeMode() throws {
+        for (fields, expected): (String, PermissionMode) in [
+            (#""yolo":true"#, .yolo),
+            (#""yolo":true,"permissionMode":"default""#, .yolo),
+            (#""yolo":false,"permissionMode":"default""#, .default),
+            (#""yolo":true,"permissionMode":"ask""#, .ask)
+        ] {
+            let json = Data(#"{"agent":"cursor",\#(fields)}"#.utf8)
+            let form = try HapiJSON.decoder.decode(NewSessionForm.self, from: json)
+            #expect(form.permissionMode == expected)
+        }
     }
 
     @Test func discoveredCatalogFlavorsSendTheirModelAndEffortFields() throws {

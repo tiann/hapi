@@ -158,6 +158,16 @@ private func apiErrorDetail(_ error: JSONValue?) -> String? {
 
 func eventPresentation(_ event: AgentEvent) -> EventPresentation {
     switch event.type {
+    case "modelError":
+        let kind = event["kind"]?.chatString ?? "unknown"
+        let detail = event["transient"] == .bool(true) ? "\(kind), transient" : kind
+        return EventPresentation(icon: "⚠️", text: "Model error (\(detail))")
+
+    case "modelErrorBridged":
+        let kind = event["kind"]?.chatString ?? "unknown"
+        let bridge = event["auto"] == .bool(true) ? "auto-bridged" : "bridged"
+        return EventPresentation(icon: "✓", text: "HAPI \(bridge) after \(kind) — re-sent last user message")
+
     case "api-error":
         let retryAttempt = event["retryAttempt"]?.chatNumber ?? 0
         let maxRetries = event["maxRetries"]?.chatNumber ?? 0

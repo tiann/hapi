@@ -65,6 +65,8 @@ public final class ChatInteractor {
     public private(set) var composerText = ""
     /// A send (or its resume recovery) is in flight.
     public private(set) var isSending = false
+    /// A successful abort cancels a queued Cursor bridge without changing its error event.
+    public private(set) var abortRevision = 0
     /// Latest window state (feeds ``queuedRows``).
     public private(set) var windowState: MessageWindowState?
     /// Codex model catalog load state (feeds ``config``).
@@ -500,6 +502,7 @@ public final class ChatInteractor {
             guard let self else { return }
             do {
                 try await self.api.abortSession(id: self.sessionId)
+                self.abortRevision += 1
             } catch {
                 self.emit(.notice(Self.errorMessage(error, fallback: "Failed to abort")))
             }
@@ -957,6 +960,10 @@ public final class ChatInteractor {
         let api = api
         let sessionId = sessionId
         let agent = currentFlavor().map(AgentFlavor.init(rawValue:))
+        if agent == .cursor {
+            guard let model, case .loaded(let response) = agentModels,
+                  CursorModelCatalog(response: response).contains(model) else { return }
+        }
         var selection = model.map(ModelSelection.id)
         var reference: PiModelReference?
         if agent == .pi, let model, case .loaded(let response) = agentModels,
@@ -1068,6 +1075,15 @@ public final class ChatInteractor {
                 }
                 if response.success {
                     self.agentModels = .loaded(response)
+                    // The live ACP session and runner can advertise different variants.
+                    if agent == .cursor, let machineId,
+                       let machine = try? await self.api.machineAgentModels(machineId: machineId, flavor: agent),
+                       machine.success {
+                        var merged = response
+                        merged.availableModels = (response.availableModels ?? []) + (machine.availableModels ?? [])
+                        merged.cliModelSkus = (response.cliModelSkus ?? []) + (machine.cliModelSkus ?? [])
+                        self.agentModels = .loaded(merged)
+                    }
                 } else {
                     self.emit(.notice(response.error ?? "Failed to load models"))
                     self.agentModels = .failed
@@ -1109,7 +1125,9 @@ public final class ChatInteractor {
     ) {
         guard !configOpPending else { return }
         configOpPending = true
+        let previous = sessionStore.detail(for: sessionId)
         sessionStore.updateDetailLocal(sessionId, optimistic)
+        let applied = sessionStore.detail(for: sessionId)
         Task { [weak self] in
             guard let self else { return }
             defer { self.configOpPending = false }
@@ -1117,9 +1135,27 @@ public final class ChatInteractor {
                 try await call()
                 onSuccess?()
             } catch {
-                // Roll back by rolling forward to server truth (an SSE patch
-                // may have moved other fields since the optimistic write).
-                _ = try? await self.sessionStore.loadSessionDetail(self.sessionId)
+                if (try? await self.sessionStore.loadSessionDetail(self.sessionId)) == nil,
+                   let previous, let applied {
+                    self.sessionStore.updateDetailLocal(self.sessionId) { current in
+                        // Undo only this edit, retaining concurrent detail updates.
+                        func restore<T: Equatable>(_ key: WritableKeyPath<Session, T>) {
+                            if previous[keyPath: key] != applied[keyPath: key],
+                               current[keyPath: key] == applied[keyPath: key] {
+                                current[keyPath: key] = previous[keyPath: key]
+                            }
+                        }
+                        restore(\.permissionMode)
+                        restore(\.collaborationMode)
+                        restore(\.model)
+                        restore(\.effort)
+                        restore(\.modelReasoningEffort)
+                        if previous.metadata?.piSelectedModel != applied.metadata?.piSelectedModel,
+                           current.metadata?.piSelectedModel == applied.metadata?.piSelectedModel {
+                            current.metadata?.piSelectedModel = previous.metadata?.piSelectedModel
+                        }
+                    }
+                }
                 self.emit(.notice(Self.errorMessage(error, fallback: "Failed to update session")))
             }
         }
