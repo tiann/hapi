@@ -1,10 +1,14 @@
 import { afterEach, describe, expect, it } from 'bun:test'
 import { Hono } from 'hono'
+import { z } from 'zod'
+import { ForkBoundarySchema } from '@hapi/protocol/forkBoundary'
 import type { WebAppEnv } from '../web/middleware/auth'
 import { createSessionsRoutes } from '../web/routes/sessions'
 import { Store } from '../store'
 import { RpcRegistry } from '../socket/rpcRegistry'
 import { SyncEngine } from './syncEngine'
+
+const previewSchema = z.object({ boundary: ForkBoundarySchema })
 
 function fixture() {
     const store = new Store(':memory:')
@@ -58,9 +62,9 @@ describe('Cursor native history', () => {
         }
         const preview = await f.post('fork-preview', { intent: 'message', messageLocalId: 'second' })
         expect(preview.status).toBe(200)
-        const response = await f.post('fork', { messageLocalId: 'second', boundary: (await preview.json()).boundary })
+        const response = await f.post('fork', { messageLocalId: 'second', boundary: previewSchema.parse(await preview.json()).boundary })
         expect(response.status).toBe(200)
-        expect(f.store.messages.getAllMessages((await response.json()).sessionId).map(m => m.localId)).toEqual(['first'])
+        expect(f.store.messages.getAllMessages(z.object({ sessionId: z.string() }).parse(await response.json()).sessionId).map(m => m.localId)).toEqual(['first'])
         expect(f.rows()).toEqual(['first', 'second'])
     })
 
@@ -82,7 +86,7 @@ describe('Cursor native history', () => {
         }
         const preview = await f.post('fork-preview', { intent: 'rewind', messageLocalId: 'second' })
         expect(preview.status).toBe(200)
-        const response = await f.post('rewind', { messageLocalId: 'second', boundary: (await preview.json()).boundary })
+        const response = await f.post('rewind', { messageLocalId: 'second', boundary: previewSchema.parse(await preview.json()).boundary })
         expect(await response.json()).toEqual({ success: true })
         expect(calls).toEqual(['prepare', 'activate'])
     })
