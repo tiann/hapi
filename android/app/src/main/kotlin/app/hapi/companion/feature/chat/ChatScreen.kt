@@ -353,11 +353,12 @@ internal fun ChatScreen(
                         onEdit = viewModel::editQueuedMessage,
                         onCancel = viewModel::cancelQueuedMessage,
                     )
+                    val presentedSteerTurn = composerState.followUpSteerTurnId
                     ChatComposer(
                         state = composerState,
-                        followUpDefaultIsSteer = hubSettings.followUpDefault == "steer",
+                        followUpDefaultIsSteer = state.flavor != "pi" && hubSettings.followUpDefault == "steer",
                         onTextChange = viewModel::onComposerChange,
-                        onSend = viewModel::sendMessage,
+                        onSend = { intent -> viewModel.sendMessage(intent, presentedSteerTurn) },
                         onAbort = viewModel::abortSession,
                         attachments = attachmentItems,
                         onAddAttachment = { attachmentSheetOpen = true },

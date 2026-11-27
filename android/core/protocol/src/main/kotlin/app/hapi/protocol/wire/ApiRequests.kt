@@ -50,6 +50,7 @@ data class SendMessageRequest(
     /** Legacy delivery mode (`MessageDeliveryModeSchema`). */
     val deliveryMode: String? = null,
     val followUpIntent: FollowUpIntent? = null,
+    val expectedFollowUpTurnId: String? = null,
 )
 
 /** Choice for an ordinary composer send. The hub resolves its default. */

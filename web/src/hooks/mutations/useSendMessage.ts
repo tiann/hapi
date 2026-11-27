@@ -22,6 +22,7 @@ type SendMessageInput = {
     scheduledAt?: number | null
     deliveryMode: MessageDeliveryMode
     followUpIntent?: ComposerSendIntent
+    expectedFollowUpTurnId?: string
 }
 
 export type SendMessageAcceptance = {
@@ -196,6 +197,7 @@ export function useSendMessage(
         scheduledAt?: number | null,
         deliveryMode?: MessageDeliveryMode,
         followUpIntent?: ComposerSendIntent,
+        expectedFollowUpTurnId?: string,
     ) => Promise<SendMessageAcceptance | false>
     retryMessage: (localId: string) => boolean
     isSending: boolean
@@ -211,15 +213,19 @@ export function useSendMessage(
             if (!api) {
                 throw new Error('API unavailable')
             }
-            await api.sendMessage(
+            const args = [
                 input.sessionId,
                 input.text,
                 input.localId,
                 input.attachments,
                 input.scheduledAt,
                 input.deliveryMode,
-                ...(input.followUpIntent ? [input.followUpIntent] : []),
-            )
+            ] as const
+            if (input.followUpIntent) {
+                await api.sendMessage(...args, input.followUpIntent, input.expectedFollowUpTurnId)
+            } else {
+                await api.sendMessage(...args)
+            }
         },
         onMutate: async (input) => {
             const successStatus = isSessionThinkingRef.current ? 'queued' as const : 'sent' as const
@@ -274,6 +280,7 @@ export function useSendMessage(
         scheduledAt?: number | null,
         deliveryMode: MessageDeliveryMode = 'queue',
         followUpIntent?: ComposerSendIntent,
+        expectedFollowUpTurnId?: string,
     ): Promise<SendMessageAcceptance | false> => {
         if (!api) {
             options?.onBlocked?.('no-api')
@@ -301,6 +308,7 @@ export function useSendMessage(
                 targetSessionId = resolved.sessionId
                 if (resolved.resumed) {
                     followUpIntent = undefined
+                    expectedFollowUpTurnId = undefined
                     // Await draft transfer / navigation before the mutation so
                     // hidden inactive attachments move with the resumed id
                     // (including same-id PTY/Pi/Cursor resumes).
@@ -352,6 +360,7 @@ export function useSendMessage(
             scheduledAt,
             deliveryMode,
             followUpIntent,
+            expectedFollowUpTurnId,
         })
         return { attemptId: localId }
     }

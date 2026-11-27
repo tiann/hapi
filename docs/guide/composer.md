@@ -46,7 +46,7 @@ If HAPI cannot confirm whether a steer reached the agent, the row says so and of
 
 With an updated Claude remote or Codex runner, choosing Steer at send time offers the message to the active turn. Claude's running tools can finish and Claude then reads the follow-up. When Claude is waiting for an answer or approval, or when the active turn ends before delivery, the message stays queued. Other runners can still offer the per-message **Steer** action listed above.
 
-On iOS and Android, long-press **Send** to pick a mode for the draft. An ordinary tap uses the Hub default, just as it does on Web.
+On iOS and Android, long-press **Send** to pick a mode for the draft. An ordinary tap uses the Hub default, just as it does on Web. Native Pi sessions also offer an explicit Steer choice while a turn is running, with Queue as the default.
 
 ## Scheduled send
 

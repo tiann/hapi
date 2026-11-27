@@ -66,6 +66,7 @@ import { resolveAssistantForkPointsForCanonicalBlocks } from '@/lib/assistant-fo
 import {
     getRestoredComposerSendIntent,
     type ComposerSendIntent,
+    type ComposerSendSelection,
 } from '@/lib/messageDelivery'
 import type { MessageDeliveryMode } from '@hapi/protocol'
 import { hasActiveSteeringTurn } from '@hapi/protocol'
@@ -701,6 +702,7 @@ type SessionChatProps = {
         scheduledAt?: number | null,
         deliveryMode?: MessageDeliveryMode,
         followUpIntent?: ComposerSendIntent,
+        expectedFollowUpTurnId?: string,
     ) => Promise<SendMessageAcceptance | false>
     resolveSessionIdForUpload?: (sessionId: string) => Promise<string>
     onUploadSessionResolved?: (sessionId: string) => void
@@ -1131,7 +1133,7 @@ function SessionChatInner(props: SessionChatProps) {
             text: string,
             attachments?: AttachmentMetadata[],
             scheduledAt?: number | null,
-            followUpIntent?: ComposerSendIntent,
+            followUp?: ComposerSendSelection,
         ): Promise<{ attemptId: string | null } | false> => {
             if (
                 scratchlistMode
@@ -1170,7 +1172,8 @@ function SessionChatInner(props: SessionChatProps) {
                     ordered,
                     scheduledAt,
                     'queue',
-                    followUpIntent,
+                    followUp?.intent,
+                    followUp?.expectedFollowUpTurnId,
                 )
                 if (accepted) {
                     // Hub blobs were copied into the normal upload dir; drop the
@@ -1187,8 +1190,8 @@ function SessionChatInner(props: SessionChatProps) {
                 await navigate({ to: '/sessions/$sessionId', params: { sessionId: result.sessionId }, ...PRESERVE_SESSION_SIDEBAR_SCROLL })
                 return { attemptId: null }
             }
-            return followUpIntent
-                ? props.onSend(text, attachments, scheduledAt, 'queue', followUpIntent)
+            return followUp
+                ? props.onSend(text, attachments, scheduledAt, 'queue', followUp.intent, followUp.expectedFollowUpTurnId)
                 : props.onSend(text, attachments, scheduledAt, 'queue')
         },
         [props.onSend, props.api, props.session.id, props.session.metadata?.capabilities?.concurrentClients, navigate, scratchlist, scratchlistMode],
@@ -2175,7 +2178,7 @@ function SessionChatInner(props: SessionChatProps) {
     // -> handleSend. The runtime consumes and resets it in the same submit
     // turn, so explicit or retry-safe queue intents never stick to later
     // ordinary sends.
-    const pendingSendIntentRef = useRef<ComposerSendIntent>('default')
+    const pendingSendIntentRef = useRef<ComposerSendSelection>({ intent: 'default' })
     const attachmentOrderRef = useRef<string[]>([])
     const restoredSendErrorIdRef = useRef<number | null>(null)
 
@@ -2186,15 +2189,15 @@ function SessionChatInner(props: SessionChatProps) {
             return
         }
         if (restoredSendErrorIdRef.current === error.id) return
-        // A retry cannot carry the original Pi streaming generation. Preserve
+        // A retry cannot carry the original streaming turn's identity. Preserve
         // queue, but deliberately downgrade a failed turn-scoped steer to the
         // HAPI queue so a later active turn is never steered by stale text.
-        pendingSendIntentRef.current = getRestoredComposerSendIntent(error.deliveryMode)
+        pendingSendIntentRef.current = { intent: getRestoredComposerSendIntent(error.deliveryMode) }
         restoredSendErrorIdRef.current = error.id
     }, [props.sendError])
 
     const handleClearSendError = useCallback(() => {
-        pendingSendIntentRef.current = 'default'
+        pendingSendIntentRef.current = { intent: 'default' }
         props.onClearSendError?.()
     }, [props.onClearSendError])
 
@@ -2220,7 +2223,7 @@ function SessionChatInner(props: SessionChatProps) {
         text: string,
         attachments?: AttachmentMetadata[],
         scheduledAt?: number | null,
-        intent: ComposerSendIntent = 'default',
+        selection: ComposerSendSelection = { intent: 'default' },
     ) => {
         // Route through the scratchlist-aware wrapper. When scratchlistMode
         // is on AND the payload is pure text, this turns into
@@ -2234,10 +2237,8 @@ function SessionChatInner(props: SessionChatProps) {
         // upstream review on PR #798: [Major] "Clear accepted scheduled
         // chat sends after scratchlist fallback".)
         const routedToScratchlist = shouldRouteToScratchlist(scratchlistMode, attachments, scheduledAt)
-        const followUpIntent = props.session.active && scheduledAt == null && !scratchlistMode
-            ? intent
-            : undefined
-        const accepted = await onSendForComposer(text, attachments, scheduledAt, followUpIntent)
+        const followUp = props.session.active && scheduledAt == null && !scratchlistMode ? selection : undefined
+        const accepted = await onSendForComposer(text, attachments, scheduledAt, followUp)
         if (!accepted) return
         if (!routedToScratchlist) {
             // Clear pendingSchedule only after the mutation is actually
@@ -2622,6 +2623,7 @@ function SessionChatInner(props: SessionChatProps) {
                         disabled={props.isSending}
                         pendingSchedule={pendingSchedule}
                         followUpDefault={canSteerFollowUp ? followUpSettingsQuery.data?.followUpDefault : undefined}
+                        followUpTurnId={props.session.agentState?.followUpSteerTurnId ?? undefined}
                         onSchedule={updatePendingSchedule}
                         onClearSchedule={() => updatePendingSchedule(null)}
                         permissionMode={props.session.permissionMode}

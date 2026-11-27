@@ -117,7 +117,7 @@ Source: `hub/src/web/routes/messages.ts`; schemas `MessagesQuerySchema`, `SendMe
 | Method & path | Request | Response |
 |---|---|---|
 | `GET /api/sessions/:id/messages` | Query: `limit?` (1–200, default 50), cursor pairs `beforeSeq+beforeAt` \| `afterSeq+afterAt` (+ optional `untilSeq+untilAt`, `epoch` with `after`) | `MessagesResponse` `{messages: DecryptedMessage[], page: {direction, limit, epoch, reset, nextBefore*/nextAfter*, snapshotHead*, hasMore}}` — full cursor semantics in [Pagination](./pagination.md) |
-| `POST /api/sessions/:id/messages` | `{text, localId?, attachments?, scheduledAt?, deliveryMode?, followUpIntent?}` — text or attachments required; `scheduledAt` requires `localId` and must be ≤ 7 days out | `{ok: true}` — the message itself arrives via SSE (`message-received`), reconciled by `localId` |
+| `POST /api/sessions/:id/messages` | `{text, localId?, attachments?, scheduledAt?, deliveryMode?, followUpIntent?, expectedFollowUpTurnId?}` — text or attachments required; `scheduledAt` requires `localId` and must be ≤ 7 days out | `{ok: true}` — the message itself arrives via SSE (`message-received`), reconciled by `localId` |
 | `GET /api/sessions/:id/messages/:messageId/context` | — | `MessageContextResponse` `{messages, targetMessageId, page: {epoch, nextBefore*, snapshotHead*, hasMore}}` or `null` when the message is not found — a window around one message (used to jump to a search result) |
 | `DELETE /api/sessions/:id/messages/:messageId` | — | `{status: 'cancelled', localId}` \| `{status: 'invoked', message}` \| `{status: 'busy', localId}` (cancel; `busy` = native delivery/removal is unresolved) |
 | `POST /api/sessions/:id/messages/:messageId/steer` | — | `{status: 'steered', localId}` \| `{status: 'invoked', message}` \| `{status: 'failed', error, localId}` |
@@ -126,7 +126,7 @@ Source: `hub/src/web/routes/messages.ts`; schemas `MessagesQuerySchema`, `SendMe
 
 The hub stamps `sentFrom: 'webapp'` on REST-sent messages server-side; the request body has no such field.
 
-Interactive composers use `followUpIntent: 'default' | 'alternate' | 'queue' | 'steer'`. The Hub reads `followUpDefault` for `default` and uses the other mode for `alternate`. A nonempty `agentState.followUpSteerTurnId` advertises a turn eligible for a Steer attempt. The Hub saves the row before attempting delivery, so `{ok: true}` confirms the send, and SSE reports delivery. A retry with the same `localId` keeps the original row. Scheduled messages queue and exclude attachments. Requests without `followUpIntent` use the existing `deliveryMode: 'queue' | 'steer'` contract, which rejects explicit Steer on scheduled messages.
+Interactive composers use `followUpIntent: 'default' | 'alternate' | 'queue' | 'steer'`. The Hub reads `followUpDefault` for `default` and uses the other mode for `alternate`. A nonempty `agentState.followUpSteerTurnId` advertises a turn eligible for a Steer attempt. Use that value as `expectedFollowUpTurnId` for one-shot Steer or alternate sends. A mismatched turn queues the message. The Hub saves the row before attempting delivery, so `{ok: true}` confirms the send, and SSE reports delivery. A retry with the same `localId` keeps the original row. Scheduled messages queue and exclude attachments. Requests without `followUpIntent` use the existing `deliveryMode: 'queue' | 'steer'` contract, which rejects explicit Steer on scheduled messages.
 
 ### Permissions
 

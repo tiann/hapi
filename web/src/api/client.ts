@@ -879,6 +879,7 @@ export class ApiClient {
         scheduledAt?: number | null,
         deliveryMode?: MessageDeliveryMode,
         followUpIntent?: FollowUpIntent,
+        expectedFollowUpTurnId?: string,
     ): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/messages`, {
             method: 'POST',
@@ -889,6 +890,7 @@ export class ApiClient {
                 scheduledAt: scheduledAt ?? undefined,
                 deliveryMode: deliveryMode ?? undefined,
                 followUpIntent,
+                expectedFollowUpTurnId,
             })
         })
     }

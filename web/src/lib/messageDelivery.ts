@@ -3,18 +3,23 @@ import type { FollowUpIntent, MessageDeliveryMode } from '@hapi/protocol'
 /** One composer submission's override for the Hub's follow-up default. */
 export type ComposerSendIntent = FollowUpIntent
 
-/** Structural shape shared by React's mutable ref and the runtime adapter. */
-export type ComposerSendIntentRef = { current: ComposerSendIntent }
+/** The one-shot mode and optional turn captured at submit time. */
+export type ComposerSendSelection = {
+    intent: ComposerSendIntent
+    expectedFollowUpTurnId?: string
+}
+
+export type ComposerSendIntentRef = { current: ComposerSendSelection }
 
 /**
  * Read exactly one composer intent and immediately return the shared ref to
  * the ordinary-send default. This is intentionally independent of React so
  * the assistant-ui adapter can consume the value synchronously in `onNew`.
  */
-export function consumeComposerSendIntent(ref?: ComposerSendIntentRef): ComposerSendIntent {
-    const intent = ref?.current ?? 'default'
-    if (ref) ref.current = 'default'
-    return intent
+export function consumeComposerSendIntent(ref?: ComposerSendIntentRef): ComposerSendSelection {
+    const selection = ref?.current ?? { intent: 'default' }
+    if (ref) ref.current = { intent: 'default' }
+    return selection
 }
 
 /**

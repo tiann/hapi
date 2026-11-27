@@ -594,16 +594,17 @@ struct ChatComposerView: View {
                 .disabled(!enabled)
                 .accessibilityLabel("Schedule send")
             } else if interactor.canChooseFollowUpMode && enabled {
+                let presentedTurn = interactor.followUpSteerTurnId
                 Menu {
                     Button {
                         interactor.sendMessage(followUpIntent: .queue)
                     } label: {
-                        followUpLabel("Queue for next turn", isDefault: interactor.followUpDefault == .queue)
+                        followUpLabel("Queue for next turn", isDefault: interactor.effectiveFollowUpDefault == .queue)
                     }
                     Button {
-                        interactor.sendMessage(followUpIntent: .steer)
+                        interactor.sendMessage(followUpIntent: .steer, expectedFollowUpTurnId: presentedTurn)
                     } label: {
-                        followUpLabel("Steer current turn", isDefault: interactor.followUpDefault == .steer)
+                        followUpLabel("Steer current turn", isDefault: interactor.effectiveFollowUpDefault == .steer)
                     }
                 } label: {
                     label
@@ -615,6 +616,7 @@ struct ChatComposerView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Send")
                 .accessibilityHint("Long-press for send options")
+                .id(presentedTurn)
             } else {
                 Button {
                     interactor.sendMessage()

@@ -378,13 +378,27 @@ struct ChatInteractorTests {
         let harness = try await ChatInteractionHarness(detail: chatDetail(thinking: true))
 
         harness.interactor.setComposerText("steer this")
-        harness.interactor.sendMessage(followUpIntent: .steer)
+        harness.interactor.sendMessage(followUpIntent: .steer, expectedFollowUpTurnId: "observed-turn")
 
         #expect(await eventually {
             await harness.row(localId: "local-1")?.status == .queued
         })
         let sends = await harness.performer.bodies("POST", pathSuffix: "/api/sessions/sess-1/messages")
-        #expect(sends == [#"{"followUpIntent":"steer","localId":"local-1","text":"steer this"}"#])
+        #expect(sends == [#"{"expectedFollowUpTurnId":"observed-turn","followUpIntent":"steer","localId":"local-1","text":"steer this"}"#])
+    }
+
+    @Test func livePiKeepsExplicitLegacySteerAndShowsQueueAsDefault() async throws {
+        let harness = try await ChatInteractionHarness(detail: chatDetail(flavor: "pi", thinking: true))
+        harness.interactor.followUpDefault = .steer
+        #expect(harness.interactor.canChooseFollowUpMode)
+        #expect(harness.interactor.effectiveFollowUpDefault == .queue)
+
+        harness.interactor.setComposerText("steer Pi")
+        harness.interactor.sendMessage(followUpIntent: .steer)
+
+        #expect(await eventually { await harness.row(localId: "local-1")?.status == .queued })
+        let sends = await harness.performer.bodies("POST", pathSuffix: "/api/sessions/sess-1/messages")
+        #expect(sends == [#"{"deliveryMode":"steer","localId":"local-1","text":"steer Pi"}"#])
     }
 
     @Test func failedSendMarksTheRowFailedAndRetryRefiresWithTheSameLocalId() async throws {

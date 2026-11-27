@@ -193,6 +193,7 @@ data class ComposerUiState(
      */
     val caretPosition: Int = -1,
     val canChooseFollowUpMode: Boolean = false,
+    val followUpSteerTurnId: String? = null,
 )
 
 data class ShareImportFailure(val fileId: String, val status: SharedFileStatus)
@@ -643,6 +644,7 @@ class ChatViewModel(
             isImportingShare = importing,
             caretPosition = draft.selectionEnd,
             canChooseFollowUpMode = session.canChooseFollowUpMode,
+            followUpSteerTurnId = session.followUpSteerTurnId,
         )
     }.stateIn(scope, SharingStarted.Eagerly, ComposerUiState(text = "", isSending = false, canSteer = false))
 
@@ -1282,7 +1284,10 @@ class ChatViewModel(
      * `resolvePendingSchedule(pending, Date.now())`) — presets are relative to
      * the Send tap. The pick is cleared with the draft once the send consumes it.
      */
-    fun sendMessage(followUpIntent: FollowUpIntent = FollowUpIntent.Default) {
+    fun sendMessage(
+        followUpIntent: FollowUpIntent = FollowUpIntent.Default,
+        expectedFollowUpTurnId: String? = null,
+    ) {
         if (sendInFlight.value || importingShare.value) return
         if (attachments.hasUnsettled()) {
             _events.tryEmit(ChatEvent.Notice(ChatNotice.AttachmentsUploading))
@@ -1302,6 +1307,14 @@ class ChatViewModel(
         }
         val attachmentMetadata = attachments.consume()
         if (text.isEmpty() && attachmentMetadata == null) return
+        val explicitSteer = followUpIntent == FollowUpIntent.Steer && scheduledAt == null
+        val detail = currentDetail()
+        val legacyPiSteer = explicitSteer && isLivePiSteerTurn(detail)
+        val steerTurn = if (explicitSteer && !legacyPiSteer) {
+            expectedFollowUpTurnId ?: detail?.agentState?.followUpSteerTurnId
+        } else {
+            null
+        }
         replaceComposerTextRaw("")
         // 分歧 (same intent as the web, Android-native restore): the web
         // clears the pick in SessionChat only after the send is accepted and
@@ -1339,6 +1352,8 @@ class ChatViewModel(
                     scheduledAt = scheduledAt,
                     isRetry = false,
                     followUpIntent = followUpIntent.takeIf { scheduledAt == null },
+                    expectedFollowUpTurnId = steerTurn,
+                    legacyPiSteer = legacyPiSteer,
                 )
             } finally { sendInFlight.value = false }
         }
@@ -1397,6 +1412,8 @@ class ChatViewModel(
         scheduledAt: Long? = null,
         isRetry: Boolean,
         followUpIntent: FollowUpIntent? = null,
+        expectedFollowUpTurnId: String? = null,
+        legacyPiSteer: Boolean = false,
     ) {
         // Wire constraint (SendMessageRequestSchema): scheduled sends exclude
         // attachments (and steer). No Android surface can produce the combo
@@ -1419,13 +1436,19 @@ class ChatViewModel(
                     createdAt = createdAt,
                 )
             }
+            val useLegacySteer = legacyPiSteer && isLivePiSteerTurn(currentDetail())
             val request = SendMessageRequest(
                 text = text,
                 localId = localId,
                 attachments = attachments,
                 scheduledAt = scheduledAt,
-                deliveryMode = if (followUpIntent == null) "queue" else null,
-                followUpIntent = followUpIntent,
+                deliveryMode = when {
+                    useLegacySteer -> "steer"
+                    followUpIntent == null -> "queue"
+                    else -> null
+                },
+                followUpIntent = followUpIntent.takeUnless { useLegacySteer },
+                expectedFollowUpTurnId = expectedFollowUpTurnId.takeUnless { useLegacySteer },
             )
             try {
                 api.sendMessage(sessionId, request)
@@ -1489,7 +1512,10 @@ class ChatViewModel(
         sessionStore.scheduleRefresh()
 
         try {
-            api.sendMessage(targetSessionId, request.copy(deliveryMode = "queue", followUpIntent = null))
+            api.sendMessage(
+                targetSessionId,
+                request.copy(deliveryMode = "queue", followUpIntent = null, expectedFollowUpTurnId = null),
+            )
             targetStore.updateStatus(localId, successStatus())
         } catch (cancellation: CancellationException) {
             throw cancellation
@@ -2168,6 +2194,7 @@ class ChatViewModel(
         val active: Boolean,
         val thinking: Boolean,
         val canChooseFollowUpMode: Boolean = false,
+        val followUpSteerTurnId: String? = null,
     )
 
     private fun currentSessionState(): SessionLiveState {
@@ -2181,15 +2208,21 @@ class ChatViewModel(
         sessionStore.sessionDetail(sessionId),
         summaryFlow(),
     ) { detail, summary ->
-        val agentState = detail?.agentState
         SessionLiveState(
             active = detail?.active ?: summary?.active ?: false,
             thinking = detail?.thinking ?: summary?.thinking ?: false,
-            canChooseFollowUpMode = detail?.active == true && detail.thinking &&
-                agentState?.followUpSteerTurnId != null &&
-                agentState.requests.isNullOrEmpty() && !terminalControlled(detail),
+            canChooseFollowUpMode = canChooseFollowUpMode(detail),
+            followUpSteerTurnId = detail?.agentState?.followUpSteerTurnId,
         )
     }
+
+    private fun canChooseFollowUpMode(detail: Session?): Boolean =
+        detail?.active == true && detail.thinking && !terminalControlled(detail) &&
+            detail.agentState?.requests.isNullOrEmpty() &&
+            (detail.metadata?.flavor == "pi" || detail.agentState?.followUpSteerTurnId != null)
+
+    private fun isLivePiSteerTurn(detail: Session?): Boolean =
+        detail?.metadata?.flavor == "pi" && canChooseFollowUpMode(detail)
 
     private fun summaryFlow() = sessionStore.sessions
         .map { list -> list.firstOrNull { it.id == sessionId } }

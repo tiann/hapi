@@ -662,14 +662,30 @@ class ChatViewModelInteractionTest {
         harness.viewModel.start()
 
         harness.viewModel.setComposerText("steer this")
-        harness.viewModel.sendMessage(FollowUpIntent.Steer)
+        harness.viewModel.sendMessage(FollowUpIntent.Steer, expectedFollowUpTurnId = "observed-turn")
 
         val (_, request) = harness.api.sendCalls.first { it.isNotEmpty() }.single()
         assertEquals(FollowUpIntent.Steer, request.followUpIntent)
+        assertEquals("observed-turn", request.expectedFollowUpTurnId)
         assertNull(request.deliveryMode)
         harness.window().state.first { state ->
             state.messages.any { it.localId == "local-1" && it.status == MessageStatus.Queued }
         }
+    }
+
+    @Test
+    fun `live Pi offers and sends explicit legacy steer`() = runTest {
+        val harness = InteractionHarness(this, detail(flavor = "pi", thinking = true))
+        harness.viewModel.start()
+        harness.viewModel.composer.first { it.canChooseFollowUpMode }
+
+        harness.viewModel.setComposerText("steer Pi")
+        harness.viewModel.sendMessage(FollowUpIntent.Steer)
+        val (_, request) = harness.api.sendCalls.first { it.isNotEmpty() }.single()
+
+        assertEquals("steer", request.deliveryMode)
+        assertNull(request.followUpIntent)
+        assertNull(request.expectedFollowUpTurnId)
     }
 
     @Test

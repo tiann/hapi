@@ -807,7 +807,8 @@ export const SendMessageRequestSchema = z.object({
     attachments: z.array(AttachmentMetadataSchema).optional(),
     scheduledAt: z.number().int().positive().nullable().optional(),
     deliveryMode: MessageDeliveryModeSchema.optional(),
-    followUpIntent: FollowUpIntentSchema.optional()
+    followUpIntent: FollowUpIntentSchema.optional(),
+    expectedFollowUpTurnId: z.string().min(1).optional()
 }).refine(
     (data) => data.scheduledAt == null || typeof data.localId === 'string',
     { message: 'scheduledAt requires localId', path: ['localId'] }

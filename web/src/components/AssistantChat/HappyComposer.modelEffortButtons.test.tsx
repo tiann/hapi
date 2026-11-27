@@ -4,7 +4,7 @@ import { useRef, useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '@/lib/i18n-context'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
-import type { ComposerSendIntent } from '@/lib/messageDelivery'
+import type { ComposerSendIntent, ComposerSendIntentRef } from '@/lib/messageDelivery'
 import type { ComposerToolbarLayout } from '@/hooks/useComposerToolbarLayout'
 import { HappyComposer } from './HappyComposer'
 
@@ -32,7 +32,7 @@ const runtime = vi.hoisted(() => ({
         thread: { isRunning: false, isDisabled: false },
     } as FakeRuntimeState,
     setSnapshot: null as null | ((updater: (current: FakeRuntimeState) => FakeRuntimeState) => void),
-    pendingSendIntentRef: { current: 'default' },
+    pendingSendIntentRef: { current: { intent: 'default' } } as ComposerSendIntentRef,
     sentIntents: [] as ComposerSendIntent[],
     narrowViewport: false,
     toolbarLayout: null as ComposerToolbarLayout | null,
@@ -51,9 +51,9 @@ vi.mock('@assistant-ui/react', async () => {
                     }))
                 },
                 send: () => {
-                    const intent = runtime.pendingSendIntentRef?.current ?? 'default'
+                    const intent = runtime.pendingSendIntentRef?.current.intent ?? 'default'
                     runtime.sentIntents.push(intent as ComposerSendIntent)
-                    if (runtime.pendingSendIntentRef) runtime.pendingSendIntentRef.current = 'default'
+                    if (runtime.pendingSendIntentRef) runtime.pendingSendIntentRef.current = { intent: 'default' }
                     runtime.setSnapshot!((current) => ({
                         ...current,
                         composer: { text: '', attachments: [] },
@@ -130,7 +130,7 @@ function renderComposer(agentFlavor: string, overrides: Partial<Parameters<typeo
                 onEffortChange={vi.fn()}
                 onPermissionModeChange={vi.fn()}
                 availableModelOptions={[{ value: 'claude-sonnet-4', label: 'Sonnet 4' }]}
-                pendingSendIntentRef={runtime.pendingSendIntentRef as { current: ComposerSendIntent }}
+                pendingSendIntentRef={runtime.pendingSendIntentRef}
                 {...overrides}
             />
         </I18nProvider>
@@ -502,7 +502,7 @@ describe('HappyComposer generic model/effort value buttons', () => {
             onPermissionModeChange: vi.fn(),
             piModels: [{ provider: 'gemini', modelId: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', reasoning: true }],
             piSelectedModel: { provider: 'gemini', modelId: 'gemini-2.5-pro' },
-            pendingSendIntentRef: runtime.pendingSendIntentRef as { current: ComposerSendIntent },
+            pendingSendIntentRef: runtime.pendingSendIntentRef,
         }
         const { rerender } = render(
             <I18nProvider>

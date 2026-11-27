@@ -162,7 +162,8 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             sentFrom: 'webapp',
             scheduledAt: parsed.data.scheduledAt,
             deliveryMode: parsed.data.deliveryMode,
-            ...(parsed.data.followUpIntent === undefined ? {} : { followUpIntent: parsed.data.followUpIntent })
+            ...(parsed.data.followUpIntent === undefined ? {} : { followUpIntent: parsed.data.followUpIntent }),
+            ...(parsed.data.expectedFollowUpTurnId === undefined ? {} : { expectedFollowUpTurnId: parsed.data.expectedFollowUpTurnId })
         })
         return c.json({ ok: true })
     })

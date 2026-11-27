@@ -848,7 +848,7 @@ private fun PrimaryActionButton(
     val canSubmit = gate.canSubmit
     val offersFollowUp = gate.action == ComposerPrimaryAction.Send && canSubmit &&
         state.canChooseFollowUpMode && !hasSchedule
-    var followUpMenuOpen by remember(offersFollowUp) { mutableStateOf(false) }
+    var followUpMenuOpen by remember(offersFollowUp, state.followUpSteerTurnId) { mutableStateOf(false) }
     Box(modifier) {
         when (gate.action) {
             ComposerPrimaryAction.Sending -> {

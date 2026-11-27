@@ -2051,16 +2051,19 @@ export class SyncEngine {
             scheduledAt?: number | null
             deliveryMode?: MessageDeliveryMode
             followUpIntent?: FollowUpIntent
+            expectedFollowUpTurnId?: string
         }
     ): Promise<void> {
         if (this.historyActionsInFlight.has(sessionId) || this.openCodeRewindPending(sessionId)) {
             throw new Error('Conversation history action already in progress')
         }
         const session = this.sessionCache.getSession(sessionId)
+        const activeTurnId = session?.agentState?.followUpSteerTurnId
         const expectedFollowUpTurnId = session?.active && payload.scheduledAt == null
             && !payload.text.trimStart().startsWith('/')
             && (payload.followUpIntent === 'default' || payload.followUpIntent === 'alternate' || payload.followUpIntent === 'steer')
-            ? session.agentState?.followUpSteerTurnId
+            && (payload.expectedFollowUpTurnId === undefined || activeTurnId === payload.expectedFollowUpTurnId)
+            ? activeTurnId
             : null
         if (!session?.thinking) {
             this.automaticTitleSuggestionService.onTurnStarted(sessionId)

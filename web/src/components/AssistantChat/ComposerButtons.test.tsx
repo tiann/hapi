@@ -169,6 +169,7 @@ describe('UnifiedButton — default send intent', () => {
                 controlsDisabled={false}
                 onSend={onSend}
                 onVoiceToggle={() => {}}
+                followUpTurnId={overrides.followUpDefault ? 'turn-A' : undefined}
                 {...overrides}
             />,
         )
@@ -208,7 +209,7 @@ describe('UnifiedButton — default send intent', () => {
         expect(onSend).toHaveBeenCalledExactlyOnceWith('steer')
     })
 
-    it('closes send options when the turn stops accepting steering', () => {
+    it('dismisses an open menu or pending touch hold when the active turn changes', () => {
         vi.useFakeTimers()
         const props = {
             canSend: true,
@@ -218,25 +219,24 @@ describe('UnifiedButton — default send intent', () => {
             onSend: vi.fn(),
             onVoiceToggle: vi.fn(),
         }
-        const buttonFor = (canSteer: boolean) => (
+        const buttonFor = (turnId?: string) => (
             <I18nProvider>
-                <UnifiedButton {...props} followUpDefault={canSteer ? 'queue' : undefined} />
+                <UnifiedButton {...props} followUpDefault={turnId ? 'queue' : undefined} followUpTurnId={turnId} />
             </I18nProvider>
         )
-        const view = render(buttonFor(true))
+        const view = render(buttonFor('turn-A'))
         fireEvent.contextMenu(getButton('Send'))
         expect(screen.getByRole('menu')).toBeInTheDocument()
 
-        view.rerender(buttonFor(false))
+        view.rerender(buttonFor('turn-B'))
         expect(screen.queryByRole('menu')).not.toBeInTheDocument()
-        view.rerender(buttonFor(true))
+        view.rerender(buttonFor('turn-A'))
         expect(screen.queryByRole('menu')).not.toBeInTheDocument()
 
         const button = getButton('Send')
         fireEvent.touchStart(button, { touches: [{ clientX: 10, clientY: 10 }] })
-        view.rerender(buttonFor(false))
+        view.rerender(buttonFor('turn-B'))
         act(() => vi.advanceTimersByTime(500))
-        view.rerender(buttonFor(true))
         fireEvent.touchEnd(button)
         fireEvent.click(button, { detail: 1 })
         expect(screen.queryByRole('menu')).not.toBeInTheDocument()

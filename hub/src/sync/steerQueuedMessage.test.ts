@@ -50,6 +50,11 @@ describe('composer follow-up delivery', () => {
             await engine.sendMessage(session.id, { text: 'other mode', localId: 'opposite-steer', followUpIntent: 'alternate' })
             await engine.sendMessage(session.id, { text: 'legacy client', localId: 'legacy' })
             await engine.sendMessage(session.id, { text: '/compact', localId: 'command', followUpIntent: 'default' })
+            await engine.sendMessage(session.id, {
+                text: 'correction for an ended turn', localId: 'stale-request',
+                followUpIntent: 'steer', expectedFollowUpTurnId: 'turn-0'
+            })
+            expect(store.messages.lookupQueuedMessage(session.id, 'stale-request').status).toBe('queued')
             expect(steer).not.toHaveBeenCalled()
 
             const correction = { text: 'new direction', localId: 'same-id', followUpIntent: 'default' as const }

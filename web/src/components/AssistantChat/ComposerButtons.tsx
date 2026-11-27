@@ -598,6 +598,7 @@ export function UnifiedButton(props: {
     controlsDisabled: boolean
     onSend: (intent?: ComposerSendIntent) => void
     followUpDefault?: MessageDeliveryMode
+    followUpTurnId?: string
     onVoiceToggle: () => void
     voiceLabel?: string
     /**
@@ -685,17 +686,18 @@ export function UnifiedButton(props: {
 
     const sendButtonRef = useRef<HTMLButtonElement | null>(null)
     const menuId = useId()
-    const [menuPoint, setMenuPoint] = useState<AnchoredMenuPoint | null>(null)
-    const followUpDefault = !isDisabled && hasText && !isVoiceActive && !routesToScratchlist
+    const [menuPoint, setMenuPoint] = useState<(AnchoredMenuPoint & { turnId: string }) | null>(null)
+    const followUpDefault = !isDisabled && hasText && !isVoiceActive && !routesToScratchlist && props.followUpTurnId
         ? props.followUpDefault
         : undefined
-    const canOpenMenuRef = useRef(false)
-    canOpenMenuRef.current = followUpDefault !== undefined
-    const menuOpen = menuPoint !== null && followUpDefault !== undefined
+    const menuTurn = followUpDefault === undefined ? null : props.followUpTurnId ?? null
+    const currentMenuTurn = useRef(menuTurn)
+    currentMenuTurn.current = menuTurn
+    const menuOpen = menuPoint !== null && menuTurn !== null && menuPoint.turnId === menuTurn
     const closeMenu = useCallback(() => setMenuPoint(null), [])
     useEffect(() => {
-        if (followUpDefault === undefined) closeMenu()
-    }, [closeMenu, followUpDefault])
+        if (menuPoint !== null && !menuOpen) closeMenu()
+    }, [closeMenu, menuOpen, menuPoint])
     const { menuRef, menuStyle } = useAnchoredMenu({
         isOpen: menuOpen,
         onClose: closeMenu,
@@ -704,10 +706,10 @@ export function UnifiedButton(props: {
     })
     const openMenu = useCallback(() => {
         const rect = sendButtonRef.current?.getBoundingClientRect()
-        if (canOpenMenuRef.current && rect) {
-            setMenuPoint({ x: rect.left + rect.width / 2, y: rect.top })
+        if (menuTurn !== null && menuTurn === currentMenuTurn.current && rect) {
+            setMenuPoint({ x: rect.left + rect.width / 2, y: rect.top, turnId: menuTurn })
         }
-    }, [])
+    }, [menuTurn])
     const longPress = useLongPress({
         interaction: 'touch-only-native-click',
         longPressEnabled: followUpDefault !== undefined,

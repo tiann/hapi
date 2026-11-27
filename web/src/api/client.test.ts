@@ -351,11 +351,11 @@ describe('ApiClient error mapping', () => {
         fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 200 }))
 
         const api = new ApiClient('test-token')
-        await api.sendMessage('session', 'a follow-up', 'local-1', undefined, null, 'queue', 'default')
+        await api.sendMessage('session', 'a follow-up', 'local-1', undefined, null, 'queue', 'alternate', 'turn-A')
 
         const [, init] = fetchMock.mock.calls[0] ?? []
         expect(JSON.parse(init?.body as string)).toMatchObject({
-            localId: 'local-1', deliveryMode: 'queue', followUpIntent: 'default',
+            localId: 'local-1', deliveryMode: 'queue', followUpIntent: 'alternate', expectedFollowUpTurnId: 'turn-A',
         })
     })
 

@@ -36,6 +36,7 @@ public struct SendMessageRequest: Codable, Equatable, Sendable {
     public var scheduledAt: Int?
     public var deliveryMode: MessageDeliveryMode?
     public var followUpIntent: FollowUpIntent?
+    public var expectedFollowUpTurnId: String?
 
     public init(
         text: String,
@@ -43,7 +44,8 @@ public struct SendMessageRequest: Codable, Equatable, Sendable {
         attachments: [AttachmentMetadata]? = nil,
         scheduledAt: Int? = nil,
         deliveryMode: MessageDeliveryMode? = nil,
-        followUpIntent: FollowUpIntent? = nil
+        followUpIntent: FollowUpIntent? = nil,
+        expectedFollowUpTurnId: String? = nil
     ) {
         self.text = text
         self.localId = localId
@@ -51,6 +53,7 @@ public struct SendMessageRequest: Codable, Equatable, Sendable {
         self.scheduledAt = scheduledAt
         self.deliveryMode = deliveryMode
         self.followUpIntent = followUpIntent
+        self.expectedFollowUpTurnId = expectedFollowUpTurnId
     }
 }
 

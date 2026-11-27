@@ -6,7 +6,7 @@ import Observation
 /// Android `ChatViewModel`'s interaction half, kept in HapiKit so the whole
 /// surface runs under `swift test`:
 ///
-/// - **Composer** (``composer``/``setComposerText(_:)``/``sendMessage(followUpIntent:)``):
+/// - **Composer** (``composer``/``setComposerText(_:)``/``sendMessage(followUpIntent:expectedFollowUpTurnId:)``):
 ///   optimistic send (`appendOptimistic` → POST → status settle), hub default
 ///   or a one-shot follow-up choice, failed rows retried via
 ///   ``retryFailedMessage(localId:)`` (steer degrades to queue —
@@ -51,7 +51,7 @@ public final class ChatInteractor {
     public let sessionId: String
 
     /// Composer attachment tray (A-M3f). The screen feeds prepared picks in
-    /// and renders `attachments.items`; ``sendMessage(followUpIntent:)`` consumes the
+    /// and renders `attachments.items`; ``sendMessage(followUpIntent:expectedFollowUpTurnId:)`` consumes the
     /// Ready set. Lives with this interactor, or is handed to its replacement
     /// when upload recovery changes the session ID. See the tray's own docs
     /// for discard-on-deallocation semantics.
@@ -268,12 +268,20 @@ public final class ChatInteractor {
 
     public var followUpDefault: MessageDeliveryMode = .queue
 
+    public var effectiveFollowUpDefault: MessageDeliveryMode {
+        currentFlavor() == "pi" ? .queue : followUpDefault
+    }
+
+    public var followUpSteerTurnId: String? {
+        sessionStore.detail(for: sessionId)?.agentState?.followUpSteerTurnId
+    }
+
     public var canChooseFollowUpMode: Bool {
-        guard let detail = sessionStore.detail(for: sessionId),
-              detail.active, detail.thinking, let agentState = detail.agentState,
-              agentState.followUpSteerTurnId != nil else { return false }
-        return agentState.requests?.isEmpty != false
-            && (agentState.controlledByUser != true || detail.metadata?.capabilities?.concurrentClients == true)
+        guard let detail = sessionStore.detail(for: sessionId), detail.active, detail.thinking else { return false }
+        let agentState = detail.agentState
+        return (detail.metadata?.flavor == "pi" || agentState?.followUpSteerTurnId != nil)
+            && agentState?.requests?.isEmpty != false
+            && (agentState?.controlledByUser != true || detail.metadata?.capabilities?.concurrentClients == true)
     }
 
     public func setPendingSchedule(_ schedule: PendingSchedule?) {
@@ -391,7 +399,7 @@ public final class ChatInteractor {
     /// Ready attachments are consumed into `SendMessageRequest.attachments`;
     /// an unsettled chip (uploading/failed) blocks the send with a notice.
     /// Text may be empty when attachments exist (wire: text OR attachments).
-    public func sendMessage(followUpIntent: FollowUpIntent = .default) {
+    public func sendMessage(followUpIntent: FollowUpIntent = .default, expectedFollowUpTurnId: String? = nil) {
         guard !isSending, !scratchlistBusy else { return }
         if composerDestination == .scratchlist {
             parkComposerDraft()
@@ -405,8 +413,9 @@ public final class ChatInteractor {
             emit(.notice("Attachments are still uploading — wait, or retry/remove the failed ones"))
             return
         }
+        let steerTurn = expectedFollowUpTurnId ?? followUpSteerTurnId
         if attachments.hasScratchlistAttachments {
-            sendComposerWithScratchlistAttachments(followUpIntent: followUpIntent)
+            sendComposerWithScratchlistAttachments(followUpIntent: followUpIntent, steerTurn: steerTurn)
             return
         }
         let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -418,6 +427,7 @@ public final class ChatInteractor {
         isSending = true
         let localId = makeLocalId()
         let createdAt = now()
+        let legacyPiSteer = followUpIntent == .steer && currentFlavor() == "pi" && canChooseFollowUpMode
         Task { [weak self] in
             guard let self else { return }
             self.drafts?.clear(sessionId: self.sessionId)
@@ -442,7 +452,9 @@ public final class ChatInteractor {
                 attachments: attachmentMetadata,
                 scheduledAt: nil,
                 isRetry: false,
-                followUpIntent: followUpIntent
+                followUpIntent: followUpIntent,
+                expectedFollowUpTurnId: followUpIntent == .steer ? steerTurn : nil,
+                legacyPiSteer: legacyPiSteer
             )
         }
     }
@@ -539,7 +551,9 @@ public final class ChatInteractor {
         scheduledAt: Int?,
         isRetry: Bool,
         targetSessionId: String? = nil,
-        followUpIntent: FollowUpIntent? = nil
+        followUpIntent: FollowUpIntent? = nil,
+        expectedFollowUpTurnId: String? = nil,
+        legacyPiSteer: Bool = false
     ) async -> String? {
         defer { isSending = false }
         let target = targetSessionId ?? scratchlistSendTarget ?? sessionId
@@ -561,13 +575,18 @@ public final class ChatInteractor {
                 createdAt: createdAt
             )
         }
+        let useLegacySteer = legacyPiSteer && target == sessionId && currentFlavor() == "pi" && canChooseFollowUpMode
+        let deliveryMode: MessageDeliveryMode? = if useLegacySteer { .steer }
+            else if followUpIntent == nil { .queue }
+            else { nil }
         let request = SendMessageRequest(
             text: text,
             localId: localId,
             attachments: attachments,
             scheduledAt: scheduledAt,
-            deliveryMode: followUpIntent == nil ? .queue : nil,
-            followUpIntent: followUpIntent
+            deliveryMode: deliveryMode,
+            followUpIntent: useLegacySteer ? nil : followUpIntent,
+            expectedFollowUpTurnId: useLegacySteer ? nil : expectedFollowUpTurnId
         )
         do {
             try await api.sendMessage(sessionId: target, request)
@@ -647,6 +666,7 @@ public final class ChatInteractor {
         do {
             var resumedRequest = request
             resumedRequest.followUpIntent = nil
+            resumedRequest.expectedFollowUpTurnId = nil
             resumedRequest.deliveryMode = .queue
             try await api.sendMessage(sessionId: targetSessionId, resumedRequest)
             await targetStore.updateStatus(localId: localId, status: successStatus())
@@ -1628,10 +1648,9 @@ public final class ChatInteractor {
         if let target = scratchlistSendTarget, target != sessionId { emit(.sessionSuperseded(sessionId: target)) }
     }
 
-    private func sendComposerWithScratchlistAttachments(followUpIntent: FollowUpIntent) {
+    private func sendComposerWithScratchlistAttachments(followUpIntent: FollowUpIntent, steerTurn: String?) {
         let text = composerText
         let snapshot = attachments.snapshot
-        let steerTurn = sessionStore.detail(for: sessionId)?.agentState?.followUpSteerTurnId
         isSending = true
         Task {
             defer { isSending = false }
@@ -1649,10 +1668,11 @@ public final class ChatInteractor {
                 }
                 setComposerText("")
                 attachments.consumePrepared(snapshot)
-                let sameTurn = steerTurn != nil && steerTurn == sessionStore.detail(for: target)?.agentState?.followUpSteerTurnId
+                let sameTurn = target == sessionId && steerTurn != nil && steerTurn == followUpSteerTurnId
                 _ = await performSend(text: text, localId: makeLocalId(), createdAt: now(),
                     attachments: staged, scheduledAt: nil, isRetry: false, targetSessionId: target,
-                    followUpIntent: sameTurn && target == sessionId ? followUpIntent : nil)
+                    followUpIntent: sameTurn ? followUpIntent : nil,
+                    expectedFollowUpTurnId: sameTurn && followUpIntent == .steer ? steerTurn : nil)
                 navigateAfterScratchlistSend()
             } catch {
                 scratchlistError = "Couldn't prepare the attachments — retry or remove the failed files"
