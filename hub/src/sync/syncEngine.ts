@@ -1548,6 +1548,10 @@ export class SyncEngine {
 
         const updated = store.update(taskId, changes, now)
         if (!updated) return { type: 'not-found' }
+        if (resuming) {
+            // The user asked for the prompt to be delivered again: the wake count starts over.
+            this.sessionTaskRunner.forgetPrompt(task.pendingLocalId)
+        }
         // maxRuns brought down to what already ran ends the task now that nothing is pending
         // (with a prompt pending, the acknowledgement ends it: SessionTaskRunner.completeSend).
         if (updated.pendingLocalId === null && taskLimitReached(updated)) store.delete(updated.id)
@@ -1586,6 +1590,8 @@ export class SyncEngine {
         const task = store.get(sessionId, taskId)
         if (!task) return { type: 'not-found' }
         if (!store.delete(taskId)) return { type: 'not-found' }
+        // Nothing is left to count wakes for.
+        this.sessionTaskRunner.forgetPrompt(task.pendingLocalId)
         const prompt = task.pendingLocalId !== null ? await this.cancelTaskPrompt(task) : 'none'
         this.emitSessionTasksChanged(sessionId)
         return { type: 'deleted', prompt }

@@ -573,6 +573,74 @@ describe('SyncEngine session tasks', () => {
             await expect(h.engine.deleteSessionTask(h.session.id, 'missing')).resolves.toEqual({ type: 'not-found' })
         })
 
+        it('forgets the wake count of the pending prompt it cancels', async () => {
+            const h = harness()
+            const task = taskOf(h.engine.createSessionTask(h.session.id, { kind: 'queue', items: [{ text: 'a' }, { text: 'b' }], intervalMs: 60_000 }))
+            await settle()
+            const runner = (h.engine as unknown as { sessionTaskRunner: { forgetPrompt: (pendingLocalId: string | null) => void } }).sessionTaskRunner
+            const forgetPrompt = mock((_pendingLocalId: string | null) => undefined)
+            runner.forgetPrompt = forgetPrompt
+
+            await h.engine.deleteSessionTask(h.session.id, task.id)
+            expect(h.cancelled).toEqual([{ sessionId: h.session.id, localId: h.sent[0].localId }])
+            expect(forgetPrompt).toHaveBeenCalledTimes(1)
+            expect(forgetPrompt).toHaveBeenCalledWith(h.sent[0].localId)
+        })
+    })
+
+    describe('a pending prompt the agent did not take', () => {
+        /** The agent exits with the prompt still queued; each resume brings the session up, and it exits again. */
+        function stubResume(h: Harness): string[] {
+            const resumes: string[] = []
+            ;(h.engine as unknown as { resumeSession: (id: string) => Promise<unknown> }).resumeSession = async (id) => {
+                resumes.push(id)
+                h.session.active = true
+                return { type: 'success', sessionId: id }
+            }
+            return resumes
+        }
+
+        it('wakes the session again after an explicit resume instead of answering prompt_not_taken at once', async () => {
+            const h = harness()
+            const task = taskOf(h.engine.createSessionTask(h.session.id, { kind: 'queue', items: [{ text: 'a' }, { text: 'b' }], intervalMs: 60_000 }))
+            await settle()
+            expect(h.sent).toHaveLength(1)
+            const resumes = stubResume(h)
+
+            h.session.active = false
+            for (let attempt = 1; attempt <= 3; attempt += 1) {
+                h.session.active = false
+                tick(h.engine)
+                await settle()
+                expect(resumes).toHaveLength(attempt)
+            }
+            h.session.active = false
+            tick(h.engine)
+            await settle()
+            expect(h.engine.listSessionTasks(h.session.id)[0]).toMatchObject({ lastError: 'prompt_not_taken', pending: true })
+            expect(resumes).toHaveLength(3)
+
+            // The user pauses and resumes to make the hub try again: the count starts over and the error stays gone.
+            h.engine.updateSessionTask(h.session.id, task.id, { paused: true })
+            expect(taskOf(h.engine.updateSessionTask(h.session.id, task.id, { paused: false }))).toMatchObject({ state: 'active', nextRunAt: null, lastError: null, pending: true })
+            await settle()
+            expect(resumes).toHaveLength(4)
+            expect(h.engine.listSessionTasks(h.session.id)[0]).toMatchObject({ lastError: null, pending: true })
+
+            // Three more wakes without a take end the same way.
+            for (let attempt = 0; attempt < 2; attempt += 1) {
+                h.session.active = false
+                tick(h.engine)
+                await settle()
+            }
+            expect(resumes).toHaveLength(6)
+            expect(h.engine.listSessionTasks(h.session.id)[0]?.lastError).toBeNull()
+            h.session.active = false
+            tick(h.engine)
+            await settle()
+            expect(h.engine.listSessionTasks(h.session.id)[0]).toMatchObject({ lastError: 'prompt_not_taken' })
+            expect(resumes).toHaveLength(6)
+        })
     })
 
     it('lists the run history newest first', async () => {

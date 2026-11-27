@@ -50,7 +50,11 @@ export type SessionTaskRunnerDeps = {
     log?: (message: string, detail: Record<string, unknown>) => void
 }
 
-/** The task error that a wake failure leaves on a task. */
+/**
+ * The task error that a wake failure leaves on a task. Everything that says
+ * the session could not be resumed is `session_unavailable`; `send_failed`
+ * is kept for a run whose insert threw (see `run`).
+ */
 function taskErrorCodeFor(wakeCode: string): SessionTaskErrorCode {
     switch (wakeCode) {
         case 'no_machine_online':
@@ -58,12 +62,28 @@ function taskErrorCodeFor(wakeCode: string): SessionTaskErrorCode {
         case 'session_archived':
             return 'session_archived'
         case 'resume_unavailable':
+        case 'resume_failed':
         case 'session_not_found':
         case 'access_denied':
             return 'session_unavailable'
         default:
             return 'send_failed'
     }
+}
+
+/** The prompt the task's next run sends: the one after the last sent (queue), or the only one (repeat). */
+function nextPrompt(task: StoredSessionTask): string | undefined {
+    return task.kind === 'queue' ? task.items[task.runCount] : task.items[0]
+}
+
+/**
+ * The prompt is not progressing and the hub has stopped trying to deliver
+ * it: only the user moves it on (un-archiving the session, or taking,
+ * retrying or discarding the prompt). A repeat slot that comes due meanwhile
+ * still goes, but is not written up again.
+ */
+function promptStuck(task: StoredSessionTask): boolean {
+    return task.lastError === 'session_archived' || task.lastError === 'prompt_not_taken'
 }
 
 export class SessionTaskRunner {
@@ -90,6 +110,16 @@ export class SessionTaskRunner {
             runs.push(run)
         }
         if (runs.length > 0) await Promise.all(runs)
+    }
+
+    /**
+     * Drop the wake count of a prompt (`task.pendingLocalId`): the user
+     * resumed its task, so the hub tries the session again from the start
+     * instead of answering `prompt_not_taken` at once, or deleted the task,
+     * so nothing is left to count for. A null prompt is nothing to forget.
+     */
+    forgetPrompt(pendingLocalId: string | null): void {
+        if (pendingLocalId !== null) this.pendingWakeAttempts.delete(pendingLocalId)
     }
 
     private retryElapsed(taskId: string, now: number): boolean {
@@ -159,7 +189,10 @@ export class SessionTaskRunner {
         }
 
         // Still queued (or being dispatched). A repeat task that came due again
-        // while its previous prompt waits: skip the slot.
+        // while its previous prompt waits: skip the slot. While that prompt is
+        // stuck (archived session, `prompt_not_taken`) the grid still moves
+        // on, but the same line is not written to the history, nor announced,
+        // on every interval.
         if (
             task.kind === 'repeat'
             && task.state === 'active'
@@ -168,7 +201,7 @@ export class SessionTaskRunner {
         ) {
             const skippedFor = task.nextRunAt
             const nextRunAt = nextRepeatRunAt(task.nextRunAt, task.intervalMs, now)
-            if (store.skipDueSlot(task.id, nextRunAt, now)) {
+            if (store.skipDueSlot(task.id, nextRunAt, now) && !promptStuck(task)) {
                 this.recordRun(task, { outcome: 'skipped', scheduledFor: skippedFor, detail: 'previous_prompt_waiting', now })
                 this.changed(task)
             }
@@ -240,7 +273,7 @@ export class SessionTaskRunner {
     private async send(task: StoredSessionTask, session: WakeableSession): Promise<void> {
         const store = this.deps.store.sessionTasks
         const runNumber = task.runCount + 1
-        const text = task.kind === 'queue' ? task.items[task.runCount] : task.items[0]
+        const text = nextPrompt(task)
         if (text === undefined) {
             // No prompt left: the queue is over. (Runs normally delete the task on the last acknowledgement.)
             this.changed(task, store.delete(task.id))
@@ -254,23 +287,35 @@ export class SessionTaskRunner {
             await this.deps.sendMessage(session.id, { text, localId })
         }
 
+        // The insert took time (an input translation is an LLM call): the task
+        // may have been deleted or paused while the prompt was on its way. An
+        // untracked prompt must not go out on its own: take it back.
+        const current = store.getById(task.id)
+        if (!current || current.state !== 'active') {
+            await this.takeBack(task, localId)
+            return
+        }
+
         const sentAt = this.now()
         const nextRunAt = task.kind === 'repeat'
             ? nextRepeatRunAt(task.nextRunAt as number, task.intervalMs, sentAt)
             : null
         if (!store.markSent(task.id, { localId, nextRunAt, now: sentAt })) {
-            // The task was deleted or paused while the prompt was on its way, or
-            // another run counted this send. An untracked prompt must not go out
-            // on its own: take it back.
-            try {
-                await this.deps.cancelMessage(session.id, localId)
-            } catch (error) {
-                this.log('could not take back an untracked prompt', error, task)
-            }
+            // Another run counted this send in the meantime.
+            await this.takeBack(task, localId)
             return
         }
         this.recordRun(task, { runNumber, localId, outcome: 'sent', preview, now: sentAt })
         this.changed(task)
+    }
+
+    /** Remove a prompt the runner inserted but no active task tracks: it lives where the redirect put it. */
+    private async takeBack(task: StoredSessionTask, localId: string): Promise<void> {
+        try {
+            await this.deps.cancelMessage(this.promptSessionId(task), localId)
+        } catch (error) {
+            this.log('could not take back an untracked prompt', error, task)
+        }
     }
 
     private async wakeForPendingPrompt(task: StoredSessionTask, localId: string, sessionId: string, now: number): Promise<void> {
@@ -329,7 +374,8 @@ export class SessionTaskRunner {
             outcome: run.outcome,
             scheduledFor: run.scheduledFor === undefined ? task.nextRunAt : run.scheduledFor,
             detail: run.detail ?? null,
-            preview: run.preview ?? sessionTaskRunPreview(task.items[0] ?? '')
+            // The prompt this run was about (the next one of a queue), when the caller did not pass it.
+            preview: run.preview ?? sessionTaskRunPreview(nextPrompt(task) ?? task.items[0] ?? '')
         }, run.now)
     }
 

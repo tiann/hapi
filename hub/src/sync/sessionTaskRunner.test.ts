@@ -431,6 +431,105 @@ describe('SessionTaskRunner', () => {
             expect(h.wakeCalls).toEqual([])
         })
 
+        describe('a prompt that is not progressing', () => {
+            /** A one-minute repeat task whose first prompt went out; then the session stops running. */
+            async function stuckPrompt(h: Harness, options: { archived?: boolean } = {}): Promise<string> {
+                const created = h.create({
+                    sessionId: h.sessionId, kind: 'repeat', items: ['ping'], intervalMs: MINUTE, maxRuns: null, nextRunAt: T0
+                })
+                await h.runner.tick()
+                h.session.active = false
+                h.session.archived = options.archived ?? false
+                return created.id
+            }
+
+            it('moves the grid on while the session is archived, without a skipped line per interval', async () => {
+                const h: Harness = makeHarness()
+                const taskId = await stuckPrompt(h, { archived: true })
+                h.wake.outcome = { type: 'refused', failure: { code: 'session_archived', message: 'Session is archived' } }
+                await h.runner.tick()
+                expect(h.task(taskId)).toMatchObject({ lastError: 'session_archived', nextRunAt: T0 + MINUTE })
+                const changesWhenStuck = h.changes.length
+                const runsWhenStuck = h.runs().length
+
+                // Ten slots come due while nobody can take the prompt: not one more line, not one more event.
+                for (let slot = 1; slot <= 10; slot += 1) {
+                    h.setClock(T0 + slot * MINUTE)
+                    await h.runner.tick()
+                }
+                expect(h.task(taskId)).toMatchObject({ state: 'active', lastError: 'session_archived', nextRunAt: T0 + 11 * MINUTE })
+                expect(h.runs()).toHaveLength(runsWhenStuck)
+                expect(h.runs().map((run) => run.outcome)).toEqual(['sent'])
+                expect(h.changes).toHaveLength(changesWhenStuck)
+                expect(h.sent).toHaveLength(1)
+
+                // Un-archived and running again: the prompt is taken and the next slot is sent as usual.
+                h.session.archived = false
+                h.session.active = true
+                h.take(h.sent[0].localId, T0 + 11 * MINUTE)
+                h.setClock(T0 + 11 * MINUTE)
+                await h.runner.tick()
+                await h.runner.tick()
+                expect(h.sent).toHaveLength(2)
+                expect(h.task(taskId)).toMatchObject({ lastError: null, runCount: 2 })
+            })
+
+            it('moves the grid on after prompt_not_taken, without a skipped line per interval', async () => {
+                const h: Harness = makeHarness()
+                const taskId = await stuckPrompt(h)
+                for (let attempt = 0; attempt < SESSION_TASK_MAX_PENDING_WAKE_ATTEMPTS; attempt += 1) await h.runner.tick()
+                await h.runner.tick()
+                expect(h.task(taskId)).toMatchObject({ lastError: 'prompt_not_taken', nextRunAt: T0 + MINUTE })
+                const changesWhenStuck = h.changes.length
+
+                for (let slot = 1; slot <= 10; slot += 1) {
+                    h.setClock(T0 + slot * MINUTE)
+                    await h.runner.tick()
+                }
+                expect(h.task(taskId)).toMatchObject({ lastError: 'prompt_not_taken', nextRunAt: T0 + 11 * MINUTE })
+                expect(h.runs().map((run) => run.outcome)).toEqual(['sent'])
+                expect(h.changes).toHaveLength(changesWhenStuck)
+                expect(h.wakeCalls).toHaveLength(SESSION_TASK_MAX_PENDING_WAKE_ATTEMPTS)
+            })
+
+            it('still writes a skipped line per interval while the hub is trying to deliver the prompt', async () => {
+                const h: Harness = makeHarness()
+                const taskId = await stuckPrompt(h)
+                h.wake.outcome = { type: 'refused', failure: { code: 'no_machine_online', message: 'No machine online' } }
+                await h.runner.tick()
+                expect(h.task(taskId)?.lastError).toBe('machine_offline')
+
+                h.setClock(T0 + MINUTE)
+                await h.runner.tick()
+                h.setClock(T0 + 2 * MINUTE)
+                await h.runner.tick()
+                expect(h.runs().map((run) => [run.outcome, run.scheduledFor, run.detail])).toEqual([
+                    ['skipped', T0 + 2 * MINUTE, 'previous_prompt_waiting'],
+                    ['skipped', T0 + MINUTE, 'previous_prompt_waiting'],
+                    ['sent', T0, null]
+                ])
+            })
+
+            it('counts wakes from the start again once the prompt is forgotten', async () => {
+                const h: Harness = makeHarness()
+                const taskId = await stuckPrompt(h)
+                const localId = h.sent[0].localId as string
+                for (let attempt = 0; attempt < SESSION_TASK_MAX_PENDING_WAKE_ATTEMPTS; attempt += 1) await h.runner.tick()
+                await h.runner.tick()
+                expect(h.task(taskId)?.lastError).toBe('prompt_not_taken')
+                h.runner.forgetPrompt(null)
+                await h.runner.tick()
+                expect(h.task(taskId)?.lastError).toBe('prompt_not_taken')
+
+                // The user resumed the task: the hub wakes the session for the prompt again.
+                h.store.sessionTasks.setError(taskId, null, T0)
+                h.runner.forgetPrompt(localId)
+                await h.runner.tick()
+                expect(h.wakeCalls).toHaveLength(SESSION_TASK_MAX_PENDING_WAKE_ATTEMPTS + 1)
+                expect(h.task(taskId)).toMatchObject({ lastError: null, pendingLocalId: localId })
+            })
+        })
+
         it('follows a task to the session a resume rotated it to', async () => {
             const h: Harness = makeHarness({ active: false })
             const replacementId = h.store.sessions.getOrCreateSession('task-session-rotated', { path: '/tmp', flavor: 'cursor' }, null, 'default').id
@@ -526,19 +625,51 @@ describe('SessionTaskRunner', () => {
             expect(h.store.sessionTasks.getById(created.id)).toBeNull()
         })
 
-        it('keeps a prompt tracked that was already on its way when the task was paused', async () => {
+        it('takes the prompt back when the task is paused while the prompt is being inserted', async () => {
             const h: Harness = makeHarness()
             const created = h.create({
                 sessionId: h.sessionId, kind: 'repeat', items: ['ping'], intervalMs: 10 * MINUTE, maxRuns: null, nextRunAt: T0
             })
             h.duringSend.fn = () => {
+                // The pause lands inside the send (after the insert, before the send returns):
+                // with input translation on, that insert is an LLM call taking seconds.
                 h.store.sessionTasks.update(created.id, { state: { paused: true, nextRunAt: null } }, T0)
             }
             await h.runner.tick()
 
-            // Pausing keeps a prompt already sent in the queue (and in the task's count); the task stays unscheduled.
-            expect(h.cancelled).toEqual([])
-            expect(h.task(created.id)).toMatchObject({ state: 'paused', runCount: 1, pendingLocalId: h.sent[0].localId, nextRunAt: null })
+            const localId = buildSessionTaskMessageLocalId(created.id, 1)
+            expect(h.sent).toHaveLength(1)
+            // A pause means no prompt of the task reaches the agent after it: this one is taken back.
+            expect(h.cancelled).toEqual([{ sessionId: h.sessionId, localId }])
+            expect(h.store.messages.lookupQueuedMessage(h.sessionId, localId).status).toBe('absent')
+            expect(h.task(created.id)).toMatchObject({ state: 'paused', runCount: 0, pendingLocalId: null, nextRunAt: null })
+            expect(h.runs()).toEqual([])
+        })
+
+        it('takes a prompt back from the session an OpenCode /clear redirected it to', async () => {
+            const h: Harness = makeHarness()
+            const replacementId = h.store.sessions.getOrCreateSession('task-session-replacement', { path: '/tmp', flavor: 'opencode' }, null, 'default').id
+            const source = h.store.sessions.getSession(h.sessionId) as { metadata: unknown; metadataVersion: number }
+            h.store.sessions.updateSessionMetadata(h.sessionId, {
+                ...(source.metadata as object),
+                opencodeClearOperation: { replacementSessionId: replacementId, state: 'pending' }
+            }, source.metadataVersion, 'default')
+            const created = h.create({
+                sessionId: h.sessionId, kind: 'repeat', items: ['ping'], intervalMs: 10 * MINUTE, maxRuns: null, nextRunAt: T0
+            })
+            h.duringSend.fn = () => {
+                h.store.sessionTasks.delete(created.id)
+            }
+            await h.runner.tick()
+
+            // The prompt was inserted into the replacement; that is where it has to be removed,
+            // or it would go out on its own from a task that no longer exists.
+            const localId = buildSessionTaskMessageLocalId(created.id, 1)
+            expect(h.sent).toHaveLength(1)
+            expect(h.cancelled).toEqual([{ sessionId: replacementId, localId }])
+            expect(h.store.messages.lookupQueuedMessage(replacementId, localId).status).toBe('absent')
+            expect(h.store.messages.lookupQueuedMessage(h.sessionId, localId).status).toBe('absent')
+            expect(h.store.sessionTasks.getById(created.id)).toBeNull()
         })
     })
 
@@ -680,14 +811,51 @@ describe('SessionTaskRunner', () => {
             await h.runner.tick()
             h.advance(MINUTE)
             await h.runner.tick()
-            h.wake.outcome = { type: 'refused', failure: { code: 'resume_failed', message: 'spawn failed' } }
+            // A resume that threw or timed out is the session's fault, not the insert's.
+            h.wake.outcome = { type: 'refused', failure: { code: 'resume_failed', message: 'Session did not become active' } }
             await h.runner.tick()
-
             expect(h.runs().map((run) => [run.outcome, run.detail, run.scheduledFor, run.recordedAt])).toEqual([
-                ['failed', 'send_failed', T0, T0 + MINUTE],
+                ['failed', 'session_unavailable', T0, T0 + MINUTE],
                 ['failed', 'machine_offline', T0, T0]
             ])
+            expect(h.task(created.id)?.lastError).toBe('session_unavailable')
+
+            // The same reason again from another code is not a new failure.
+            h.wake.outcome = { type: 'refused', failure: { code: 'resume_unavailable', message: 'Retry after the agent has initialized' } }
+            await h.runner.tick()
+            expect(h.runs()).toHaveLength(2)
+            expect(h.runs().map((run) => [run.outcome, run.detail, run.preview])).toEqual([
+                ['failed', 'session_unavailable', 'ping'],
+                ['failed', 'machine_offline', 'ping']
+            ])
             expect(created.id).toBe(h.runs()[0].taskId)
+        })
+
+        it('previews the prompt a failed run of a queue was about to send', async () => {
+            const h: Harness = makeHarness()
+            const created = h.create({
+                sessionId: h.sessionId, kind: 'queue', items: ['first', 'second', 'third'], intervalMs: 10 * MINUTE, maxRuns: null, nextRunAt: T0
+            })
+            await h.runner.tick()
+            h.take(h.sent[0].localId, T0 + MINUTE)
+            await h.runner.tick()
+            h.setClock(T0 + 11 * MINUTE)
+            await h.runner.tick()
+            h.take(h.sent[1].localId, T0 + 11 * MINUTE)
+            await h.runner.tick()
+            h.setClock(T0 + 21 * MINUTE)
+            // The machine goes to sleep before the third prompt: it cannot go out.
+            h.session.active = false
+            h.wake.outcome = { type: 'refused', failure: { code: 'no_machine_online', message: 'No machine online' } }
+            await h.runner.tick()
+
+            expect(h.sent.map((prompt) => prompt.text)).toEqual(['first', 'second'])
+            expect(h.task(created.id)).toMatchObject({ runCount: 2, lastError: 'machine_offline' })
+            expect(h.runs().map((run) => [run.outcome, run.runNumber, run.detail, run.preview])).toEqual([
+                ['failed', null, 'machine_offline', 'third'],
+                ['sent', 2, null, 'second'],
+                ['sent', 1, null, 'first']
+            ])
         })
 
         it('keeps the history of a finished task and follows it through a merge', async () => {
