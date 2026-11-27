@@ -176,9 +176,11 @@ A task is a schedule the hub owns: `repeat` sends the same prompt on a fixed gri
 - `GET /api/sessions/:id/tasks` - List the session's tasks, oldest first.
 - `POST /api/sessions/:id/tasks` - Create a `repeat` or `queue` task; a session holds at most 20 active ones.
 - `GET /api/sessions/:id/tasks/history` - What the session's tasks did (prompts sent and taken, slots skipped, runs that could not go out), newest first; 500 rows per session, 30 days.
-- `PATCH /api/sessions/:id/tasks/:taskId` - Pause or resume a task, or change its prompts, interval or run limit.
+- `PATCH /api/sessions/:id/tasks/:taskId` - Pause or resume a task, or change its prompts, interval or run limit. A pause with a prompt waiting takes that prompt back when the CLI confirms the cancel (the hub waits up to 3 s for the answer, `SESSION_TASK_CANCEL_PROBE_MS`); the answer is the task as it is after that.
 - `POST /api/sessions/:id/tasks/:taskId/run` - Send the task's next prompt now.
-- `DELETE /api/sessions/:id/tasks/:taskId` - Delete a task; a prompt the agent has not taken yet is cancelled.
+- `DELETE /api/sessions/:id/tasks/:taskId` - Delete a task; a prompt the agent has not taken yet is cancelled, with the same wait for the CLI's answer.
+
+A task's cancel is the one cancel that must be right, so it does not stop at the first answer it does not get. The hub asks the CLI to drop the prompt and waits up to 3 s (`SESSION_TASK_CANCEL_PROBE_MS`; the queued-message bar's own cancel keeps its 500 ms). What no CLI confirmed is followed up: the run-history row carries `detail: 'cancel_unconfirmed'`, and on every scheduler tick a CLI that is in the session's room is asked again (2 s per ask) for two minutes (`SESSION_TASK_CANCEL_FOLLOW_UP_MS`); the list is rebuilt from the marked rows at hub start. `cancel_unconfirmed` on a `cancelled` row means the hub removed its row with no CLI connected and a wrapper alive with its socket down may still hold the prompt; on a `sent` row it means the CLI did not answer and the row waits in the queued-message bar. See `SyncEngine.followUpCancels`.
 
 Every change emits `session-tasks-changed` over SSE, and the session list carries `activeTaskCount` / `nextTaskRunAt` per session.
 
