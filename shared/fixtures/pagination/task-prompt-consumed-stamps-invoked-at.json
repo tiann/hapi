@@ -1,5 +1,5 @@
 {
-    "description": "A prompt a repeat or queue task inserts arrives by SSE as a hub row: a hub-assigned id, the task's localId (`hapi-task:<task>:<n>`), invokedAt and scheduledAt null. The prefix changes nothing for the window: the row is queued like a user's own, and messages-consumed for that localId stamps invokedAt and moves it to its invocation position.",
+    "description": "A prompt a repeat or queue task inserts arrives by SSE as a hub row: a hub-assigned id and the task's localId (`hapi-task:<task>:<n>`), with no scheduled time. The prefix changes nothing for the window: the row is queued like a user's own, and messages-consumed for that localId stamps invokedAt and moves it to its invocation position.",
     "expectedState": {
         "epoch": 0,
         "hasMore": false,
@@ -20,7 +20,6 @@
                 "localId": "hapi-task:t1:1",
                 "optimistic": false,
                 "queued": false,
-                "scheduledAt": null,
                 "seq": 2,
                 "status": "sent"
             }
@@ -97,7 +96,6 @@
                     "id": "srv-task-1",
                     "invokedAt": null,
                     "localId": "hapi-task:t1:1",
-                    "scheduledAt": null,
                     "seq": 2
                 }
             ],

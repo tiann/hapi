@@ -8,7 +8,7 @@ import {
     paginationFixtureSessionId,
     runPaginationScript
 } from '../../scripts/fixtures/pagination/runner'
-import type { PaginationFixtureDocument } from '../../scripts/fixtures/pagination/types'
+import type { PaginationFixtureDocument, PaginationOp } from '../../scripts/fixtures/pagination/types'
 import { toCanonicalJson } from '../../scripts/fixtures/serialize'
 
 // Self-conformance for the pagination fixtures in shared/fixtures/pagination:
@@ -41,6 +41,22 @@ describe('shared/fixtures/pagination golden fixtures', () => {
 
     it('VERSION matches the generator fixtureVersion', () => {
         expect(readFileSync(join(fixturesDir, 'VERSION'), 'utf8')).toBe(`${FIXTURE_VERSION}\n`)
+    })
+
+    // The hub sends a row's `scheduledAt` as an explicit null over SSE. The web passes that key through as it
+    // came; the iOS and Android ports drop a null when they encode a row, so a stored fixture, which all three
+    // replay, cannot carry it. This keeps the real wire shape covered on the web side.
+    it('a hub row whose scheduledAt is an explicit null leaves the same window as one without the key', async () => {
+        const document = JSON.parse(readFileSync(join(paginationDir, 'task-prompt-consumed-stamps-invoked-at.json'), 'utf8')) as PaginationFixtureDocument
+        const ops: PaginationOp[] = document.ops.map((op) => op.op === 'sse-messages'
+            ? { ...op, messages: op.messages.map((message) => ({ ...message, scheduledAt: null })) }
+            : op)
+        const { expectedState } = await runPaginationScript(paginationFixtureSessionId(document.name), ops)
+        const withNullKey = {
+            ...document.expectedState,
+            messages: document.expectedState.messages.map((message) => (message.id === 'srv-task-1' ? { ...message, scheduledAt: null } : message))
+        }
+        expect(canonical(expectedState)).toEqual(canonical(withNullKey))
     })
 
     for (const file of fixtureFiles) {

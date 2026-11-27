@@ -558,8 +558,12 @@ export const paginationFixtureCases: PaginationFixtureCase[] = [
         ]
     },
     {
+        // The hub sends a row's `scheduledAt` as an explicit null over SSE. The web keeps that key as it
+        // came; the iOS and Android ports drop a null when they encode a row, so a golden fixture cannot
+        // carry it. The row here has no `scheduledAt`, and a TypeScript-only test next to the fixture
+        // replay pins that the explicit null leaves the same window.
         name: 'task-prompt-consumed-stamps-invoked-at',
-        description: 'A prompt a repeat or queue task inserts arrives by SSE as a hub row: a hub-assigned id, the task\'s localId (`hapi-task:<task>:<n>`), invokedAt and scheduledAt null. The prefix changes nothing for the window: the row is queued like a user\'s own, and messages-consumed for that localId stamps invokedAt and moves it to its invocation position.',
+        description: 'A prompt a repeat or queue task inserts arrives by SSE as a hub row: a hub-assigned id and the task\'s localId (`hapi-task:<task>:<n>`), with no scheduled time. The prefix changes nothing for the window: the row is queued like a user\'s own, and messages-consumed for that localId stamps invokedAt and moves it to its invocation position.',
         ops: [
             {
                 op: 'sync-tail',
@@ -582,7 +586,6 @@ export const paginationFixtureCases: PaginationFixtureCase[] = [
                         localId: 'hapi-task:t1:1',
                         createdAt: 2_000,
                         invokedAt: null,
-                        scheduledAt: null,
                         text: 'check progress'
                     })
                 ]
