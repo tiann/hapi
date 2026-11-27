@@ -186,6 +186,7 @@ export type NormalizedMessage = ({
 }
 
 export type ToolPermission = {
+    acpAllowOptions?: Record<string, string>
     id: string
     status: 'pending' | 'approved' | 'denied' | 'canceled' | 'resolved'
     reason?: string

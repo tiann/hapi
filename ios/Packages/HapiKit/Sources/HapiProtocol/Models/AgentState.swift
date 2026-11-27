@@ -7,6 +7,7 @@ import Foundation
 /// keyed by request id and are resolved over
 /// `POST /api/sessions/:id/permissions/:requestId/approve|deny`.
 public struct AgentStateRequest: Codable, Equatable, Sendable {
+    public var acpAllowOptions: [String: String]?
     public var tool: String
     /// Correlates a native tool call; approval still uses the request dictionary key.
     public var toolCallId: String?

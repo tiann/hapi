@@ -16,19 +16,8 @@ interface PermissionResponseMessage {
     decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort';
 }
 
-function pickOptionId(
-    request: PermissionRequest,
-    preferredKinds: string[],
-    options?: { fallbackToFirst?: boolean }
-): string | null {
-    for (const kind of preferredKinds) {
-        const match = request.options.find((option) => option.kind === kind);
-        if (match) return match.optionId;
-    }
-    if (options?.fallbackToFirst === false) {
-        return null;
-    }
-    return request.options.length > 0 ? request.options[0].optionId : null;
+function permissionOption(request: PermissionRequest, kind: string) {
+    return request.options.find((option) => option.kind === kind);
 }
 
 export class PermissionAdapter {
@@ -70,8 +59,11 @@ export class PermissionAdapter {
             request.toolCallId
         );
 
-        if (autoDecision) {
-            void this.autoApproveRequest(request, toolName, input, autoDecision);
+        const once = permissionOption(request, 'allow_once');
+        const always = permissionOption(request, 'allow_always');
+        const autoOption = autoDecision === 'approved_for_session' ? always ?? once : once;
+        if (autoDecision && autoOption) {
+            void this.autoApproveRequest(request, toolName, input, autoOption.kind === 'allow_always' ? 'approved_for_session' : 'approved', autoOption.optionId);
             return;
         }
 
@@ -85,6 +77,10 @@ export class PermissionAdapter {
                     tool: toolName,
                     toolCallId: request.toolCallId,
                     arguments: input,
+                    acpAllowOptions: {
+                        ...(once && { allow_once: once.name }),
+                        ...(always && { allow_always: always.name })
+                    },
                     createdAt: Date.now()
                 }
             }
@@ -97,24 +93,13 @@ export class PermissionAdapter {
         request: PermissionRequest,
         toolName: string,
         input: unknown,
-        decision: AutoApprovalDecision
+        decision: AutoApprovalDecision,
+        optionId: string
     ): Promise<void> {
-        const optionId = pickOptionId(
-            request,
-            decision === 'approved_for_session'
-                ? ['allow_always', 'allow_once']
-                : ['allow_once', 'allow_always'],
-            { fallbackToFirst: false }
-        );
-
-        const outcome: PermissionResponse = optionId
-            ? { outcome: 'selected', optionId }
-            : { outcome: 'cancelled' };
-
+        const outcome: PermissionResponse = { outcome: 'selected', optionId };
         await this.backend.respondToPermission(request.sessionId, request, outcome);
 
         const timestamp = Date.now();
-        const status = outcome.outcome === 'selected' ? 'approved' : 'canceled';
 
         this.session.updateAgentState((currentState) => ({
             ...currentState,
@@ -126,14 +111,14 @@ export class PermissionAdapter {
                     arguments: input,
                     createdAt: timestamp,
                     completedAt: timestamp,
-                    status,
-                    decision: outcome.outcome === 'selected' ? decision : 'abort'
+                    status: 'approved',
+                    decision
                 }
             }
         } satisfies AgentState));
 
         logger.debug(
-            `[ACP] Auto-${outcome.outcome === 'selected' ? 'approved' : 'cancelled'} ` +
+            `[ACP] Auto-approved ` +
             `${toolName} (${request.id}) with decision=${decision}`
         );
     }
@@ -145,9 +130,10 @@ export class PermissionAdapter {
             return;
         }
 
-        this.pendingRequests.delete(response.id);
-
         const decision = response.decision ?? (response.approved ? 'approved' : 'denied');
+        if (response.approved !== (decision === 'approved' || decision === 'approved_for_session')) {
+            throw new Error('Permission response conflicts with its requested decision');
+        }
         const toolName = deriveToolName({
             title: pending.title,
             kind: pending.kind,
@@ -155,12 +141,20 @@ export class PermissionAdapter {
         });
         const toolInput = deriveToolInput(pending);
 
-        const outcome = this.mapDecisionToOutcome(pending, decision);
+        // Never substitute a grant with a different lifetime or rely on the order of options.
+        const kind = decision === 'approved' ? 'allow_once'
+            : decision === 'approved_for_session' ? 'allow_always' : 'reject_once';
+        const option = permissionOption(pending, kind);
+        if ((decision === 'approved' || decision === 'approved_for_session') && !option) {
+            throw new Error(`Agent does not offer ${kind} for this request`);
+        }
+        const outcome: PermissionResponse = option ? { outcome: 'selected', optionId: option.optionId } : { outcome: 'cancelled' };
+        this.pendingRequests.delete(response.id);
         if (decision === 'abort') {
             await this.backend.cancelPrompt(pending.sessionId);
             await this.backend.respondToPermission(pending.sessionId, pending, { outcome: 'cancelled' });
             await this.cancelAll('User aborted');
-        } else if (outcome) {
+        } else {
             await this.backend.respondToPermission(pending.sessionId, pending, outcome);
         }
 
@@ -168,7 +162,7 @@ export class PermissionAdapter {
             const requestEntry = currentState.requests?.[response.id];
             const { [response.id]: _, ...remaining } = currentState.requests ?? {};
 
-            const status = response.approved ? 'approved' : 'denied';
+            const status = decision === 'abort' ? 'canceled' : decision === 'denied' ? 'denied' : 'approved';
 
             return {
                 ...currentState,
@@ -189,28 +183,6 @@ export class PermissionAdapter {
         });
 
         logger.debug(`[ACP] Permission ${response.approved ? 'approved' : 'denied'} for ${toolName}`);
-    }
-
-    private mapDecisionToOutcome(
-        request: PermissionRequest,
-        decision: 'approved' | 'approved_for_session' | 'denied' | 'abort'
-    ): PermissionResponse | null {
-        if (decision === 'abort') {
-            return { outcome: 'cancelled' };
-        }
-
-        if (decision === 'approved_for_session') {
-            const optionId = pickOptionId(request, ['allow_always', 'allow_once']);
-            return optionId ? { outcome: 'selected', optionId } : { outcome: 'cancelled' };
-        }
-
-        if (decision === 'approved') {
-            const optionId = pickOptionId(request, ['allow_once', 'allow_always']);
-            return optionId ? { outcome: 'selected', optionId } : { outcome: 'cancelled' };
-        }
-
-        const optionId = pickOptionId(request, ['reject_once', 'reject_always']);
-        return optionId ? { outcome: 'selected', optionId } : { outcome: 'cancelled' };
     }
 
     async cancelAll(reason: string): Promise<void> {

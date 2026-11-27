@@ -300,6 +300,7 @@ public struct ToolResultPermission: Equatable, Sendable {
 /// reproduce spread semantics exactly. `id`/`status` are present at every
 /// site and excluded from the set.
 public struct ToolPermission: Equatable, Sendable {
+    public var acpAllowOptions: [String: String]?
     public struct PresentKeys: OptionSet, Equatable, Sendable {
         public let rawValue: Int
         public init(rawValue: Int) { self.rawValue = rawValue }
@@ -331,6 +332,7 @@ public struct ToolPermission: Equatable, Sendable {
     public init(
         id: String,
         status: ToolPermissionStatus,
+        acpAllowOptions: [String: String]? = nil,
         reason: String? = nil,
         mode: String? = nil,
         allowedTools: [String]? = nil,
@@ -343,6 +345,7 @@ public struct ToolPermission: Equatable, Sendable {
     ) {
         self.id = id
         self.status = status
+        self.acpAllowOptions = acpAllowOptions
         self.reason = reason
         self.mode = mode
         self.allowedTools = allowedTools
@@ -360,6 +363,7 @@ public struct ToolPermission: Equatable, Sendable {
     public static func spreading(_ base: ToolPermission?, with seed: ToolPermission) -> ToolPermission {
         guard let base else { return seed }
         var merged = seed
+        if merged.acpAllowOptions == nil { merged.acpAllowOptions = base.acpAllowOptions }
         if !seed.presentKeys.contains(.reason) { merged.reason = base.reason }
         if !seed.presentKeys.contains(.mode) { merged.mode = base.mode }
         if !seed.presentKeys.contains(.decision) { merged.decision = base.decision }

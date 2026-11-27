@@ -263,6 +263,36 @@ describe('PermissionAdapter', () => {
         });
     });
 
+    it.each([
+        ['allow_once', 'approved_for_session', 'approved'],
+        ['allow_always', 'approved', 'approved_for_session']
+    ])('offers only %s and keeps a mismatched grant pending', async (kind, unavailable, supported) => {
+        const harness = createHarness();
+        harness.emitPermissionRequest(buildRequest({ options: [{ kind, name: 'Native grant', optionId: 'choice' }] }));
+        const reply = harness.rpcHandlers.get('permission')!;
+        expect(harness.getAgentState().requests['perm-1']).toMatchObject({ acpAllowOptions: { [kind]: 'Native grant' } });
+        await expect(reply({ id: 'perm-1', approved: true, decision: unavailable })).rejects.toThrow('does not offer');
+        expect(harness.respondCalls).toEqual([]);
+        expect(harness.getAgentState().requests['perm-1']).toBeDefined();
+        await reply({ id: 'perm-1', approved: true, decision: supported });
+        expect(harness.respondCalls[0].response).toEqual({ outcome: 'selected', optionId: 'choice' });
+        expect(harness.getAgentState().completedRequests['perm-1']).toMatchObject({ decision: supported });
+    });
+
+    it('does not select a grant when rejecting a request without reject_once', async () => {
+        const harness = createHarness();
+        harness.emitPermissionRequest(buildRequest());
+        await harness.rpcHandlers.get('permission')!({ id: 'perm-1', approved: false, decision: 'denied' });
+        expect(harness.respondCalls[0].response).toEqual({ outcome: 'cancelled' });
+    });
+
+    it('records the narrower grant actually used for automatic approval', async () => {
+        const harness = createHarnessWithMode(() => 'yolo');
+        harness.emitPermissionRequest(buildRequest({ options: [{ kind: 'allow_once', name: 'Once', optionId: 'only-once' }] }));
+        await flushAsyncWork();
+        expect(harness.getAgentState().completedRequests['perm-1']).toMatchObject({ status: 'approved', decision: 'approved' });
+    });
+
     it('keeps non-title permissions pending until the hub responds', async () => {
         const harness = createHarness();
 

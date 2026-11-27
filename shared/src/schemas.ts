@@ -446,6 +446,7 @@ export type Metadata = z.infer<typeof MetadataSchema>
 
 export const AgentStateRequestSchema = z.object({
     tool: z.string(),
+    acpAllowOptions: z.record(z.string(), z.string()).optional(),
     // Correlation only; replies use the request map key, never this tool id.
     toolCallId: z.string().optional(),
     arguments: z.unknown(),

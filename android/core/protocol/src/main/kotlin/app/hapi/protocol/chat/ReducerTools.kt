@@ -48,6 +48,7 @@ fun getPermissions(agentState: AgentState?): LinkedHashMap<String, PermissionEnt
                 permission = ToolPermission(
                     id = id,
                     status = "pending",
+                    acpAllowOptions = request.acpAllowOptions,
                     createdAt = request.createdAt,
                     presence = ToolPermission.PENDING_KEYS,
                 ),

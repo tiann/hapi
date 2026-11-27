@@ -111,7 +111,8 @@ private fun PermissionActionsRow(
     }
     val resolving = override == PermissionRowOverride.Resolving
     val codex = isCodexUx(flavor, tool.name)
-    val canAllowForSession = !codex && tool.name !in HIDE_ALLOW_FOR_SESSION
+    val scopes = tool.permission?.acpAllowOptions
+    val showSession = scopes?.containsKey("allow_always") ?: (codex || tool.name !in HIDE_ALLOW_FOR_SESSION)
     val canAllowAllEdits = flavor == "claude" && tool.name in EDIT_TOOLS
     var overflowOpen by remember { mutableStateOf(false) }
 
@@ -124,13 +125,13 @@ private fun PermissionActionsRow(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        ChatActionButton(
+        if (scopes == null || "allow_once" in scopes) ChatActionButton(
             onClick = { onAction(requestId, PermissionAction.Allow) },
             enabled = !resolving,
             prominence = ChatActionProminence.Primary,
             modifier = Modifier.weight(1f),
         ) {
-            Text(stringResource(R.string.chat_perm_allow))
+            Text(scopes?.get("allow_once")?.ifEmpty { null } ?: stringResource(R.string.chat_perm_allow))
         }
         ChatActionButton(
             onClick = {
@@ -141,7 +142,7 @@ private fun PermissionActionsRow(
         ) {
             Text(stringResource(if (codex) R.string.chat_perm_abort else R.string.chat_perm_deny))
         }
-        if (codex || canAllowForSession || canAllowAllEdits) {
+        if (showSession || canAllowAllEdits) {
             Box {
                 IconButton(onClick = { overflowOpen = true }, enabled = !resolving) {
                     Icon(
@@ -151,9 +152,9 @@ private fun PermissionActionsRow(
                     )
                 }
                 DropdownMenu(expanded = overflowOpen, onDismissRequest = { overflowOpen = false }) {
-                    if (codex || canAllowForSession) {
+                    if (showSession) {
                         DropdownMenuItem(
-                            text = { Text(stringResource(R.string.chat_perm_allow_for_session)) },
+                            text = { Text(scopes?.get("allow_always")?.ifEmpty { null } ?: stringResource(R.string.chat_perm_allow_for_session)) },
                             onClick = {
                                 overflowOpen = false
                                 onAction(requestId, PermissionAction.AllowForSession)

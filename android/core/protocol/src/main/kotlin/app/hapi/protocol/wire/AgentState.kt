@@ -35,6 +35,7 @@ data class AgentStateRequest(
     val createdAt: Long? = null,
     /** Native correlation only; approve/deny uses the request map key. */
     val toolCallId: String? = null,
+    val acpAllowOptions: Map<String, String>? = null,
 )
 
 /** A resolved request (`AgentStateCompletedRequestSchema`). */
