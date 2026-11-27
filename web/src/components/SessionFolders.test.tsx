@@ -18,9 +18,9 @@ describe('SessionFolderDialog', () => {
             onSubmit={vi.fn()}
         /></I18nProvider>)
 
-        expect(screen.getByRole('option', { name: 'Work / Notes', exact: true })).toHaveValue('nested')
-        expect(screen.getByRole('option', { name: '"Work / Notes"', exact: true })).toHaveValue('root')
-        expect(screen.getByRole('option', { name: 'No folder', exact: true })).toHaveValue('')
-        expect(screen.getByRole('option', { name: '"No folder"', exact: true })).toHaveValue('literal')
+        expect(screen.getByRole('option', { name: 'Work / Notes' })).toHaveValue('nested')
+        expect(screen.getByRole('option', { name: '"Work / Notes"' })).toHaveValue('root')
+        expect(screen.getByRole('option', { name: 'No folder' })).toHaveValue('')
+        expect(screen.getByRole('option', { name: '"No folder"' })).toHaveValue('literal')
     })
 })
