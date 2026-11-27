@@ -41,6 +41,23 @@ describe('incoming hub toasts', () => {
             .toEqual({ title: '定时消息没有发出', body: 'Something else' })
     })
 
+    it.each([
+        [
+            'Deleted task prompt was taken',
+            '已删除任务的一条消息还是发给了代理',
+            '你删除任务时，代理的进程里还留着它的一条消息，后来还是被接走了。请查看这个会话。'
+        ],
+        [
+            'Paused task prompt was taken',
+            '已暂停任务的一条消息还是发给了代理',
+            '你暂停任务时，代理的进程里还留着那条已撤回的消息，后来还是被接走了。任务不会再发这一条。'
+        ]
+    ])('says in zh-CN that a prompt reached the agent after all (%s)', (hubTitle, title, body) => {
+        // The hub's English sentence names nothing that belongs in the translated one; the title says which case it is.
+        expect(translateIncomingToast(hubTitle, 'The agent process reported that it took the prompt.', translator('zh-CN'))).toEqual({ title, body })
+        expect(translateIncomingToast(hubTitle, '…', translator('en')).title).not.toBe(hubTitle)
+    })
+
     it('still translates the other hub toasts and passes the rest through', () => {
         const t = translator('zh-CN')
         expect(translateIncomingToast('Codex needs your input', 'What next?', t)).toEqual({ title: 'Codex 需要你回答', body: 'What next?' })

@@ -59,6 +59,17 @@ export function translateIncomingToast(
         }
     }
 
+    // The hub goes on asking about the prompt of a task that was deleted or paused when no agent process
+    // confirmed the cancel. When the process then reports that the agent took that prompt after all, the
+    // user hears of it. The hub's sentence names nothing that belongs in the translated one.
+    if (normalizedTitle === 'Deleted task prompt was taken' || normalizedTitle === 'Paused task prompt was taken') {
+        const key = normalizedTitle === 'Deleted task prompt was taken' ? 'deletedTaskPromptTaken' : 'pausedTaskPromptTaken'
+        return {
+            title: t(`toast.${key}.title`),
+            body: t(`toast.${key}.body`)
+        }
+    }
+
     if (normalizedTitle === 'Permission Request') {
         return {
             title: t('toast.permission.title'),
