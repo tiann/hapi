@@ -33,6 +33,41 @@ struct UsageEndpointTests {
         #expect(request?.value(forHTTPHeaderField: "Authorization") == "Bearer \(token)")
     }
 
+    @Test(arguments: [false, true])
+    func usageQuotasLoadsProviderWindows(refresh: Bool) async throws {
+        let token = freshJWT()
+        let harness = try makeHarness(jwt: token)
+        await harness.performer.enqueue(json: """
+        {"machines":[{"machineId":"m","machineName":"Mac","supported":true,"accounts":[
+          {"agent":"cursor","available":true,"status":"ok","planLabel":"Pro","creditsLabel":"$7 left",
+           "buckets":[{"id":"month","label":"Monthly","remainingPercent":81.5,"usedPercent":18.4,"resetsAt":1755600000000}]},
+          {"agent":"future-cli","available":true,"status":"unauthenticated","buckets":[]},
+          {"agent":"claude","available":false,"status":"unavailable","buckets":[]}
+        ]},{"machineId":"old","machineName":"Old runner","supported":false,"accounts":[]}]}
+        """)
+
+        let quotas = try await harness.client.usageQuotas(refresh: refresh)
+        let machine = try #require(quotas.machines.first)
+        #expect(machine.visibleAccounts.map(\.agent.rawValue) == ["cursor", "future-cli"])
+        #expect(machine.visibleAccounts.first?.creditsLabel == "$7 left")
+        let bucket = try #require(machine.accounts.first?.buckets.first)
+        #expect(bucket.remainingPercent == 81.5)
+        #expect(bucket.usedPercent == 18.4)
+        #expect(bucket.resetDate == Date(timeIntervalSince1970: 1_755_600_000))
+        #expect(quotas.machines.last?.supported == false)
+        let request = await harness.performer.requests.first
+        #expect(request?.url?.absoluteString == "\(testHubURLString)/api/usage/quotas" + (refresh ? "?refresh=1" : ""))
+        #expect(request?.value(forHTTPHeaderField: "Authorization") == "Bearer \(token)")
+    }
+
+    @Test(arguments: [403, 404])
+    func usageQuotasPreservesFailureStatus(status: Int) async throws {
+        let harness = try makeHarness(jwt: freshJWT())
+        await harness.performer.enqueue(status: status, json: "{}")
+        let error = await capturedError { try await harness.client.usageQuotas() }
+        #expect((error as? APIError)?.status == status)
+    }
+
     @Test func sqliteStorageUsageHitsThePlainPath() async throws {
         let harness = try makeHarness(jwt: freshJWT())
         await harness.performer.enqueue(

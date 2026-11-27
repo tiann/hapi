@@ -83,14 +83,17 @@ final class UsageModel {
 struct UsageView: View {
     @State private var model: UsageModel
     @State private var selectedDay: String?
+    private let api: APIClient
 
     init(api: APIClient) {
+        self.api = api
         _model = State(initialValue: UsageModel(api: api))
     }
 
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
+                UsageQuotasSection(api: api)
                 rangePicker
 
                 switch model.state {
