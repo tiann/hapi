@@ -189,7 +189,7 @@ export function createSessionTaskRoutes(getSyncEngine: () => SyncEngine | null):
         if (!parsed.success) {
             return c.json({ error: 'Invalid body', issues: parsed.error.flatten() }, 400)
         }
-        const result = engine.updateSessionTask(sessionResult.sessionId, c.req.param('taskId'), parsed.data)
+        const result = await engine.updateSessionTask(sessionResult.sessionId, c.req.param('taskId'), parsed.data)
         if (result.type === 'not-found') {
             return c.json({ error: 'Task not found' }, 404)
         }

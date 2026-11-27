@@ -1110,4 +1110,62 @@ describe('SessionTaskRunner', () => {
             expect(h.sent).toHaveLength(1)
         })
     })
+
+    describe('a task the engine holds', () => {
+        it('is not settled while held, even when its prompt is taken or discarded, and is once released', async () => {
+            const h: Harness = makeHarness()
+            const created = h.create({
+                sessionId: h.sessionId, kind: 'queue', items: ['a', 'b'], intervalMs: 10 * MINUTE, maxRuns: null, nextRunAt: T0
+            })
+            await h.runner.tick()
+            const localId = h.sent[0].localId
+            expect(h.task(created.id)).toMatchObject({ runCount: 1, pendingLocalId: localId })
+
+            // The engine takes the prompt back (the row goes) and holds the task while it does.
+            h.runner.hold(created.id)
+            h.discard(localId)
+            await h.runner.tick()
+            expect(h.task(created.id)).toMatchObject({ runCount: 1, pendingLocalId: localId, lastError: null })
+            expect(h.runs().map((run) => run.outcome)).toEqual(['sent'])
+
+            // Taken instead, still held: the runner leaves it to the engine as well.
+            const other = h.create({
+                sessionId: h.sessionId, kind: 'queue', items: ['x', 'y'], intervalMs: 10 * MINUTE, maxRuns: null, nextRunAt: T0
+            })
+            await h.runner.tick()
+            expect(h.sent).toHaveLength(2)
+            h.take(h.sent[1].localId, T0 + MINUTE)
+            h.setClock(T0 + 60 * MINUTE)
+            await h.runner.tick()
+            // The other task was not held and went on as usual.
+            expect(h.task(other.id)).toMatchObject({ pendingLocalId: null, nextRunAt: T0 + 11 * MINUTE })
+            expect(h.task(created.id)).toMatchObject({ runCount: 1, pendingLocalId: localId })
+
+            // Released: the next tick settles what it finds, as it would have.
+            h.runner.release(created.id)
+            await h.runner.tick()
+            expect(h.task(created.id)).toMatchObject({ pendingLocalId: null, runCount: 1 })
+            expect(h.runs().find((run) => run.localId === localId)?.outcome).toBe('cancelled')
+        })
+
+        it('is not run while held, and runs once released', async () => {
+            const h: Harness = makeHarness()
+            const created = h.create({
+                sessionId: h.sessionId, kind: 'repeat', items: ['ping'], intervalMs: 10 * MINUTE, maxRuns: null, nextRunAt: T0
+            })
+            h.runner.hold(created.id)
+            await h.runner.tick()
+            expect(h.sent).toEqual([])
+            expect(h.task(created.id)).toMatchObject({ runCount: 0, nextRunAt: T0 })
+
+            h.runner.release(created.id)
+            await h.runner.tick()
+            expect(h.sent).toHaveLength(1)
+            // Releasing a task that is not held is harmless.
+            h.runner.release('never-held')
+            h.runner.release(created.id)
+            await h.runner.tick()
+            expect(h.sent).toHaveLength(1)
+        })
+    })
 })

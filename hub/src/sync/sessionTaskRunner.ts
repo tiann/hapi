@@ -90,6 +90,8 @@ function nextPrompt(task: StoredSessionTask): string | undefined {
 
 export class SessionTaskRunner {
     private readonly inFlight = new Set<string>()
+    /** Tasks the engine is working on itself (a pause taking its prompt back): the tick leaves them alone. */
+    private readonly held = new Set<string>()
     private readonly retryAt = new Map<string, number>()
     /** Wake attempts so far, per pending prompt localId. */
     private readonly pendingWakeAttempts = new Map<string, number>()
@@ -99,6 +101,21 @@ export class SessionTaskRunner {
 
     constructor(private readonly deps: SessionTaskRunnerDeps) {}
 
+    /**
+     * Hold a task while the engine changes its pending prompt itself: no
+     * tick runs or settles it until `release`. Placed before the engine's
+     * first await, so a settle that must not see the prompt half-changed
+     * cannot be under way (a tick settles synchronously up to its first
+     * await, and the engine holds before it awaits).
+     */
+    hold(taskId: string): void {
+        this.held.add(taskId)
+    }
+
+    release(taskId: string): void {
+        this.held.delete(taskId)
+    }
+
     /** Look at every task that needs attention now. Safe to call on every tick. */
     async tick(): Promise<void> {
         const now = this.now()
@@ -106,7 +123,7 @@ export class SessionTaskRunner {
         this.forgetEndedTasks()
         const runs: Array<Promise<void>> = []
         for (const task of this.deps.store.sessionTasks.findRunnable(now)) {
-            if (this.inFlight.has(task.id)) continue
+            if (this.inFlight.has(task.id) || this.held.has(task.id)) continue
             if (task.pendingLocalId === null && !this.retryElapsed(task.id, now)) continue
             const run = this.run(task, now).finally(() => {
                 this.inFlight.delete(task.id)

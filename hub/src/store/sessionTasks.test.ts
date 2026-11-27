@@ -8,6 +8,7 @@ import { Store } from './index'
 import {
     RUNNABLE_DUE_SQL,
     RUNNABLE_PENDING_SQL,
+    SESSION_TASK_RUN_CANCEL_UNCONFIRMED,
     SESSION_TASK_RUNS_MAX_PER_SESSION,
     sessionTaskRunPreview,
     toSessionTask,
@@ -249,6 +250,39 @@ describe('session task store', () => {
         expect(store.sessionTasks.getById(repeat.id)).toMatchObject({ nextRunAt: 61_000, lastError: null })
     })
 
+    it('unsentPending takes the waiting prompt back out of the count', () => {
+        const store = makeStore()
+        const session = makeSession(store, 's')
+        const queue = makeRepeatTask(store, session, { kind: 'queue', items: ['a', 'b', 'c'], maxRuns: null, nextRunAt: 1_000 })
+        // Prompt 1 sent at 1_000 and taken; prompt 2 sent at 70_000 and waiting.
+        store.sessionTasks.markSent(queue.id, { localId: 'hapi-task:u:1', nextRunAt: null, now: 1_000 })
+        store.sessionTasks.recordRun({ sessionId: session, taskId: queue.id, taskKind: 'queue', runNumber: 1, localId: 'hapi-task:u:1', outcome: 'sent', scheduledFor: 1_000 }, 1_000)
+        store.sessionTasks.settlePending(queue.id, { consumedAt: 9_000, nextRunAt: 69_000, now: 9_000 })
+        store.sessionTasks.markSent(queue.id, { localId: 'hapi-task:u:2', nextRunAt: null, now: 70_000 })
+        store.sessionTasks.recordRun({ sessionId: session, taskId: queue.id, taskKind: 'queue', runNumber: 2, localId: 'hapi-task:u:2', outcome: 'sent', scheduledFor: 69_000 }, 70_000)
+        store.sessionTasks.markRunCancelled(session, 'hapi-task:u:2')
+        store.sessionTasks.setError(queue.id, 'prompt_not_taken', 71_000)
+
+        expect(store.sessionTasks.unsentPending(queue.id, 'hapi-task:u:2', 72_000)).toBe(true)
+        // As before the second send: prompt 2 is the next one again, and the
+        // last run is the send that still counts.
+        expect(store.sessionTasks.getById(queue.id)).toMatchObject({
+            pendingLocalId: null, runCount: 1, lastRunAt: 1_000, lastError: null, updatedAt: 72_000
+        })
+        expect(store.sessionTasks.getById(queue.id)?.lastConsumedAt).toBe(9_000)
+        // Nothing pending any more: a second call is a no-op.
+        expect(store.sessionTasks.unsentPending(queue.id, 'hapi-task:u:2', 73_000)).toBe(false)
+        expect(store.sessionTasks.getById(queue.id)?.runCount).toBe(1)
+
+        // The only prompt pulled back: no send is left.
+        const single = makeRepeatTask(store, session, { kind: 'queue', items: ['only'], maxRuns: null, nextRunAt: 1_000 })
+        store.sessionTasks.markSent(single.id, { localId: 'hapi-task:u:only', nextRunAt: null, now: 1_000 })
+        expect(store.sessionTasks.unsentPending(single.id, 'hapi-task:u:only', 2_000)).toBe(true)
+        expect(store.sessionTasks.getById(single.id)).toMatchObject({ pendingLocalId: null, runCount: 0, lastRunAt: null })
+        // Another prompt's localId does not match.
+        expect(store.sessionTasks.unsentPending(single.id, 'hapi-task:u:other', 3_000)).toBe(false)
+    })
+
     it('skipDueSlot only moves an active task that has a prompt pending', () => {
         const store = makeStore()
         const session = makeSession(store, 's')
@@ -447,6 +481,66 @@ describe('session task store', () => {
                 [null, 'failed', null],
                 [1, 'sent', 2_000]
             ])
+        })
+
+        it('marks a prompt no CLI confirmed the cancel of, and settles the marker with the row', () => {
+            const store = makeStore()
+            const session = makeSession(store, 's')
+            const other = makeSession(store, 'other')
+            const task = makeRepeatTask(store, session)
+            // A cancel the CLI never answered: the row stays a waiting send.
+            store.sessionTasks.recordRun({
+                sessionId: session, taskId: task.id, taskKind: 'repeat', runNumber: 1, localId: 'hapi-task:m:1', outcome: 'sent', scheduledFor: 1_000
+            }, 1_000)
+            // A cancel with no CLI in the room: the row is cancelled already.
+            store.sessionTasks.recordRun({
+                sessionId: session, taskId: task.id, taskKind: 'repeat', runNumber: 2, localId: 'hapi-task:m:2', outcome: 'sent', scheduledFor: 61_000
+            }, 61_000)
+            store.sessionTasks.markRunCancelled(session, 'hapi-task:m:2')
+            // A prompt taken long ago: nothing to follow up.
+            store.sessionTasks.recordRun({
+                sessionId: session, taskId: task.id, taskKind: 'repeat', runNumber: 3, localId: 'hapi-task:m:3', outcome: 'sent', scheduledFor: 121_000
+            }, 121_000)
+            store.sessionTasks.markRunTaken(session, 'hapi-task:m:3', 122_000)
+
+            expect(store.sessionTasks.markRunCancelUnconfirmed(session, 'hapi-task:m:1')).toBe(true)
+            expect(store.sessionTasks.markRunCancelUnconfirmed(session, 'hapi-task:m:2')).toBe(true)
+            // Taken, failed or other reasons are not touched.
+            expect(store.sessionTasks.markRunCancelUnconfirmed(session, 'hapi-task:m:3')).toBe(false)
+            expect(store.sessionTasks.markRunCancelUnconfirmed(other, 'hapi-task:m:1')).toBe(false)
+
+            // One query lists exactly the two, wherever the hub starts from.
+            const marked = store.sessionTasks.listRunsCancelUnconfirmed()
+            expect(marked.map((run) => [run.localId, run.outcome, run.detail]).sort()).toEqual([
+                ['hapi-task:m:1', 'sent', SESSION_TASK_RUN_CANCEL_UNCONFIRMED],
+                ['hapi-task:m:2', 'cancelled', SESSION_TASK_RUN_CANCEL_UNCONFIRMED]
+            ])
+
+            // A CLI confirms it holds no copy: the marker goes, the outcome stays.
+            expect(store.sessionTasks.clearRunCancelUnconfirmed(session, 'hapi-task:m:2')).toBe(true)
+            expect(store.sessionTasks.clearRunCancelUnconfirmed(session, 'hapi-task:m:2')).toBe(false)
+            expect(store.sessionTasks.listRunsCancelUnconfirmed().map((run) => run.localId)).toEqual(['hapi-task:m:1'])
+
+            // The CLI reports the take instead: a marked row goes back to sent with its taken time.
+            expect(store.sessionTasks.markRunTaken(session, 'hapi-task:m:1', 200_000)).toBe(true)
+            expect(store.sessionTasks.listRuns(session, 10).find((run) => run.localId === 'hapi-task:m:1')).toMatchObject({
+                outcome: 'sent', takenAt: 200_000, detail: null
+            })
+            expect(store.sessionTasks.listRunsCancelUnconfirmed()).toEqual([])
+
+            // Marked again, then cancelled by the ordinary path: the marker goes with it.
+            store.sessionTasks.recordRun({
+                sessionId: session, taskId: task.id, taskKind: 'repeat', runNumber: 4, localId: 'hapi-task:m:4', outcome: 'sent', scheduledFor: 181_000
+            }, 181_000)
+            store.sessionTasks.markRunCancelUnconfirmed(session, 'hapi-task:m:4')
+            expect(store.sessionTasks.markRunCancelled(session, 'hapi-task:m:4')).toBe(true)
+            expect(store.sessionTasks.listRunsCancelUnconfirmed()).toEqual([])
+            // A marked cancelled row the CLI reports taken after all goes back to sent too.
+            store.sessionTasks.markRunCancelUnconfirmed(session, 'hapi-task:m:4')
+            expect(store.sessionTasks.markRunTaken(session, 'hapi-task:m:4', 201_000)).toBe(true)
+            expect(store.sessionTasks.listRuns(session, 10).find((run) => run.localId === 'hapi-task:m:4')).toMatchObject({
+                outcome: 'sent', takenAt: 201_000, detail: null
+            })
         })
 
         it(`keeps at most ${SESSION_TASK_RUNS_MAX_PER_SESSION} rows per session and leaves other sessions alone`, () => {

@@ -31,6 +31,13 @@ import { prepareCached } from './statementCache'
 export const SESSION_TASK_RUNS_MAX_PER_SESSION = 500
 /** Run-history rows older than this are deleted (the scheduler checks at most once an hour). */
 export const SESSION_TASK_RUN_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
+/**
+ * `detail` of a run row whose prompt was cancelled without a CLI confirming
+ * that it holds no copy (no CLI socket was in the room, or the cancel went
+ * unanswered). The outcome is what the cancel made of it; the hub asks a CLI
+ * again while the marker is there (SyncEngine's cancel follow-up).
+ */
+export const SESSION_TASK_RUN_CANCEL_UNCONFIRMED = 'cancel_unconfirmed'
 
 /** Active tasks of one session, for the session-list summary. */
 export type SessionTaskSummary = {
@@ -466,6 +473,30 @@ export class SessionTaskStore {
     }
 
     /**
+     * The task's waiting prompt was pulled back (the user paused the task and
+     * the CLI confirmed the cancel): the task is as before the send. The
+     * prompt is not counted, so a resumed queue sends it again and a repeat
+     * task does not count a prompt that never reached the agent. Nothing else
+     * moves: the task is paused, or was resumed in the meantime, in which
+     * case the caller schedules it.
+     */
+    unsentPending(taskId: string, localId: string, now: number): boolean {
+        const result = prepareCached(this.db,
+            `UPDATE session_tasks
+             SET pending_local_id = NULL,
+                 run_count = run_count - 1,
+                 last_run_at = (
+                     SELECT MAX(recorded_at) FROM session_task_runs
+                     WHERE task_id = session_tasks.id AND outcome = 'sent'
+                 ),
+                 last_error = NULL,
+                 updated_at = ?
+             WHERE id = ? AND pending_local_id = ?`
+        ).run(now, taskId, localId)
+        return result.changes > 0
+    }
+
+    /**
      * A `repeat` task was due while its previous prompt is still waiting to
      * be taken. Move to the next slot on its grid instead of stacking a
      * second prompt on a busy agent.
@@ -547,22 +578,60 @@ export class SessionTaskStore {
         return toStoredRun(row)
     }
 
-    /** The agent took a prompt the task sent: stamp when. */
+    /**
+     * The agent took a prompt the task sent: stamp when. A row cancelled
+     * without the CLI's confirmation (it carries `cancel_unconfirmed`) goes
+     * back to `sent`: the CLI has now reported the take. Either way the row
+     * is settled, so the marker goes.
+     */
     markRunTaken(sessionId: string, localId: string, takenAt: number): boolean {
         const result = prepareCached(this.db,
-            `UPDATE session_task_runs SET taken_at = ?
-             WHERE session_id = ? AND local_id = ? AND outcome = 'sent' AND taken_at IS NULL`
-        ).run(takenAt, sessionId, localId)
+            `UPDATE session_task_runs SET outcome = 'sent', taken_at = ?, detail = NULL
+             WHERE session_id = ? AND local_id = ? AND taken_at IS NULL
+                 AND (outcome = 'sent' OR detail = ?)`
+        ).run(takenAt, sessionId, localId, SESSION_TASK_RUN_CANCEL_UNCONFIRMED)
         return result.changes > 0
     }
 
     /** A prompt the task sent was cancelled before the agent took it. */
     markRunCancelled(sessionId: string, localId: string): boolean {
         const result = prepareCached(this.db,
-            `UPDATE session_task_runs SET outcome = 'cancelled'
+            `UPDATE session_task_runs SET outcome = 'cancelled', detail = NULL
              WHERE session_id = ? AND local_id = ? AND outcome = 'sent' AND taken_at IS NULL`
         ).run(sessionId, localId)
         return result.changes > 0
+    }
+
+    /**
+     * The prompt was cancelled without a CLI confirming it holds no copy.
+     * The outcome stays (`cancelled` when the hub removed its own row with no
+     * CLI to ask, `sent` when the cancel went unanswered and the row waits in
+     * the queued-message bar); the marker says the take is not ruled out,
+     * until a CLI confirms it.
+     */
+    markRunCancelUnconfirmed(sessionId: string, localId: string): boolean {
+        const result = prepareCached(this.db,
+            `UPDATE session_task_runs SET detail = ?
+             WHERE session_id = ? AND local_id = ? AND taken_at IS NULL AND outcome IN ('sent', 'cancelled')`
+        ).run(SESSION_TASK_RUN_CANCEL_UNCONFIRMED, sessionId, localId)
+        return result.changes > 0
+    }
+
+    /** A CLI confirmed it holds no copy of the prompt: the row reads as its outcome says. */
+    clearRunCancelUnconfirmed(sessionId: string, localId: string): boolean {
+        const result = prepareCached(this.db,
+            `UPDATE session_task_runs SET detail = NULL
+             WHERE session_id = ? AND local_id = ? AND detail = ?`
+        ).run(sessionId, localId, SESSION_TASK_RUN_CANCEL_UNCONFIRMED)
+        return result.changes > 0
+    }
+
+    /** Run rows whose cancelled prompt no CLI has confirmed yet (one query; loaded at hub start). */
+    listRunsCancelUnconfirmed(): StoredSessionTaskRun[] {
+        const rows = prepareCached(this.db,
+            `SELECT ${RUN_COLUMNS} FROM session_task_runs WHERE detail = ? AND taken_at IS NULL`
+        ).all(SESSION_TASK_RUN_CANCEL_UNCONFIRMED) as DbRunRow[]
+        return rows.map(toStoredRun)
     }
 
     /** Newest first. */

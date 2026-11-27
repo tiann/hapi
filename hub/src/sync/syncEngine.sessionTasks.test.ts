@@ -6,8 +6,11 @@ import {
     type SessionTask
 } from '@hapi/protocol'
 import type { SyncEvent } from '@hapi/protocol/types'
-import { Store } from '../store'
-import { SyncEngine } from './syncEngine'
+import { Store, type CancelQueuedMessageOptions, type CancelQueuedMessageResult } from '../store'
+import { SESSION_TASK_RUN_CANCEL_UNCONFIRMED } from '../store/sessionTasks'
+import type { StoredMessage } from '../store/types'
+import type { CliCancelAckResult } from './messageService'
+import { SESSION_TASK_CANCEL_FOLLOW_UP_MS, SyncEngine } from './syncEngine'
 
 type FakeSession = { id: string; namespace: string; active: boolean; metadata?: { lifecycleState?: string } }
 
@@ -60,12 +63,37 @@ function harness(tag = 'tasks') {
     }
     /** A confirmed cancel, as the message service performs one on a queued row. */
     const cancelled: Array<{ sessionId: string; localId: string }> = []
-    ;(engine as unknown as { cancelQueuedMessage: (id: string, localId: string) => Promise<unknown> }).cancelQueuedMessage = async (id, localId) => {
+    /** The options each cancel was called with: the probe budget a task's cancel asks for. */
+    const cancelOptions: Array<CancelQueuedMessageOptions | undefined> = []
+    ;(engine as unknown as { cancelQueuedMessage: (id: string, localId: string, options?: CancelQueuedMessageOptions) => Promise<unknown> }).cancelQueuedMessage = async (id, localId, options) => {
         cancelled.push({ sessionId: id, localId })
+        cancelOptions.push(options)
         store.messages.deleteQueuedMessageById(id, localId)
         return { status: 'cancelled', localId }
     }
-    return { store, session, sessions, engine, events, internals, sent, cancelled }
+    return { store, session, sessions, engine, events, internals, sent, cancelled, cancelOptions }
+}
+
+/** A test's own stand-in for `SyncEngine.cancelQueuedMessage` (the harness installs one that confirms). */
+type CancelStub = (id: string, localId: string, options?: CancelQueuedMessageOptions) => Promise<CancelQueuedMessageResult>
+const setCancel = (h: Harness, stub: CancelStub): void => {
+    ;(h.engine as unknown as { cancelQueuedMessage: CancelStub }).cancelQueuedMessage = stub
+}
+
+/**
+ * The message service as the cancel follow-up sees it: whether a CLI socket
+ * is in the session's room, and what it answers a cancel probe with.
+ */
+function withCliSocket(h: Harness, answer: CliCancelAckResult = 'removed') {
+    const cli = { connected: false, answer, probes: [] as Array<[string, string, string, number]> }
+    Object.assign(h.internals.messageService as object, {
+        hasCliSocket: (sessionId: string) => cli.connected,
+        requestCliCancelAck: async (sessionId: string, localId: string, messageId: string, timeoutMs: number) => {
+            cli.probes.push([sessionId, localId, messageId, timeoutMs])
+            return cli.answer
+        }
+    })
+    return cli
 }
 
 type Harness = ReturnType<typeof harness>
@@ -90,7 +118,7 @@ describe('SyncEngine session tasks', () => {
         mock.restore()
     })
 
-    it('creates a repeat task with its first run at startAt and announces the change', () => {
+    it('creates a repeat task with its first run at startAt and announces the change', async () => {
         const h = harness()
         const startAt = Date.now() + HOUR
         const result = h.engine.createSessionTask(h.session.id, {
@@ -146,7 +174,7 @@ describe('SyncEngine session tasks', () => {
         expect(h.engine.listSessionTasks(h.session.id)[0]).toMatchObject({ runCount: 1, pending: true, nextRunAt: null })
     })
 
-    it('clamps a first run that is already past to now', () => {
+    it('clamps a first run that is already past to now', async () => {
         const h = harness()
         const before = Date.now()
         const task = taskOf(h.engine.createSessionTask(h.session.id, {
@@ -159,7 +187,7 @@ describe('SyncEngine session tasks', () => {
         expect(task.nextRunAt).toBeGreaterThanOrEqual(before)
     })
 
-    it(`answers too-many-tasks at ${SESSION_TASK_MAX_ACTIVE_PER_SESSION} active tasks, not counting paused ones`, () => {
+    it(`answers too-many-tasks at ${SESSION_TASK_MAX_ACTIVE_PER_SESSION} active tasks, not counting paused ones`, async () => {
         const h = harness()
         for (let index = 0; index < SESSION_TASK_MAX_ACTIVE_PER_SESSION; index += 1) {
             const created = h.engine.createSessionTask(h.session.id, { kind: 'repeat', text: `ping ${index}`, intervalMs: 60_000, startAt: Date.now() + HOUR })
@@ -171,11 +199,11 @@ describe('SyncEngine session tasks', () => {
         expect(h.events.filter((event) => event.type === 'session-tasks-changed')).toHaveLength(SESSION_TASK_MAX_ACTIVE_PER_SESSION)
 
         const paused = h.engine.listSessionTasks(h.session.id)[0]
-        h.engine.updateSessionTask(h.session.id, paused.id, { paused: true })
+        await h.engine.updateSessionTask(h.session.id, paused.id, { paused: true })
         expect(h.engine.createSessionTask(h.session.id, { kind: 'queue', items: [{ text: 'a' }], intervalMs: 60_000 }).type).toBe('created')
     })
 
-    it('summarizes the active tasks of the listed sessions', () => {
+    it('summarizes the active tasks of the listed sessions', async () => {
         const h = harness()
         const other = makeSession(h.store, 'other')
         h.sessions.set(other.id, other)
@@ -192,12 +220,12 @@ describe('SyncEngine session tasks', () => {
             return taskOf(h.engine.createSessionTask(h.session.id, { ...request, startAt: Date.now() + HOUR } as CreateSessionTaskRequest))
         }
 
-        it('pause clears the schedule and the stored error', () => {
+        it('pause clears the schedule and the stored error', async () => {
             const h = harness()
             const task = createLater(h, { kind: 'repeat', text: 'ping', intervalMs: 60_000 })
             h.store.sessionTasks.setError(task.id, 'machine_offline', Date.now())
 
-            const paused = taskOf(h.engine.updateSessionTask(h.session.id, task.id, { paused: true }))
+            const paused = taskOf(await h.engine.updateSessionTask(h.session.id, task.id, { paused: true }))
             expect(paused).toMatchObject({ state: 'paused', nextRunAt: null, lastError: null })
             expect(h.events.at(-1)).toEqual({ type: 'session-tasks-changed', sessionId: h.session.id })
         })
@@ -205,10 +233,10 @@ describe('SyncEngine session tasks', () => {
         it('resume runs a task with nothing pending now', async () => {
             const h = harness()
             const task = taskOf(h.engine.createSessionTask(h.session.id, { kind: 'repeat', text: 'ping', intervalMs: 60_000, startAt: Date.now() - 1_000 }))
-            h.engine.updateSessionTask(h.session.id, task.id, { paused: true })
+            await h.engine.updateSessionTask(h.session.id, task.id, { paused: true })
             const before = Date.now()
 
-            const resumed = taskOf(h.engine.updateSessionTask(h.session.id, task.id, { paused: false }))
+            const resumed = taskOf(await h.engine.updateSessionTask(h.session.id, task.id, { paused: false }))
             expect(resumed.state).toBe('active')
             expect(resumed.nextRunAt).toBeGreaterThanOrEqual(before)
             await settle()
@@ -219,16 +247,16 @@ describe('SyncEngine session tasks', () => {
             const h = harness()
             const startAt = Date.now() + 2 * HOUR
             const task = taskOf(h.engine.createSessionTask(h.session.id, { kind: 'queue', items: [{ text: 'a' }, { text: 'b' }], intervalMs: 60_000, startAt }))
-            h.engine.updateSessionTask(h.session.id, task.id, { paused: true })
+            await h.engine.updateSessionTask(h.session.id, task.id, { paused: true })
 
-            const resumed = taskOf(h.engine.updateSessionTask(h.session.id, task.id, { paused: false }))
+            const resumed = taskOf(await h.engine.updateSessionTask(h.session.id, task.id, { paused: false }))
             expect(resumed).toMatchObject({ state: 'active', startAt })
             expect(resumed.nextRunAt).toBe(startAt)
             await settle()
             expect(h.sent).toEqual([])
         })
 
-        it('resume keeps a queue task spaced from when its last prompt was taken', () => {
+        it('resume keeps a queue task spaced from when its last prompt was taken', async () => {
             const h = harness()
             const now = Date.now()
             const task = createLater(h, { kind: 'queue', items: [{ text: 'a' }, { text: 'b' }], intervalMs: 30 * 60_000 })
@@ -237,10 +265,10 @@ describe('SyncEngine session tasks', () => {
             h.store.sessionTasks.update(task.id, { state: { paused: true, nextRunAt: null } }, now)
 
             // Paused for a moment: the rest of the spacing is kept.
-            expect(taskOf(h.engine.updateSessionTask(h.session.id, task.id, { paused: false })).nextRunAt).toBe(now + 25 * 60_000)
+            expect(taskOf(await h.engine.updateSessionTask(h.session.id, task.id, { paused: false })).nextRunAt).toBe(now + 25 * 60_000)
         })
 
-        it('resume runs a queue task whose spacing elapsed while it was paused', () => {
+        it('resume runs a queue task whose spacing elapsed while it was paused', async () => {
             const h = harness()
             const task = createLater(h, { kind: 'queue', items: [{ text: 'a' }, { text: 'b' }], intervalMs: 30 * 60_000 })
             const takenAt = Date.now() - 3 * HOUR
@@ -249,16 +277,16 @@ describe('SyncEngine session tasks', () => {
             h.store.sessionTasks.update(task.id, { state: { paused: true, nextRunAt: null } }, takenAt + 1000)
             const before = Date.now()
 
-            expect(taskOf(h.engine.updateSessionTask(h.session.id, task.id, { paused: false })).nextRunAt).toBeGreaterThanOrEqual(before)
+            expect(taskOf(await h.engine.updateSessionTask(h.session.id, task.id, { paused: false })).nextRunAt).toBeGreaterThanOrEqual(before)
         })
 
-        it('resume leaves a queue task unscheduled while its prompt is still pending', () => {
+        it('resume leaves a queue task unscheduled while its prompt is still pending', async () => {
             const h = harness()
             const task = createLater(h, { kind: 'queue', items: [{ text: 'a' }, { text: 'b' }], intervalMs: 60_000 })
             h.store.sessionTasks.markSent(task.id, { localId: 'hapi-task:y:1', nextRunAt: null, now: Date.now() })
             h.store.sessionTasks.update(task.id, { state: { paused: true, nextRunAt: null } }, Date.now())
 
-            const resumed = taskOf(h.engine.updateSessionTask(h.session.id, task.id, { paused: false }))
+            const resumed = taskOf(await h.engine.updateSessionTask(h.session.id, task.id, { paused: false }))
             expect(resumed).toMatchObject({ state: 'active', nextRunAt: null, pending: true })
         })
 
@@ -266,23 +294,23 @@ describe('SyncEngine session tasks', () => {
             const h = harness()
             const task = createLater(h, { kind: 'repeat', text: 'ping', intervalMs: 60_000 })
 
-            const untouched = taskOf(h.engine.updateSessionTask(h.session.id, task.id, { paused: false }))
+            const untouched = taskOf(await h.engine.updateSessionTask(h.session.id, task.id, { paused: false }))
             expect(untouched.nextRunAt).toBe(task.nextRunAt)
             await settle()
             expect(h.sent).toEqual([])
         })
 
-        it('returns not-found for a task that is not in this session', () => {
+        it('returns not-found for a task that is not in this session', async () => {
             const h = harness()
             createLater(h, { kind: 'repeat', text: 'ping', intervalMs: 60_000 })
-            expect(h.engine.updateSessionTask(h.session.id, 'missing', { paused: true })).toEqual({ type: 'not-found' })
+            expect(await h.engine.updateSessionTask(h.session.id, 'missing', { paused: true })).toEqual({ type: 'not-found' })
         })
 
-        it('replaces the prompt of a repeat task', () => {
+        it('replaces the prompt of a repeat task', async () => {
             const h = harness()
             const task = createLater(h, { kind: 'repeat', text: 'ping', intervalMs: 60_000 })
 
-            const edited = taskOf(h.engine.updateSessionTask(h.session.id, task.id, { text: 'pong' }))
+            const edited = taskOf(await h.engine.updateSessionTask(h.session.id, task.id, { text: 'pong' }))
             expect(edited.items).toEqual([{ text: 'pong' }])
             expect(edited).toMatchObject({ nextRunAt: task.nextRunAt, state: 'active' })
         })
@@ -293,7 +321,7 @@ describe('SyncEngine session tasks', () => {
             await settle()
             expect(h.sent.map((prompt) => prompt.text)).toEqual(['a'])
 
-            const edited = taskOf(h.engine.updateSessionTask(h.session.id, task.id, { items: [{ text: 'x' }, { text: 'y' }] }))
+            const edited = taskOf(await h.engine.updateSessionTask(h.session.id, task.id, { items: [{ text: 'x' }, { text: 'y' }] }))
             expect(edited.items).toEqual([{ text: 'a' }, { text: 'x' }, { text: 'y' }])
             expect(edited).toMatchObject({ runCount: 1, pending: true, totalRuns: 3 })
 
@@ -306,12 +334,12 @@ describe('SyncEngine session tasks', () => {
             expect(h.sent.map((prompt) => prompt.text)).toEqual(['a', 'x'])
         })
 
-        it('re-anchors a task with nothing pending to one interval from now', () => {
+        it('re-anchors a task with nothing pending to one interval from now', async () => {
             const h = harness()
             const task = createLater(h, { kind: 'repeat', text: 'ping', intervalMs: 60_000 })
             const before = Date.now()
 
-            const edited = taskOf(h.engine.updateSessionTask(h.session.id, task.id, { intervalMs: 10 * 60_000 }))
+            const edited = taskOf(await h.engine.updateSessionTask(h.session.id, task.id, { intervalMs: 10 * 60_000 }))
             expect(edited.intervalMs).toBe(10 * 60_000)
             // Nothing has run yet: the first run stays where it was put.
             expect(edited.nextRunAt).toBe(task.nextRunAt)
@@ -319,12 +347,12 @@ describe('SyncEngine session tasks', () => {
             // A task that has run, with nothing pending, moves its next run.
             h.store.sessionTasks.markSent(task.id, { localId: 'hapi-task:r:1', nextRunAt: before + 60_000, now: before })
             h.store.sessionTasks.settlePending(task.id, { consumedAt: before + 1, now: before + 1 })
-            const reAnchored = taskOf(h.engine.updateSessionTask(h.session.id, task.id, { intervalMs: 10 * 60_000 }))
+            const reAnchored = taskOf(await h.engine.updateSessionTask(h.session.id, task.id, { intervalMs: 10 * 60_000 }))
             expect(reAnchored.nextRunAt).toBeGreaterThanOrEqual(before + 10 * 60_000)
             expect(reAnchored.nextRunAt).toBeLessThanOrEqual(Date.now() + 10 * 60_000)
         })
 
-        it('re-anchors a resumed task to one new interval from now', () => {
+        it('re-anchors a resumed task to one new interval from now', async () => {
             const h = harness()
             const now = Date.now()
             const task = createLater(h, { kind: 'repeat', text: 'ping', intervalMs: 60_000 })
@@ -332,7 +360,7 @@ describe('SyncEngine session tasks', () => {
             h.store.sessionTasks.settlePending(task.id, { consumedAt: now, now })
             h.store.sessionTasks.update(task.id, { state: { paused: true, nextRunAt: null } }, now)
 
-            const resumed = taskOf(h.engine.updateSessionTask(h.session.id, task.id, { paused: false, intervalMs: 10 * 60_000 }))
+            const resumed = taskOf(await h.engine.updateSessionTask(h.session.id, task.id, { paused: false, intervalMs: 10 * 60_000 }))
             expect(resumed).toMatchObject({ state: 'active', intervalMs: 10 * 60_000 })
             expect(resumed.nextRunAt).toBeGreaterThanOrEqual(now + 10 * 60_000)
             expect(resumed.nextRunAt).toBeLessThanOrEqual(Date.now() + 10 * 60_000)
@@ -356,11 +384,11 @@ describe('SyncEngine session tasks', () => {
             // Pausing and changing the interval in one request: the task cannot run
             // after it, so there is nothing to re-anchor and the pause stays.
             for (const task of [repeat, queue]) {
-                const paused = taskOf(h.engine.updateSessionTask(h.session.id, task.id, { paused: true, intervalMs: 120_000 }))
+                const paused = taskOf(await h.engine.updateSessionTask(h.session.id, task.id, { paused: true, intervalMs: 120_000 }))
                 expect(paused).toMatchObject({ id: task.id, state: 'paused', nextRunAt: null, intervalMs: 120_000, runCount: 1, pending: false })
             }
             // The same request on a task that is paused already only changes the interval.
-            const edited = taskOf(h.engine.updateSessionTask(h.session.id, repeat.id, { paused: true, intervalMs: 180_000 }))
+            const edited = taskOf(await h.engine.updateSessionTask(h.session.id, repeat.id, { paused: true, intervalMs: 180_000 }))
             expect(edited).toMatchObject({ state: 'paused', nextRunAt: null, intervalMs: 180_000 })
             await settle()
             expect(h.sent).toEqual([])
@@ -370,19 +398,19 @@ describe('SyncEngine session tasks', () => {
             const h = harness()
             const now = Date.now()
             /** A task that has run once, with its prompt taken, and is now paused. */
-            function pausedAfterOneRun(request: CreateSessionTaskRequest) {
+            async function pausedAfterOneRun(request: CreateSessionTaskRequest) {
                 const task = createLater(h, request)
                 h.store.sessionTasks.markSent(task.id, { localId: 'hapi-task:interval:1', nextRunAt: null, now })
                 h.store.sessionTasks.settlePending(task.id, { consumedAt: now + 1, nextRunAt: now + 60_000, now: now + 1 })
-                expect(taskOf(h.engine.updateSessionTask(h.session.id, task.id, { paused: true }))).toMatchObject({ state: 'paused', runCount: 1, pending: false })
+                expect(taskOf(await h.engine.updateSessionTask(h.session.id, task.id, { paused: true }))).toMatchObject({ state: 'paused', runCount: 1, pending: false })
                 return task
             }
-            const repeat = pausedAfterOneRun({ kind: 'repeat', text: 'ping', intervalMs: 60_000 })
-            const queue = pausedAfterOneRun({ kind: 'queue', items: [{ text: 'a' }, { text: 'b' }], intervalMs: 60_000 })
+            const repeat = await pausedAfterOneRun({ kind: 'repeat', text: 'ping', intervalMs: 60_000 })
+            const queue = await pausedAfterOneRun({ kind: 'queue', items: [{ text: 'a' }, { text: 'b' }], intervalMs: 60_000 })
 
             // An edit form that submits only the changed field must not start an unattended sender again.
             for (const task of [repeat, queue]) {
-                const edited = taskOf(h.engine.updateSessionTask(h.session.id, task.id, { intervalMs: 10 * 60_000 }))
+                const edited = taskOf(await h.engine.updateSessionTask(h.session.id, task.id, { intervalMs: 10 * 60_000 }))
                 expect(edited).toMatchObject({ id: task.id, state: 'paused', nextRunAt: null, intervalMs: 10 * 60_000, runCount: 1 })
             }
             await settle()
@@ -397,9 +425,9 @@ describe('SyncEngine session tasks', () => {
                 h.store.sessionTasks.markSent(task.id, { localId: `hapi-task:end:${run}`, nextRunAt: now + 60_000, now })
                 h.store.sessionTasks.settlePending(task.id, { consumedAt: now + run, now: now + run })
             }
-            h.engine.updateSessionTask(h.session.id, task.id, { paused: true })
+            await h.engine.updateSessionTask(h.session.id, task.id, { paused: true })
 
-            const ended = taskOf(h.engine.updateSessionTask(h.session.id, task.id, { paused: false, maxRuns: 3 }))
+            const ended = taskOf(await h.engine.updateSessionTask(h.session.id, task.id, { paused: false, maxRuns: 3 }))
             expect(ended).toMatchObject({ state: 'active', maxRuns: 3, totalRuns: 3, runCount: 3 })
             // The limit is reached and nothing is pending: there is nothing left to resume.
             expect(h.engine.listSessionTasks(h.session.id)).toEqual([])
@@ -411,15 +439,15 @@ describe('SyncEngine session tasks', () => {
         it('refuses to resume a task while the session holds the cap of active tasks', async () => {
             const h = harness()
             const paused = taskOf(h.engine.createSessionTask(h.session.id, { kind: 'repeat', text: 'paused', intervalMs: 60_000, startAt: Date.now() + HOUR }))
-            h.engine.updateSessionTask(h.session.id, paused.id, { paused: true })
+            await h.engine.updateSessionTask(h.session.id, paused.id, { paused: true })
             const active: SessionTask[] = []
             for (let index = active.length; index < SESSION_TASK_MAX_ACTIVE_PER_SESSION; index += 1) {
                 active.push(taskOf(h.engine.createSessionTask(h.session.id, { kind: 'repeat', text: `ping ${index}`, intervalMs: 60_000, startAt: Date.now() + HOUR })))
             }
             const changesBefore = h.events.length
 
-            expect(h.engine.updateSessionTask(h.session.id, paused.id, { paused: false })).toEqual({ type: 'too-many-tasks' })
-            expect(h.engine.updateSessionTask(h.session.id, paused.id, { paused: false, intervalMs: 120_000 })).toEqual({ type: 'too-many-tasks' })
+            expect(await h.engine.updateSessionTask(h.session.id, paused.id, { paused: false })).toEqual({ type: 'too-many-tasks' })
+            expect(await h.engine.updateSessionTask(h.session.id, paused.id, { paused: false, intervalMs: 120_000 })).toEqual({ type: 'too-many-tasks' })
             expect(h.engine.runSessionTaskNow(h.session.id, paused.id)).toEqual({ type: 'too-many-tasks' })
             // Nothing was applied, announced or run.
             expect(h.engine.listSessionTasks(h.session.id).find((row) => row.id === paused.id)).toMatchObject({ state: 'paused', nextRunAt: null, intervalMs: 60_000 })
@@ -429,7 +457,7 @@ describe('SyncEngine session tasks', () => {
 
             // One of the others goes: the resume fits.
             await h.engine.deleteSessionTask(h.session.id, active[0].id)
-            expect(taskOf(h.engine.updateSessionTask(h.session.id, paused.id, { paused: false })).state).toBe('active')
+            expect(taskOf(await h.engine.updateSessionTask(h.session.id, paused.id, { paused: false })).state).toBe('active')
         })
 
         /** Fill the session up to the cap with active tasks that run in an hour. */
@@ -448,12 +476,12 @@ describe('SyncEngine session tasks', () => {
                 h.store.sessionTasks.markSent(paused.id, { localId: `hapi-task:cap:${run}`, nextRunAt: now + 60_000, now })
                 h.store.sessionTasks.settlePending(paused.id, { consumedAt: now + run, now: now + run })
             }
-            h.engine.updateSessionTask(h.session.id, paused.id, { paused: true })
+            await h.engine.updateSessionTask(h.session.id, paused.id, { paused: true })
             fillSession(h)
 
             // The limit comes down to what already ran: the task is over the moment it is
             // resumed, so it is never the 21st active task.
-            const ended = taskOf(h.engine.updateSessionTask(h.session.id, paused.id, { paused: false, maxRuns: 3 }))
+            const ended = taskOf(await h.engine.updateSessionTask(h.session.id, paused.id, { paused: false, maxRuns: 3 }))
             expect(ended).toMatchObject({ state: 'active', maxRuns: 3, runCount: 3, pending: false })
             expect(h.engine.listSessionTasks(h.session.id).some((row) => row.id === paused.id)).toBe(false)
             expect(h.engine.getSessionTaskSummaries([h.session.id]).get(h.session.id)?.activeTaskCount).toBe(SESSION_TASK_MAX_ACTIVE_PER_SESSION)
@@ -461,41 +489,43 @@ describe('SyncEngine session tasks', () => {
             expect(h.sent).toEqual([])
         })
 
-        it('still refuses a resume into a full session when the task ends only once its pending prompt is taken', () => {
+        it('still refuses a resume into a full session when the task ends only once its pending prompt is taken', async () => {
             const h = harness()
             const paused = createLater(h, { kind: 'repeat', text: 'paused', intervalMs: 60_000, maxRuns: 5 })
             const localId = 'hapi-task:cap:pending'
             h.store.sessionTasks.markSent(paused.id, { localId, nextRunAt: null, now: Date.now() })
             // The prompt is in the queue, where the scheduler finds it on the ticks the other creates kick.
             h.store.addMessageForCurrentSession(h.session.id, { role: 'user', content: { type: 'text', text: 'paused' }, meta: { sentFrom: 'webapp' } }, localId, null)
-            h.engine.updateSessionTask(h.session.id, paused.id, { paused: true })
+            // Paused while the CLI could not confirm the cancel: the prompt stayed pending.
+            ;(h.engine as unknown as { cancelQueuedMessage: () => Promise<unknown> }).cancelQueuedMessage = async () => ({ status: 'busy', localId })
+            await h.engine.updateSessionTask(h.session.id, paused.id, { paused: true })
             fillSession(h)
 
             // Active until the agent takes the prompt: it counts like any other resume.
-            expect(h.engine.updateSessionTask(h.session.id, paused.id, { paused: false, maxRuns: 1 })).toEqual({ type: 'too-many-tasks' })
+            expect(await h.engine.updateSessionTask(h.session.id, paused.id, { paused: false, maxRuns: 1 })).toEqual({ type: 'too-many-tasks' })
             expect(h.engine.listSessionTasks(h.session.id).find((row) => row.id === paused.id)).toMatchObject({ state: 'paused', maxRuns: 5, pending: true })
         })
 
         it('edits a paused task while the session holds the cap, since nothing is resumed', async () => {
             const h = harness()
             const paused = createLater(h, { kind: 'repeat', text: 'paused', intervalMs: 60_000, maxRuns: 2 })
-            h.engine.updateSessionTask(h.session.id, paused.id, { paused: true })
+            await h.engine.updateSessionTask(h.session.id, paused.id, { paused: true })
             fillSession(h)
 
-            const edited = taskOf(h.engine.updateSessionTask(h.session.id, paused.id, { text: 'renamed', intervalMs: 120_000, maxRuns: null }))
+            const edited = taskOf(await h.engine.updateSessionTask(h.session.id, paused.id, { text: 'renamed', intervalMs: 120_000, maxRuns: null }))
             expect(edited).toMatchObject({ state: 'paused', nextRunAt: null, intervalMs: 120_000, maxRuns: null, items: [{ text: 'renamed' }] })
             await settle()
             expect(h.sent).toEqual([])
         })
 
-        it('refuses fields that do not apply to the task kind', () => {
+        it('refuses fields that do not apply to the task kind', async () => {
             const h = harness()
             const queue = createLater(h, { kind: 'queue', items: [{ text: 'a' }], intervalMs: 60_000 })
             const repeat = createLater(h, { kind: 'repeat', text: 'ping', intervalMs: 60_000 })
 
-            expect(h.engine.updateSessionTask(h.session.id, queue.id, { text: 'nope' })).toEqual({ type: 'wrong-task-kind', fields: ['text'] })
-            expect(h.engine.updateSessionTask(h.session.id, queue.id, { maxRuns: null })).toEqual({ type: 'wrong-task-kind', fields: ['maxRuns'] })
-            expect(h.engine.updateSessionTask(h.session.id, repeat.id, { items: [{ text: 'nope' }] })).toEqual({ type: 'wrong-task-kind', fields: ['items'] })
+            expect(await h.engine.updateSessionTask(h.session.id, queue.id, { text: 'nope' })).toEqual({ type: 'wrong-task-kind', fields: ['text'] })
+            expect(await h.engine.updateSessionTask(h.session.id, queue.id, { maxRuns: null })).toEqual({ type: 'wrong-task-kind', fields: ['maxRuns'] })
+            expect(await h.engine.updateSessionTask(h.session.id, repeat.id, { items: [{ text: 'nope' }] })).toEqual({ type: 'wrong-task-kind', fields: ['items'] })
             // Nothing was applied, nothing announced.
             expect(h.engine.listSessionTasks(h.session.id).find((row) => row.id === queue.id)?.items).toEqual([{ text: 'a' }])
             expect(h.events.filter((event) => event.type === 'session-tasks-changed')).toHaveLength(2)
@@ -512,9 +542,9 @@ describe('SyncEngine session tasks', () => {
             await settle()
             expect(h.sent).toHaveLength(2)
 
-            expect(h.engine.updateSessionTask(h.session.id, task.id, { maxRuns: 1 })).toEqual({ type: 'invalid-max-runs' })
+            expect(await h.engine.updateSessionTask(h.session.id, task.id, { maxRuns: 1 })).toEqual({ type: 'invalid-max-runs' })
             // Equal to what ran is allowed: with a prompt pending the task ends when it is taken.
-            const trimmed = taskOf(h.engine.updateSessionTask(h.session.id, task.id, { maxRuns: 2 }))
+            const trimmed = taskOf(await h.engine.updateSessionTask(h.session.id, task.id, { maxRuns: 2 }))
             expect(trimmed).toMatchObject({ maxRuns: 2, runCount: 2, pending: true, totalRuns: 2 })
             expect(h.engine.listSessionTasks(h.session.id)).toHaveLength(1)
 
@@ -524,24 +554,24 @@ describe('SyncEngine session tasks', () => {
             expect(h.engine.listSessionTasks(h.session.id)).toEqual([])
         })
 
-        it('ends a task at once when the limit is brought down to what ran with nothing pending', () => {
+        it('ends a task at once when the limit is brought down to what ran with nothing pending', async () => {
             const h = harness()
             const task = taskOf(h.engine.createSessionTask(h.session.id, { kind: 'repeat', text: 'ping', intervalMs: 60_000, maxRuns: 5 }))
             const now = Date.now()
             h.store.sessionTasks.markSent(task.id, { localId: 'hapi-task:e:1', nextRunAt: now + 60_000, now })
             h.store.sessionTasks.settlePending(task.id, { consumedAt: now + 1, now: now + 1 })
 
-            const ended = taskOf(h.engine.updateSessionTask(h.session.id, task.id, { maxRuns: 1 }))
+            const ended = taskOf(await h.engine.updateSessionTask(h.session.id, task.id, { maxRuns: 1 }))
             expect(ended).toMatchObject({ maxRuns: 1, runCount: 1, pending: false })
             expect(h.engine.listSessionTasks(h.session.id)).toEqual([])
             expect(h.events.at(-1)).toEqual({ type: 'session-tasks-changed', sessionId: h.session.id })
         })
 
-        it('removes the run limit with null', () => {
+        it('removes the run limit with null', async () => {
             const h = harness()
             const task = createLater(h, { kind: 'repeat', text: 'ping', intervalMs: 60_000, maxRuns: 2 })
 
-            expect(taskOf(h.engine.updateSessionTask(h.session.id, task.id, { maxRuns: null }))).toMatchObject({ maxRuns: null, totalRuns: null })
+            expect(taskOf(await h.engine.updateSessionTask(h.session.id, task.id, { maxRuns: null }))).toMatchObject({ maxRuns: null, totalRuns: null })
         })
     })
 
@@ -549,7 +579,7 @@ describe('SyncEngine session tasks', () => {
         it('makes a paused task active, clears its error and runs it now', async () => {
             const h = harness()
             const task = taskOf(h.engine.createSessionTask(h.session.id, { kind: 'repeat', text: 'ping', intervalMs: 60_000, startAt: Date.now() + HOUR }))
-            h.engine.updateSessionTask(h.session.id, task.id, { paused: true })
+            await h.engine.updateSessionTask(h.session.id, task.id, { paused: true })
             h.store.sessionTasks.setError(task.id, 'session_archived', Date.now())
             const before = Date.now()
 
@@ -575,7 +605,7 @@ describe('SyncEngine session tasks', () => {
             expect(h.sent).toHaveLength(1)
         })
 
-        it('answers not-found for a task that is not in this session', () => {
+        it('answers not-found for a task that is not in this session', async () => {
             const h = harness()
             expect(h.engine.runSessionTaskNow(h.session.id, 'missing')).toEqual({ type: 'not-found' })
         })
@@ -704,9 +734,13 @@ describe('SyncEngine session tasks', () => {
             expect(h.engine.listSessionTasks(h.session.id)[0]).toMatchObject({ lastError: 'prompt_not_taken', pending: true })
             expect(resumes).toHaveLength(3)
 
-            // The user pauses and resumes to make the hub try again: the count starts over and the error stays gone.
-            h.engine.updateSessionTask(h.session.id, task.id, { paused: true })
-            expect(taskOf(h.engine.updateSessionTask(h.session.id, task.id, { paused: false }))).toMatchObject({ state: 'active', nextRunAt: null, lastError: null, pending: true })
+            // The user pauses and resumes to make the hub try again. The CLI could not confirm the
+            // cancel, so the prompt stayed pending through the pause: the count starts over and
+            // the error stays gone.
+            const localId = h.sent[0].localId
+            ;(h.engine as unknown as { cancelQueuedMessage: (id: string, localId: string) => Promise<unknown> }).cancelQueuedMessage = async () => ({ status: 'busy', localId })
+            expect(taskOf(await h.engine.updateSessionTask(h.session.id, task.id, { paused: true }))).toMatchObject({ state: 'paused', nextRunAt: null, pending: true, runCount: 1 })
+            expect(taskOf(await h.engine.updateSessionTask(h.session.id, task.id, { paused: false }))).toMatchObject({ state: 'active', nextRunAt: null, lastError: null, pending: true })
             await settle()
             expect(resumes).toHaveLength(4)
             expect(h.engine.listSessionTasks(h.session.id)[0]).toMatchObject({ lastError: null, pending: true })
@@ -791,5 +825,476 @@ describe('SyncEngine session tasks', () => {
         await settle()
         expect(h.sent.map((prompt) => prompt.text)).toEqual(['ping'])
         expect(h.engine.listSessionTasks(archived.id)[0]).toMatchObject({ lastError: null, runCount: 1 })
+    })
+
+    describe('a cancel the CLI must confirm', () => {
+        /** [outcome, takenAt set?, detail] of the task's run rows, oldest first. */
+        const runsOf = (h: Harness, localId: string) => h.store.sessionTasks.listRuns(h.session.id, 50)
+            .filter((run) => run.localId === localId)
+            .map((run) => [run.outcome, run.takenAt !== null, run.detail])
+
+        async function pendingPrompt(h: Harness, request: CreateSessionTaskRequest = { kind: 'queue', items: [{ text: 'a' }, { text: 'b' }], intervalMs: 60_000 }) {
+            const task = taskOf(h.engine.createSessionTask(h.session.id, request))
+            await settle()
+            const prompts = h.sent.filter((prompt) => prompt.localId.startsWith(`${SESSION_TASK_MESSAGE_LOCAL_ID_PREFIX}${task.id}:`))
+            expect(prompts).toHaveLength(1)
+            return { task, localId: prompts[0].localId }
+        }
+
+        it('waits for a slow CLI: the probe gets the patient budget and the answer is cancelled', async () => {
+            const h = harness()
+            const { task, localId } = await pendingPrompt(h)
+            // A CLI that answers after 900 ms: within the task's budget, past the bar's 500 ms.
+            setCancel(h, async (id, prompt, options) => {
+                h.cancelOptions.push(options)
+                if (options?.probeTimeoutMs !== 3000) return { status: 'busy', localId: prompt }
+                h.store.messages.deleteQueuedMessageById(id, prompt)
+                return { status: 'cancelled', localId: prompt }
+            })
+
+            await expect(h.engine.deleteSessionTask(h.session.id, task.id)).resolves.toEqual({ type: 'deleted', prompt: 'cancelled' })
+            expect(h.cancelOptions).toEqual([{ probeTimeoutMs: 3000 }])
+            expect(h.store.messages.lookupQueuedMessage(h.session.id, localId).status).toBe('absent')
+            expect(runsOf(h, localId)).toEqual([['cancelled', false, null]])
+        })
+
+        it('with no CLI socket answers cancelled, marks the run row, and asks the CLI again once it is in the room', async () => {
+            const h = harness()
+            const { task, localId } = await pendingPrompt(h)
+            const cli = withCliSocket(h, 'removed')
+            setCancel(h, async (id, prompt) => {
+                h.cancelOptions.push(undefined)
+                h.store.messages.deleteQueuedMessageById(id, prompt)
+                return { status: 'cancelled', localId: prompt, unconfirmed: true }
+            })
+
+            await expect(h.engine.deleteSessionTask(h.session.id, task.id)).resolves.toEqual({ type: 'deleted', prompt: 'cancelled' })
+            expect(runsOf(h, localId)).toEqual([['cancelled', false, SESSION_TASK_RUN_CANCEL_UNCONFIRMED]])
+            const eventsBefore = h.events.length
+
+            // No CLI in the room: nothing to ask.
+            tick(h.engine)
+            await settle()
+            expect(cli.probes).toEqual([])
+
+            cli.connected = true
+            tick(h.engine)
+            await settle()
+            expect(cli.probes).toEqual([[h.session.id, localId, localId, 2000]])
+            expect(runsOf(h, localId)).toEqual([['cancelled', false, null]])
+            expect(h.events.slice(eventsBefore)).toEqual([{ type: 'session-tasks-changed', sessionId: h.session.id }])
+
+            // Settled: the next tick asks nothing more.
+            tick(h.engine)
+            await settle()
+            expect(cli.probes).toHaveLength(1)
+        })
+
+        it('clears the marker on not-found as well', async () => {
+            const h = harness()
+            const { task, localId } = await pendingPrompt(h)
+            const cli = withCliSocket(h, 'not-found')
+            setCancel(h, async (id, prompt) => {
+                h.store.messages.deleteQueuedMessageById(id, prompt)
+                return { status: 'cancelled', localId: prompt, unconfirmed: true }
+            })
+            await h.engine.deleteSessionTask(h.session.id, task.id)
+            cli.connected = true
+
+            tick(h.engine)
+            await settle()
+            expect(runsOf(h, localId)).toEqual([['cancelled', false, null]])
+        })
+
+        it('flips the row to sent when the CLI reports the prompt was taken after all', async () => {
+            const h = harness()
+            const { task, localId } = await pendingPrompt(h)
+            const cli = withCliSocket(h, 'consumed')
+            setCancel(h, async (id, prompt) => {
+                h.store.messages.deleteQueuedMessageById(id, prompt)
+                return { status: 'cancelled', localId: prompt, unconfirmed: true }
+            })
+            await h.engine.deleteSessionTask(h.session.id, task.id)
+            cli.connected = true
+
+            tick(h.engine)
+            await settle()
+            expect(runsOf(h, localId)).toEqual([['sent', true, null]])
+            expect(h.store.sessionTasks.listRuns(h.session.id, 50).find((run) => run.localId === localId)?.takenAt).toBeGreaterThan(0)
+        })
+
+        it('keeps asking on timeout, in-flight and indeterminate, and gives up after two minutes', async () => {
+            const h = harness()
+            const { task, localId } = await pendingPrompt(h)
+            const cli = withCliSocket(h, 'timeout')
+            setCancel(h, async (id, prompt) => {
+                h.store.messages.deleteQueuedMessageById(id, prompt)
+                return { status: 'cancelled', localId: prompt, unconfirmed: true }
+            })
+            await h.engine.deleteSessionTask(h.session.id, task.id)
+            cli.connected = true
+
+            for (const answer of ['timeout', 'in-flight', 'indeterminate'] as CliCancelAckResult[]) {
+                cli.answer = answer
+                tick(h.engine)
+                await settle()
+                expect(runsOf(h, localId)).toEqual([['cancelled', false, SESSION_TASK_RUN_CANCEL_UNCONFIRMED]])
+            }
+            expect(cli.probes).toHaveLength(3)
+
+            // Two minutes over: the row keeps its marker, nothing more is asked.
+            const realNow = Date.now
+            try {
+                Date.now = () => realNow() + SESSION_TASK_CANCEL_FOLLOW_UP_MS + 1
+                tick(h.engine)
+                await settle()
+                expect(cli.probes).toHaveLength(3)
+            } finally {
+                Date.now = realNow
+            }
+            expect(runsOf(h, localId)).toEqual([['cancelled', false, SESSION_TASK_RUN_CANCEL_UNCONFIRMED]])
+
+            // A CLI that answers 'consumed' in time ends it with the take instead.
+            const other = await pendingPrompt(h, { kind: 'queue', items: [{ text: 'x' }], intervalMs: 60_000 })
+            cli.answer = 'consumed'
+            await h.engine.deleteSessionTask(h.session.id, other.task.id)
+            tick(h.engine)
+            await settle()
+            expect(runsOf(h, other.localId)).toEqual([['sent', true, null]])
+        })
+
+        it('asks again through the ordinary cancel while the row is still there, and gives up on it the same way', async () => {
+            const h = harness()
+            const { task, localId } = await pendingPrompt(h)
+            const cli = withCliSocket(h, 'removed')
+            // The CLI did not answer the first cancel: the row stays indeterminate.
+            setCancel(h, async (id, prompt) => {
+                h.store.messages.setMessagesDeliveryState(id, [prompt], 'indeterminate')
+                return { status: 'busy', localId: prompt }
+            })
+
+            await expect(h.engine.deleteSessionTask(h.session.id, task.id)).resolves.toEqual({ type: 'deleted', prompt: 'unconfirmed' })
+            expect(runsOf(h, localId)).toEqual([['sent', false, SESSION_TASK_RUN_CANCEL_UNCONFIRMED]])
+            // The row is there, so the CLI is asked through the cancel, with the follow-up budget, not directly.
+            cli.connected = true
+            let optionsSeen: unknown = 'unset'
+            setCancel(h, async (id, prompt, options) => {
+                optionsSeen = options
+                h.store.messages.deleteQueuedMessageById(id, prompt)
+                return { status: 'cancelled', localId: prompt }
+            })
+
+            tick(h.engine)
+            await settle()
+            expect(optionsSeen).toEqual({ probeTimeoutMs: 2000 })
+            expect(cli.probes).toEqual([])
+            expect(runsOf(h, localId)).toEqual([['cancelled', false, null]])
+
+            // Busy again and again: the marker stays until the time is up.
+            const other = await pendingPrompt(h, { kind: 'queue', items: [{ text: 'y' }], intervalMs: 60_000 })
+            setCancel(h, async (id, prompt) => ({ status: 'busy', localId: prompt }))
+            await h.engine.deleteSessionTask(h.session.id, other.task.id)
+            const realNow = Date.now
+            try {
+                tick(h.engine)
+                await settle()
+                expect(runsOf(h, other.localId)).toEqual([['sent', false, SESSION_TASK_RUN_CANCEL_UNCONFIRMED]])
+                Date.now = () => realNow() + SESSION_TASK_CANCEL_FOLLOW_UP_MS + 1
+                tick(h.engine)
+                await settle()
+            } finally {
+                Date.now = realNow
+            }
+            expect(runsOf(h, other.localId)).toEqual([['sent', false, SESSION_TASK_RUN_CANCEL_UNCONFIRMED]])
+        })
+
+        it('loads the list at engine start from the run rows that carry the marker', async () => {
+            const h = harness()
+            const task = taskOf(h.engine.createSessionTask(h.session.id, { kind: 'repeat', text: 'z', intervalMs: 60_000, startAt: Date.now() + HOUR }))
+            const localId = 'hapi-task:restart:1'
+            h.store.sessionTasks.recordRun({
+                sessionId: h.session.id, taskId: task.id, taskKind: 'repeat', runNumber: 1, localId, outcome: 'cancelled',
+                scheduledFor: Date.now(), detail: SESSION_TASK_RUN_CANCEL_UNCONFIRMED
+            }, Date.now())
+            // A row that was settled since carries no marker: nothing is asked about it.
+            h.store.sessionTasks.recordRun({
+                sessionId: h.session.id, taskId: task.id, taskKind: 'repeat', runNumber: 2, localId: 'hapi-task:restart:2', outcome: 'cancelled', scheduledFor: Date.now()
+            }, Date.now())
+
+            // A new engine process on the same store.
+            const { engine, events, internals } = stubEngine(h.store, h.sessions)
+            const cli = { connected: true, probes: [] as Array<[string, string, string, number]> }
+            Object.assign(internals.messageService as object, {
+                hasCliSocket: () => cli.connected,
+                requestCliCancelAck: async (sessionId: string, prompt: string, messageId: string, timeoutMs: number) => {
+                    cli.probes.push([sessionId, prompt, messageId, timeoutMs])
+                    return 'removed'
+                }
+            })
+            const asked: string[] = []
+            ;(engine as unknown as { cancelQueuedMessage: CancelStub }).cancelQueuedMessage = async (_id, prompt) => {
+                asked.push(prompt)
+                return { status: 'cancelled', localId: null }
+            }
+            const changes = events.filter((event) => event.type === 'session-tasks-changed').length
+
+            tick(engine)
+            await settle()
+            expect(cli.probes).toEqual([[h.session.id, localId, localId, 2000]])
+            expect(asked).toEqual([])
+            expect(h.store.sessionTasks.listRuns(h.session.id, 50).map((run) => [run.localId, run.detail])).toEqual([
+                ['hapi-task:restart:2', null],
+                [localId, null]
+            ])
+            expect(events.filter((event) => event.type === 'session-tasks-changed')).toHaveLength(changes + 1)
+        })
+
+        it('the queued-message bar\'s own cancel registers no follow-up', async () => {
+            const h = harness()
+            const { task, localId } = await pendingPrompt(h)
+            const cli = withCliSocket(h, 'removed')
+            cli.connected = true
+            setCancel(h, async (id, prompt, options) => {
+                h.cancelOptions.push(options)
+                h.store.messages.deleteQueuedMessageById(id, prompt)
+                return { status: 'cancelled', localId: prompt, unconfirmed: true }
+            })
+
+            // The user cancels the prompt from the bar: the ordinary path, no task involved.
+            await h.engine.cancelQueuedMessage(h.session.id, localId)
+            expect(h.cancelOptions).toEqual([undefined])
+            expect(runsOf(h, localId)).toEqual([['sent', false, null]])
+
+            tick(h.engine)
+            await settle()
+            expect(cli.probes).toEqual([])
+            // The runner settles the task on the row that is gone, as before.
+            expect(h.engine.listSessionTasks(h.session.id)[0]).toMatchObject({ pending: false, runCount: 1 })
+            expect(runsOf(h, localId)).toEqual([['cancelled', false, null]])
+        })
+    })
+
+    describe('pause takes the waiting prompt back', () => {
+        /** A task whose first prompt is out and waiting. */
+        async function pendingTask(
+            h: Harness,
+            request: CreateSessionTaskRequest = { kind: 'queue', items: [{ text: 'a' }, { text: 'b' }, { text: 'c' }], intervalMs: 60_000 }
+        ) {
+            const task = taskOf(h.engine.createSessionTask(h.session.id, request))
+            await settle()
+            expect(h.sent).toHaveLength(1)
+            return { task, localId: h.sent[0].localId as string }
+        }
+
+        it('pulls the prompt back when the CLI confirms: not pending, one send fewer, the run row cancelled; resume sends it again', async () => {
+            const h = harness()
+            const { task, localId } = await pendingTask(h)
+            expect(h.engine.listSessionTasks(h.session.id)[0]).toMatchObject({ runCount: 1, pending: true })
+
+            const paused = taskOf(await h.engine.updateSessionTask(h.session.id, task.id, { paused: true }))
+            expect(paused).toMatchObject({ state: 'paused', nextRunAt: null, pending: false, runCount: 0, lastRunAt: null, lastError: null, totalRuns: 3 })
+            expect(h.cancelled).toEqual([{ sessionId: h.session.id, localId }])
+            expect(h.cancelOptions).toEqual([{ probeTimeoutMs: 3000 }])
+            expect(h.store.messages.lookupQueuedMessage(h.session.id, localId).status).toBe('absent')
+            expect(h.store.sessionTasks.listRuns(h.session.id, 50).map((run) => [run.runNumber, run.outcome, run.takenAt, run.detail])).toEqual([[1, 'cancelled', null, null]])
+            expect(h.events.at(-1)).toEqual({ type: 'session-tasks-changed', sessionId: h.session.id })
+
+            // Nothing is pending and the task is paused: a tick changes nothing.
+            tick(h.engine)
+            await settle()
+            expect(h.engine.listSessionTasks(h.session.id)[0]).toMatchObject({ state: 'paused', runCount: 0, pending: false })
+
+            // Resume: the queue sends that same prompt again, under the same localId.
+            const resumed = taskOf(await h.engine.updateSessionTask(h.session.id, task.id, { paused: false }))
+            expect(resumed).toMatchObject({ state: 'active', runCount: 0, pending: false })
+            await settle()
+            expect(h.sent.map((prompt) => [prompt.text, prompt.localId])).toEqual([['a', localId], ['a', localId]])
+            expect(h.engine.listSessionTasks(h.session.id)[0]).toMatchObject({ state: 'active', runCount: 1, pending: true })
+            expect(h.store.sessionTasks.listRuns(h.session.id, 50).map((run) => [run.runNumber, run.outcome])).toEqual([[1, 'sent'], [1, 'cancelled']])
+        })
+
+        it('leaves the last run at the send that still counts', async () => {
+            const h = harness()
+            const { task, localId } = await pendingTask(h)
+            const firstTakenAt = Date.now()
+            // Prompt 1 is taken; prompt 2 goes out and waits.
+            h.store.messages.markMessagesInvoked(h.session.id, [localId], firstTakenAt)
+            tick(h.engine)
+            await settle()
+            h.engine.runSessionTaskNow(h.session.id, task.id)
+            await settle()
+            expect(h.sent.map((prompt) => prompt.text)).toEqual(['a', 'b'])
+            const second = h.sent[1].localId
+            const firstRunAt = h.store.sessionTasks.listRuns(h.session.id, 50).find((run) => run.localId === localId)?.recordedAt
+
+            const paused = taskOf(await h.engine.updateSessionTask(h.session.id, task.id, { paused: true }))
+            expect(paused).toMatchObject({ runCount: 1, pending: false, lastRunAt: firstRunAt })
+            expect(h.store.sessionTasks.getById(task.id)?.lastConsumedAt).toBe(firstTakenAt)
+            // Resume keeps the spacing from the take of the prompt that still counts.
+            const resumed = taskOf(await h.engine.updateSessionTask(h.session.id, task.id, { paused: false }))
+            expect(resumed.nextRunAt).toBe(firstTakenAt + 60_000)
+        })
+
+        it('a prompt the agent already took stays counted', async () => {
+            const h = harness()
+            const { task, localId } = await pendingTask(h)
+            setCancel(h, async (id, prompt) => {
+                h.store.messages.markMessagesInvoked(id, [prompt], 123)
+                return { status: 'invoked', message: { invokedAt: 123 } as unknown as StoredMessage }
+            })
+
+            const paused = taskOf(await h.engine.updateSessionTask(h.session.id, task.id, { paused: true }))
+            expect(paused).toMatchObject({ state: 'paused', pending: true, runCount: 1 })
+            expect(h.store.sessionTasks.listRuns(h.session.id, 50)[0]).toMatchObject({ outcome: 'sent', takenAt: 123 })
+            // The runner settles it on its tick as before.
+            tick(h.engine)
+            await settle()
+            expect(h.engine.listSessionTasks(h.session.id)[0]).toMatchObject({ state: 'paused', pending: false, runCount: 1 })
+
+            await h.engine.updateSessionTask(h.session.id, task.id, { paused: false })
+            await settle()
+            expect(h.sent.map((prompt) => prompt.text)).toEqual(['a', 'b'])
+        })
+
+        it('an unconfirmed pull-back leaves the prompt pending and registers no follow-up', async () => {
+            const h = harness()
+            const { task, localId } = await pendingTask(h)
+            const cli = withCliSocket(h, 'removed')
+            setCancel(h, async (id, prompt) => {
+                h.store.messages.setMessagesDeliveryState(id, [prompt], 'indeterminate')
+                return { status: 'busy', localId: prompt }
+            })
+
+            const paused = taskOf(await h.engine.updateSessionTask(h.session.id, task.id, { paused: true }))
+            expect(paused).toMatchObject({ state: 'paused', nextRunAt: null, pending: true, runCount: 1 })
+            expect(h.store.sessionTasks.listRuns(h.session.id, 50).map((run) => [run.outcome, run.detail])).toEqual([['sent', null]])
+
+            // The task still owns the prompt: no follow-up, with or without a CLI in the room.
+            cli.connected = true
+            tick(h.engine)
+            await settle()
+            expect(cli.probes).toEqual([])
+            expect(h.engine.listSessionTasks(h.session.id)[0]).toMatchObject({ state: 'paused', pending: true, runCount: 1, lastError: 'prompt_indeterminate' })
+        })
+
+        it('a pause with no CLI in the room leaves the prompt to the task as well', async () => {
+            const h = harness()
+            const { task, localId } = await pendingTask(h)
+            // The hub removed its row (nobody to ask); the task keeps the prompt.
+            setCancel(h, async (id, prompt) => {
+                h.store.messages.deleteQueuedMessageById(id, prompt)
+                return { status: 'cancelled', localId: prompt, unconfirmed: true }
+            })
+
+            const paused = taskOf(await h.engine.updateSessionTask(h.session.id, task.id, { paused: true }))
+            expect(paused).toMatchObject({ state: 'paused', pending: true, runCount: 1 })
+            expect(h.store.sessionTasks.listRuns(h.session.id, 50)[0]?.detail).toBeNull()
+            // The runner settles the gone row as a cancel, as it does for a prompt discarded from the bar.
+            tick(h.engine)
+            await settle()
+            expect(h.engine.listSessionTasks(h.session.id)[0]).toMatchObject({ state: 'paused', pending: false, runCount: 1 })
+        })
+
+        it('does not let the runner settle the task while the pull-back is in flight', async () => {
+            const h = harness()
+            const { task, localId } = await pendingTask(h)
+            let answer: (result: CancelQueuedMessageResult) => void = () => undefined
+            setCancel(h, (_id, prompt) => new Promise((resolve) => {
+                answer = resolve
+                // The row goes while the CLI's answer is awaited.
+                h.store.messages.deleteQueuedMessageById(h.session.id, prompt)
+            }))
+
+            const pausing = h.engine.updateSessionTask(h.session.id, task.id, { paused: true })
+            expect(h.engine.listSessionTasks(h.session.id)[0]).toMatchObject({ state: 'paused', pending: true, runCount: 1 })
+            // A tick in the middle: the runner must not settle the task on the row that is gone.
+            tick(h.engine)
+            await settle()
+            expect(h.engine.listSessionTasks(h.session.id)[0]).toMatchObject({ state: 'paused', pending: true, runCount: 1 })
+            expect(h.store.sessionTasks.listRuns(h.session.id, 50)[0]?.outcome).toBe('sent')
+
+            answer({ status: 'cancelled', localId })
+            expect(taskOf(await pausing)).toMatchObject({ state: 'paused', pending: false, runCount: 0 })
+            // Released: ticks run again (nothing to do here: the task is paused with nothing pending).
+            tick(h.engine)
+            await settle()
+            expect(h.engine.listSessionTasks(h.session.id)[0]).toMatchObject({ state: 'paused', pending: false, runCount: 0 })
+        })
+
+        it('a delete that lands while the pull-back is in flight wins: the pause answers not-found', async () => {
+            const h = harness()
+            const { task, localId } = await pendingTask(h)
+            let answer: (result: CancelQueuedMessageResult) => void = () => undefined
+            let calls = 0
+            setCancel(h, (id, prompt) => {
+                calls += 1
+                if (calls === 1) return new Promise((resolve) => { answer = resolve })
+                h.store.messages.deleteQueuedMessageById(id, prompt)
+                return Promise.resolve({ status: 'cancelled', localId: prompt })
+            })
+
+            const pausing = h.engine.updateSessionTask(h.session.id, task.id, { paused: true })
+            await expect(h.engine.deleteSessionTask(h.session.id, task.id)).resolves.toEqual({ type: 'deleted', prompt: 'cancelled' })
+            answer({ status: 'cancelled', localId: null })
+            await expect(pausing).resolves.toEqual({ type: 'not-found' })
+            expect(h.engine.listSessionTasks(h.session.id)).toEqual([])
+            expect(h.store.sessionTasks.listRuns(h.session.id, 50).map((run) => [run.outcome, run.detail])).toEqual([['cancelled', null]])
+        })
+
+        it('a resume that lands while the pull-back is in flight runs the task once the prompt is back', async () => {
+            const h = harness()
+            const { task, localId } = await pendingTask(h)
+            let answer: (result: CancelQueuedMessageResult) => void = () => undefined
+            setCancel(h, (_id, prompt) => new Promise((resolve) => {
+                answer = resolve
+                h.store.messages.deleteQueuedMessageById(h.session.id, prompt)
+            }))
+
+            const pausing = h.engine.updateSessionTask(h.session.id, task.id, { paused: true })
+            expect(taskOf(await h.engine.updateSessionTask(h.session.id, task.id, { paused: false }))).toMatchObject({ state: 'active', pending: true, nextRunAt: null })
+            answer({ status: 'cancelled', localId })
+            const before = Date.now()
+            const result = taskOf(await pausing)
+            expect(result).toMatchObject({ state: 'active', pending: false, runCount: 0 })
+            expect(result.nextRunAt).toBeGreaterThanOrEqual(before - 1)
+            expect(result.nextRunAt).toBeLessThanOrEqual(Date.now())
+
+            await settle()
+            expect(h.sent.map((prompt) => [prompt.text, prompt.localId])).toEqual([['a', localId], ['a', localId]])
+        })
+
+        it('a limit equal to what ran, paused with the prompt waiting, leaves one prompt to send on resume', async () => {
+            const h = harness()
+            const { task, localId } = await pendingTask(h, { kind: 'repeat', text: 'r', intervalMs: 60_000, maxRuns: 1 })
+            const paused = taskOf(await h.engine.updateSessionTask(h.session.id, task.id, { paused: true, maxRuns: 1 }))
+            // Validated against the old count, applied to the new one: not ended, one run left.
+            expect(paused).toMatchObject({ state: 'paused', maxRuns: 1, totalRuns: 1, runCount: 0, pending: false })
+            expect(h.engine.listSessionTasks(h.session.id)).toHaveLength(1)
+
+            await h.engine.updateSessionTask(h.session.id, task.id, { paused: false })
+            await settle()
+            expect(h.engine.listSessionTasks(h.session.id)[0]).toMatchObject({ state: 'active', runCount: 1, pending: true, maxRuns: 1 })
+            // Taken: the limit is reached and the task ends.
+            h.store.messages.markMessagesInvoked(h.session.id, [localId], Date.now())
+            tick(h.engine)
+            await settle()
+            expect(h.engine.listSessionTasks(h.session.id)).toEqual([])
+        })
+
+        it('a task that is paused already keeps its prompt pending', async () => {
+            const h = harness()
+            const { task, localId } = await pendingTask(h)
+            let asked = 0
+            setCancel(h, async () => {
+                asked += 1
+                return { status: 'busy', localId }
+            })
+            await h.engine.updateSessionTask(h.session.id, task.id, { paused: true })
+            expect(asked).toBe(1)
+
+            const again = taskOf(await h.engine.updateSessionTask(h.session.id, task.id, { paused: true, intervalMs: 120_000 }))
+            expect(again).toMatchObject({ state: 'paused', pending: true, runCount: 1, intervalMs: 120_000 })
+            expect(asked).toBe(1)
+        })
     })
 })

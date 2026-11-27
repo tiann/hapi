@@ -304,6 +304,19 @@ describe('session task routes', () => {
         expect((await post(app, `${base}/task-1`, { paused: 'yes' }, 'PATCH')).status).toBe(400)
     })
 
+    it('PATCH waits for a pause that takes its prompt back and answers the task as it is after that', async () => {
+        // A pause whose pull-back waits for the CLI's answer: the engine answers a while later, with the prompt gone.
+        const final = wireTask(SESSION_ID, { kind: 'queue', state: 'paused', nextRunAt: null, pending: false, runCount: 0, totalRuns: 2 })
+        const update = mock((_sessionId: string, _taskId: string, body: UpdateSessionTaskRequest) => new Promise<{ type: string; task: SessionTask }>((resolve) => {
+            setTimeout(() => resolve({ type: 'updated', task: body.paused ? final : wireTask(SESSION_ID) }), 30)
+        }))
+        const { app, base } = setup({ engine: { updateSessionTask: update } })
+
+        const res = await post(app, `${base}/task-1`, { paused: true }, 'PATCH')
+        expect(res.status).toBe(200)
+        expect(await res.json()).toEqual({ task: final })
+    })
+
     it('edits every editable field through PATCH', async () => {
         const { app, base, engine } = setup()
         const body = { text: 'pong', intervalMs: 120_000, maxRuns: null, paused: false }
