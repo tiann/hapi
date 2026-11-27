@@ -65,13 +65,26 @@ function downgradeToV37(db: Database): void {
 }
 
 describe('schema migration v37 to v38', () => {
-    it('adds start_at (dated from creation for existing tasks) and the run history table to a v37 database', () => {
+    it('adds start_at and the run history table to a v37 database, keeping each task\'s planned first run', () => {
         const dbPath = tempDatabasePath('v37')
         const original = new Store(dbPath)
         const sessionId = original.sessions.getOrCreateSession('v37', { path: '/tmp', flavor: 'cursor' }, null, 'default').id
-        const task = original.sessionTasks.create({
-            sessionId, kind: 'repeat', items: ['ping'], intervalMs: 60_000, maxRuns: null, startAt: 1, nextRunAt: 1, now: 5_000
+        // Phase 1 (v37) had no start_at: a task's planned first run lived in next_run_at alone.
+        const planned = original.sessionTasks.create({
+            sessionId, kind: 'repeat', items: ['ping'], intervalMs: 60_000, maxRuns: null, startAt: 9_000, nextRunAt: 9_000, now: 5_000
         })
+        const overdue = original.sessionTasks.create({
+            sessionId, kind: 'queue', items: ['a'], intervalMs: 60_000, maxRuns: null, startAt: 1, nextRunAt: 1, now: 6_000
+        })
+        const ran = original.sessionTasks.create({
+            sessionId, kind: 'repeat', items: ['pong'], intervalMs: 60_000, maxRuns: null, startAt: 1, nextRunAt: 1, now: 7_000
+        })
+        original.sessionTasks.markSent(ran.id, { localId: 'hapi-task:v37:1', nextRunAt: 61_000, now: 8_000 })
+        original.sessionTasks.settlePending(ran.id, { consumedAt: 8_500, now: 8_500 })
+        const paused = original.sessionTasks.create({
+            sessionId, kind: 'queue', items: ['b'], intervalMs: 60_000, maxRuns: null, startAt: 1, nextRunAt: 1, now: 9_000
+        })
+        original.sessionTasks.update(paused.id, { state: { paused: true, nextRunAt: null } }, 9_500)
         original.close()
 
         const legacy = new Database(dbPath)
@@ -86,11 +99,15 @@ describe('schema migration v37 to v38', () => {
         const startAt = (internalDb.prepare('PRAGMA table_info(session_tasks)').all() as Array<{ name: string; notnull: number }>)
             .find((column) => column.name === 'start_at')
         expect(startAt?.notnull).toBe(1)
-        // The task predates the column: its first run is taken to be when it was created.
-        expect(migrated.sessionTasks.getById(task.id)).toMatchObject({ startAt: 5_000, createdAt: 5_000, runCount: 0 })
+        // A task that has not run yet keeps the time its user chose, so a pause and resume does not fire it at once.
+        expect(migrated.sessionTasks.getById(planned.id)).toMatchObject({ startAt: 9_000, nextRunAt: 9_000, runCount: 0 })
+        expect(migrated.sessionTasks.getById(overdue.id)).toMatchObject({ startAt: 1, runCount: 0 })
+        // One that has run is dated from when it was created; a paused one has no next run to take.
+        expect(migrated.sessionTasks.getById(ran.id)).toMatchObject({ startAt: 7_000, createdAt: 7_000, runCount: 1 })
+        expect(migrated.sessionTasks.getById(paused.id)).toMatchObject({ startAt: 9_000, createdAt: 9_000, state: 'paused' })
         migrated.sessionTasks.recordRun({
-            sessionId, taskId: task.id, taskKind: 'repeat', runNumber: 1, localId: 'hapi-task:v38:1', outcome: 'sent', scheduledFor: 5_000
-        }, 5_000)
+            sessionId, taskId: planned.id, taskKind: 'repeat', runNumber: 1, localId: 'hapi-task:v38:1', outcome: 'sent', scheduledFor: 9_000
+        }, 9_000)
         expect(migrated.sessionTasks.listRuns(sessionId, 10)).toHaveLength(1)
         migrated.close()
     })

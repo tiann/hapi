@@ -1436,8 +1436,9 @@ export class Store {
      * its first-run time across a pause) and `session_task_runs`, the history
      * of what the tasks did. A database that got the table from the v36→v37
      * step of this build already carries the column. Rows written before the
-     * column exist are dated from their creation, which is when phase 1 ran
-     * a task first. Idempotent.
+     * column exist are dated from their planned first run when they have not
+     * run yet (phase 1 kept it in `next_run_at`), and from their creation
+     * once they have. Idempotent.
      * Rollback: `DROP TABLE session_task_runs; ALTER TABLE session_tasks DROP COLUMN start_at; PRAGMA user_version = 37;`
      */
     private migrateFromV37ToV38(): void {
@@ -1445,7 +1446,8 @@ export class Store {
         if (!columns.some((col) => col.name === 'start_at')) {
             this.db.exec(`
                 ALTER TABLE session_tasks ADD COLUMN start_at INTEGER NOT NULL DEFAULT 0;
-                UPDATE session_tasks SET start_at = created_at;
+                UPDATE session_tasks
+                SET start_at = CASE WHEN run_count = 0 AND next_run_at IS NOT NULL THEN next_run_at ELSE created_at END;
             `)
         }
         this.db.exec(SESSION_TASK_RUNS_TABLE_SQL)

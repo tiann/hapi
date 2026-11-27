@@ -6,6 +6,8 @@ import { join } from 'node:path'
 import { SESSION_TASK_RUN_PREVIEW_LENGTH } from '@hapi/protocol'
 import { Store } from './index'
 import {
+    RUNNABLE_DUE_SQL,
+    RUNNABLE_PENDING_SQL,
     SESSION_TASK_RUNS_MAX_PER_SESSION,
     sessionTaskRunPreview,
     toSessionTask,
@@ -139,10 +141,10 @@ describe('session task store', () => {
 
     it('findRunnable reads the two partial indexes instead of scanning the table', () => {
         const store = makeStore()
-        const pendingPlan = queryPlan(store, 'SELECT id FROM session_tasks WHERE pending_local_id IS NOT NULL')
+        // Exactly the statements findRunnable runs: a later edit of their WHERE must not fall back to a scan unnoticed.
+        const pendingPlan = queryPlan(store, RUNNABLE_PENDING_SQL)
         expect(pendingPlan.some((step) => step.includes('idx_session_tasks_pending'))).toBe(true)
-        const duePlan = queryPlan(store,
-            'SELECT id FROM session_tasks WHERE state = \'active\' AND next_run_at IS NOT NULL AND next_run_at <= ?', 1)
+        const duePlan = queryPlan(store, RUNNABLE_DUE_SQL, 1)
         expect(duePlan.some((step) => step.includes('idx_session_tasks_active_due'))).toBe(true)
         // The phase-1 single OR query could not use either.
         expect([...pendingPlan, ...duePlan].some((step) => step.startsWith('SCAN session_tasks'))).toBe(false)

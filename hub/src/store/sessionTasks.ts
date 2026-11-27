@@ -116,6 +116,10 @@ type DbRunRow = {
 const TASK_COLUMNS = `id, session_id, kind, state, items, interval_ms, max_runs, run_count, next_run_at, pending_local_id, last_run_at, last_consumed_at, last_error, start_at, created_at, updated_at`
 const RUN_COLUMNS = `id, session_id, task_id, task_kind, run_number, local_id, outcome, scheduled_for, recorded_at, taken_at, detail, preview`
 
+/** The two statements `findRunnable` runs (over the partial indexes above); exported so the query-plan test pins exactly these. */
+export const RUNNABLE_PENDING_SQL = `SELECT ${TASK_COLUMNS} FROM session_tasks WHERE pending_local_id IS NOT NULL`
+export const RUNNABLE_DUE_SQL = `SELECT ${TASK_COLUMNS} FROM session_tasks WHERE state = 'active' AND next_run_at IS NOT NULL AND next_run_at <= ?`
+
 /**
  * v37 created the table without `start_at`; the v37→v38 step adds the column
  * to such databases (see Store.migrateFromV37ToV38). A fresh database gets
@@ -309,16 +313,11 @@ export class SessionTaskStore {
      * is one query over its partial index (a single OR would scan the whole
      * table); the merge is ordered by next run (a task with nothing scheduled
      * sorts last), then by age and id, so the order never depends on SQLite.
+     * The statements are exported so the query-plan test pins exactly these.
      */
     findRunnable(now: number): StoredSessionTask[] {
-        const pending = prepareCached(this.db,
-            `SELECT ${TASK_COLUMNS} FROM session_tasks
-             WHERE pending_local_id IS NOT NULL`
-        ).all() as DbTaskRow[]
-        const due = prepareCached(this.db,
-            `SELECT ${TASK_COLUMNS} FROM session_tasks
-             WHERE state = 'active' AND next_run_at IS NOT NULL AND next_run_at <= ?`
-        ).all(now) as DbTaskRow[]
+        const pending = prepareCached(this.db, RUNNABLE_PENDING_SQL).all() as DbTaskRow[]
+        const due = prepareCached(this.db, RUNNABLE_DUE_SQL).all(now) as DbTaskRow[]
         const seen = new Set<string>()
         const merged: StoredSessionTask[] = []
         // A task with a prompt pending that is also due is in both halves: keep the pending row.
