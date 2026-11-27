@@ -10,19 +10,19 @@ This page covers the web app and PWA, plus the iOS and Android apps where they d
 
 ## Sending while the agent is working
 
-### Queue (default)
+The Hub owner can choose **Queue** or **Steer** under **Settings → Chat → Input → Follow-up default**. The setting applies to new and existing sessions across Web, iOS and Android. A new Hub starts with Queue.
 
-A message you send while the agent is mid-turn is **queued**. It is not lost or dropped — it waits in a small bar above the composer and is delivered when the current turn ends.
+To choose how to send just one message, right-click **Send** on desktop Web or long-press it on a touchscreen. On desktop Web, **Alt/Option+Enter** sends that message with the other mode. Your next ordinary send follows the Hub default again.
+
+### Queue
+
+A queued message waits in the bar above the composer until the current turn ends.
 
 Each queued row has:
 
 - **Edit** — cancels the queued message and puts its text (and schedule, if any) back in the composer.
 - **Cancel** — removes it.
 - **Steer** — shown only when the agent supports it (see below).
-
-Set **Follow-up default** under **Settings → Chat → Input** to choose Queue or Steer for this Hub. Queue is the initial default. You can still steer a queued message from its **Steer** button.
-
-For a single follow-up, right-click **Send** on desktop Web or long-press it on a touchscreen and choose a delivery mode. On desktop Web, **Alt/Option+Enter** sends the draft with the other mode.
 
 ### Steer
 

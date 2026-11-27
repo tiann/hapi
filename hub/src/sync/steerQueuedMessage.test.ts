@@ -31,12 +31,20 @@ describe('composer follow-up delivery', () => {
             'default'
         )
         engine.handleSessionAlive({ sid: session.id, time: Date.now(), thinking: true })
+        const otherSession = engine.getOrCreateSession(
+            'other-composer-session',
+            { path: '/tmp/other-project', host: 'localhost', flavor: 'claude' },
+            { followUpSteerTurnId: 'other-turn' },
+            'tenant'
+        )
+        engine.handleSessionAlive({ sid: otherSession.id, time: Date.now(), thinking: true })
         const steer = spyOn(RpcGateway.prototype, 'steerQueuedMessage').mockImplementation(async (sid, localId) => {
             expect(store.messages.lookupQueuedMessage(sid, localId).status).toBe('queued')
             return { steered: true }
         })
         try {
             await engine.sendMessage(session.id, { text: 'initial default', localId: 'stock', followUpIntent: 'default' })
+            await engine.sendMessage(otherSession.id, { text: 'initial default', localId: 'other-stock', followUpIntent: 'default' })
             expect(steer).not.toHaveBeenCalled()
             await engine.sendMessage(session.id, { text: 'steer on purpose', localId: 'override', followUpIntent: 'steer' })
             expect(steer).toHaveBeenCalledWith(session.id, 'override', 'turn-1')
@@ -61,6 +69,8 @@ describe('composer follow-up delivery', () => {
             await Promise.all([engine.sendMessage(session.id, correction), engine.sendMessage(session.id, correction)])
             expect(steer).toHaveBeenCalledTimes(1)
             expect(steer).toHaveBeenCalledWith(session.id, 'same-id', 'turn-1')
+            await engine.sendMessage(otherSession.id, { text: 'use updated default', localId: 'other-update', followUpIntent: 'default' })
+            expect(steer).toHaveBeenCalledWith(otherSession.id, 'other-update', 'other-turn')
         } finally {
             steer.mockRestore()
             engine.stop()
