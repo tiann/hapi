@@ -443,38 +443,53 @@ describe('SessionTaskRunner', () => {
                 return created.id
             }
 
-            it('moves the grid on while the session is archived, without a skipped line per interval', async () => {
+            it('moves the grid on while the session is archived: one skipped line for the first slot, then one an hour', async () => {
                 const h: Harness = makeHarness()
                 const taskId = await stuckPrompt(h, { archived: true })
                 h.wake.outcome = { type: 'refused', failure: { code: 'session_archived', message: 'Session is archived' } }
                 await h.runner.tick()
                 expect(h.task(taskId)).toMatchObject({ lastError: 'session_archived', nextRunAt: T0 + MINUTE })
                 const changesWhenStuck = h.changes.length
-                const runsWhenStuck = h.runs().length
 
-                // Ten slots come due while nobody can take the prompt: not one more line, not one more event.
-                for (let slot = 1; slot <= 10; slot += 1) {
+                // The first slot that comes due while nobody can take the prompt is one line and one event; the next 59 are neither.
+                h.setClock(T0 + MINUTE)
+                await h.runner.tick()
+                expect(h.runs().map((run) => [run.outcome, run.scheduledFor, run.detail])).toEqual([
+                    ['skipped', T0 + MINUTE, 'previous_prompt_waiting'],
+                    ['sent', T0, null]
+                ])
+                expect(h.changes).toHaveLength(changesWhenStuck + 1)
+                for (let slot = 2; slot <= 60; slot += 1) {
                     h.setClock(T0 + slot * MINUTE)
                     await h.runner.tick()
                 }
-                expect(h.task(taskId)).toMatchObject({ state: 'active', lastError: 'session_archived', nextRunAt: T0 + 11 * MINUTE })
-                expect(h.runs()).toHaveLength(runsWhenStuck)
-                expect(h.runs().map((run) => run.outcome)).toEqual(['sent'])
-                expect(h.changes).toHaveLength(changesWhenStuck)
+                expect(h.task(taskId)).toMatchObject({ state: 'active', lastError: 'session_archived', nextRunAt: T0 + 61 * MINUTE })
+                expect(h.runs()).toHaveLength(2)
+                expect(h.changes).toHaveLength(changesWhenStuck + 1)
                 expect(h.sent).toHaveLength(1)
+
+                // An hour after that line, the next slot due is one more.
+                h.setClock(T0 + 61 * MINUTE)
+                await h.runner.tick()
+                expect(h.runs().map((run) => [run.outcome, run.scheduledFor, run.recordedAt])).toEqual([
+                    ['skipped', T0 + 61 * MINUTE, T0 + 61 * MINUTE],
+                    ['skipped', T0 + MINUTE, T0 + MINUTE],
+                    ['sent', T0, T0]
+                ])
+                expect(h.changes).toHaveLength(changesWhenStuck + 2)
 
                 // Un-archived and running again: the prompt is taken and the next slot is sent as usual.
                 h.session.archived = false
                 h.session.active = true
-                h.take(h.sent[0].localId, T0 + 11 * MINUTE)
-                h.setClock(T0 + 11 * MINUTE)
+                h.take(h.sent[0].localId, T0 + 62 * MINUTE)
+                h.setClock(T0 + 62 * MINUTE)
                 await h.runner.tick()
                 await h.runner.tick()
                 expect(h.sent).toHaveLength(2)
                 expect(h.task(taskId)).toMatchObject({ lastError: null, runCount: 2 })
             })
 
-            it('moves the grid on after prompt_not_taken, without a skipped line per interval', async () => {
+            it('moves the grid on after prompt_not_taken, with one skipped line for the first slot and none for the next', async () => {
                 const h: Harness = makeHarness()
                 const taskId = await stuckPrompt(h)
                 for (let attempt = 0; attempt < SESSION_TASK_MAX_PENDING_WAKE_ATTEMPTS; attempt += 1) await h.runner.tick()
@@ -482,32 +497,68 @@ describe('SessionTaskRunner', () => {
                 expect(h.task(taskId)).toMatchObject({ lastError: 'prompt_not_taken', nextRunAt: T0 + MINUTE })
                 const changesWhenStuck = h.changes.length
 
-                for (let slot = 1; slot <= 10; slot += 1) {
+                h.setClock(T0 + MINUTE)
+                await h.runner.tick()
+                expect(h.runs().map((run) => [run.outcome, run.scheduledFor, run.detail])).toEqual([
+                    ['skipped', T0 + MINUTE, 'previous_prompt_waiting'],
+                    ['sent', T0, null]
+                ])
+                for (let slot = 2; slot <= 10; slot += 1) {
                     h.setClock(T0 + slot * MINUTE)
                     await h.runner.tick()
                 }
                 expect(h.task(taskId)).toMatchObject({ lastError: 'prompt_not_taken', nextRunAt: T0 + 11 * MINUTE })
-                expect(h.runs().map((run) => run.outcome)).toEqual(['sent'])
-                expect(h.changes).toHaveLength(changesWhenStuck)
+                expect(h.runs()).toHaveLength(2)
+                expect(h.changes).toHaveLength(changesWhenStuck + 1)
                 expect(h.wakeCalls).toHaveLength(SESSION_TASK_MAX_PENDING_WAKE_ATTEMPTS)
             })
 
-            it('still writes a skipped line per interval while the hub is trying to deliver the prompt', async () => {
+            it('writes the first skipped slot, then at most one line an hour, while the hub is trying to deliver the prompt', async () => {
                 const h: Harness = makeHarness()
                 const taskId = await stuckPrompt(h)
                 h.wake.outcome = { type: 'refused', failure: { code: 'no_machine_online', message: 'No machine online' } }
                 await h.runner.tick()
                 expect(h.task(taskId)?.lastError).toBe('machine_offline')
 
-                h.setClock(T0 + MINUTE)
+                // The machine is asleep for eight hours of a one-minute task: eight lines, not 480 (newest first).
+                const changesBeforeOutage = h.changes.length
+                for (let slot = 1; slot <= 8 * 60; slot += 1) {
+                    h.setClock(T0 + slot * MINUTE)
+                    await h.runner.tick()
+                }
+                const skipped = () => h.runs().filter((run) => run.outcome === 'skipped')
+                expect(skipped().map((run) => [run.scheduledFor, run.recordedAt, run.detail])).toEqual(
+                    [421, 361, 301, 241, 181, 121, 61, 1].map((slot) => [T0 + slot * MINUTE, T0 + slot * MINUTE, 'previous_prompt_waiting'])
+                )
+                expect(h.changes).toHaveLength(changesBeforeOutage + 8)
+                expect(h.task(taskId)).toMatchObject({ state: 'active', lastError: 'machine_offline', nextRunAt: T0 + 481 * MINUTE })
+            })
+
+            it('writes the first skipped slot of the next prompt again', async () => {
+                const h: Harness = makeHarness()
+                const created = h.create({
+                    sessionId: h.sessionId, kind: 'repeat', items: ['ping'], intervalMs: 10 * MINUTE, maxRuns: null, nextRunAt: T0
+                })
                 await h.runner.tick()
-                h.setClock(T0 + 2 * MINUTE)
+                // The first prompt waits over a slot: one line.
+                h.setClock(T0 + 10 * MINUTE)
                 await h.runner.tick()
-                expect(h.runs().map((run) => [run.outcome, run.scheduledFor, run.detail])).toEqual([
-                    ['skipped', T0 + 2 * MINUTE, 'previous_prompt_waiting'],
-                    ['skipped', T0 + MINUTE, 'previous_prompt_waiting'],
-                    ['sent', T0, null]
-                ])
+                // Taken; the second prompt goes out at the next slot and waits over one too:
+                // its first skip is a line again, well within the hour.
+                h.take(h.sent[0].localId, T0 + 12 * MINUTE)
+                h.setClock(T0 + 20 * MINUTE)
+                await h.runner.tick()
+                await h.runner.tick()
+                expect(h.sent).toHaveLength(2)
+                h.setClock(T0 + 30 * MINUTE)
+                await h.runner.tick()
+                const skipped = () => h.runs().filter((run) => run.outcome === 'skipped').map((run) => run.scheduledFor)
+                expect(skipped()).toEqual([T0 + 30 * MINUTE, T0 + 10 * MINUTE])
+                // The same prompt over the next slot, twenty minutes later: not another line.
+                h.setClock(T0 + 40 * MINUTE)
+                await h.runner.tick()
+                expect(skipped()).toEqual([T0 + 30 * MINUTE, T0 + 10 * MINUTE])
+                expect(h.task(created.id)?.nextRunAt).toBe(T0 + 50 * MINUTE)
             })
 
             it('counts wakes from the start again once the prompt is forgotten', async () => {

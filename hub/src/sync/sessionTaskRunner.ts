@@ -23,6 +23,8 @@ import type { SessionWakeResult, WakeableSession } from './sessionWakeGate'
  *
  * A `repeat` task that comes due while its previous prompt is still waiting
  * skips that slot, so a busy agent never has a second prompt stacked on it.
+ * The first skipped slot of a prompt is one line in the history, then at
+ * most one an hour for as long as that prompt keeps waiting.
  *
  * Every run leaves a line in the run history (`session_task_runs`): a prompt
  * sent (stamped when the agent takes it, or flipped to `cancelled`), a slot
@@ -33,6 +35,13 @@ import type { SessionWakeResult, WakeableSession } from './sessionWakeGate'
 export const SESSION_TASK_MAX_PENDING_WAKE_ATTEMPTS = 3
 /** How often run-history rows past the retention age are deleted. */
 export const SESSION_TASK_RUN_PRUNE_INTERVAL_MS = 60 * 60 * 1000
+/**
+ * How often a skipped slot is written to the history again while the same
+ * prompt keeps waiting: the first skipped slot always is, then at most one
+ * an hour (an overnight outage on a one-minute task would otherwise fill
+ * the history with skipped lines).
+ */
+export const SESSION_TASK_SKIP_REPEAT_MS = 60 * 60 * 1000
 
 export type SessionTaskRunnerDeps = {
     store: Pick<Store, 'sessionTasks' | 'messages' | 'resolveMessageTarget'>
@@ -78,21 +87,13 @@ function nextPrompt(task: StoredSessionTask): string | undefined {
     return task.kind === 'queue' ? task.items[task.runCount] : task.items[0]
 }
 
-/**
- * The prompt is not progressing and the hub has stopped trying to deliver
- * it: only the user moves it on (un-archiving the session, or taking,
- * retrying or discarding the prompt). A repeat slot that comes due meanwhile
- * still goes, but is not written up again.
- */
-function promptStuck(task: StoredSessionTask): boolean {
-    return task.lastError === 'session_archived' || task.lastError === 'prompt_not_taken'
-}
-
 export class SessionTaskRunner {
     private readonly inFlight = new Set<string>()
     private readonly retryAt = new Map<string, number>()
     /** Wake attempts so far, per pending prompt localId. */
     private readonly pendingWakeAttempts = new Map<string, number>()
+    /** Per task: the prompt that was waiting and the time of the last skipped slot written to the history. */
+    private readonly skipRecordedAt = new Map<string, { pendingLocalId: string; at: number }>()
     private lastPruneAt = 0
 
     constructor(private readonly deps: SessionTaskRunnerDeps) {}
@@ -191,19 +192,16 @@ export class SessionTaskRunner {
         }
 
         // Still queued (or being dispatched). A repeat task that came due again
-        // while its previous prompt waits: skip the slot. While that prompt is
-        // stuck (archived session, `prompt_not_taken`) the grid still moves
-        // on, but the same line is not written to the history, nor announced,
-        // on every interval.
-        if (
-            task.kind === 'repeat'
-            && task.state === 'active'
-            && task.nextRunAt !== null
-            && task.nextRunAt <= now
-        ) {
+        // while its previous prompt waits: skip the slot. The first skipped slot
+        // of a prompt is a line in the history, then at most one an hour for as
+        // long as that prompt keeps waiting, whatever kept it waiting (a busy
+        // agent, an offline machine, an archived session); a slot that writes
+        // no line announces nothing.
+        if (task.kind === 'repeat' && task.state === 'active' && task.nextRunAt !== null && task.nextRunAt <= now) {
             const skippedFor = task.nextRunAt
             const nextRunAt = nextRepeatRunAt(task.nextRunAt, task.intervalMs, now)
-            if (store.skipDueSlot(task.id, nextRunAt, now) && !promptStuck(task)) {
+            if (store.skipDueSlot(task.id, nextRunAt, now) && this.skipIsWritable(task, localId, now)) {
+                this.skipRecordedAt.set(task.id, { pendingLocalId: localId, at: now })
                 this.recordRun(task, { outcome: 'skipped', scheduledFor: skippedFor, detail: 'previous_prompt_waiting', now })
                 this.changed(task)
             }
@@ -216,6 +214,23 @@ export class SessionTaskRunner {
         }
     }
 
+    /**
+     * Whether a skipped slot is written up. The first one while this prompt
+     * waits always is; a later one only once `SESSION_TASK_SKIP_REPEAT_MS` has
+     * passed since the last line. The bookkeeping is per hub process, so a
+     * restart writes one more first line.
+     */
+    private skipIsWritable(task: StoredSessionTask, pendingLocalId: string, now: number): boolean {
+        const last = this.skipRecordedAt.get(task.id)
+        return last === undefined || last.pendingLocalId !== pendingLocalId || now - last.at >= SESSION_TASK_SKIP_REPEAT_MS
+    }
+
+    /** The task is gone: nothing of it is left to remember. */
+    private remove(task: StoredSessionTask): boolean {
+        this.skipRecordedAt.delete(task.id)
+        return this.deps.store.sessionTasks.delete(task.id)
+    }
+
     private completeSend(task: StoredSessionTask, localId: string, taken: boolean, consumedAt: number, now: number): void {
         const store = this.deps.store.sessionTasks
         this.pendingWakeAttempts.delete(localId)
@@ -226,7 +241,7 @@ export class SessionTaskRunner {
             : task.maxRuns !== null && task.runCount >= task.maxRuns
         if (finished) {
             // Nothing left to send; the prompts themselves stay in the transcript.
-            this.changed(task, store.delete(task.id))
+            this.changed(task, this.remove(task))
             return
         }
         // Queue: the next prompt follows the acknowledgement. Repeat: keep the grid,
@@ -245,7 +260,7 @@ export class SessionTaskRunner {
         const session = this.deps.getSession(task.sessionId)
         if (!session) {
             // The session row is gone. Its tasks normally go with it (FK cascade).
-            this.changed(task, store.delete(task.id))
+            this.changed(task, this.remove(task))
             return
         }
 
@@ -266,7 +281,7 @@ export class SessionTaskRunner {
         if (!current || current.state !== 'active' || current.pendingLocalId !== null) return
         const target = this.deps.getSession(current.sessionId)
         if (!target) {
-            this.changed(current, store.delete(current.id))
+            this.changed(current, this.remove(current))
             return
         }
         await this.send(current, target)
@@ -278,7 +293,7 @@ export class SessionTaskRunner {
         const text = nextPrompt(task)
         if (text === undefined) {
             // No prompt left: the queue is over. (Runs normally delete the task on the last acknowledgement.)
-            this.changed(task, store.delete(task.id))
+            this.changed(task, this.remove(task))
             return
         }
         const localId = buildSessionTaskMessageLocalId(task.id, runNumber)
