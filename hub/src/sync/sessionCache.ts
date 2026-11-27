@@ -2387,13 +2387,15 @@ export class SessionCache {
         if (options.deleteOldSession) {
             // Deleting the row cascades to its turns; they're the new row's history now.
             this.store.turns.transferSession(oldSessionId, newSessionId)
-            // Write the redirect before the row disappears so a concurrent
-            // lookup of the old id never observes "neither row nor redirect".
-            this.store.sessionRedirects.record(oldSessionId, newSessionId, namespace)
-            const deleted = this.store.sessions.deleteSession(oldSessionId, namespace)
-            if (!deleted) {
-                throw new Error('Failed to delete old session during merge')
-            }
+            this.store.runInTransaction(() => {
+                this.store.sessionFolders.copyAssignmentForMerge(namespace, oldSessionId, newSessionId)
+                // Write the redirect before deleting the old row so lookups always have one or the other.
+                this.store.sessionRedirects.record(oldSessionId, newSessionId, namespace)
+                if (!this.store.sessions.deleteSession(oldSessionId, namespace)) {
+                    throw new Error('Failed to delete old session during merge')
+                }
+            })
+            this.publisher.emit({ type: 'session-folders-updated', namespace })
 
             const existed = this.sessions.delete(oldSessionId)
             if (existed) {

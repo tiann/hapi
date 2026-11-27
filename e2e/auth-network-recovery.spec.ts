@@ -54,6 +54,7 @@ test.beforeAll(async () => {
             res.on('close', () => { clearInterval(timer); streams.delete(res) }); return
         }
         if (path === '/api/sessions') { json({ sessions }); return }
+        if (path === '/api/session-folders') { json({ folders: [], assignments: {} }); return }
         if (path === '/api/features') { json({ githubPrAwareness: { enabled: false, source: 'default' } }); return }
         if (path === '/api/machines') {
             json({ machines: skewedRunner ? [{

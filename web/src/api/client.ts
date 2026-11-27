@@ -1,6 +1,6 @@
 import { HubClock } from '@/lib/hubClock'
 import type { AttachedJob } from '@hapi/protocol'
-import type { BranchConversationRequest, BranchConversationResponse } from '@hapi/protocol/apiTypes'
+import { SessionFoldersResponseSchema, type BranchConversationRequest, type BranchConversationResponse, type CreateSessionFolderResponse, type SessionFolder, type SessionFoldersResponse } from '@hapi/protocol/apiTypes'
 import { isAuthRejectionStatus } from '@/lib/authConnection'
 import type {
     AttachmentMetadata,
@@ -437,6 +437,29 @@ export class ApiClient {
         const response = await this.request<SessionsResponse>('/api/sessions')
         if (response.serverTime !== undefined) this.hubClock.observe(response.serverTime, sample)
         return response
+    }
+
+    async getSessionFolders(): Promise<SessionFoldersResponse> {
+        return SessionFoldersResponseSchema.parse(await this.request('/api/session-folders'))
+    }
+
+    async createSessionFolder(name: string, parentId: string | null): Promise<SessionFolder> {
+        const { folder } = await this.request<CreateSessionFolderResponse>('/api/session-folders', {
+            method: 'POST',
+            body: JSON.stringify({ name, parentId })
+        })
+        return folder
+    }
+
+    async deleteSessionFolder(folderId: string): Promise<void> {
+        await this.request(`/api/session-folders/${encodeURIComponent(folderId)}`, { method: 'DELETE' })
+    }
+
+    async moveSessionToFolder(sessionId: string, folderId: string | null): Promise<void> {
+        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/folder`, {
+            method: 'PUT',
+            body: JSON.stringify({ folderId })
+        })
     }
 
     async getScratchlistSessionIds(): Promise<string[]> {

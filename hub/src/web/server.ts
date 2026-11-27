@@ -25,6 +25,7 @@ import {
 import { createEventsRoutes } from './routes/events'
 import { createFeaturesRoutes } from './routes/features'
 import { createSessionsRoutes } from './routes/sessions'
+import { createSessionFoldersRoutes } from './routes/sessionFolders'
 import { createMessagesRoutes } from './routes/messages'
 import { createPermissionsRoutes } from './routes/permissions'
 import { createMachinesRoutes } from './routes/machines'
@@ -397,6 +398,7 @@ export function createWebApp(options: {
     app.route('/api', createPasskeyManagementRoutes(passkeyDeps))
     app.route('/api', createEventsRoutes(options.getSseManager, options.getSyncEngine, options.getVisibilityTracker))
     app.route('/api', createSessionsRoutes(options.getSyncEngine))
+    app.route('/api', createSessionFoldersRoutes(options.store.sessionFolders, options.getSyncEngine, options.getSseManager))
     app.route('/api', createMessagesRoutes(options.getSyncEngine))
     app.route('/api', createPermissionsRoutes(options.getSyncEngine))
     app.route('/api', createMachinesRoutes(options.getSyncEngine, { dataDir: configuration.dataDir }))

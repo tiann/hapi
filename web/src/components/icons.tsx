@@ -149,6 +149,20 @@ export function PinOffIcon(props: IconProps) {
     )
 }
 
+export function FolderIcon(props: IconProps) {
+    return createIcon(
+        <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />,
+        props
+    )
+}
+
+export function TrashIcon(props: IconProps) {
+    return createIcon(
+        <path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" />,
+        props
+    )
+}
+
 export function ForkIcon(props: IconProps) {
     return createIcon(
         <>

@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, expect, it, vi } from 'vitest'
 import { toSessionSummary, type Session } from '@hapi/protocol'
+import type { ApiClient } from '@/api/client'
 import { I18nProvider } from '@/lib/i18n-context'
 import { ToastProvider } from '@/lib/toast-context'
 import { SessionList } from './SessionList'
@@ -57,10 +58,13 @@ it('keeps rendered rows and machine filters stable by default, but promotes new 
     expect(machineOrder()).toEqual([...machinesBefore].reverse())
 })
 
-function renderSessions(rows: Array<{ id: string; path: string; active: boolean; lastUserMessageAt: number }>) {
+function renderSessions(
+    rows: Array<{ id: string; path: string; active: boolean; lastUserMessageAt: number; globalPinned?: boolean; thinking?: boolean }>,
+    api: ApiClient | null = null
+) {
     const sessions = rows.map((row): Session => ({
         id: row.id, namespace: 'default', seq: 1, createdAt: 1, lastUserMessageAt: row.lastUserMessageAt, updatedAt: row.lastUserMessageAt,
-        active: row.active, activeAt: 1, thinking: false, thinkingAt: 1,
+        active: row.active, activeAt: 1, thinking: row.thinking ?? false, thinkingAt: 1, globalPinned: row.globalPinned,
         metadata: { path: row.path, host: 'mac', name: `Row ${row.id}`, machineId: 'm1', ...(row.active ? {} : { lifecycleState: 'archived' }) },
         metadataVersion: 1, agentState: null, agentStateVersion: 1,
         model: null, modelReasoningEffort: null, effort: null, serviceTier: null
@@ -72,7 +76,7 @@ function renderSessions(rows: Array<{ id: string; path: string; active: boolean;
                     <SessionList
                         sessions={sessions.map(s => toSessionSummary(s))}
                         onSelect={vi.fn()} onNewSession={vi.fn()} onRefresh={vi.fn()}
-                        isLoading={false} renderHeader={false} api={null}
+                        isLoading={false} renderHeader={false} api={api}
                     />
                 </I18nProvider>
             </ToastProvider>
@@ -108,4 +112,32 @@ it('keeps the default project order for equally relevant search results', () => 
     fireEvent.click(screen.getByRole('button', { name: 'Search sessions (title, path, Agent, machine name, ID, and more)' }))
     fireEvent.change(screen.getByPlaceholderText('Search title/path/Agent/machine/ID…'), { target: { value: 'Row' } })
     expect(rowOrder()).toEqual(['archivedNewer', 'liveOlder'])
+})
+
+it('keeps filed priority rows at the root and scopes open folders to their members', async () => {
+    window.localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+    const api = {
+        getSessionFolders: async () => ({
+            folders: [
+                { id: 'work', name: 'Work folder', parentId: null },
+                { id: 'other', name: 'Other folder', parentId: null }
+            ],
+            assignments: { pinned: 'work', working: 'work', filed: 'other' }
+        })
+    } as unknown as ApiClient
+
+    const rowOrder = renderSessions([
+        { id: 'pinned', path: '/a', active: true, lastUserMessageAt: 1, globalPinned: true },
+        { id: 'working', path: '/a', active: true, lastUserMessageAt: 2, thinking: true },
+        { id: 'filed', path: '/a', active: true, lastUserMessageAt: 3 },
+        { id: 'unfiled', path: '/a', active: true, lastUserMessageAt: 4 }
+    ], api)
+
+    const workFolder = await screen.findByRole('button', { name: 'Work folder' })
+    expect(rowOrder()).toEqual(['pinned', 'working', 'unfiled'])
+    fireEvent.click(workFolder)
+    expect(rowOrder()).toEqual(['pinned', 'working'])
+    fireEvent.click(screen.getByRole('button', { name: 'Parent folder' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Other folder' }))
+    expect(rowOrder()).toEqual(['filed'])
 })

@@ -697,7 +697,14 @@ export function useSSE(options: {
                 // the field, which safely reads as a full resync.
                 const resumed = data && typeof data === 'object'
                     && (data as { resume?: unknown }).resume === 'ok'
+                if (scope === 'global' && !resumed) {
+                    void queryClient.invalidateQueries({ queryKey: queryKeys.sessionFolders })
+                }
                 onConnectRef.current?.({ resumed: Boolean(resumed) })
+            }
+
+            if (scope === 'global' && (event.type === 'session-folders-updated' || event.type === 'session-removed')) {
+                void queryClient.invalidateQueries({ queryKey: queryKeys.sessionFolders })
             }
 
             if (event.type === 'toast') {

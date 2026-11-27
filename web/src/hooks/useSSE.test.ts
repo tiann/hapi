@@ -59,6 +59,7 @@ class FakeEventSource {
 }
 
 function renderUseSSE(options?: {
+    scope?: 'global'
     onDisconnect?: (reason: string) => void
 }) {
     const queryClient = new QueryClient()
@@ -69,6 +70,7 @@ function renderUseSSE(options?: {
         token: 'test-token',
         baseUrl: 'http://hub.test',
         subscription: { all: true },
+        scope: options?.scope,
         onEvent: () => {},
         onDisconnect: options?.onDisconnect
     }), { wrapper })
@@ -85,6 +87,39 @@ describe('useSSE connection liveness (mobile suspend/resume)', () => {
     afterEach(() => {
         vi.unstubAllGlobals()
         vi.useRealTimers()
+    })
+
+    it('refreshes chat folders after a folder update, session removal, or replay gap', () => {
+        const { unmount, queryClient } = renderUseSSE({ scope: 'global' })
+        const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries').mockResolvedValue(undefined)
+        const folderQuery = { queryKey: queryKeys.sessionFolders }
+        const folderInvalidations = () => invalidateQueries.mock.calls.filter(([options]) =>
+            options?.queryKey === queryKeys.sessionFolders
+        )
+
+        act(() => { FakeEventSource.instances[0]?.simulateMessage({ type: 'session-folders-updated', namespace: 'default' }) })
+        expect(invalidateQueries).toHaveBeenCalledWith(folderQuery)
+        expect(folderInvalidations()).toHaveLength(1)
+
+        act(() => { FakeEventSource.instances[0]?.simulateMessage({ type: 'session-removed', sessionId: 'session-1' }) })
+        expect(folderInvalidations()).toHaveLength(2)
+
+        act(() => {
+            FakeEventSource.instances[0]?.simulateMessage({
+                type: 'connection-changed',
+                data: { status: 'connected', subscriptionId: 'sub-1', resume: 'ok' }
+            })
+        })
+        expect(folderInvalidations()).toHaveLength(2)
+
+        act(() => {
+            FakeEventSource.instances[0]?.simulateMessage({
+                type: 'connection-changed',
+                data: { status: 'connected', subscriptionId: 'sub-2', resume: 'gap' }
+            })
+        })
+        expect(folderInvalidations()).toHaveLength(3)
+        unmount()
     })
 
     it('reconnects on visibility resume when a heartbeat interval was missed', () => {

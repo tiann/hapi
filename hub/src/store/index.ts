@@ -11,6 +11,7 @@ import type { StoredMessage } from './types'
 import { PushStore } from './pushStore'
 import { FcmStore } from './fcmStore'
 import { ScratchlistStore } from './scratchlistStore'
+import { SESSION_FOLDERS_TABLES_SQL, SessionFolderStore } from './sessionFolderStore'
 import { SessionJobsStore } from './sessionJobsStore'
 import { SessionRedirectStore } from './sessionRedirectStore'
 import { SessionStore } from './sessionStore'
@@ -60,7 +61,7 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 36
+const SCHEMA_VERSION: number = 37
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -80,7 +81,9 @@ const REQUIRED_TABLES = [
     'event_links',
     'session_turns',
     'session_redirects',
-    'passkey_credentials'
+    'passkey_credentials',
+    'session_folders',
+    'session_folder_assignments'
 ] as const
 
 export class Store {
@@ -96,6 +99,7 @@ export class Store {
     readonly push: PushStore
     readonly fcm: FcmStore
     readonly scratchlist: ScratchlistStore
+    readonly sessionFolders: SessionFolderStore
     readonly sessionJobs: SessionJobsStore
     readonly sessionRedirects: SessionRedirectStore
     readonly usage: UsageStore
@@ -154,6 +158,7 @@ export class Store {
         this.push = new PushStore(this.db)
         this.fcm = new FcmStore(this.db)
         this.scratchlist = new ScratchlistStore(this.db)
+        this.sessionFolders = new SessionFolderStore(this.db)
         this.sessionJobs = new SessionJobsStore(this.db)
         this.sessionRedirects = new SessionRedirectStore(this.db)
         this.usage = new UsageStore(this.db)
@@ -393,7 +398,7 @@ export class Store {
             // upstream read-state at v29→v30;
             // #1404 session_jobs at v31→v32 (after upstream FTS v30→v31); run_id fence at v32→v33;
             // #1489 wake-on-terminal at v33→v34; session_redirects at v34→v35;
-            // passkey_credentials at v35→v36
+            // passkey_credentials at v35→v36; session folders at v36→v37
             // (jobs remapped again after upstream took 28/29/30).
             21: () => this.migrateFromV21ToV22(),
             22: () => this.migrateFromV22ToV23(),
@@ -410,6 +415,7 @@ export class Store {
             33: () => this.migrateFromV33ToV34(),
             34: () => this.migrateFromV34ToV35(),
             35: () => this.migrateFromV35ToV36(),
+            36: () => this.migrateFromV36ToV37(),
         })
 
         if (currentVersion === 0) {
@@ -454,6 +460,7 @@ export class Store {
             this.migrateFromV33ToV34()
             this.migrateFromV34ToV35()
             this.migrateFromV35ToV36()
+            this.migrateFromV36ToV37()
             this.ensureUsageScanParserVersion()
             this.setUserVersion(SCHEMA_VERSION)
             return
@@ -648,6 +655,7 @@ export class Store {
                 ON session_redirects(namespace, new_id);
 
             ${PASSKEY_CREDENTIALS_TABLE_SQL}
+            ${SESSION_FOLDERS_TABLES_SQL}
 
             CREATE TABLE IF NOT EXISTS usage_events (
                 session_id TEXT NOT NULL,
@@ -1395,6 +1403,10 @@ export class Store {
     /** v35→v36: WebAuthn credentials that can be exchanged for a web JWT. */
     private migrateFromV35ToV36(): void {
         this.db.exec(PASSKEY_CREDENTIALS_TABLE_SQL)
+    }
+
+    private migrateFromV36ToV37(): void {
+        this.db.exec(SESSION_FOLDERS_TABLES_SQL)
     }
 
     private ensureUsageScanParserVersion(): void {
