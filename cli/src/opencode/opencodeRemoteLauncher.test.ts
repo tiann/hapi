@@ -103,6 +103,7 @@ const harness = vi.hoisted(() => ({
     detectedVersion: null as null | 'v1' | 'v2',
     discoverV2Rest: true,
     advertisesCompact: true,
+    commandCatalogPending: false,
     onAvailableCommandsUpdate: null as null | ((sessionId: string) => void),
     loopbackListeners: [] as number[],
     discoveredPort: null as null | number,
@@ -235,7 +236,8 @@ vi.mock('./utils/opencodeBackend', () => ({
         }),
         getSessionModelsMetadata: vi.fn(() => harness.sessionModelsMetadata),
         hasAvailableCommand: vi.fn((_id: string, command: string) => command === 'compact' && harness.advertisesCompact),
-        setAvailableCommandsUpdateListener: vi.fn((listener: (sessionId: string) => void) => {
+        hasSessionAvailableCommands: vi.fn(() => !harness.commandCatalogPending),
+        setAvailableCommandsUpdateListener: vi.fn((listener: ((sessionId: string) => void) | null) => {
             harness.onAvailableCommandsUpdate = listener;
         }),
         getThoughtLevelConfigOption: vi.fn(() => {
@@ -803,6 +805,7 @@ afterEach(async () => {
     harness.detectedVersion = null;
     harness.discoverV2Rest = true;
     harness.advertisesCompact = true;
+    harness.commandCatalogPending = false;
     harness.onAvailableCommandsUpdate = null;
     harness.loopbackListeners = [];
     harness.discoveredPort = null;
@@ -9163,19 +9166,53 @@ describe('OpenCode v2 ACP on Windows', () => {
         expect(harness.promptContents).toHaveLength(0);
     });
 
-    it('enables compact when the current session advertises it after startup', async () => {
-        useWindowsAcp();
+    it('waits for the current session to advertise a startup-queued compact without signaling teardown', async () => {
+        const notify = useWindowsAcp();
         harness.advertisesCompact = false;
+        harness.commandCatalogPending = true;
+        harness.promptImpl = async () => {
+            const update = { sessionUpdate: 'compaction_update', compactionId: 'early' };
+            notify('acp-session-1', { ...update, status: 'in_progress' });
+            notify('acp-session-1', { ...update, status: 'completed', summary: [{ type: 'text', text: 'early compact' }] });
+        };
         const availability: boolean[] = [];
-        const { session } = createSessionStub([], { keepOpen: true });
+        const { session, thinkingChangeCalls, sentAgentMessages } = createSessionStub([{
+            message: '', mode: createCompactMode(), localId: 'early'
+        }], { keepOpen: true });
         const run = opencodeRemoteLauncher(session as never, { onCompactAvailabilityChange: value => availability.push(value) });
         try {
-            await vi.waitFor(() => expect(availability).toEqual([false]));
-            harness.advertisesCompact = true;
+            await vi.waitFor(() => expect(thinkingChangeCalls).toContain(true));
+            expect(availability).toEqual([]);
+            expect(harness.promptContents).toHaveLength(0);
             harness.onAvailableCommandsUpdate?.('another-session');
-            expect(availability).toEqual([false]);
+            expect(availability).toEqual([]);
+            harness.advertisesCompact = true;
             harness.onAvailableCommandsUpdate?.('acp-session-1');
-            expect(availability).toEqual([false, true]);
+            await vi.waitFor(() => expect(sentAgentMessages).toContainEqual({ type: 'compact-summary', summary: 'early compact' }));
+            expect(availability).toEqual([true]);
+        } finally {
+            session.queue.close();
+            await run;
+        }
+        expect(availability).toEqual([true, false]);
+        expect(harness.onAvailableCommandsUpdate).toBeNull();
+    });
+
+    it('cancels a startup-queued compact while waiting for the command catalog', async () => {
+        useWindowsAcp();
+        harness.advertisesCompact = false;
+        harness.commandCatalogPending = true;
+        const { session, rpcHandlers, sessionEvents, thinkingChangeCalls } = createSessionStub([{
+            message: '', mode: createCompactMode(), localId: 'early'
+        }], { keepOpen: true });
+        const run = opencodeRemoteLauncher(session as never);
+        try {
+            await vi.waitFor(() => expect(thinkingChangeCalls).toContain(true));
+            await rpcHandlers.get('abort')!({});
+            await vi.waitFor(() => expect(sessionEvents).toContainEqual({ type: 'ready' }));
+            harness.advertisesCompact = true;
+            harness.onAvailableCommandsUpdate?.('acp-session-1');
+            expect(harness.promptContents).toHaveLength(0);
         } finally {
             session.queue.close();
             await run;

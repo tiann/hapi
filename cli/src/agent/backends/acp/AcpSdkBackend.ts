@@ -733,6 +733,10 @@ export class AcpSdkBackend implements AgentBackend {
             ?? this.initialAvailableCommands.has(command);
     }
 
+    hasSessionAvailableCommands(sessionId: string): boolean {
+        return this.sessionAvailableCommands.has(sessionId);
+    }
+
     /**
      * Returns the slash commands negotiated via ACP `available_commands_update`
      * (or `initialize` / `session/new` / `session/resume` metadata) for the

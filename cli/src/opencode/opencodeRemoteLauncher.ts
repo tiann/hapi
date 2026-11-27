@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Buffer } from 'node:buffer';
+import { once } from 'node:events';
 import { isObject } from '@hapi/protocol';
 import { createAcpSessionTitleSync, registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
 import { logger } from '@/ui/logger';
@@ -92,10 +93,11 @@ export type AbortStatusDecision = {
     shouldClearThinking: boolean;
 };
 
-type CompactOperationPhase = 'idle' | 'snapshot' | 'summarize' | 'post-summarize' | 'verification';
+type CompactOperationPhase = 'idle' | 'await-commands' | 'snapshot' | 'summarize' | 'post-summarize' | 'verification';
 type RoundSummaryPhase = 'idle' | 'snapshot' | 'prompt' | 'settle';
 
 const ROUND_SUMMARY_SETTLE_TIMEOUT_MS = 1_000;
+const V2_COMMAND_CATALOG_WAIT_MS = 2_000;
 
 async function settleRoundSummary<T>(promise: Promise<T>, controller: AbortController): Promise<T | null> {
     return await new Promise<T | null>((resolve) => {
@@ -294,6 +296,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     /** v2-only REST access discovered after spawn; null unless both port and OPENCODE_PASSWORD were found. */
     private v2RestInfo: { baseUrl: string; password: string } | null = null;
     private useV2AcpUpdates = false;
+    private v2CompactCommandCatalog: AbortSignal | null = null;
     private lastAcpRetryAttempt = 0;
     private onAcpCompactionUpdate: ((update: Record<string, unknown>) => void) | null = null;
     private readonly workerId: string;
@@ -1118,15 +1121,22 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         // requestExit() synchronously withdraws availability and sets shouldExit;
         // finishing initialization must not advertise compact again mid-teardown.
         if (this.useV2AcpUpdates) {
+            // The command catalog can arrive after the session replies. Only an
+            // early /compact waits for it. The rest of remote startup continues.
+            const catalog = new AbortController();
+            this.v2CompactCommandCatalog = AbortSignal.any([catalog.signal, AbortSignal.timeout(V2_COMMAND_CATALOG_WAIT_MS)]);
             const publishCompactAvailability = () => {
-                if (!this.shouldExit) {
-                    this.options.onCompactAvailabilityChange?.(backend.hasAvailableCommand(acpSessionId, 'compact'));
+                // The caller treats false as a remote teardown notification.
+                if (!this.rewindStopped && !this.shouldExit && backend.hasAvailableCommand(acpSessionId, 'compact')) {
+                    this.options.onCompactAvailabilityChange?.(true);
                 }
             };
-            // OpenCode can send available_commands_update after session/new or session/load replies.
             backend.setAvailableCommandsUpdateListener(sessionId => {
-                if (sessionId === acpSessionId) publishCompactAvailability();
+                if (sessionId !== acpSessionId) return;
+                catalog.abort();
+                publishCompactAvailability();
             });
+            if (backend.hasSessionAvailableCommands(acpSessionId)) catalog.abort();
             publishCompactAvailability();
         } else if (!this.shouldExit && (this.v2RestInfo !== null || this.baseUrl !== null)) {
             this.options.onCompactAvailabilityChange?.(true);
@@ -2447,6 +2457,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         // already on its way out.
         this.historyProbeAbortController.abort();
         this.closeSteerGate();
+        if (this.useV2AcpUpdates) this.backend?.setAvailableCommandsUpdateListener(null);
         this.options.onCompactAvailabilityChange?.(false);
         // Withdraw history affordances for the teardown window and any
         // subsequent local mode: the loopback server is going away, so forks
@@ -2716,17 +2727,28 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     ): Promise<void> {
         const session = this.session;
         try {
-            if (this.useV2AcpUpdates && !this.backend?.hasAvailableCommand(acpSessionId, 'compact')) {
-                session.sendSessionEvent({ type: 'message', message: 'OpenCode does not advertise /compact for this session.' });
-                return;
-            }
-            session.sendSessionEvent({ type: 'message', message: '📦 Compaction started' });
             const isCancelled = (): boolean =>
                 (localId ? (this.options.isLocalIdCancelled?.(localId) ?? false) : false)
                 || compactAbortController.signal.aborted
                 || this.compactResultSuppressed;
 
             const backend = this.backend;
+            if (backend && this.useV2AcpUpdates) {
+                if (isCancelled()) return;
+                const catalog = this.v2CompactCommandCatalog;
+                if (catalog && !catalog.aborted && !backend.hasAvailableCommand(acpSessionId, 'compact')) {
+                    this.compactOperationPhase = 'await-commands';
+                    await once(catalog, 'abort', { signal: compactAbortController.signal }).catch(error => {
+                        if (!compactAbortController.signal.aborted) throw error;
+                    });
+                    if (isCancelled()) return;
+                }
+                if (!backend.hasAvailableCommand(acpSessionId, 'compact')) {
+                    session.sendSessionEvent({ type: 'message', message: 'OpenCode does not advertise /compact for this session.' });
+                    return;
+                }
+            }
+            session.sendSessionEvent({ type: 'message', message: '📦 Compaction started' });
             if (backend && this.useV2AcpUpdates) {
                 await this.runV2AcpCompact(backend, acpSessionId, isCancelled);
                 return;
@@ -3260,6 +3282,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 // waits for an in-flight POST to complete server-side.
                 if (
                     leavingRemote
+                    || this.compactOperationPhase === 'await-commands'
                     || this.compactOperationPhase === 'snapshot'
                     || this.compactOperationPhase === 'post-summarize'
                     || this.compactOperationPhase === 'verification'
