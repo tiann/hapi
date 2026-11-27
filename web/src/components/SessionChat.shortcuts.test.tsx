@@ -10,6 +10,8 @@ import { ToastProvider } from '@/lib/toast-context'
 import type { Session } from '@/types/api'
 import { SessionChat } from './SessionChat'
 
+const cachedTailFirstFrameProps = { cachedTailFirstFrame: false }
+
 vi.mock('@tanstack/react-router', async (importOriginal) => ({
     ...(await importOriginal<Record<string, unknown>>()),
     useNavigate: () => async () => {},
@@ -47,6 +49,7 @@ it('cycles DSH reasoning effort from the value applied to the session', async ()
             metadata: { flavor: 'dsh', path: '/work', host: 'test' },
         } as Session
         return <SessionChat
+            {...cachedTailFirstFrameProps}
             api={api}
             session={session}
             messages={[]}
