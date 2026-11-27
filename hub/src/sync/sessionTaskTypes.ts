@@ -17,7 +17,7 @@ export type UpdateSessionTaskResult =
     | { type: 'wrong-task-kind'; fields: string[] }
     /** `maxRuns` below the number of prompts the task already sent. */
     | { type: 'invalid-max-runs' }
-    /** Resuming would give the session more than `SESSION_TASK_MAX_ACTIVE_PER_SESSION` active tasks. */
+    /** Resuming would leave the session with more than `SESSION_TASK_MAX_ACTIVE_PER_SESSION` active tasks; one that ends the task at once does not count. */
     | { type: 'too-many-tasks' }
 
 export type RunSessionTaskNowResult =

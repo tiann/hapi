@@ -404,6 +404,62 @@ describe('SyncEngine session tasks', () => {
             expect(taskOf(h.engine.updateSessionTask(h.session.id, paused.id, { paused: false })).state).toBe('active')
         })
 
+        /** Fill the session up to the cap with active tasks that run in an hour. */
+        function fillSession(h: Harness): void {
+            for (let index = 0; index < SESSION_TASK_MAX_ACTIVE_PER_SESSION; index += 1) {
+                h.engine.createSessionTask(h.session.id, { kind: 'repeat', text: `ping ${index}`, intervalMs: 60_000, startAt: Date.now() + HOUR })
+            }
+            expect(h.engine.getSessionTaskSummaries([h.session.id]).get(h.session.id)?.activeTaskCount).toBe(SESSION_TASK_MAX_ACTIVE_PER_SESSION)
+        }
+
+        it('lets a resume that ends the task at once into a session that holds the cap', async () => {
+            const h = harness()
+            const paused = createLater(h, { kind: 'repeat', text: 'paused', intervalMs: 60_000, maxRuns: 5 })
+            const now = Date.now()
+            for (let run = 1; run <= 3; run += 1) {
+                h.store.sessionTasks.markSent(paused.id, { localId: `hapi-task:cap:${run}`, nextRunAt: now + 60_000, now })
+                h.store.sessionTasks.settlePending(paused.id, { consumedAt: now + run, now: now + run })
+            }
+            h.engine.updateSessionTask(h.session.id, paused.id, { paused: true })
+            fillSession(h)
+
+            // The limit comes down to what already ran: the task is over the moment it is
+            // resumed, so it is never the 21st active task.
+            const ended = taskOf(h.engine.updateSessionTask(h.session.id, paused.id, { paused: false, maxRuns: 3 }))
+            expect(ended).toMatchObject({ state: 'active', maxRuns: 3, runCount: 3, pending: false })
+            expect(h.engine.listSessionTasks(h.session.id).some((row) => row.id === paused.id)).toBe(false)
+            expect(h.engine.getSessionTaskSummaries([h.session.id]).get(h.session.id)?.activeTaskCount).toBe(SESSION_TASK_MAX_ACTIVE_PER_SESSION)
+            await settle()
+            expect(h.sent).toEqual([])
+        })
+
+        it('still refuses a resume into a full session when the task ends only once its pending prompt is taken', () => {
+            const h = harness()
+            const paused = createLater(h, { kind: 'repeat', text: 'paused', intervalMs: 60_000, maxRuns: 5 })
+            const localId = 'hapi-task:cap:pending'
+            h.store.sessionTasks.markSent(paused.id, { localId, nextRunAt: null, now: Date.now() })
+            // The prompt is in the queue, where the scheduler finds it on the ticks the other creates kick.
+            h.store.addMessageForCurrentSession(h.session.id, { role: 'user', content: { type: 'text', text: 'paused' }, meta: { sentFrom: 'webapp' } }, localId, null)
+            h.engine.updateSessionTask(h.session.id, paused.id, { paused: true })
+            fillSession(h)
+
+            // Active until the agent takes the prompt: it counts like any other resume.
+            expect(h.engine.updateSessionTask(h.session.id, paused.id, { paused: false, maxRuns: 1 })).toEqual({ type: 'too-many-tasks' })
+            expect(h.engine.listSessionTasks(h.session.id).find((row) => row.id === paused.id)).toMatchObject({ state: 'paused', maxRuns: 5, pending: true })
+        })
+
+        it('edits a paused task while the session holds the cap, since nothing is resumed', async () => {
+            const h = harness()
+            const paused = createLater(h, { kind: 'repeat', text: 'paused', intervalMs: 60_000, maxRuns: 2 })
+            h.engine.updateSessionTask(h.session.id, paused.id, { paused: true })
+            fillSession(h)
+
+            const edited = taskOf(h.engine.updateSessionTask(h.session.id, paused.id, { text: 'renamed', intervalMs: 120_000, maxRuns: null }))
+            expect(edited).toMatchObject({ state: 'paused', nextRunAt: null, intervalMs: 120_000, maxRuns: null, items: [{ text: 'renamed' }] })
+            await settle()
+            expect(h.sent).toEqual([])
+        })
+
         it('refuses fields that do not apply to the task kind', () => {
             const h = harness()
             const queue = createLater(h, { kind: 'queue', items: [{ text: 'a' }], intervalMs: 60_000 })

@@ -218,9 +218,9 @@ function wrongTaskKindFields(task: StoredSessionTask, patch: UpdateSessionTaskRe
     return fields
 }
 
-/** A `repeat` task has sent every prompt `maxRuns` allows. */
-function taskLimitReached(task: StoredSessionTask): boolean {
-    return task.kind === 'repeat' && task.maxRuns !== null && task.runCount >= task.maxRuns
+/** The run limit is reached and nothing is pending: the task is over the moment the change lands. */
+function endsAtOnce(task: Pick<StoredSessionTask, 'kind' | 'maxRuns' | 'runCount' | 'pendingLocalId'>): boolean {
+    return task.pendingLocalId === null && task.kind === 'repeat' && task.maxRuns !== null && task.runCount >= task.maxRuns
 }
 
 /**
@@ -1545,7 +1545,9 @@ export class SyncEngine {
      * sent stays tracked; a resume runs a task that has nothing pending now,
      * except that a task which has not run yet keeps its first-run time and a
      * queue task keeps its spacing from when the agent took its last prompt.
-     * Resuming counts against the session's cap of active tasks.
+     * The cap of active tasks looks at the task after the change: a resume
+     * counts against it, an edit that keeps the task paused or ends it at
+     * once does not.
      */
     updateSessionTask(sessionId: string, taskId: string, patch: UpdateSessionTaskRequest): UpdateSessionTaskResult {
         const store = this.store.sessionTasks
@@ -1555,9 +1557,6 @@ export class SyncEngine {
         if (wrongKind.length > 0) return { type: 'wrong-task-kind', fields: wrongKind }
         if (patch.maxRuns != null && patch.maxRuns < task.runCount) return { type: 'invalid-max-runs' }
         const resuming = patch.paused === false && task.state === 'paused'
-        if (resuming && store.countActive(sessionId) >= SESSION_TASK_MAX_ACTIVE_PER_SESSION) {
-            return { type: 'too-many-tasks' }
-        }
 
         const now = Date.now()
         const changes: Parameters<SessionTaskStore['update']>[1] = {}
@@ -1589,6 +1588,18 @@ export class SyncEngine {
             changes.state = { paused: false, nextRunAt: now + changes.intervalMs }
         }
 
+        // The cap is about what the session holds after the change. A resume
+        // that ends the task at once (the limit brought down to what already
+        // ran, nothing pending) leaves the session as it was, so it fits.
+        const maxRunsAfter = changes.maxRuns === undefined ? task.maxRuns : changes.maxRuns
+        if (
+            resuming
+            && !endsAtOnce({ ...task, maxRuns: maxRunsAfter })
+            && store.countActive(sessionId) >= SESSION_TASK_MAX_ACTIVE_PER_SESSION
+        ) {
+            return { type: 'too-many-tasks' }
+        }
+
         const updated = store.update(taskId, changes, now)
         if (!updated) return { type: 'not-found' }
         if (resuming) {
@@ -1597,7 +1608,7 @@ export class SyncEngine {
         }
         // maxRuns brought down to what already ran ends the task now that nothing is pending
         // (with a prompt pending, the acknowledgement ends it: SessionTaskRunner.completeSend).
-        if (updated.pendingLocalId === null && taskLimitReached(updated)) store.delete(updated.id)
+        if (endsAtOnce(updated)) store.delete(updated.id)
         this.emitSessionTasksChanged(sessionId)
         if (resuming) this.runSessionTaskTick()
         return { type: 'updated', task: toSessionTask(updated) }

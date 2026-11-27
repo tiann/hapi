@@ -29,7 +29,7 @@ When no `code` is present, branch on status alone and treat the failure generica
 | 400 | — | Flavor gates (`sessions.ts`: wrong-flavor model/mode endpoints) | Hide the control for this flavor |
 | 400 | `scratchlist_attachment_invalid`, `scratchlist_entry_empty`, attachment-limit codes from `validateScratchlistAttachmentsForWrite` | `sessions.ts` scratchlist routes | Surface validation message |
 | 400 | `invalid_start_at` | `sessionTasks.ts` create | `startAt` is more than 60 s in the past or more than 366 days ahead — fix the first-run time |
-| 400 | `too_many_tasks` | `sessionTasks.ts` create and PATCH (`{error, code}`) | The session already holds 20 active tasks — pause or delete one first (PATCH: resuming the task would make the 21st) |
+| 400 | `too_many_tasks` | `sessionTasks.ts` create and PATCH (`{error, code}`) | The session already holds 20 active tasks — pause or delete one first (PATCH: resuming the task would make it the 21st active one; a resume that ends the task at once is not refused) |
 | 400 | `wrong_task_kind` | `sessionTasks.ts` PATCH (`{error, code}`) | A field that does not apply to the task's kind (`text`/`maxRuns` on a `queue`, `items` on a `repeat`) — offer only the kind's fields |
 | 400 | `invalid_max_runs` | `sessionTasks.ts` PATCH | `maxRuns` is below the prompts the task already sent — raise it |
 | 401 | — | Middleware (`middleware/auth.ts`) and `POST /api/auth` (`routes/auth.ts`) | See [Auth → 401 bodies](./auth.md#401-error-bodies); middleware 401 → silent re-auth once, `/api/auth` 401 → re-pair |
