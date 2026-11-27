@@ -38,7 +38,7 @@ Steer, effort and history controls apply to sessions under remote control. The w
 |-------|:-----:|:-------------:|:-------------:|:------:|:--------------------:|
 | Claude Code | ✓ | ✓ | Fork current point | ✓ | ✓ |
 | Codex | ✓ | ✓ (reasoning effort) | Fork (no rewind) | ✓ | ✓ |
-| Cursor Agent | ✓ (ACP sessions) | — | — | — | — |
+| Cursor Agent | ✓ (ACP sessions) | ✓ (model variants) | — | ✓ | ✓ (ACP attach) |
 | Grok Build | — | ✓ | Probed | — | — |
 | GitHub Copilot | — | ✓ | — | — | — |
 | Kimi | — | ✓ | — | — | — |
@@ -48,7 +48,7 @@ Steer, effort and history controls apply to sessions under remote control. The w
 | Pi | ✓ | ✓ | Probed | — | ✓ |
 
 - **Steer** delivers a queued message into the running turn instead of waiting for it to end. See [Composer](./composer.md).
-- **Fork / rewind** use the agent's native history; **Branch** starts a new Claude Code or Codex session from a Claude Code or Codex conversation's visible history, optionally switching agents. See [Conversation history](./conversation-history.md).
+- **Fork / rewind** use the agent's native history. **Branch** starts a fresh session from visible history and lets you switch between Claude Code, Codex and Cursor. See [Conversation history](./conversation-history.md).
 - **Import local history** brings sessions started outside HAPI into the session list. See [Import local sessions](./import-local-sessions.md).
 
 Source: `STEERING_SUPPORTED_FLAVORS` in `shared/src/modes.ts`, `shared/src/flavors.ts`, and the per-agent history capabilities in `shared/src/conversationHistory.ts`.

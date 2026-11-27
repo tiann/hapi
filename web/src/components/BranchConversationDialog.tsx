@@ -6,22 +6,25 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Button } from '@/components/ui/button'
 import { SelectControl } from '@/components/ui/select-control'
 import { randomId } from '@/lib/randomId'
+import { formatCursorModelPickerLabel } from '@/lib/cursorModelOptions'
 import { useTranslation } from '@/lib/use-translation'
 
 export function BranchConversationDialog(props: {
     api: ApiClient
     machineId: string
-    sourceAgent: string
+    sourceAgent: BranchConversationRequest['agent']
+    sourceDirectory: string
     messageLocalId?: string
     messageId?: string
     onClose: () => void
     onSubmit: (options: BranchConversationRequest) => Promise<void>
 }) {
     const { t } = useTranslation()
-    const [agent, setAgent] = useState<'claude' | 'codex'>(props.sourceAgent === 'codex' ? 'codex' : 'claude')
+    const [agent, setAgent] = useState(props.sourceAgent)
     const [model, setModel] = useState('')
     const [boundary, setBoundary] = useState<'before' | 'after'>('before')
     const [workspace, setWorkspace] = useState<'current' | 'worktree'>('current')
+    const [confirmedDirectory, setConfirmedDirectory] = useState<string>()
     const [instruction, setInstruction] = useState('')
     const [pending, setPending] = useState(false)
     const [error, setError] = useState<string | null>(null)
@@ -36,6 +39,13 @@ export function BranchConversationDialog(props: {
                 if (!result.success) throw new Error(result.error ?? t('branch.modelsError'))
                 return (result.availableModels ?? []).map(item => ({ value: item.value, label: item.displayName ?? item.value }))
             }
+            if (agent === 'cursor') {
+                const result = await props.api.getMachineCursorModels(props.machineId)
+                if (!result.success) throw new Error(result.error ?? t('branch.modelsError'))
+                return (result.availableModels ?? []).map(item => ({
+                    value: item.modelId, label: formatCursorModelPickerLabel(item.modelId)
+                }))
+            }
             const result = await props.api.getMachineCodexModels(props.machineId)
             if (!result.success) throw new Error(result.error ?? t('branch.modelsError'))
             return (result.models ?? []).map(item => ({ value: item.id, label: item.displayName }))
@@ -43,9 +53,20 @@ export function BranchConversationDialog(props: {
         retry: false,
         staleTime: 30_000
     })
+    const cursorSource = props.sourceAgent === 'cursor'
+    const confirmed = !cursorSource || confirmedDirectory === props.sourceDirectory
     const submit = async () => {
-        const options = { agent, model: model || undefined, boundary, workspace,
-            messageLocalId: props.messageLocalId, messageId: props.messageId, instruction: instruction.trim() }
+        if (!confirmed) return
+        const options: Omit<BranchConversationRequest, 'requestId'> = {
+            agent,
+            model: model || undefined,
+            boundary,
+            workspace: agent === 'cursor' ? 'current' : workspace,
+            sourceDirectory: cursorSource ? confirmedDirectory : undefined,
+            messageLocalId: props.messageLocalId,
+            messageId: props.messageId,
+            instruction: instruction.trim()
+        }
         const fingerprint = JSON.stringify(options)
         const requestId = attempt?.fingerprint === fingerprint ? attempt.requestId : randomId()
         setAttempt({ fingerprint, requestId })
@@ -70,10 +91,12 @@ export function BranchConversationDialog(props: {
                         <option value="after">{t('branch.after')}</option>
                     </SelectControl>
                 </label> : <p className="text-sm">{t('branch.current')}</p>}
-                <label className="text-sm">Harness
-                    <SelectControl aria-label="Harness" className={control} value={agent} disabled={pending}
-                        onChange={event => { setAgent(event.target.value as 'claude' | 'codex'); setModel('') }}>
-                        <option value="claude">Claude Code</option><option value="codex">Codex</option>
+                <label className="text-sm">{t('newSession.agent')}
+                    <SelectControl aria-label={t('newSession.agent')} className={control} value={agent} disabled={pending}
+                        onChange={event => { setAgent(event.target.value as BranchConversationRequest['agent']); setModel('') }}>
+                        <option value="claude">Claude Code</option>
+                        <option value="codex">Codex</option>
+                        <option value="cursor">Cursor</option>
                     </SelectControl>
                 </label>
                 <label className="text-sm">{t('newSession.model')}
@@ -84,14 +107,26 @@ export function BranchConversationDialog(props: {
                     </SelectControl>
                 </label>
                 {models.error ? <p role="status" className="text-sm text-[var(--app-hint)]">{t('branch.modelsError')}</p> : null}
-                <label className="text-sm">{t('branch.workspace')}
-                    <SelectControl aria-label={t('branch.workspace')} className={control} value={workspace} disabled={pending}
-                        onChange={event => setWorkspace(event.target.value as 'current' | 'worktree')}>
-                        <option value="current">{t('branch.currentWorkspace')}</option>
-                        <option value="worktree">{t('branch.worktree')}</option>
-                    </SelectControl>
-                </label>
-                <p className="text-xs text-[var(--app-hint)]">{t('branch.filesNotice')}</p>
+                {agent === 'cursor' && !cursorSource ? <p className="text-sm">
+                    {t('branch.currentWorkspace')} <code className="break-all">{props.sourceDirectory}</code>
+                </p> : null}
+                {agent !== 'cursor' ? <>
+                    <label className="text-sm">{t('branch.workspace')}
+                        <SelectControl aria-label={t('branch.workspace')} className={control} value={workspace} disabled={pending}
+                            onChange={event => setWorkspace(event.target.value as 'current' | 'worktree')}>
+                            <option value="current">{t('branch.currentWorkspace')}</option>
+                            <option value="worktree">{t('branch.worktree')}</option>
+                        </SelectControl>
+                    </label>
+                    <p className="text-xs text-[var(--app-hint)]">{t('branch.filesNotice')}</p>
+                </> : null}
+                {cursorSource ? <label className="flex items-start gap-2 text-sm">
+                    <input type="checkbox" checked={confirmed} disabled={pending}
+                        onChange={event => setConfirmedDirectory(event.target.checked ? props.sourceDirectory : undefined)} />
+                    <span className="min-w-0">
+                        {t('branch.confirmDirectory')} <code className="break-all">{props.sourceDirectory}</code>
+                    </span>
+                </label> : null}
                 <label className="text-sm">{t('branch.instruction')}
                     <textarea aria-label={t('branch.instruction')} className={control} rows={4} value={instruction} maxLength={16000}
                         disabled={pending} onChange={event => setInstruction(event.target.value)} />
@@ -101,7 +136,7 @@ export function BranchConversationDialog(props: {
                 </div> : null}
                 <div className="flex justify-end gap-2">
                     <Button variant="secondary" disabled={pending} onClick={props.onClose}>{t('button.cancel')}</Button>
-                    <Button disabled={pending || !instruction.trim()} onClick={() => void submit()}>
+                    <Button disabled={pending || !instruction.trim() || !confirmed} onClick={() => void submit()}>
                         {t(pending ? 'message.fork.confirming' : 'branch.create')}
                     </Button>
                 </div>
