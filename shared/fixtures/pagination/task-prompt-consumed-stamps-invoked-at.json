@@ -1,0 +1,114 @@
+{
+    "description": "A prompt a repeat or queue task inserts arrives by SSE as a hub row: a hub-assigned id, the task's localId (`hapi-task:<task>:<n>`), invokedAt and scheduledAt null. The prefix changes nothing for the window: the row is queued like a user's own, and messages-consumed for that localId stamps invokedAt and moves it to its invocation position.",
+    "expectedState": {
+        "epoch": 0,
+        "hasMore": false,
+        "messages": [
+            {
+                "createdAt": 1000,
+                "id": "a-1",
+                "invokedAt": 1000,
+                "localId": null,
+                "optimistic": false,
+                "queued": false,
+                "seq": 1
+            },
+            {
+                "createdAt": 2000,
+                "id": "srv-task-1",
+                "invokedAt": 3000,
+                "localId": "hapi-task:t1:1",
+                "optimistic": false,
+                "queued": false,
+                "scheduledAt": null,
+                "seq": 2,
+                "status": "sent"
+            }
+        ],
+        "newestCursor": {
+            "at": 2000,
+            "seq": 2
+        },
+        "olderCursor": {
+            "at": 1000,
+            "seq": 1
+        },
+        "readThroughRevision": 0,
+        "viewMode": "tail"
+    },
+    "fixtureVersion": 1,
+    "name": "task-prompt-consumed-stamps-invoked-at",
+    "ops": [
+        {
+            "expectedRequests": [
+                {
+                    "limit": 20
+                }
+            ],
+            "op": "sync-tail",
+            "responses": [
+                {
+                    "messages": [
+                        {
+                            "content": {
+                                "content": {
+                                    "data": {
+                                        "message": "a-1",
+                                        "type": "message"
+                                    },
+                                    "type": "codex"
+                                },
+                                "role": "agent"
+                            },
+                            "createdAt": 1000,
+                            "id": "a-1",
+                            "invokedAt": 1000,
+                            "localId": null,
+                            "seq": 1
+                        }
+                    ],
+                    "page": {
+                        "direction": "latest",
+                        "epoch": 0,
+                        "hasMore": false,
+                        "limit": 200,
+                        "nextAfterAt": null,
+                        "nextAfterSeq": null,
+                        "nextBeforeAt": 1000,
+                        "nextBeforeSeq": 1,
+                        "reset": false,
+                        "snapshotHeadAt": 1000,
+                        "snapshotHeadSeq": 1
+                    }
+                }
+            ]
+        },
+        {
+            "messages": [
+                {
+                    "content": {
+                        "content": {
+                            "text": "check progress",
+                            "type": "text"
+                        },
+                        "role": "user"
+                    },
+                    "createdAt": 2000,
+                    "id": "srv-task-1",
+                    "invokedAt": null,
+                    "localId": "hapi-task:t1:1",
+                    "scheduledAt": null,
+                    "seq": 2
+                }
+            ],
+            "op": "sse-messages"
+        },
+        {
+            "invokedAt": 3000,
+            "localIds": [
+                "hapi-task:t1:1"
+            ],
+            "op": "messages-consumed"
+        }
+    ]
+}

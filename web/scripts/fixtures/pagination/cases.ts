@@ -78,6 +78,8 @@ function userMessage(init: {
     localId?: string | null
     createdAt: number
     invokedAt?: number | null
+    /** The wire tri-state as the hub sends it: absent, null, or the scheduled time. */
+    scheduledAt?: number | null
     status?: MessageStatus
     text?: string
 }): DecryptedMessage {
@@ -91,6 +93,7 @@ function userMessage(init: {
         },
         createdAt: init.createdAt,
         ...(init.invokedAt !== undefined ? { invokedAt: init.invokedAt } : {}),
+        ...(init.scheduledAt !== undefined ? { scheduledAt: init.scheduledAt } : {}),
         ...(init.status !== undefined ? { status: init.status } : {})
     }
 }
@@ -552,6 +555,68 @@ export const paginationFixtureCases: PaginationFixtureCase[] = [
                 queuedLocalIds: ['local-kept'],
                 invoked: [{ localId: 'local-consumed', invokedAt: 4_000 }]
             }
+        ]
+    },
+    {
+        name: 'task-prompt-consumed-stamps-invoked-at',
+        description: 'A prompt a repeat or queue task inserts arrives by SSE as a hub row: a hub-assigned id, the task\'s localId (`hapi-task:<task>:<n>`), invokedAt and scheduledAt null. The prefix changes nothing for the window: the row is queued like a user\'s own, and messages-consumed for that localId stamps invokedAt and moves it to its invocation position.',
+        ops: [
+            {
+                op: 'sync-tail',
+                responses: [
+                    pageResponse([agentMessage({ id: 'a-1', seq: 1, at: 1_000 })], {
+                        direction: 'latest',
+                        epoch: 0,
+                        hasMore: false,
+                        nextBefore: { at: 1_000, seq: 1 },
+                        snapshotHead: { at: 1_000, seq: 1 }
+                    })
+                ]
+            },
+            {
+                op: 'sse-messages',
+                messages: [
+                    userMessage({
+                        id: 'srv-task-1',
+                        seq: 2,
+                        localId: 'hapi-task:t1:1',
+                        createdAt: 2_000,
+                        invokedAt: null,
+                        scheduledAt: null,
+                        text: 'check progress'
+                    })
+                ]
+            },
+            { op: 'messages-consumed', localIds: ['hapi-task:t1:1'], invokedAt: 3_000 }
+        ]
+    },
+    {
+        name: 'scheduled-hub-row-cancelled-by-id',
+        description: 'The same hub row with a future scheduledAt is a queued row like any other awaiting its time (it is a reconcile candidate after a resume gap, and stays queued). message-cancelled carries the hub\'s messageId, and the removal matches a row by id as well as by localId (the op\'s localId field holds the id here); the row leaves, the newest cursor stays where the page left it, and a repeat is an idempotent no-op.',
+        ops: [
+            {
+                op: 'sync-tail',
+                responses: [
+                    pageResponse([userMessage({
+                        id: 'srv-task-1',
+                        seq: 1,
+                        localId: 'hapi-task:t1:1',
+                        createdAt: 1_000,
+                        invokedAt: null,
+                        scheduledAt: 60_000,
+                        text: 'check progress'
+                    })], {
+                        direction: 'latest',
+                        epoch: 0,
+                        hasMore: false,
+                        nextBefore: { at: 1_000, seq: 1 },
+                        snapshotHead: { at: 1_000, seq: 1 }
+                    })
+                ]
+            },
+            { op: 'queued-state', queuedLocalIds: ['hapi-task:t1:1'], invoked: [] },
+            { op: 'message-cancelled', localId: 'srv-task-1' },
+            { op: 'message-cancelled', localId: 'srv-task-1' }
         ]
     }
 ]
