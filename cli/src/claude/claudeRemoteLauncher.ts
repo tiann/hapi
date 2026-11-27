@@ -73,7 +73,23 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
         return React.createElement(RemoteModeDisplay, context);
     }
 
-    private async abort(): Promise<void> {
+    private async abort(options?: { parkQueue?: boolean }): Promise<void> {
+        // A stop parks the queue; it must not resume it. Without this the
+        // loop's next attempt immediately consumes whatever was queued before
+        // the stop, auto-sending it into a fresh turn — the codex abort
+        // already resets the queue, and "stop means stop" is the operator
+        // expectation. The queued rows stay on the hub (invoked_at IS NULL)
+        // and remain cancelable from the queued bar; send-now (#2475) adds
+        // the manual re-delivery affordance. Dispatching steer reservations
+        // survive the reset so an aborted steer resolves as indeterminate
+        // through its normal path (mirrors codexRemoteLauncher's abort).
+        //
+        // A switch/exit handoff passes parkQueue: false — the local launcher
+        // takes over the same session and its queue, so discarding waiting
+        // prompts there would strand rows the operator never stopped.
+        if (options?.parkQueue !== false) {
+            this.session.queue.reset({ preserveDispatchingReservations: true })
+        }
         if (this.abortController && !this.abortController.signal.aborted) {
             this.abortController.abort();
         }
@@ -110,14 +126,14 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
     private async handleSwitchRequest(): Promise<void> {
         logger.debug('[remote]: doSwitch');
         await this.requestExit('switch', async () => {
-            await this.abort();
+            await this.abort({ parkQueue: false });
         });
     }
 
     private async handleExitFromUi(): Promise<void> {
         logger.debug('[remote]: Exiting client via Ctrl-C');
         await this.requestExit('exit', async () => {
-            await this.abort();
+            await this.abort({ parkQueue: false });
         });
     }
 
