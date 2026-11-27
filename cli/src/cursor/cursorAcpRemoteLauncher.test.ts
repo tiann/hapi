@@ -726,6 +726,7 @@ describe('cursorAcpRemoteLauncher', () => {
             candidate.getSessionConfigOptions = vi.fn(() => [{ ...parameter, currentValue: fast }]);
             vi.mocked(candidate.setConfigOption).mockImplementation(async (_id, option, value) => {
                 if (option === 'fast') fast = value;
+                return undefined;
             });
             const rewind = handlers.get(RPC_METHODS.RewindConversation)!;
             await expect(rewind({ cursorSourceSessionId: 'new-acp-session', messageLocalId: 'synthetic-turn' }))
