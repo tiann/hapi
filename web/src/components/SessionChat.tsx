@@ -1,4 +1,5 @@
 import { BranchConversationDialog } from '@/components/BranchConversationDialog'
+import { BranchConversationAgentSchema, resolveBranchSourceDirectory } from '@hapi/protocol/apiTypes'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { Link, useNavigate } from '@tanstack/react-router'
@@ -765,6 +766,7 @@ function SessionChatInner(props: SessionChatProps) {
     const { groupingMode: toolGroupingMode } = getToolCardDisplayPresentation(toolCardDisplayMode)
     const [historyActionPending, setHistoryActionPending] = useState(false)
     const [branchPoint, setBranchPoint] = useState<{ messageLocalId?: string; messageId?: string } | null>(null)
+    const branchAgent = BranchConversationAgentSchema.safeParse(props.session.metadata?.flavor ?? 'claude').data
     const [rewindForkFallback, setRewindForkFallback] = useState<string | null>(null)
     const forkFlow = useForkFlow({
         session: props.session,
@@ -2451,10 +2453,11 @@ function SessionChatInner(props: SessionChatProps) {
                                 ? <p role="status">{t('branch.uncertain')}</p> : null}
                         </div>
                     ) : null}
-                    {branchPoint && props.session.metadata?.machineId ? <BranchConversationDialog
+                    {branchPoint && branchAgent && props.session.metadata?.machineId ? <BranchConversationDialog
                         api={props.api}
                         machineId={props.session.metadata.machineId}
-                        sourceAgent={props.session.metadata.flavor ?? 'claude'}
+                        sourceAgent={branchAgent}
+                        sourceDirectory={resolveBranchSourceDirectory(props.session.metadata)}
                         messageLocalId={branchPoint.messageLocalId}
                         messageId={branchPoint.messageId}
                         onClose={() => setBranchPoint(null)}
@@ -2485,7 +2488,7 @@ function SessionChatInner(props: SessionChatProps) {
                         onRetryMessage={props.onRetryMessage}
                         onContinuePlan={() => focusComposerRef.current?.()}
                         historyActionPending={forkFlow.loading || historyActionPending}
-                        onBranchConversation={Boolean(props.session.metadata?.machineId) && (!props.session.active || !controlledByUser) && ['claude', 'codex'].includes(props.session.metadata?.flavor ?? 'claude')
+                        onBranchConversation={Boolean(props.session.metadata?.machineId) && (!props.session.active || !controlledByUser) && branchAgent
                             ? (messageLocalId, messageId) => setBranchPoint({ messageLocalId, messageId }) : undefined}
                         onForkConversation={controlledByUser && !sessionInactive ? undefined : onForkConversation}
                         onRewindConversation={controlledByUser ? undefined : onRewindConversation}

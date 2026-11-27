@@ -5,14 +5,19 @@ import type { ApiClient } from '@/api/client'
 import { I18nProvider } from '@/lib/i18n-context'
 import { BranchConversationDialog } from './BranchConversationDialog'
 
-function mount(onSubmit = vi.fn().mockResolvedValue(undefined), boundary: { messageLocalId?: string; messageId?: string } = { messageLocalId: 'turn-two' }) {
+function mount(
+    onSubmit = vi.fn().mockResolvedValue(undefined),
+    boundary: { messageLocalId?: string; messageId?: string } = { messageLocalId: 'turn-two' },
+    cursorDirectory?: string
+) {
     const api = {
         getMachineClaudeModels: vi.fn().mockResolvedValue({ success: true, availableModels: [{ value: 'claude-opus-test', displayName: 'Opus test' }] }),
-        getMachineCodexModels: vi.fn().mockResolvedValue({ success: true, models: [{ id: 'codex-test', displayName: 'Codex test' }] })
+        getMachineCodexModels: vi.fn().mockResolvedValue({ success: true, models: [{ id: 'codex-test', displayName: 'Codex test' }] }),
+        getMachineCursorModels: vi.fn().mockResolvedValue({ success: true, availableModels: [{ modelId: 'cursor-test', name: 'Cursor test' }] })
     } as unknown as ApiClient
     render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-        <I18nProvider><BranchConversationDialog api={api} machineId="machine" sourceAgent="claude"
-            {...boundary} onClose={vi.fn()} onSubmit={onSubmit} /></I18nProvider>
+        <I18nProvider><BranchConversationDialog api={api} machineId="machine" sourceAgent={cursorDirectory ? 'cursor' : 'claude'}
+            sourceDirectory={cursorDirectory} {...boundary} onClose={vi.fn()} onSubmit={onSubmit} /></I18nProvider>
     </QueryClientProvider>)
     return { api, onSubmit }
 }
@@ -34,7 +39,7 @@ describe('BranchConversationDialog', () => {
     it('selects another harness, its discovered model, boundary and workspace', async () => {
         const { onSubmit } = mount()
         await screen.findByRole('option', { name: 'Opus test' })
-        fireEvent.change(screen.getByLabelText('Harness'), { target: { value: 'codex' } })
+        fireEvent.change(screen.getByLabelText('Agent'), { target: { value: 'codex' } })
         await screen.findByRole('option', { name: 'Codex test' })
         expect(screen.queryByRole('option', { name: 'Opus test' })).toBeNull()
         fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'codex-test' } })
@@ -46,6 +51,32 @@ describe('BranchConversationDialog', () => {
         expect(onSubmit.mock.calls[0][0]).toMatchObject({ agent: 'codex', model: 'codex-test', boundary: 'after',
             workspace: 'worktree', messageLocalId: 'turn-two', instruction: 'Try another approach' })
         expect(screen.getByText(/Files are not rolled back/)).toBeInTheDocument()
+    })
+    it('uses the current directory when switching a worktree branch to Cursor', async () => {
+        const { api, onSubmit } = mount()
+        fireEvent.change(screen.getByLabelText('Workspace'), { target: { value: 'worktree' } })
+        fireEvent.change(screen.getByLabelText('Agent'), { target: { value: 'cursor' } })
+        await screen.findByRole('option', { name: 'Cursor test' })
+        expect(api.getMachineCursorModels).toHaveBeenCalledWith('machine')
+        expect(screen.queryByLabelText('Workspace')).toBeNull()
+        expect(screen.getByText('Use the current directory')).toBeInTheDocument()
+        fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'cursor-test' } })
+        fireEvent.change(screen.getByLabelText('First instruction in the new branch'), { target: { value: 'Continue' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Create branch' }))
+        await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce())
+        expect(onSubmit.mock.calls[0][0]).toMatchObject({ agent: 'cursor', model: 'cursor-test', workspace: 'current' })
+    })
+    it('requires confirmation of the exact Cursor source directory', async () => {
+        const directory = '/tmp/cursor-worktree'
+        const { onSubmit } = mount(undefined, undefined, directory)
+        expect(screen.getByLabelText('Agent')).toHaveValue('cursor')
+        fireEvent.change(screen.getByLabelText('First instruction in the new branch'), { target: { value: 'Continue' } })
+        const create = screen.getByRole('button', { name: 'Create branch' })
+        expect(create).toBeDisabled()
+        fireEvent.click(screen.getByRole('checkbox', { name: `Use this source directory ${directory}` }))
+        fireEvent.click(create)
+        await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce())
+        expect(onSubmit.mock.calls[0][0]).toMatchObject({ agent: 'cursor', sourceDirectory: directory })
     })
     it('retains request identity after a lost response and requires a new instruction', async () => {
         const onSubmit = vi.fn().mockRejectedValue(new Error('Response lost'))

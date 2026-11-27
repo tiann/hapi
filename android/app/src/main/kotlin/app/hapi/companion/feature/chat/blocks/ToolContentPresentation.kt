@@ -22,7 +22,8 @@ internal fun toolSourceInput(input: JsonElement?, keys: List<String>): String? =
 
 private fun JsonElement?.textValue(): String? = (this as? JsonPrimitive)?.takeIf { it.isString }?.content
 
-internal fun isPlanProposalTool(name: String): Boolean = name == "ExitPlanMode" || name == "exit_plan_mode"
+internal fun isPlanProposalTool(name: String): Boolean =
+    name == "ExitPlanMode" || name == "exit_plan_mode" || name == "CursorCreatePlan"
 
 /** A proposal is input.plan Markdown, not update_plan's checklist or a result. */
 internal fun planProposalMarkdown(tool: ChatToolCall): String? =

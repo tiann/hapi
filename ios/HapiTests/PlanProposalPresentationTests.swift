@@ -38,10 +38,10 @@ final class PlanProposalPresentationTests: XCTestCase {
             .sizeThatFits(in: CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)).height
     }
 
-    func testBothAliasesShowTheEntireMarkdownLayoutWithoutOpeningDetails() {
+    func testPlanToolsShowTheEntireMarkdownLayoutWithoutOpeningDetails() {
         let longPlan = plan + "\n\n" + String(repeating: "Complete paragraph 中文 👩🏽‍💻. ", count: 900) + "\n\nLast paragraph."
         XCTAssertGreaterThan(longPlan.count, toolTextPageSize)
-        for name in ["ExitPlanMode", "exit_plan_mode"] {
+        for name in ["ExitPlanMode", "exit_plan_mode", "CursorCreatePlan"] {
             for source in [plan, longPlan] {
                 // Compare with the full production Markdown renderer, not the
                 // plan component itself: truncation/paged source must fail.
@@ -80,7 +80,7 @@ final class PlanProposalPresentationTests: XCTestCase {
             await cache.prepare([plan])
             let view = NavigationStack {
                 ScrollView {
-                    ToolCallBlockView(block: block("ExitPlanMode", plan: plan), basePath: nil)
+                    ToolCallBlockView(block: block("CursorCreatePlan", plan: plan), basePath: nil)
                         .hapiReadingColumn().padding(.vertical, 16)
                 }
                 .background(theme.background)

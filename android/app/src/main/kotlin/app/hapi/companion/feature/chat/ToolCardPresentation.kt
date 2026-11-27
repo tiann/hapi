@@ -284,6 +284,12 @@ fun toolCardPresentation(
             return ToolCardPresentation(ToolIcons.WEB, query ?: res.getString(R.string.tool_web_search), query?.let { truncate(it, 80) })
         }
 
+        "CursorTask" -> return ToolCardPresentation(
+            ToolIcons.AGENT,
+            getInputStringAny(input, listOf("title", "description")) ?: res.getString(R.string.tool_task),
+            getInputStringAny(input, listOf("prompt"))?.let { truncate(it, 120) },
+        )
+
         "Task", "Agent" -> {
             val inputName = getInputStringAny(input, listOf("name"))
             val teamName = getInputStringAny(input, listOf("team_name"))
@@ -348,7 +354,10 @@ fun toolCardPresentation(
 
         "update_plan" -> return ToolCardPresentation(ToolIcons.PLAN, res.getString(R.string.tool_plan), null)
 
-        "ExitPlanMode", "exit_plan_mode" -> return ToolCardPresentation(ToolIcons.PLAN, res.getString(R.string.tool_plan_proposal), null)
+        "ExitPlanMode", "exit_plan_mode", "CursorCreatePlan" -> return ToolCardPresentation(
+            ToolIcons.PLAN, res.getString(R.string.tool_plan_proposal),
+            if (name == "CursorCreatePlan") getInputStringAny(input, listOf("name")) else null,
+        )
 
         "Skill" -> {
             val skill = getInputStringAny(input, listOf("skill"))

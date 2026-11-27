@@ -38,7 +38,7 @@ Steer, effort and history controls apply to sessions under remote control. The w
 |-------|:-----:|:-------------:|:-------------:|:------:|:--------------------:|
 | Claude Code | ✓ | ✓ | Fork current point | ✓ | ✓ |
 | Codex | ✓ | ✓ (reasoning effort) | Fork (no rewind) | ✓ | ✓ |
-| Cursor Agent | ✓ (ACP sessions) | — | — | — | — |
+| Cursor Agent | ✓ (ACP sessions) | ✓ (model variants) | — | ✓ | ✓ (ACP attach) |
 | Grok Build | — | ✓ | Probed | — | — |
 | GitHub Copilot | — | ✓ | — | — | — |
 | Kimi | — | ✓ | — | — | — |
@@ -48,7 +48,7 @@ Steer, effort and history controls apply to sessions under remote control. The w
 | Pi | ✓ | ✓ | Probed | — | ✓ |
 
 - **Steer** delivers a queued message into the running turn instead of waiting for it to end. See [Composer](./composer.md).
-- **Fork / rewind** use the agent's native history; **Branch** starts a new Claude Code or Codex session from a Claude Code or Codex conversation's visible history, optionally switching agents. See [Conversation history](./conversation-history.md).
+- **Fork / rewind** use the agent's native history. **Branch** starts a fresh session from visible history and lets you switch between Claude Code, Codex and Cursor. See [Conversation history](./conversation-history.md).
 - **Import local history** brings sessions started outside HAPI into the session list. See [Import local sessions](./import-local-sessions.md).
 
 Source: `STEERING_SUPPORTED_FLAVORS` in `shared/src/modes.ts`, `shared/src/flavors.ts`, and the per-agent history capabilities in `shared/src/conversationHistory.ts`.
@@ -228,12 +228,16 @@ These commands are isolated in the queue and forwarded to the agent (ACP prompt 
 
 `/compress` `/summarize` `/compact` `/model` `/multitask` `/best-of-n` `/worktree` `/apply-worktree` `/delete-worktree` `/add-dir` `/context` `/fork` `/auto-review`
 
+The slash menu also lists the commands and skills that the running Cursor ACP session advertises. HAPI sends a listed command in its own turn.
+
 Interactive TUI-only commands (`/config`, `/mcp`, `/sandbox`, `/btw`, `/rewind`, …) are not supported remotely.
 
 ### Modes
 
 - **Local mode** - Run `hapi cursor` from terminal. Full interactive experience.
 - **Remote mode** - Spawn from web/phone when no terminal. New Cursor sessions use `agent acp` with HAPI permission approval, plan/question UI, and richer tool updates. Legacy sessions created before the ACP migration may still resume via the old `agent -p` stream-json path temporarily.
+
+Cursor plan proposals show the full Markdown and approval controls in the web, iOS, and Android apps. A pending plan or question marks the session as waiting for input.
 
 ### Model errors
 

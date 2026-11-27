@@ -73,8 +73,10 @@ class SummaryPatchingTest {
         val permissionOnly = AgentState(requests = mapOf("a" to request("Bash"), "b" to request("Edit")))
         assertEquals(listOf("permission"), SummaryPatching.computePendingRequestKinds(permissionOnly))
 
-        val inputOnly = AgentState(requests = mapOf("a" to request("AskUserQuestion")))
-        assertEquals(listOf("input"), SummaryPatching.computePendingRequestKinds(inputOnly))
+        for (tool in listOf("AskUserQuestion", "CursorAskQuestion", "cursor_ask_question", "CursorCreatePlan")) {
+            val inputOnly = AgentState(requests = mapOf("a" to request(tool)))
+            assertEquals(listOf("input"), SummaryPatching.computePendingRequestKinds(inputOnly), tool)
+        }
 
         // Input encountered first — canonical order is still permission,input.
         val both = AgentState(

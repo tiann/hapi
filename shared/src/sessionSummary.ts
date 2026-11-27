@@ -30,6 +30,7 @@ const INPUT_REQUEST_TOOLS = new Set([
     'ask_user_question',
     'CursorAskQuestion',
     'cursor_ask_question',
+    'CursorCreatePlan',
     'ExitPlanMode',
     'exit_plan_mode',
     'request_user_input'

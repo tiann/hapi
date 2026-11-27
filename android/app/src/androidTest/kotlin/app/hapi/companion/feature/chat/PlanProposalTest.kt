@@ -35,8 +35,11 @@ class PlanProposalTest {
         tool = value, children = children, meta = meta,
     )
 
-    @Test fun plansStartExpandedUpdateInPlaceAndKeepSourceAndErrors() {
-        val block = mutableStateOf(previewToolCall("proposal", "ExitPlanMode", input = mapOf("plan" to "# 实施计划\n\nRead **input.plan**.")))
+    @Test fun cursorPlanStartsExpandedUpdatesInPlaceAndKeepsSourceAndErrors() {
+        val block = mutableStateOf(previewToolCall(
+            "proposal", "CursorCreatePlan",
+            input = mapOf("name" to "Update navigation", "plan" to "# 实施计划\n\nRead **input.plan**."),
+        ))
         block.value = block.value.withTool(block.value.tool.copy(result = JsonNull))
         val projection = TranscriptProjection()
         compose.setContent {
@@ -46,6 +49,7 @@ class PlanProposalTest {
                 }
             }
         }
+        compose.onNodeWithText("Update navigation").assertIsDisplayed()
         compose.onNodeWithText("实施计划").assertIsDisplayed()
         compose.onNodeWithText("Read input.plan.").assertIsDisplayed()
         compose.onNodeWithText("Input").assertDoesNotExist()

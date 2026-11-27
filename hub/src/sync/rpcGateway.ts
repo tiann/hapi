@@ -334,7 +334,8 @@ export class RpcGateway {
         /** Fresh machine-spawn stub — distinct from reopen existingSessionId. */
         reservedSessionId?: string,
         /** Claude: resume the spawned child truncated to this entry uuid. */
-        resumeSessionAt?: string
+        resumeSessionAt?: string,
+        approvedNewDirectoryCreation?: boolean
     ): Promise<
         | { type: 'success'; sessionId: string }
         | {
@@ -372,7 +373,8 @@ export class RpcGateway {
                     copilotAgentMode,
                     startingMode,
                     forkSession: forkSession === true,
-                    resumeSessionAt
+                    resumeSessionAt,
+                    approvedNewDirectoryCreation
                 },
                 agent === 'codex' ? CODEX_SPAWN_RPC_TIMEOUT_MS : DEFAULT_RPC_TIMEOUT_MS
             )

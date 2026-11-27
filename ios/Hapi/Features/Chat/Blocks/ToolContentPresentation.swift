@@ -20,7 +20,7 @@ func toolSourceInput(_ input: JSONValue?, keys: [String]) -> String? {
 }
 
 func isPlanProposalTool(_ name: String) -> Bool {
-    name == "ExitPlanMode" || name == "exit_plan_mode"
+    name == "ExitPlanMode" || name == "exit_plan_mode" || name == "CursorCreatePlan"
 }
 
 /// Plans are documents in input.plan, not update_plan's checklist or a tool result.

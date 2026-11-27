@@ -818,15 +818,25 @@ export const SendMessageRequestSchema = z.object({
 export type SendMessageRequest = z.infer<typeof SendMessageRequestSchema>
 
 /** Portable visible-history branch; native fork remains a separate operation. */
+export const BranchConversationAgentSchema = z.enum(['claude', 'codex', 'cursor'])
+
+export function resolveBranchSourceDirectory(metadata: Session['metadata']): string | undefined {
+    if (metadata?.flavor === 'cursor' && metadata.worktree?.worktreePath) {
+        return metadata.worktree.worktreePath
+    }
+    return metadata?.path
+}
+
 export const BranchConversationRequestSchema = z.object({
     requestId: z.uuid(),
     messageLocalId: z.string().min(1).optional(),
     messageId: z.string().min(1).optional(),
     boundary: z.enum(['before', 'after']).default('before'),
-    agent: z.enum(['claude', 'codex']),
+    agent: BranchConversationAgentSchema,
     model: z.string().trim().min(1).max(256).optional(),
     workspace: z.enum(['current', 'worktree']).default('current'),
     worktreeName: z.string().trim().min(1).max(100).optional(),
+    sourceDirectory: z.string().min(1).max(4096).optional(),
     instruction: z.string().trim().min(1).max(16_000)
 }).strict().refine(data => !(data.messageLocalId && data.messageId), {
     message: 'Specify only one branch boundary identifier', path: ['messageId']

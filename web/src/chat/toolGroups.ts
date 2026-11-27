@@ -66,6 +66,7 @@ const PLAN_TOOL_NAMES = new Set([
     'todowrite',
     'updateplan',
     'exitplanmode',
+    'cursorcreateplan',
     'codexreasoning'
 ])
 
@@ -73,6 +74,7 @@ const MILESTONE_TOOL_NAMES = new Set([
     'task',
     'agent',
     'codexagent',
+    'cursortask',
     'teamcreate',
     'teamdelete',
     'sendmessage',

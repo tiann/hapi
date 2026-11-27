@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
 import { expectAcpKill } from '@/test/expectAcpKill';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import type { EnhancedMode } from './loop';
+import { enqueueCursorUserMessage } from './cursorUserMessageQueue';
 import type { AgentMessage } from '@/agent/types';
 import { ACP_INDETERMINATE_SYMBOL } from '@/agent/backends/acp/AcpStdioTransport';
 
@@ -79,6 +80,8 @@ const harness = vi.hoisted(() => ({
     overlayCleanup: null as ReturnType<typeof vi.fn> | null,
     notifyRuleInstallCalls: [] as Array<{ cwd: string; project?: string | null; agentId?: string | null }>,
     notifyRuleCleanup: null as ReturnType<typeof vi.fn> | null,
+    availableCommands: [] as Array<{ name: string }>,
+    availableCommandsListener: null as ((sessionId: string | null) => void) | null,
     agentActivityListener: null as ((thinking: boolean, source?: string) => void) | null,
     titleSyncControllers: [] as unknown[],
     titleSyncRegistered: [] as unknown[],
@@ -316,6 +319,10 @@ vi.mock('./utils/cursorAcpBackend', () => ({
             respondToPermission: vi.fn(async () => {}),
             onStderrError: vi.fn((handler: typeof harness.stderrErrorHandler) => {
                 harness.stderrErrorHandler = handler;
+            }),
+            getAvailableCommands: vi.fn(() => harness.availableCommands),
+            setAvailableCommandsUpdateListener: vi.fn((listener: typeof harness.availableCommandsListener) => {
+                harness.availableCommandsListener = listener;
             }),
             setUsageUpdateListener: vi.fn(),
             setAgentActivityListener: vi.fn((listener: ((thinking: boolean, source?: string) => void) | null) => {
@@ -648,6 +655,8 @@ describe('cursorAcpRemoteLauncher', () => {
         harness.overlayCleanup = null;
         harness.notifyRuleInstallCalls = [];
         harness.notifyRuleCleanup = null;
+        harness.availableCommands = [];
+        harness.availableCommandsListener = null;
         harness.agentActivityListener = null;
         resetSessionSummaryContractForTests();
         delete process.env.HAPI_SESSION_SUMMARY_CONTRACT;
@@ -672,6 +681,53 @@ describe('cursorAcpRemoteLauncher', () => {
         _resetSharedCursorModelsCacheForTests();
         resetSessionSummaryContractForTests();
         delete process.env.HAPI_SESSION_SUMMARY_CONTRACT;
+    });
+
+    it('publishes the current ACP slash catalog and ignores updates for other sessions', async () => {
+        const session = makeSession(null, { keepQueueOpen: true });
+        harness.availableCommands = [{ name: 'rename-chat' }, { name: 'not a command' }];
+        const running = cursorAcpRemoteLauncher(session);
+        try {
+            await vi.waitFor(() => expect(session.availableSlashCommands).toEqual(new Set(['rename-chat'])));
+            const updateMetadata = vi.mocked(session.client.updateMetadata);
+            const catalogUpdates = () => updateMetadata.mock.calls
+                .map(([update]) => update({} as Parameters<typeof update>[0]).slashCommands)
+                .filter((commands) => commands !== undefined);
+            expect(catalogUpdates()).toEqual([['rename-chat']]);
+
+            harness.availableCommands = [{ name: 'simplify' }];
+            harness.availableCommandsListener?.('unrelated-session');
+            expect(catalogUpdates()).toEqual([['rename-chat']]);
+            harness.availableCommandsListener?.('new-acp-session');
+            expect(catalogUpdates()).toEqual([['rename-chat'], ['simplify']]);
+
+            harness.availableCommands = [];
+            harness.availableCommandsListener?.('new-acp-session');
+            expect(catalogUpdates()).toEqual([['rename-chat'], ['simplify'], []]);
+        } finally {
+            session.queue.close();
+            await running;
+        }
+    });
+
+    it('sends an advertised command separately and does not replay it after a retryable failure', async () => {
+        const session = makeSession(null, { keepQueueOpen: true });
+        harness.availableCommands = [{ name: 'rename-chat' }];
+        harness.promptErrors = [new Error('http/2 stream closed with error code CANCEL')];
+        const running = cursorAcpRemoteLauncher(session);
+        try {
+            await vi.waitFor(() => expect(session.availableSlashCommands?.has('rename-chat')).toBe(true));
+            const mode: EnhancedMode = { permissionMode: 'default' };
+            enqueueCursorUserMessage(session.queue, '/rename-chat New title', mode, 'command', session.availableSlashCommands);
+            enqueueCursorUserMessage(session.queue, 'next task', mode, 'prompt', session.availableSlashCommands);
+            await vi.waitFor(() => expect(harness.prompts).toEqual([
+                [{ type: 'text', text: '/rename-chat New title' }],
+                [{ type: 'text', text: 'next task' }]
+            ]));
+        } finally {
+            session.queue.close();
+            await running;
+        }
     });
 
     it('does not auto-bridge after a soft-steer accepted newer input', async () => {

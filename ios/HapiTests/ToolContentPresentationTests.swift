@@ -27,7 +27,7 @@ final class ToolContentPresentationTests: XCTestCase {
 
     func testPlanProposalsReadInputAndPreserveTheCompleteDocument() throws {
         let plan = "\n# 计划 👩🏽‍💻\n\n" + String(repeating: "- Inspect **input.plan**  \n", count: 1_000) + "last  \n"
-        for name in ["ExitPlanMode", "exit_plan_mode"] {
+        for name in ["ExitPlanMode", "exit_plan_mode", "CursorCreatePlan"] {
             let input: JSONValue = .object(["plan": .string(plan), "extra": .bool(true)])
             let call = tool(name, input: input, result: .null)
             XCTAssertTrue(isPlanProposalTool(name))

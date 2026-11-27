@@ -113,7 +113,9 @@ export async function runCursor(opts: {
             model: queuedModel
         };
         const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
-        enqueueCursorUserMessage(messageQueue, formattedText, enhancedMode, localId);
+        enqueueCursorUserMessage(
+            messageQueue, formattedText, enhancedMode, localId, sessionWrapperRef.current?.availableSlashCommands
+        );
     });
 
     session.onCancelQueuedMessage((localId) => {

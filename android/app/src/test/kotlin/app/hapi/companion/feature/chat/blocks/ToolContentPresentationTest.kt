@@ -34,7 +34,7 @@ class ToolContentPresentationTest {
 
     @Test fun planProposalsReadInputAndPreserveTheCompleteDocument() {
         val plan = "\n# 计划 👩🏽‍💻\n\n" + "- Inspect **input.plan**  \n".repeat(1_000) + "last  \n"
-        for (name in listOf("ExitPlanMode", "exit_plan_mode")) {
+        for (name in listOf("ExitPlanMode", "exit_plan_mode", "CursorCreatePlan")) {
             val input = JsonObject(mapOf("plan" to JsonPrimitive(plan), "extra" to JsonPrimitive(true)))
             val call = tool(name, input, JsonNull)
             assertTrue(isPlanProposalTool(name))

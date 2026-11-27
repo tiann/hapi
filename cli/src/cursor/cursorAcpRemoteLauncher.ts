@@ -35,7 +35,11 @@ import {
 } from './utils/cursorModeConfig';
 import { CURSOR_AUTO_MODEL_ID, cursorSpawnModelId, isCursorAutoModelId } from '@hapi/protocol';
 import { CURSOR_PLAN_CONTINUE } from './utils/cursorPlanContinue';
-import { cursorPassThroughStatusMessage, parseCursorSpecialCommand } from './cursorSpecialCommands';
+import {
+    cursorPassThroughStatusMessage,
+    isAdvertisedCursorSlashCommand,
+    parseCursorSpecialCommand
+} from './cursorSpecialCommands';
 import { buildCursorModelsSeedPayload, seedCursorModelsCache } from '@/modules/common/cursorModels';
 import { readSharedCursorModelsCache } from '@/modules/common/cursorModelsSharedCache';
 import type { AcpSdkBackend } from '@/agent/backends/acp';
@@ -185,6 +189,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
      */
     private activePromptGenerationAtStart: number | null = null;
     private lastUserMessage: string | null = null;
+    private lastUserMessageWasSlashCommand = false;
     /** Set only while the bridge prompt itself is the active turn. */
     private bridgingForEventId: string | null = null;
     private bridgingSource: 'auto' | 'manual' | null = null;
@@ -536,6 +541,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             throw new Error('Failed to establish Cursor ACP session');
         }
         this.acpSessionId = acpSessionId;
+        this.wireAvailableCommands(backend, acpSessionId);
         this.spawnedWithCliAuto = cursorSpawnModelId(spawnModel) === CURSOR_AUTO_MODEL_ID;
 
         if (acpSessionId !== resumeSessionId) {
@@ -622,7 +628,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     return { steered: false, error: 'Message not in queue' };
                 }
                 const isControlCommand = Boolean(taken.item.isolate)
-                    || parseCursorSpecialCommand(taken.item.message).type !== null;
+                    || parseCursorSpecialCommand(taken.item.message).type !== null
+                    || isAdvertisedCursorSlashCommand(taken.item.message, session.availableSlashCommands);
                 if (isControlCommand) {
                     session.queue.restoreReservation(taken);
                     return { steered: false, error: 'Control commands cannot be steered' };
@@ -1135,6 +1142,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     this.lastUserMessage = batch.message;
 
                     const specialCommand = parseCursorSpecialCommand(batch.message);
+                    this.lastUserMessageWasSlashCommand = specialCommand.type === 'pass-through'
+                        || (batch.isolate && batch.message.startsWith('/'))
+                        || isAdvertisedCursorSlashCommand(batch.message, session.availableSlashCommands);
                     if (specialCommand.type === 'pass-through') {
                         messageBuffer.addMessage(cursorPassThroughStatusMessage(specialCommand.command), 'status');
                     }
@@ -1264,6 +1274,18 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                             }
                             caughtRetryableError = error;
                             this.pendingRetryableError = error instanceof Error ? error.message : String(error);
+                        }
+
+                        // A command can take effect before Cursor reports a tool call.
+                        if (this.lastUserMessageWasSlashCommand) {
+                            const message = this.pendingRetryableError ?? 'Cursor command failed';
+                            const failure = settleFailure(caughtRetryableError ?? message);
+                            this.surfacePromptFailure(message, { deferFooter: true });
+                            this.pendingStderrFailure = null;
+                            this.pendingTextFailure = null;
+                            if (failure) this.recordModelError(failure);
+                            this.stampBlockedFooter(message);
+                            break;
                         }
 
                         // Capture the primary attempt's retryable failure and its
@@ -1468,6 +1490,25 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             // disconnects the ACP transport, rejecting pending soft-steer
             // requests and settling any waiters.
         }
+    }
+
+    private wireAvailableCommands(backend: AcpSdkBackend, sessionId: string): void {
+        const session = this.session;
+        const publish = () => {
+            if (this.backend !== backend || this.sessionTeardownStarted) return;
+            const commands = new Set(backend.getAvailableCommands(sessionId)
+                .map((command) => command.name)
+                .filter((name) => /^[^\s/]+$/.test(name)));
+            const previous = session.availableSlashCommands
+                ?? new Set(session.client.getMetadata()?.slashCommands);
+            session.availableSlashCommands = commands;
+            if (previous.size === commands.size && [...commands].every((name) => previous.has(name))) return;
+            session.client.updateMetadata((metadata) => ({ ...metadata, slashCommands: [...commands] }));
+        };
+        backend.setAvailableCommandsUpdateListener((updatedSessionId) => {
+            if (updatedSessionId === null || updatedSessionId === sessionId) publish();
+        });
+        publish();
     }
 
     private async disconnectBackend(backend = this.backend): Promise<void> {
@@ -1907,10 +1948,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         // and would re-run completed shell/edit tools (same gate as ordinary retry).
         const fullMessage = this.lastUserMessage ?? '';
         const fitsBridgeLimit = fullMessage.length <= MAX_LAST_USER_MESSAGE_CHARS;
-        const isPassThroughCommand = parseCursorSpecialCommand(fullMessage).type === 'pass-through';
         const bridgeable = opts?.bridgeable !== false
             && fitsBridgeLimit
-            && !isPassThroughCommand
+            && !this.lastUserMessageWasSlashCommand
             && !this.attemptProducedToolActivity
             && !this.turnHasSteeredInput;
         const lastUserMessage = bridgeable ? fullMessage : '';
@@ -2617,6 +2657,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
         this.backend = backend;
         this.acpSessionId = acpSessionId;
+        this.wireAvailableCommands(backend, acpSessionId);
 
         // Fresh ACP process — bookkeeping must reflect THIS spawn's flags, not
         // the prior process (e.g. started with --auto-review, relaunched without).

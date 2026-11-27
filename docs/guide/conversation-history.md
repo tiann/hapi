@@ -1,5 +1,5 @@
 ---
-description: "Fork, rewind, branch across harnesses and export HAPI conversations, with per-agent support for Claude Code, Codex, OpenCode, Grok and Pi."
+description: "Fork, rewind, branch across harnesses and export HAPI conversations, with per-agent support for Claude Code, Codex, Cursor, OpenCode, Grok and Pi."
 ---
 
 # Fork, rewind, branch and export
@@ -10,7 +10,7 @@ HAPI gives you four ways to work with a conversation's history:
 |--------|--------------|----------------|
 | **Fork** | Creates a new session that continues from a point in the agent's own (native) history | Unchanged |
 | **Rewind** | Removes history from a user message onward, in place | Shortened permanently |
-| **Branch with options** | Starts a fresh Claude Code or Codex session that gets the visible conversation text as reference, with a harness, model and workspace you choose | Unchanged |
+| **Branch with options** | Starts a fresh Claude Code, Codex or Cursor session that gets the visible conversation text as reference | Unchanged |
 | **Export** | Downloads the conversation as JSON or Markdown | Unchanged |
 
 None of these touch your files. A fork or rewind changes only the conversation; your working tree stays as it is. To get a clean copy of the code, branch into a Git worktree (see [Branch with options](#branch-with-options)).
@@ -26,7 +26,8 @@ Fork and rewind use each agent's own history API, so support depends on the agen
 | Grok Build | Yes¹ | Yes¹ | Yes¹ | — | — |
 | OpenCode | v2 only¹ | v2 only¹ | v2 only¹ | — | — |
 | Pi | Yes¹ | Yes¹ | Yes¹ | — | — |
-| Gemini, Kimi, Copilot, Cursor, Antigravity, DeepSeek Harness | — | — | — | — | — |
+| Cursor | — | — | — | — | Yes |
+| Gemini, Kimi, Copilot, Antigravity, DeepSeek Harness | — | — | — | — | — |
 
 ¹ Detected when the session starts. HAPI shows the control only if the installed agent version provides the API:
 
@@ -82,7 +83,7 @@ You can't rewind while the agent is working, while messages are queued, in local
 
 ## Branch with options
 
-**Branch with options** starts a brand-new session in a harness you choose, seeded with the conversation's visible text. A fork copies the agent's internal state. A branch doesn't, so it works across harnesses: you can branch a Claude conversation into Codex, or the other way round.
+**Branch with options** starts a new session in the agent you choose, seeded with the conversation's visible text. You can branch between Claude Code, Codex and Cursor.
 
 **Where:** web app only. Use the **Options** button (fork icon) in a message's action row:
 
@@ -95,16 +96,17 @@ You can't rewind while the agent is working, while messages are queued, in local
 
 | Option | Choices |
 |--------|---------|
-| Harness | Claude Code or Codex |
-| Model | **Harness default**, or a model from the source machine's catalog for that harness |
-| Workspace | **Use the current directory**, or **Create a Git worktree from current HEAD**. A new worktree doesn't copy uncommitted changes. |
+| Agent | Claude Code, Codex or Cursor |
+| Model | **Harness default**, or a model from the source machine's catalog for that agent |
+| Workspace | **Use the current directory**, or **Create a Git worktree from current HEAD** for Claude Code and Codex destinations. A new worktree starts with committed files from HEAD. |
 | First instruction | Required, up to 16,000 characters |
 
 **What carries over:** only user/assistant text and tool observations, labelled as historical reference. Hidden reasoning, system prompts, attachments and native session state are not carried over. The new session is titled **Branch: _source title_** and shows a banner that links back to the source.
 
 **Requirements and limits:**
 
-- The source must be a Claude or Codex session, and its machine must be online.
+- The source must be a Claude Code, Codex or Cursor session, and its machine must be online.
+- For a Cursor source, confirm the directory shown in the dialog. HAPI uses the recorded worktree path when available and otherwise shows the session's launch directory.
 - The source can't have a turn running or queued messages. Inactive sources can be branched.
 - The reference text must fit in 256 KiB. If it doesn't, pick an earlier boundary.
 
