@@ -4,7 +4,7 @@ import { safeCopyToClipboard } from '@/lib/clipboard'
 import { buildSessionReferenceText } from '@/lib/sessionReference'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useAnchoredMenu } from '@/hooks/useAnchoredMenu'
-import { ArchiveIcon, CheckIcon, CopyIcon, ForkIcon } from '@/components/icons'
+import { ArchiveIcon, CheckIcon, CopyIcon, FolderIcon, ForkIcon } from '@/components/icons'
 import { buildSessionWindowPath } from '@/lib/sessionNavigation'
 import { getSessionManualUnreadAt, sessionNeedsReadAction, markListedSessionSeen, markSessionUnread, useSessionLastSeenVersion } from '@/lib/sessionLastSeen'
 import type { SessionSummary } from '@/types/api'
@@ -69,6 +69,7 @@ type SessionActionMenuProps = {
     sessionActive: boolean
     canArchive?: boolean
     onRename: () => void
+    onMoveToFolder?: () => void
     onLinkPr?: () => void
     /** When linked, shown at the top of the long-press / more menu. */
     linkedPr?: SessionActionMenuLinkedPr | null
@@ -273,6 +274,7 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
         sessionActive,
         canArchive = sessionActive,
         onRename,
+        onMoveToFolder,
         onLinkPr,
         linkedPr,
         sessionPinned = false,
@@ -423,6 +425,18 @@ export function SessionActionMenu(props: SessionActionMenuProps) {
                     <EditIcon className="text-[var(--app-hint)]" />
                     {t('session.action.rename')}
                 </button>
+
+                {onMoveToFolder ? (
+                    <button
+                        type="button"
+                        role="menuitem"
+                        className={`${baseItemClassName} hover:bg-[var(--app-subtle-bg)]`}
+                        onClick={() => { onClose(); onMoveToFolder() }}
+                    >
+                        <FolderIcon className="h-[18px] w-[18px] text-[var(--app-hint)]" />
+                        {t('sessions.folders.moveTo')}
+                    </button>
+                ) : null}
 
                 {onLinkPr ? (
                     <button

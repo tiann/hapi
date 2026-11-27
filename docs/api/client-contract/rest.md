@@ -70,6 +70,19 @@ the `content-search` routes above. List badges come from
 `pendingRequests` (capped at 5, oldest-first) — do not derive counts from
 `pendingRequests.length`.
 
+### Session folders
+
+Source: `hub/src/web/routes/sessionFolders.ts`. Requests and response types
+are defined in `shared/src/apiTypes.ts`. Folders and assignments are scoped
+to the caller’s namespace.
+
+| Method & path | Request | Response |
+|---|---|---|
+| `GET /api/session-folders` | — | `{folders: [{id, name, parentId}], assignments}` where `assignments` maps session IDs to folder IDs |
+| `POST /api/session-folders` | `{name, parentId}` where `null` creates a root folder | `201 {folder}`; `404` if the parent is missing |
+| `PUT /api/sessions/:id/folder` | `{folderId}` where `null` removes the assignment | `{ok: true}`; `404` if the session or folder is missing |
+| `DELETE /api/session-folders/:id` | — | `{ok: true}`; deletes the folder tree and clears its assignments while keeping every session |
+
 ### Sessions — lifecycle
 
 Source: `hub/src/web/routes/sessions.ts`; request schemas in `shared/src/apiTypes.ts`.

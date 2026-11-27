@@ -62,6 +62,17 @@ A session counts as working while it has open tool calls, even between agent
 rounds. Autonomous loops that keep running tools therefore show as working
 rather than as waiting for input.
 
+## Custom folders
+
+Use **New folder** in the session list to create a folder. Open it and choose
+**New subfolder** to organize sessions further. From a session’s row menu,
+choose **Move to folder** and select a destination. Choose **No folder** to
+return the session to its regular list grouping.
+
+The Hub saves folders and assignments for the current namespace. Search can
+find sessions across folders. Deleting a folder removes its subfolders and
+returns their sessions to the regular list.
+
 ## Text search
 
 The search field has two scopes. The icon at its left edge switches between

@@ -1,5 +1,6 @@
 export const queryKeys = {
     sessions: ['sessions'] as const,
+    sessionFolders: ['session-folders'] as const,
     scratchlistSessionIds: ['scratchlist-session-ids'] as const,
     session: (sessionId: string) => ['session', sessionId] as const,
     messages: (sessionId: string) => ['messages', sessionId] as const,

@@ -145,6 +145,21 @@ export type AuthResponse = {
 }
 
 export type SessionsResponse = { sessions: SessionSummary[]; serverTime?: number }
+export type SessionFolder = { id: string; name: string; parentId: string | null }
+export type SessionFoldersResponse = { folders: SessionFolder[]; assignments: Record<string, string> }
+
+const SessionFolderIdSchema = z.string().uuid()
+export const CreateSessionFolderRequestSchema = z.object({
+    name: z.string().trim().min(1).max(100),
+    parentId: SessionFolderIdSchema.nullable()
+})
+export type CreateSessionFolderRequest = z.infer<typeof CreateSessionFolderRequestSchema>
+export type CreateSessionFolderResponse = { folder: SessionFolder }
+
+export const SetSessionFolderRequestSchema = z.object({
+    folderId: SessionFolderIdSchema.nullable()
+})
+export type SetSessionFolderRequest = z.infer<typeof SetSessionFolderRequestSchema>
 export type ScratchlistSessionIdsResponse = { sessionIds: string[] }
 export type SessionContentMatch = {
     messageId: string
