@@ -77,6 +77,7 @@ function makeHarness(options: { active?: boolean; archived?: boolean } = {}) {
         runs,
         setClock: (value: number) => { clock = value },
         advance: (ms: number) => { clock += ms },
+        now: () => clock,
         /** The CLI acknowledges taking a prompt. */
         take: (localId: string, at = clock) => {
             if (at !== clock) clock = at
@@ -762,6 +763,33 @@ describe('SessionTaskRunner', () => {
             h.take(h.sent[0].localId)
             await h.runner.tick()
             expect(h.task(created.id)).toMatchObject({ lastError: null, pendingLocalId: null, runCount: 1 })
+        })
+
+        it('clears prompt_indeterminate as soon as the user has retried the prompt, while it still waits', async () => {
+            const h: Harness = makeHarness()
+            const created = h.create({
+                sessionId: h.sessionId, kind: 'queue', items: ['a', 'b'], intervalMs: 10 * MINUTE, maxRuns: null, nextRunAt: T0
+            })
+            await h.runner.tick()
+            h.store.messages.setMessagesDeliveryState(h.sessionId, [h.sent[0].localId], 'indeterminate')
+            await h.runner.tick()
+            expect(h.task(created.id)?.lastError).toBe('prompt_indeterminate')
+
+            // Retry queues the row again (being dispatched, or plainly queued).
+            // The prompt is plainly waiting from then on, so the task must stop
+            // saying its take is unknown — before the agent has taken it.
+            for (const deliveryState of ['dispatching', 'queued'] as const) {
+                h.store.messages.setMessagesDeliveryState(h.sessionId, [h.sent[0].localId], deliveryState)
+                h.store.sessionTasks.setError(created.id, 'prompt_indeterminate', h.now())
+                const announced = h.changes.length
+                h.advance(MINUTE)
+                await h.runner.tick()
+                expect(h.task(created.id)).toMatchObject({ lastError: null, pendingLocalId: h.sent[0].localId, runCount: 1 })
+                expect(h.changes).toHaveLength(announced + 1)
+                // Nothing new to say on the next tick.
+                await h.runner.tick()
+                expect(h.changes).toHaveLength(announced + 1)
+            }
         })
     })
 

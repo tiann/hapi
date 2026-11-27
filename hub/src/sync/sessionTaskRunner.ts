@@ -191,6 +191,11 @@ export class SessionTaskRunner {
             return
         }
 
+        // The row is queued again (Retry in the queued-message bar): it is plainly
+        // waiting once more, so the task stops saying its take is unknown — now,
+        // not when the agent gets to it.
+        if (task.lastError === 'prompt_indeterminate' && store.setError(task.id, null, now)) this.changed(task)
+
         // Still queued (or being dispatched). A repeat task that came due again
         // while its previous prompt waits: skip the slot. The first skipped slot
         // of a prompt is a line in the history, then at most one an hour for as
