@@ -73,6 +73,7 @@ type Props = {
     onMirrorChange: (state: { text: string; selection: ComposerSelection }) => void
     onKeyDown?: (e: ReactKeyboardEvent<HTMLDivElement>) => void
     onPaste?: (e: ReactClipboardEvent<HTMLDivElement>) => void
+    onTextPaste?: (text: string, insert: () => void) => boolean
     onFocus?: (e: ReactFocusEvent<HTMLDivElement>) => void
     onEdit?: () => void
     /** Live session meta for chip hover / aria-label (from useSessions). */
@@ -684,6 +685,7 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         onMirrorChange,
         onKeyDown,
         onPaste,
+        onTextPaste,
         onFocus,
         onEdit,
         resolveSessionMentionTooltip,
@@ -981,11 +983,10 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         emitFromDom()
     }, [clearMentionTooltip, emitFromDom, onEdit])
 
-    const insertPlainClipboardText = useCallback((text: string) => {
+    const insertPlainClipboardText = useCallback((text: string, selection: ComposerSelection) => {
         const root = rootRef.current
         if (!root || !text) return
         const segments = segmentsFromEditor(root)
-        const selection = getMirrorSelection(root)
         // Parse wire markdown so `[title](/sessions/<id>)` paste restores chips
         // (copy/cut put that format on the clipboard). Plain prose stays text.
         const result = insertSegmentsInComposerSegments(
@@ -1024,8 +1025,13 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         // Contenteditable default paste inserts HTML; nested blocks collapse in
         // segmentsFromEditor without depth-aware breaks. Force plain text.
         e.preventDefault()
-        insertPlainClipboardText(e.clipboardData?.getData('text/plain') ?? '')
-    }, [insertPlainClipboardText, onPaste])
+        const root = rootRef.current
+        const text = e.clipboardData?.getData('text/plain') ?? ''
+        if (!root || !text) return
+        const selection = getMirrorSelection(root)
+        const insert = () => insertPlainClipboardText(text, selection)
+        if (!onTextPaste?.(text, insert)) insert()
+    }, [insertPlainClipboardText, onPaste, onTextPaste])
 
     const applyBackwardDelete = useCallback((
         root: HTMLElement,

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { flushSync } from 'react-dom'
 import { useRef, useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -363,6 +363,37 @@ describe('RichComposerInput paste', () => {
         })
 
         expect(onPaste).toHaveBeenCalledTimes(1)
+    })
+
+    it('defers text paste and uses the original selection after focus moves', () => {
+        const onTextPaste = vi.fn((_text: string, _insert: () => void) => true)
+        const onValueChange = vi.fn()
+        render(
+            <RichComposerInput
+                value="before selected after"
+                onValueChange={onValueChange}
+                onMirrorChange={() => {}}
+                onTextPaste={onTextPaste}
+            />
+        )
+        const editor = screen.getByTestId('rich-composer-input')
+        editor.focus()
+        const range = document.createRange()
+        range.setStart(editor.firstChild!, 7)
+        range.setEnd(editor.firstChild!, 15)
+        const selection = window.getSelection()!
+        selection.removeAllRanges()
+        selection.addRange(range)
+
+        fireEvent.paste(editor, {
+            clipboardData: { files: [], getData: () => '已選😀' },
+        })
+        expect(onValueChange).not.toHaveBeenCalled()
+        const [text, insert] = onTextPaste.mock.calls[0]
+        expect(text).toBe('已選😀')
+        selection.removeAllRanges()
+        act(insert)
+        expect(onValueChange).toHaveBeenLastCalledWith('before 已選😀 after')
     })
 
     it('inserts plain text without calling onPaste when no files are pasted', () => {

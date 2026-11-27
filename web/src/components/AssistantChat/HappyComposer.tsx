@@ -60,6 +60,9 @@ import { SortableComposerAttachments } from '@/components/AssistantChat/Sortable
 import { ComposerParkingContext } from '@/components/AssistantChat/composerParkingContext'
 import type { ScratchlistParkResult } from '@/lib/scratchlistAttachmentFlow'
 import { useTranslation } from '@/lib/use-translation'
+import { isLongMessage } from '@/lib/longMessage'
+import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { getModelOptionsForFlavor, getNextModelForFlavor } from './modelOptions'
 import { getClaudeComposerEffortOptions } from './claudeEffortOptions'
 import { getCodexComposerReasoningEffortOptions } from './codexReasoningEffortOptions'
@@ -1534,10 +1537,47 @@ export function HappyComposer(props: {
         }))
     }, [])
 
-    const handlePaste = useCallback(async (e: ReactClipboardEvent<HTMLTextAreaElement | HTMLDivElement>) => {
+    const [longPaste, setLongPaste] = useState<{ text: string; insert: () => void } | null>(null)
+    const canAttachPaste = !controlsDisabled && pendingSchedule == null && props.attachmentsEnabled !== false
+
+    const offerLongPaste = useCallback((text: string, insert: () => void) => {
+        if (!canAttachPaste || !isLongMessage(text)) return false
+        setLongPaste({ text, insert })
+        return true
+    }, [canAttachPaste])
+
+    const addPastedFiles = useCallback(async (files: File[]) => {
+        try {
+            for (const file of files) {
+                await api.composer().addAttachment(file)
+            }
+        } catch (error) {
+            console.error('Error adding pasted file:', error)
+        }
+    }, [api])
+
+    const handlePaste = useCallback((e: ReactClipboardEvent<HTMLTextAreaElement | HTMLDivElement>) => {
         const files = Array.from(e.clipboardData?.files || [])
 
-        if (files.length === 0) return
+        if (files.length === 0) {
+            const input = e.currentTarget
+            if (!(input instanceof HTMLTextAreaElement)) return
+            const { value, selectionStart, selectionEnd } = input
+            const text = e.clipboardData.getData('text/plain')
+            const handled = offerLongPaste(text, () => {
+                const pastedText = text.replace(/\r\n?/g, '\n')
+                const nextText = value.slice(0, selectionStart) + pastedText + value.slice(selectionEnd)
+                const cursor = selectionStart + pastedText.length
+                api.composer().setText(nextText)
+                setInputState({ text: nextText, selection: { start: cursor, end: cursor } })
+                handleUserEdit()
+                requestAnimationFrame(() => {
+                    if (textareaRef.current === input) input.setSelectionRange(cursor, cursor)
+                })
+            })
+            if (handled) e.preventDefault()
+            return
+        }
 
         // The backend rejects scheduledAt + attachments (per-CLI upload dir is
         // torn down before a mature emit could read the files). The button-based
@@ -1551,14 +1591,8 @@ export function HappyComposer(props: {
 
         e.preventDefault()
 
-        try {
-            for (const file of files) {
-                await api.composer().addAttachment(file)
-            }
-        } catch (error) {
-            console.error('Error adding pasted file:', error)
-        }
-    }, [api, pendingSchedule])
+        void addPastedFiles(files)
+    }, [addPastedFiles, api, handleUserEdit, offerLongPaste, pendingSchedule])
 
     // Opens (or closes) the settings sheet. `section` anchors the sheet to a
     // single section ('model' / 'effort'); the gear passes nothing = full sheet.
@@ -2463,6 +2497,7 @@ export function HappyComposer(props: {
                                             onMirrorChange={handleRichMirrorChange}
                                             onKeyDown={handleKeyDown}
                                             onPaste={handlePaste}
+                                            onTextPaste={offerLongPaste}
                                             onFocus={() => engageRichComposerFue()}
                                             resolveSessionMentionTooltip={resolveSessionMentionTooltip}
                                             onEdit={handleRichEdit}
@@ -2606,6 +2641,45 @@ export function HappyComposer(props: {
                         </div>
                     </div>
                 </ComposerPrimitive.Root>
+                <Dialog open={longPaste !== null} onOpenChange={(open) => { if (!open) setLongPaste(null) }}>
+                    <DialogContent
+                        aria-describedby={undefined}
+                        onCloseAutoFocus={(event) => {
+                            event.preventDefault()
+                            if (richMentionsEnabled) richInputRef.current?.focus()
+                            else textareaRef.current?.focus({ preventScroll: true })
+                        }}
+                    >
+                        <DialogHeader>
+                            <DialogTitle>{t('composer.longPaste.title')}</DialogTitle>
+                        </DialogHeader>
+                        <div className="mt-4 flex flex-wrap justify-end gap-2">
+                            <Button
+                                type="button"
+                                variant="secondary"
+                                disabled={controlsDisabled}
+                                onClick={() => {
+                                    longPaste?.insert()
+                                    setLongPaste(null)
+                                }}
+                            >
+                                {t('composer.longPaste.asText')}
+                            </Button>
+                            <Button
+                                type="button"
+                                disabled={!canAttachPaste}
+                                onClick={() => {
+                                    if (!longPaste) return
+                                    const file = new File([longPaste.text], 'pasted-text.txt', { type: 'text/plain' })
+                                    void addPastedFiles([file])
+                                    setLongPaste(null)
+                                }}
+                            >
+                                {t('composer.longPaste.asFile')}
+                            </Button>
+                        </div>
+                    </DialogContent>
+                </Dialog>
             </div>
         </div>
         </ComposerParkingContext.Provider>

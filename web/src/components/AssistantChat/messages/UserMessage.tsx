@@ -8,6 +8,7 @@ import { UserBubbleContent, getUserBubbleClassName, shouldShowMessageStatus } fr
 import { CliOutputBlock } from '@/components/CliOutputBlock'
 import { getConversationMessageAnchorId } from '@/chat/outline'
 import { MessageActions, isConversationHistoryBlocked } from '@/components/AssistantChat/messages/MessageActions'
+import { isLongMessage } from '@/lib/longMessage'
 import { useTranslation } from '@/lib/use-translation'
 import { MessageTimestamp } from '@/components/AssistantChat/messages/MessageTimestamp'
 
@@ -65,6 +66,7 @@ export function HappyUserMessage() {
         s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
     )?.translationFailed === true)
     const [showSentText, setShowSentText] = useState(false)
+    const [expanded, setExpanded] = useState(false)
     const steered = useAuiState(({ message }) => (
         message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
     )?.steered === true)
@@ -157,6 +159,11 @@ export function HappyUserMessage() {
     const isTranslated = typeof translatedFrom === 'string' && importIndex < 0
     const visibleText = isTranslated && !showSentText ? translatedFrom : sentText
     const hasText = visibleText.length > 0
+    const collapsible = isLongMessage(visibleText)
+    const textId = `${elementId}-text`
+    const preview = collapsible && !expanded
+        ? (visibleText.match(/^.{1,1000}/su)?.[0] ?? '').split(/\r\n|[\r\n]/, 10).join('\n')
+        : null
     const hasAttachments = attachments && attachments.length > 0
 
     return (
@@ -169,7 +176,24 @@ export function HappyUserMessage() {
             <div className={getUserBubbleClassName(status)}>
                 <div className="flex items-start gap-2">
                     <div className="min-w-0 flex-1">
-                        {hasText ? <UserBubbleContent text={visibleText} /> : null}
+                        {collapsible ? (
+                            <>
+                                <div id={textId}>
+                                    {preview !== null ? (
+                                        <div className="line-clamp-10 whitespace-pre-wrap [overflow-wrap:anywhere]">{preview}</div>
+                                    ) : <UserBubbleContent text={visibleText} />}
+                                </div>
+                                <button
+                                    type="button"
+                                    aria-controls={textId}
+                                    aria-expanded={expanded}
+                                    onClick={() => setExpanded((value) => !value)}
+                                    className="mt-1 min-h-6 cursor-pointer text-xs underline underline-offset-2"
+                                >
+                                    {t(expanded ? 'chat.longMessage.showLess' : 'chat.longMessage.showMore')}
+                                </button>
+                            </>
+                        ) : hasText ? <UserBubbleContent text={visibleText} /> : null}
                         {importedReference ? <details className="mt-2 text-xs">
                             <summary className="cursor-pointer">{t('branch.importedReference')}</summary>
                             <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words">{importedReference}</pre>
