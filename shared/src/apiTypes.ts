@@ -935,6 +935,8 @@ export type OpenCodeRewindReport = z.infer<typeof OpenCodeRewindReportSchema>
 
 export type RewindConversationRpcResult = {
     success: true
+    /** Exact ACP-loaded Cursor copy, prepared before the Hub commits a rewind. */
+    nativeSessionId?: string
     /** Truncate HAPI transcript at/after this localId, then accept rehydrated history. */
     truncateFromLocalId: string
     messages?: Array<{

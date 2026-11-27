@@ -2225,6 +2225,10 @@ export class SyncEngine {
 
     /** Stale localIds must fail before native fork/rewind mutates agent history. */
     private assertInvokedHistoryBoundary(sessionId: string, messageLocalId: string): void {
+        const metadata = this.getSession(sessionId)?.metadata
+        if (metadata?.flavor === 'cursor' && metadata.conversationHistoryPoints?.[messageLocalId] !== true) {
+            throw new Error('No verified Cursor checkpoint for this message')
+        }
         const boundary = this.store.messages.getAllMessages(sessionId).find(
             (message) => message.localId === messageLocalId && message.invokedAt != null
         )
@@ -2293,7 +2297,7 @@ export class SyncEngine {
     private async waitForExactNativeForkBound(
         childId: string,
         expectedNativeSessionId: string,
-        metadataKey: 'grokSessionId' | 'piSessionId' | 'opencodeSessionId' | 'codexSessionId',
+        metadataKey: 'cursorSessionId' | 'grokSessionId' | 'piSessionId' | 'opencodeSessionId' | 'codexSessionId',
         requireSessionReady: boolean,
         timeoutMs: number = 60_000
     ): Promise<boolean> {
@@ -3061,11 +3065,15 @@ export class SyncEngine {
             return { type: 'error', message: 'Session is missing machine or path metadata' }
         }
 
+        // Cursor copies a native store while the Hub owns the visible transcript.
+        // Refuse to pair the snapshot with rows that arrived during that copy.
+        const cursorSourceId = source.metadata?.flavor === 'cursor' ? source.metadata.cursorSessionId : undefined
+        const cursorRows = cursorSourceId ? JSON.stringify(this.store.messages.getAllMessages(sessionId)) : undefined
         let rpcResult: Awaited<ReturnType<RpcGateway['forkConversation']>>
         try {
             rpcResult = await this.rpcGateway.forkConversation(
                 sessionId,
-                latestCompleted
+                cursorSourceId ? { cursorSourceSessionId: cursorSourceId, messageLocalId } : latestCompleted
                     ? { latestCompleted: true, ...(boundary?.nativeTurnId ? { lastTurnId: boundary.nativeTurnId } : {}) }
                     : messageLocalId
                         ? { messageLocalId }
@@ -3112,6 +3120,11 @@ export class SyncEngine {
         source = refreshedSource
 
         const flavor = this.resolveFlavor(source)
+        if (flavor === 'cursor' && (!cursorSourceId || source.metadata?.cursorSessionProtocol !== 'acp'
+            || source.metadata.cursorSessionId !== cursorSourceId || rpcResult.nativeSessionId === cursorSourceId
+            || JSON.stringify(this.store.messages.getAllMessages(sessionId)) !== cursorRows)) {
+            return { type: 'error', message: 'Cursor source changed or did not produce a distinct native fork' }
+        }
         if (flavor === 'opencode'
             && (rpcResult.opencodeHistoryCheckpoint?.sessionId !== rpcResult.nativeSessionId
                 || rpcResult.opencodeHistoryCheckpoint.localMessageIds?.length !== 0
@@ -3163,6 +3176,11 @@ export class SyncEngine {
         } else if (flavor === 'opencode') {
             childMetadata.opencodeHistoryCheckpoint = rpcResult.opencodeHistoryCheckpoint
             childMetadata.opencodeForkPending = true
+        } else if (flavor === 'cursor') {
+            childMetadata.cursorSessionId = rpcResult.nativeSessionId
+            childMetadata.cursorSessionProtocol = 'acp'
+            // Cursor checkpoints belong to the parent launcher instance.
+            childMetadata.conversationHistoryPoints = {}
         } else if (flavor === 'grok') {
             childMetadata.grokSessionId = rpcResult.nativeSessionId
         } else if (flavor === 'pi') {
@@ -3261,12 +3279,12 @@ export class SyncEngine {
                 }
             }
 
-            if (flavor === 'pi') {
+            if (flavor === 'pi' || flavor === 'cursor') {
                 const bound = await this.waitForExactNativeForkBound(
-                    childId, rpcResult.nativeSessionId, 'piSessionId', true
+                    childId, rpcResult.nativeSessionId, flavor === 'pi' ? 'piSessionId' : 'cursorSessionId', true
                 )
                 if (!bound) {
-                    throw new Error('Pi fork could not load the exact native session before ready')
+                    throw new Error(`${flavor === 'pi' ? 'Pi' : 'Cursor'} fork could not load the exact native session before ready`)
                 }
             }
 
@@ -3568,6 +3586,7 @@ export class SyncEngine {
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }
         }
 
+        if (session.metadata?.flavor === 'cursor') return await this.rewindCursor(session, namespace, messageLocalId)
         if (session.metadata?.flavor === 'opencode') return await this.rewindOpenCode(session, namespace, messageLocalId)
 
         this.claudeRewindRpcsInFlight.set(sessionId, messageLocalId)
@@ -3653,6 +3672,51 @@ export class SyncEngine {
                 hydrateFailed: true
             }
         }
+    }
+
+    private async rewindCursor(session: Session, namespace: string, localId: string): Promise<{ type: 'success' } | { type: 'error'; message: string }> {
+        const metadata = session.metadata
+        const sourceId = metadata?.cursorSessionId
+        if (!sourceId || metadata.cursorSessionProtocol !== 'acp') {
+            return { type: 'error', message: 'Cursor rewind requires a verified native checkpoint' }
+        }
+        const sessionId = session.id
+        const version = session.metadataVersion
+        const transcript = JSON.stringify(this.store.messages.getAllMessages(sessionId))
+        let childId: string
+        try {
+            // Preparation loads an independent native copy and fences prompt dispatch.
+            // Until the transaction commits, restarting the runner resumes the original.
+            const prepared = await this.rpcGateway.rewindConversation(sessionId, { messageLocalId: localId, cursorSourceSessionId: sourceId })
+            if (!prepared?.success) return { type: 'error', message: prepared?.error ?? 'Cursor rewind preparation failed' }
+            if (!prepared.nativeSessionId || prepared.nativeSessionId === sourceId || prepared.truncateFromLocalId !== localId) {
+                throw new Error('Cursor did not verify the requested native checkpoint')
+            }
+            childId = prepared.nativeSessionId
+            this.store.runInTransaction(() => {
+                const latest = this.sessionCache.getSessionByNamespace(sessionId, namespace)
+                if (!latest?.active || latest.thinking || transcript !== JSON.stringify(this.store.messages.getAllMessages(sessionId))) {
+                    throw new Error('Cursor source changed during rewind')
+                }
+                const update = this.store.sessions.updateSessionMetadata(sessionId, {
+                    ...metadata, cursorSessionId: childId, conversationHistoryPoints: {}, lastModelError: null
+                }, version, namespace)
+                if (update.result !== 'success') throw new Error('Cursor session binding changed during rewind')
+                this.store.messages.truncateMessagesFromLocalId(sessionId, localId)
+                const todos = this.store.messages.getAllMessages(sessionId).map(m => extractTodoWriteTodosFromMessageContent(m.content)).filter(Boolean).at(-1) ?? null
+                this.store.sessions.replaceSessionTodos(sessionId, todos, namespace)
+            })
+        } catch (error) {
+            return { type: 'error', message: `${error instanceof Error ? error.message : String(error)}. Resume the session if its runner is waiting for rewind confirmation.` }
+        }
+
+        this.sessionCache.refreshSession(sessionId)
+        this.eventPublisher.emit({ type: 'messages-invalidated', sessionId, namespace, reason: 'rewind', truncateFromLocalId: localId })
+        try {
+            const ack = await this.rpcGateway.rewindConversation(sessionId, { messageLocalId: localId, cursorCommittedSessionId: childId })
+            if (ack?.success && ack.truncateFromLocalId === localId) return { type: 'success' }
+        } catch { /* The durable cut is authoritative even if the worker disconnected. */ }
+        return { type: 'error', message: 'Cursor rewind committed. Resume the session to continue from the verified checkpoint.' }
     }
 
     private openCodeRewindPending(sessionId: string): boolean {

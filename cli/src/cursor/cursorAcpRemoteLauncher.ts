@@ -1,5 +1,6 @@
 import React from 'react';
 import { settleAcpLauncherShutdown } from '@/modules/common/remote/settleAcpLauncherShutdown';
+import { CursorConversationHistory, loadCursorHistoryStore } from './cursorConversationHistory';
 import { randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import { logger } from '@/ui/logger';
@@ -163,6 +164,10 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     /** True while backend.prompt() is in flight — lets stderr model_not_found
      *  surface as modelError during a turn without breaking setup/load remap. */
     private promptInFlight = false;
+    private history: CursorConversationHistory | null = null;
+    private processingBatch = false;
+    private historyGate: PromiseWithResolvers<void> | null = null;
+    private preparedRewind: { id: string; localId: string; backend: AcpSdkBackend } | null = null;
     /**
      * Set in handleAbort before session/cancel. Cursor often rejects the
      * in-flight prompt as `Error: T: [canceled] Operation aborted`, which the
@@ -538,6 +543,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         this.acpSessionId = acpSessionId;
         this.spawnedWithCliAuto = cursorSpawnModelId(spawnModel) === CURSOR_AUTO_MODEL_ID;
 
+        if (resumeSessionId && acpSessionId !== resumeSessionId && session.client.getMetadata?.()?.forkedFrom) {
+            throw new Error('Cursor loaded a different native fork');
+        }
         if (acpSessionId !== resumeSessionId) {
             session.onSessionFoundWithProtocol(acpSessionId, 'acp');
             // tiann/hapi#913: block until the metadata write that pins
@@ -553,6 +561,24 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 logger.warn(`[cursor-acp] cursorSessionId metadata write did not ACK within 5s; session may be unrecoverable if killed before the lock drains (acpSessionId=${acpSessionId})`);
             }
         }
+
+        const store = !session.cursorWorktree && !session.cursorAddDirs?.length && backend.supportsLoadSession()
+            ? await loadCursorHistoryStore() : null;
+        this.history = new CursorConversationHistory(session, store);
+        if (store || session.client.getMetadata?.()?.capabilities?.conversationHistory) {
+            this.history.reset();
+            this.history.refresh(acpSessionId);
+        }
+        session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ForkConversation, (payload: {
+            messageLocalId?: string; cursorSourceSessionId?: string
+        }) => {
+            const sourceId = this.idleHistorySource();
+            if (payload?.cursorSourceSessionId !== sourceId) throw new Error('Update the Hub to fork Cursor sessions');
+            return { nativeSessionId: this.history!.fork(sourceId, payload.messageLocalId) };
+        });
+        session.client.rpcHandlerManager.registerHandler(RPC_METHODS.RewindConversation, (payload: {
+            messageLocalId: string; cursorSourceSessionId?: string; cursorCommittedSessionId?: string
+        }) => this.rewindConversation(payload));
 
         session.client.emitSessionReady();
 
@@ -850,6 +876,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 break;
             }
 
+            if (this.historyGate) await this.historyGate.promise;
+            this.processingBatch = true;
             let batchSettled = false;
             const requeueAborted = () => {
                 this.requeueAbortedBatch(batch);
@@ -1173,6 +1201,10 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                             // runs against the same shared failure state.
                             this.activePromptGenerationAtStart = generationAtPromptStart;
                             let reopenedSpeechForThisPrompt = false;
+                            const item = batch.items.length === 1 ? batch.items[0] : undefined;
+                            const pointId = retryAttempt === 0 && !item?.internal && !batch.message.trimStart().startsWith('/')
+                                ? item?.localId : undefined;
+                            const before = pointId ? this.history?.root(liveSessionId) : undefined;
                             const sent = await liveBackend.prompt(liveSessionId, promptContent, (message) => {
                                 if (
                                     !reopenedSpeechForThisPrompt
@@ -1196,6 +1228,10 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                                 break;
                             }
                             if (this.userAbortRequested) break;
+                            if (pointId && before !== undefined && !this.turnHasSteeredInput) {
+                                this.history?.confirm(liveSessionId, pointId, before, batch.message);
+                            }
+                            this.history?.refresh(liveSessionId);
                             if (turnCompleted && this.pendingRetryableFromStderr && !this.pendingInlineRetryableError) {
                                 this.pendingRetryableError = null;
                             }
@@ -1458,6 +1494,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 continue;
             }
             } finally {
+                this.processingBatch = false;
                 if (!batchSettled) {
                     session.queue.releaseBatch(batch);
                 }
@@ -1468,6 +1505,84 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             // disconnects the ACP transport, rejecting pending soft-steer
             // requests and settling any waiters.
         }
+    }
+
+    private idleHistorySource(): string {
+        if (!this.history || !this.acpSessionId || !this.backend || this.shouldExit || this.sessionTeardownStarted
+            || this.processingBatch || this.promptInFlight || this.session.thinking || this.softSteerOutstanding()
+            || this.historyGate || this.acpRelaunchPromise || this.session.queue.size() > 0) {
+            throw new Error('Cursor history requires an idle ACP session');
+        }
+        return this.acpSessionId;
+    }
+
+    private async rewindConversation(params: {
+        messageLocalId: string; cursorSourceSessionId?: string; cursorCommittedSessionId?: string
+    }) {
+        return this.modelApplyLock.inLock(async () => {
+            const { messageLocalId, cursorCommittedSessionId } = params;
+            if (!messageLocalId || this.shouldExit || this.sessionTeardownStarted) throw new Error('Cursor rewind unavailable');
+            if (cursorCommittedSessionId) {
+                const prepared = this.preparedRewind;
+                if (!prepared || prepared.localId !== messageLocalId || prepared.id !== cursorCommittedSessionId) {
+                    throw new Error('No matching prepared Cursor rewind');
+                }
+                // The Hub has atomically rebound the native ID and truncated
+                // the transcript. Until this callback succeeds, keep input fenced.
+                await this.disconnectBackend();
+                if (this.shouldExit) throw new Error('Cursor session ended during rewind');
+                this.wireReplacementBackend(prepared.backend, () => {});
+                await this.activateLoadedBackend(prepared.backend, prepared.id, this.spawnedWithAutoReview);
+                this.session.onSessionFoundWithProtocol(prepared.id, 'acp');
+                this.lastRecordedModelError = null;
+                this.turnHasModelError = false;
+                this.lastUserMessage = null;
+                this.lastAssistantText = null;
+                clearPostCloseGateForNewUserPrompt(this.postCloseHarnessGate);
+                this.history?.reset();
+                this.preparedRewind = null;
+                this.historyGate?.resolve();
+                this.historyGate = null;
+                return { success: true, truncateFromLocalId: messageLocalId, messages: [] };
+            }
+
+            const source = this.idleHistorySource();
+            if (params.cursorSourceSessionId !== source) throw new Error('Cursor rewind requires a matching two-phase Hub');
+            this.historyGate = Promise.withResolvers<void>();
+            let candidate: AcpSdkBackend | undefined;
+            try {
+                const id = this.history!.fork(source, messageLocalId);
+                // Prepare on a separate ACP connection with no listeners. Native
+                // history replay must never enter the source HAPI transcript.
+                candidate = createCursorAcpBackend({
+                    cwd: this.session.path,
+                    model: this.spawnedWithCliAuto ? CURSOR_AUTO_MODEL_ID : resolveCursorSpawnModel(this.currentBackendModel),
+                    autoReview: this.spawnedWithAutoReview
+                });
+                this.replacementBackend = candidate;
+                await candidate.initialize();
+                await candidate.authenticateIfAvailable('cursor_login');
+                if (!candidate.supportsLoadSession() || await candidate.loadSession({
+                    sessionId: id, cwd: this.session.path, mcpServers: []
+                }) !== id || this.shouldExit || this.sessionTeardownStarted) {
+                    throw new Error('Cursor could not load the exact rewind point');
+                }
+                // No more source-side title rows after the Hub begins its cut.
+                this.backend?.setSessionInfoUpdateListener(null);
+                this.preparedRewind = { id, localId: messageLocalId, backend: candidate };
+                return { success: true, nativeSessionId: id, truncateFromLocalId: messageLocalId, messages: [] };
+            } catch (error) {
+                try {
+                    if (candidate) await this.disconnectBackend(candidate);
+                } finally {
+                    this.historyGate?.resolve();
+                    this.historyGate = null;
+                }
+                throw error;
+            } finally {
+                this.replacementBackend = null;
+            }
+        });
     }
 
     private async disconnectBackend(backend = this.backend): Promise<void> {
@@ -1489,8 +1604,11 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         const notifyOverlay = this.notifyRuleOverlay;
         this.notifyRuleOverlay = null;
         this.sessionTeardownStarted = true;
+        this.historyGate?.resolve();
+        this.history?.disable();
 
         try {
+            if (this.preparedRewind) await this.disconnectBackend(this.preparedRewind.backend);
             this.clearAbortHandlers(this.session.client.rpcHandlerManager);
             this.session.client.rpcHandlerManager.registerHandler(
                 RPC_METHODS.BridgeModelError,
@@ -1546,6 +1664,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         const session = this.session;
         const messageBuffer = this.messageBuffer;
         backend.onStderrError((error: AcpStderrError) => {
+            if (this.preparedRewind) return;
             logger.debug('[cursor-acp] stderr error', error);
             const hint = error.raw || error.message;
             onHint(hint);
@@ -1595,6 +1714,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     private handleCreatePlanAccepted(): void {
+        if (this.historyGate) return;
         const backend = this.backend;
         const acpSessionId = this.acpSessionId;
         if (!backend || !acpSessionId) {
@@ -1649,6 +1769,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
     private wireAgentActivityThinking(backend: AcpSdkBackend, session: CursorSession): void {
         backend.setAgentActivityListener((thinking, source) => {
+            if (this.preparedRewind) return;
             if (source === 'state_update_running' && !this.promptInFlight) {
                 return;
             }
@@ -1683,6 +1804,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     private handleAgentMessage(message: AgentMessage): void {
+        if (this.preparedRewind) return;
         // Attribute late output to the turn that produced it, not the one that
         // happens to be starting.
         const previousTurnDrain = this.isPreviousTurnDrain();
@@ -1953,6 +2075,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async handleBridgeModelErrorRpc(payload: unknown): Promise<{ ok: boolean; reason?: string }> {
+        if (this.historyGate) return { ok: false, reason: 'Cursor rewind is pending' };
         if (!payload || typeof payload !== 'object') {
             return this.tryEnqueueModelErrorBridge('manual');
         }
@@ -2015,6 +2138,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     private tryEnqueueModelErrorBridge(source: 'auto' | 'manual'): { ok: boolean; reason?: string } {
+        if (this.historyGate) return { ok: false, reason: 'Cursor rewind is pending' };
         const metadataError = this.lastRecordedModelError;
 
         if (!metadataError) {
@@ -2273,6 +2397,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         const session = this.session;
         const previousSetPermissionMode = session.setPermissionMode.bind(session);
         session.setPermissionMode = (mode: PermissionMode) => {
+            if (this.historyGate) throw new Error('Cursor rewind is pending');
             previousSetPermissionMode(mode);
             const backend = this.backend;
             const acpSessionId = this.acpSessionId;
@@ -2310,8 +2435,10 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         previousSetModel: CursorSession['setModel'],
         options: { optimistic: boolean; throwOnFailure: boolean }
     ): Promise<string | null> {
-        return this.modelApplyLock.inLock(() =>
-            this.applyLiveModelLocked(model, previousSetModel, options));
+        return this.modelApplyLock.inLock(() => {
+            if (this.historyGate) throw new Error('Cursor rewind is pending');
+            return this.applyLiveModelLocked(model, previousSetModel, options);
+        });
     }
 
     private async applyLiveModelLocked(
@@ -2545,18 +2672,13 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
     private async initializeReplacementBackend(
         backend: AcpSdkBackend,
-        { resumeSessionId, autoReview, spawnModel }: { resumeSessionId: string; autoReview: boolean; spawnModel: string | null | undefined }
+        { resumeSessionId, autoReview }: { resumeSessionId: string; autoReview: boolean; spawnModel: string | null | undefined }
     ): Promise<void> {
         const session = this.session;
         let recentStderrHint: string | null = null;
         // Publish this.backend only after initialize + session/load so the
         // message loop cannot prompt against a half-ready process.
-        registerAcpSessionTitleSync(backend, session.client, this.titleSync);
-        backend.setUsageUpdateListener((message) => this.handleAgentMessage(message));
-        this.wireAgentActivityThinking(backend, session);
-        this.wireStderrErrorListener(backend, (hint) => {
-            recentStderrHint = hint;
-        });
+        this.wireReplacementBackend(backend, hint => { recentStderrHint = hint; });
 
         try {
             await backend.initialize();
@@ -2570,19 +2692,6 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             await this.disconnectBackend(backend).catch(() => {});
             throw new Error(message);
         }
-
-        this.extensionAdapter = new CursorExtensionAdapter(
-            session.client,
-            backend,
-            (message) => this.handleAgentMessage(message),
-            () => this.handleCreatePlanAccepted()
-        );
-        this.permissionAdapter = new PermissionAdapter(
-            session.client,
-            backend,
-            () => session.getPermissionMode(),
-            (response) => this.handlePermissionResponse(this.extensionAdapter!, response)
-        );
 
         if (!backend.supportsLoadSession()) {
             await this.disconnectBackend(backend).catch(() => {});
@@ -2614,6 +2723,32 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             await this.disconnectBackend(backend).catch(() => {});
             throw new Error('Session ending; discarding replacement ACP backend');
         }
+
+        await this.activateLoadedBackend(backend, acpSessionId, autoReview);
+    }
+
+    private wireReplacementBackend(backend: AcpSdkBackend, onStderr: (hint: string | null) => void): void {
+        const session = this.session;
+        registerAcpSessionTitleSync(backend, session.client, this.titleSync);
+        backend.setUsageUpdateListener((message) => this.handleAgentMessage(message));
+        this.wireAgentActivityThinking(backend, session);
+        this.wireStderrErrorListener(backend, onStderr);
+    }
+
+    private async activateLoadedBackend(backend: AcpSdkBackend, acpSessionId: string, autoReview: boolean): Promise<void> {
+        const session = this.session;
+        this.extensionAdapter = new CursorExtensionAdapter(
+            session.client,
+            backend,
+            (message) => this.handleAgentMessage(message),
+            () => this.handleCreatePlanAccepted()
+        );
+        this.permissionAdapter = new PermissionAdapter(
+            session.client,
+            backend,
+            () => session.getPermissionMode(),
+            (response) => this.handlePermissionResponse(this.extensionAdapter!, response)
+        );
 
         this.backend = backend;
         this.acpSessionId = acpSessionId;
@@ -2755,6 +2890,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         this.bridgingForEventId = null;
         this.bridgingSource = null;
         if (leavingRemote) {
+            this.historyGate?.resolve();
             // Terminal switch/exit must unpark a waiting loop iteration
             // before the teardown's awaits: a batch arriving meanwhile would
             // otherwise be dequeued against the still-live signal and dropped
@@ -2820,10 +2956,12 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async handleSwitchFromUi(): Promise<void> {
+        if (this.historyGate) throw new Error('Cursor rewind is pending');
         await this.requestExit('switch', () => this.handleAbort(true));
     }
 
     private async handleSwitchRequest(): Promise<void> {
+        if (this.historyGate) throw new Error('Cursor rewind is pending');
         await this.requestExit('switch', () => this.handleAbort(true));
     }
 
