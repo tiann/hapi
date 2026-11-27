@@ -1502,6 +1502,7 @@ export class SyncEngine {
      * sent stays tracked; a resume runs a task that has nothing pending now,
      * except that a task which has not run yet keeps its first-run time and a
      * queue task keeps its spacing from when the agent took its last prompt.
+     * Resuming counts against the session's cap of active tasks.
      */
     updateSessionTask(sessionId: string, taskId: string, patch: UpdateSessionTaskRequest): UpdateSessionTaskResult {
         const store = this.store.sessionTasks
@@ -1510,6 +1511,10 @@ export class SyncEngine {
         const wrongKind = wrongTaskKindFields(task, patch)
         if (wrongKind.length > 0) return { type: 'wrong-task-kind', fields: wrongKind }
         if (patch.maxRuns != null && patch.maxRuns < task.runCount) return { type: 'invalid-max-runs' }
+        const resuming = patch.paused === false && task.state === 'paused'
+        if (resuming && store.countActive(sessionId) >= SESSION_TASK_MAX_ACTIVE_PER_SESSION) {
+            return { type: 'too-many-tasks' }
+        }
 
         const now = Date.now()
         const changes: Parameters<SessionTaskStore['update']>[1] = {}
@@ -1522,37 +1527,44 @@ export class SyncEngine {
         }
         if (patch.intervalMs !== undefined) changes.intervalMs = patch.intervalMs
         if (patch.maxRuns !== undefined) changes.maxRuns = patch.maxRuns
-        const resuming = patch.paused === false && task.state === 'paused'
         if (patch.paused !== undefined && patch.paused !== (task.state === 'paused')) {
             changes.state = {
                 paused: patch.paused,
                 nextRunAt: patch.paused ? null : resumeRunAt(task, patch.intervalMs ?? task.intervalMs, now)
             }
         }
-        // A new interval re-anchors a task that has nothing pending and has
-        // already run: the next prompt goes out one interval from now.
-        if (changes.intervalMs !== undefined && !patch.paused && task.pendingLocalId === null && task.runCount > 0) {
+        // A new interval re-anchors a task that may run (it is active, or this
+        // request resumes it), has nothing pending and has already run: the
+        // next prompt goes out one interval from now. A paused task keeps its
+        // pause; an edit of the interval alone never resumes it.
+        if (
+            changes.intervalMs !== undefined
+            && (task.state === 'active' || resuming)
+            && task.pendingLocalId === null
+            && task.runCount > 0
+        ) {
             changes.state = { paused: false, nextRunAt: now + changes.intervalMs }
         }
 
         const updated = store.update(taskId, changes, now)
         if (!updated) return { type: 'not-found' }
-        if (!resuming) {
-            // maxRuns brought down to what already ran ends the task now that nothing is pending
-            // (with a prompt pending, the acknowledgement ends it: SessionTaskRunner.completeSend).
-            if (updated.pendingLocalId === null && taskLimitReached(updated)) store.delete(updated.id)
-        }
+        // maxRuns brought down to what already ran ends the task now that nothing is pending
+        // (with a prompt pending, the acknowledgement ends it: SessionTaskRunner.completeSend).
+        if (updated.pendingLocalId === null && taskLimitReached(updated)) store.delete(updated.id)
         this.emitSessionTasksChanged(sessionId)
         if (resuming) this.runSessionTaskTick()
         return { type: 'updated', task: toSessionTask(updated) }
     }
 
-    /** Run the task's next prompt now instead of waiting for its next run. */
+    /** Run the task's next prompt now instead of waiting for its next run. A paused task becomes active, within the session's cap. */
     runSessionTaskNow(sessionId: string, taskId: string): RunSessionTaskNowResult {
         const store = this.store.sessionTasks
         const task = store.get(sessionId, taskId)
         if (!task) return { type: 'not-found' }
         if (task.pendingLocalId !== null) return { type: 'prompt-pending', task: toSessionTask(task) }
+        if (task.state === 'paused' && store.countActive(sessionId) >= SESSION_TASK_MAX_ACTIVE_PER_SESSION) {
+            return { type: 'too-many-tasks' }
+        }
         const now = Date.now()
         // The state change clears the stored error as well.
         const updated = store.update(taskId, { state: { paused: false, nextRunAt: now } }, now)

@@ -17,12 +17,16 @@ export type UpdateSessionTaskResult =
     | { type: 'wrong-task-kind'; fields: string[] }
     /** `maxRuns` below the number of prompts the task already sent. */
     | { type: 'invalid-max-runs' }
+    /** Resuming would give the session more than `SESSION_TASK_MAX_ACTIVE_PER_SESSION` active tasks. */
+    | { type: 'too-many-tasks' }
 
 export type RunSessionTaskNowResult =
     | { type: 'queued'; task: SessionTask }
     | { type: 'not-found' }
     /** A prompt of the task is still waiting to be taken; it goes first. */
     | { type: 'prompt-pending'; task: SessionTask }
+    /** The task is paused and the session already holds `SESSION_TASK_MAX_ACTIVE_PER_SESSION` active tasks. */
+    | { type: 'too-many-tasks' }
 
 export type DeleteSessionTaskResult =
     | { type: 'deleted'; prompt: SessionTaskDeleteResponse['prompt'] }

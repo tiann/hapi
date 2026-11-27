@@ -29,7 +29,7 @@ When no `code` is present, branch on status alone and treat the failure generica
 | 400 | — | Flavor gates (`sessions.ts`: wrong-flavor model/mode endpoints) | Hide the control for this flavor |
 | 400 | `scratchlist_attachment_invalid`, `scratchlist_entry_empty`, attachment-limit codes from `validateScratchlistAttachmentsForWrite` | `sessions.ts` scratchlist routes | Surface validation message |
 | 400 | `invalid_start_at` | `sessionTasks.ts` create | `startAt` is more than 60 s in the past or more than 366 days ahead — fix the first-run time |
-| 400 | `too_many_tasks` | `sessionTasks.ts` create | The session already holds 20 active tasks — pause or delete one first |
+| 400 | `too_many_tasks` | `sessionTasks.ts` create and PATCH (`{error, code}`) | The session already holds 20 active tasks — pause or delete one first (PATCH: resuming the task would make the 21st) |
 | 400 | `wrong_task_kind` | `sessionTasks.ts` PATCH (`{error, code}`) | A field that does not apply to the task's kind (`text`/`maxRuns` on a `queue`, `items` on a `repeat`) — offer only the kind's fields |
 | 400 | `invalid_max_runs` | `sessionTasks.ts` PATCH | `maxRuns` is below the prompts the task already sent — raise it |
 | 401 | — | Middleware (`middleware/auth.ts`) and `POST /api/auth` (`routes/auth.ts`) | See [Auth → 401 bodies](./auth.md#401-error-bodies); middleware 401 → silent re-auth once, `/api/auth` 401 → re-pair |
@@ -45,6 +45,7 @@ When no `code` is present, branch on status alone and treat the failure generica
 | 409 | `runner_upgrade_required` | `machines.ts` Agent availability | Upgrade and restart the runner; disable session creation |
 | 409 | `control_mode_not_applicable` | `sessions.ts` switch | Concurrent clients do not use ownership switching; hide takeover controls |
 | 409 | `prompt_pending` | `sessionTasks.ts` run now | A prompt of the task is still waiting to be taken; it goes first — wait for it, do not retry in a loop |
+| 409 | `too_many_tasks` | `sessionTasks.ts` run now on a paused task | The session already holds 20 active tasks — pause or delete one first |
 | 409 | — (version conflict) | `sessions.ts` PATCH rename/summary, `machines.ts` PATCH rename — message mentions `version`/`concurrently`; **no code** | Concurrent edit — refetch and reapply |
 | 409 | — | `sessions.ts` delete-while-active, archive of plain inactive row, fork/rewind refusals, remote-only config on terminal-controlled sessions (`controlledByUser`) | Surface message; refresh session state |
 | 413 | — | `sessions.ts` upload (> 50 MB decoded), export too large (`{error, count, limit}`); `voice.ts` transcription (`Audio file too large`, 25 MB audio / ~26 MB body); `sessionTasks.ts` create/PATCH (`Task request too large`, 1 MB) | Reduce payload |

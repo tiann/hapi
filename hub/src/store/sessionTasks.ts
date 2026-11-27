@@ -334,17 +334,22 @@ export class SessionTaskStore {
         })
     }
 
-    /** Active tasks and their earliest next run, per session (sessions without active tasks are absent). */
-    summarizeActiveBySessionIds(sessionIds: string[]): Map<string, SessionTaskSummary> {
+    /**
+     * Active tasks and their earliest next run, per session (sessions without
+     * active tasks are absent). `nextTaskRunAt` is never in the past: a task
+     * that is due but blocked (its machine is offline, its session archived)
+     * reads as due now.
+     */
+    summarizeActiveBySessionIds(sessionIds: string[], now: number = Date.now()): Map<string, SessionTaskSummary> {
         const summaries = new Map<string, SessionTaskSummary>()
         if (sessionIds.length === 0) return summaries
         const placeholders = sessionIds.map(() => '?').join(',')
         const rows = prepareCached(this.db,
-            `SELECT session_id, COUNT(*) AS active_task_count, MIN(next_run_at) AS next_task_run_at
+            `SELECT session_id, COUNT(*) AS active_task_count, MIN(MAX(next_run_at, ?)) AS next_task_run_at
              FROM session_tasks
              WHERE state = 'active' AND session_id IN (${placeholders})
              GROUP BY session_id`
-        ).all(...sessionIds) as Array<{ session_id: string; active_task_count: number; next_task_run_at: number | null }>
+        ).all(now, ...sessionIds) as Array<{ session_id: string; active_task_count: number; next_task_run_at: number | null }>
         for (const row of rows) {
             summaries.set(row.session_id, {
                 activeTaskCount: row.active_task_count,

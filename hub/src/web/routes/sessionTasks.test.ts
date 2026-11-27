@@ -266,6 +266,22 @@ describe('session task routes', () => {
         expect(await limit.json()).toMatchObject({ code: 'invalid_max_runs' })
     })
 
+    it('answers too_many_tasks when a resume would exceed the cap: 400 on PATCH, 409 on run now', async () => {
+        const { app, base } = setup({
+            engine: {
+                updateSessionTask: mock(() => ({ type: 'too-many-tasks' })),
+                runSessionTaskNow: mock(() => ({ type: 'too-many-tasks' }))
+            }
+        })
+
+        const patch = await post(app, `${base}/task-1`, { paused: false }, 'PATCH')
+        expect(patch.status).toBe(400)
+        expect(await patch.json()).toEqual({ error: 'A session may hold at most 20 active tasks', code: 'too_many_tasks' })
+        const run = await post(app, `${base}/task-1/run`, undefined)
+        expect(run.status).toBe(409)
+        expect(await run.json()).toEqual({ error: 'A session may hold at most 20 active tasks', code: 'too_many_tasks' })
+    })
+
     it('answers 404 for a task that is not in this session', async () => {
         const { app, base } = setup({
             engine: {

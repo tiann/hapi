@@ -15,6 +15,7 @@ import { requireSessionFromParam, requireSyncEngine } from './guards'
 /** Task requests are small (50 prompts of at most 20 000 characters); a larger body is refused before it is parsed. */
 const TASK_REQUEST_MAX_BYTES = 1024 * 1024
 const RUN_HISTORY_DEFAULT_LIMIT = 50
+const TOO_MANY_TASKS_ERROR = `A session may hold at most ${SESSION_TASK_MAX_ACTIVE_PER_SESSION} active tasks`
 
 const taskRequestTooLarge = (c: Context<WebAppEnv>) => c.json({ error: 'Task request too large' }, 413)
 
@@ -115,7 +116,7 @@ export function createSessionTaskRoutes(getSyncEngine: () => SyncEngine | null):
         const created = engine.createSessionTask(sessionResult.sessionId, parsed.data)
         if (created.type === 'too-many-tasks') {
             return c.json({
-                error: `A session may hold at most ${SESSION_TASK_MAX_ACTIVE_PER_SESSION} active tasks`,
+                error: TOO_MANY_TASKS_ERROR,
                 code: 'too_many_tasks'
             }, 400)
         }
@@ -157,6 +158,12 @@ export function createSessionTaskRoutes(getSyncEngine: () => SyncEngine | null):
                 code: 'invalid_max_runs'
             }, 400)
         }
+        if (result.type === 'too-many-tasks') {
+            return c.json({
+                error: TOO_MANY_TASKS_ERROR,
+                code: 'too_many_tasks'
+            }, 400)
+        }
         return c.json({ task: result.task })
     })
 
@@ -179,6 +186,12 @@ export function createSessionTaskRoutes(getSyncEngine: () => SyncEngine | null):
             return c.json({
                 error: 'A prompt of this task is still waiting to be taken',
                 code: 'prompt_pending'
+            }, 409)
+        }
+        if (result.type === 'too-many-tasks') {
+            return c.json({
+                error: TOO_MANY_TASKS_ERROR,
+                code: 'too_many_tasks'
             }, 409)
         }
         return c.json({ task: result.task })

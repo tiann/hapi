@@ -165,11 +165,38 @@ describe('session task store', () => {
         expect(store.sessionTasks.countActive(b)).toBe(1)
         expect(store.sessionTasks.countActive(c)).toBe(0)
         // A task waiting for its prompt to be taken is active but has no next run of its own.
-        const summaries = store.sessionTasks.summarizeActiveBySessionIds([a, b, c])
+        const summaries = store.sessionTasks.summarizeActiveBySessionIds([a, b, c], 2_000)
         expect(summaries.get(a)).toEqual({ activeTaskCount: 3, nextTaskRunAt: 3_000 })
         expect(summaries.get(b)).toEqual({ activeTaskCount: 1, nextTaskRunAt: 9_000 })
         expect(summaries.has(c)).toBe(false)
-        expect(store.sessionTasks.summarizeActiveBySessionIds([]).size).toBe(0)
+        expect(store.sessionTasks.summarizeActiveBySessionIds([], 2_000).size).toBe(0)
+    })
+
+    it('never reports a next task run in the past', () => {
+        const store = makeStore()
+        const a = makeSession(store, 'a')
+        const b = makeSession(store, 'b')
+        const c = makeSession(store, 'c')
+        // Due long ago and blocked (its machine is offline): the summary says due now, not five minutes ago.
+        const blocked = makeRepeatTask(store, a, { nextRunAt: 1_000 })
+        makeRepeatTask(store, a, { nextRunAt: 90_000 })
+        makeRepeatTask(store, b, { nextRunAt: 70_000 })
+        makeRepeatTask(store, b, { nextRunAt: 95_000 })
+        // Active, but its prompt is out: no next run of its own.
+        const waiting = makeRepeatTask(store, c, { nextRunAt: 500 })
+        store.sessionTasks.markSent(waiting.id, { localId: 'hapi-task:p:1', nextRunAt: null, now: 0 })
+
+        const summaryAt = (now: number) => store.sessionTasks.summarizeActiveBySessionIds([a, b, c], now)
+        expect(summaryAt(500).get(a)).toEqual({ activeTaskCount: 2, nextTaskRunAt: 1_000 })
+        expect(summaryAt(30_000).get(a)).toEqual({ activeTaskCount: 2, nextTaskRunAt: 30_000 })
+        expect(summaryAt(100_000).get(a)).toEqual({ activeTaskCount: 2, nextTaskRunAt: 100_000 })
+        // Nothing due yet: the earliest one as it is.
+        expect(summaryAt(30_000).get(b)).toEqual({ activeTaskCount: 2, nextTaskRunAt: 70_000 })
+        expect(summaryAt(80_000).get(b)).toEqual({ activeTaskCount: 2, nextTaskRunAt: 80_000 })
+        // A null next run never wins, and a session with only those has none.
+        expect(summaryAt(30_000).get(c)).toEqual({ activeTaskCount: 1, nextTaskRunAt: null })
+        // The task itself keeps the time it was due; only the summary is clamped.
+        expect(store.sessionTasks.getById(blocked.id)?.nextRunAt).toBe(1_000)
     })
 
     it('markSent counts a send once and keeps a paused task unscheduled', () => {
