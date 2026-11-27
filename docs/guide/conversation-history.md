@@ -86,7 +86,7 @@ You can't rewind while the agent is working, while messages are queued, in local
 
 HAPI records a boundary when a single plain-text user prompt matches one new native Cursor turn and its stored checkpoint. After a restart, fork or rewind, only newly verified messages gain checkpoints. Fork from the latest turn remains available when the current store can be verified.
 
-Rewind keeps the HAPI session ID. HAPI first loads an independent native copy at the checkpoint. The Hub then saves the new Cursor ID and shortens the transcript in a single transaction. The original Cursor store stays on disk. If the runner disconnects during confirmation, resume the HAPI session to load the ID the Hub committed. Workspace files stay untouched.
+Rewind keeps the HAPI session ID. HAPI first loads an independent native copy at the checkpoint. The Hub then saves the new Cursor ID and shortens the transcript in a single transaction. The original Cursor store stays on disk. The Hub allows up to 255 seconds on the HTTP request so a slow native load can finish both RPC phases. If the runner disconnects during confirmation, resume the HAPI session to load the ID the Hub committed. Workspace files stay untouched.
 
 ## Branch with options
 

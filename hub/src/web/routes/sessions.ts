@@ -1107,6 +1107,12 @@ export function createSessionsRoutes(
             return sessionResult
         }
 
+        if (sessionResult.session.active && sessionResult.session.metadata?.flavor === 'cursor'
+            && sessionResult.session.metadata.cursorSessionProtocol === 'acp' && sessionResult.session.metadata.cursorSessionId) {
+            // Preparing and committing a Cursor rewind can each use a 120-second
+            // runner RPC. Bun caps a per-request idle timeout at 255 seconds.
+            c.env?.server?.timeout(c.req.raw, 255)
+        }
         const result = await engine.rewindConversation(
             sessionResult.sessionId,
             c.get('namespace'),

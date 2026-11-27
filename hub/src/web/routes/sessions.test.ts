@@ -2190,6 +2190,28 @@ describe('sessions routes', () => {
         expect(calls[0]?.[4]).toEqual(boundary)
     })
 
+    it.each([
+        { flavor: 'cursor', protocol: 'acp', body: { messageLocalId: 'u2' }, active: true, exists: true, budget: [255] },
+        { flavor: 'cursor', protocol: 'stream-json', body: { messageLocalId: 'u2' }, active: true, exists: true, budget: [] },
+        { flavor: 'codex', protocol: undefined, body: { messageLocalId: 'u2' }, active: true, exists: true, budget: [] },
+        { flavor: 'cursor', protocol: 'acp', body: {}, active: true, exists: true, budget: [] },
+        { flavor: 'cursor', protocol: 'acp', body: { messageLocalId: 'u2' }, active: false, exists: true, budget: [] },
+        { flavor: 'cursor', protocol: 'acp', body: { messageLocalId: 'u2' }, active: true, exists: false, budget: [] }
+    ] as const)('scopes the extended Cursor HTTP timeout to an authorized active ACP rewind', async ({ flavor, protocol, body, active, exists, budget }) => {
+        const session = createSession({ active, metadata: { path: '/tmp/p', host: 'localhost', flavor, cursorSessionProtocol: protocol, cursorSessionId: 'native-fixture' } })
+        const { app } = createApp(session, { sessionExists: exists, rewindConversation: async () => ({ type: 'success' }) })
+        const request = new Request('http://localhost/api/sessions/session-1/rewind', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+        })
+        const observed: number[] = []
+        const response = await app.fetch(request, { server: { timeout: (raw, seconds) => {
+            expect(raw).toBe(request)
+            observed.push(seconds)
+        } } })
+        expect(response.status).toBe(!exists ? 404 : !('messageLocalId' in body) ? 400 : !active ? 409 : 200)
+        expect(observed).toEqual([...budget])
+    })
+
     it('passes the rewind boundary to the engine and returns boundary_moved as a coded 409', async () => {
         const calls: unknown[][] = []
         const session = createSession({

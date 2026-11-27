@@ -654,7 +654,7 @@ export async function startWebServer(options: {
                 }
             }
         },
-        fetch: async (req: Request, server: { upgrade: (req: Request, opts?: unknown) => boolean }) => {
+        fetch: async (req: Request, server: BunServer<WebSocketData>) => {
             const url = new URL(req.url)
             if (url.pathname.startsWith('/socket.io/')) {
                 return socketHandler.fetch(req, server as never)
@@ -713,7 +713,7 @@ export async function startWebServer(options: {
                 return undefined as unknown as Response
             }
 
-            return app.fetch(req)
+            return app.fetch(req, { server })
         }
     })
 
