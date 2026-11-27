@@ -17,10 +17,16 @@ internal class CursorModelPicker(catalog: CursorModelsResponse, val selected: St
 
     init {
         val acp = catalog.availableModels.orEmpty().map { parse(it.modelId) }.filter { it.base !in defaults }
-        val skus = catalog.cliModelSkus.orEmpty().map { parse(it.modelId) }
-        groups = acp.groupBy { it.base }.mapValues { (base, wires) ->
+        val wiresByBase = acp.groupBy { it.base }
+        fun advertisedBase(base: String): String = when {
+            base in wiresByBase -> base
+            base.startsWith("cursor-") -> base.removePrefix("cursor-")
+            else -> "cursor-$base"
+        }
+        val skusByBase = catalog.cliModelSkus.orEmpty().map { parse(it.modelId) }.groupBy { advertisedBase(it.base) }
+        groups = wiresByBase.mapValues { (base, wires) ->
             // Bare-only catalogs cannot reliably apply CLI SKU suffixes.
-            val offers = if (wires.any { '[' in it.id }) skus.filter { it.base.removePrefix("cursor-") == base.removePrefix("cursor-") } else emptyList()
+            val offers = if (wires.any { '[' in it.id }) skusByBase[base].orEmpty() else emptyList()
             // Keep ACP combinations, then add only SKU choices not already
             // represented by a wire. Preserve the exact selected ID on readback.
             val choices = wires.distinctBy { it.id }.toMutableList()
@@ -42,7 +48,7 @@ internal class CursorModelPicker(catalog: CursorModelsResponse, val selected: St
             }
             choices
         }
-        val rows = groups[parse(selected).base].orEmpty()
+        val rows = groups[advertisedBase(parse(selected).base)].orEmpty()
         val picked = rows.find { it.id == selected }
         val options = groups.toSortedMap().map { (base, variants) ->
             OptionItem(variants.firstOrNull { it.id == selected }?.id ?: variants.first().id, base)

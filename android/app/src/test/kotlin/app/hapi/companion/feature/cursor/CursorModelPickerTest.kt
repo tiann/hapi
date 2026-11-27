@@ -35,6 +35,28 @@ class CursorModelPickerTest {
         assertEquals(listOf(a, b), CursorModelPicker(catalog(a, b), a).fields.getValue("variant").map { it.value })
     }
 
+    @Test fun selectedCliAliasUsesTheAdvertisedFamilyAndPreservesOtherAxes() {
+        for ((wireBase, skuBase) in listOf("grok-4.5" to "cursor-grok-4.5", "cursor-grok-4.5" to "grok-4.5")) {
+            val standard = "$wireBase[reasoning_effort=high,fast=false]"
+            val fast = standard.replace("false", "true")
+            val selected = "$skuBase-high"
+            val catalog = catalog(standard, fast).copy(cliModelSkus = listOf(CursorModelSummary(selected)))
+            val picker = CursorModelPicker(catalog, selected)
+            assertEquals(listOf("auto", selected), picker.models.map { it.value })
+            assertEquals(wireBase, picker.models.last().label)
+            assertEquals(listOf(selected, fast), picker.fields.getValue("fast").map { it.value })
+        }
+    }
+
+    @Test fun exactFamilyOwnsTheSkuWhenBothBaseSpellingsAreAdvertised() {
+        val first = "grok-4.5[reasoning_effort=high,fast=false]"
+        val second = "cursor-$first"
+        val selected = "cursor-grok-4.5-high"
+        val catalog = catalog(first, second).copy(cliModelSkus = listOf(CursorModelSummary(selected)))
+        val picker = CursorModelPicker(catalog, selected)
+        assertEquals(listOf("auto", selected, first), picker.models.map { it.value })
+    }
+
     @Test fun bareOnlyRunnerAndExplicitAccountDefault() {
         val response = catalog("model", "default[]").copy(cliModelSkus = listOf(CursorModelSummary("model-high")))
         assertFalse(CursorModelPicker.contains(response, "model-high"))

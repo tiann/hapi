@@ -49,8 +49,13 @@ class CursorModelControlsTest {
     @Test fun changingSpeedPreservesReasoningAndSendsOneAdvertisedId() {
         val id = "grok-4.7[reasoning_effort=high,fast=false]"
         val fast = id.replace("false", "true")
-        val response = CursorModelsResponse(true, listOf(id, fast, id.replace("high", "low"), fast.replace("high", "low")).map { CursorModelSummary(it) })
-        val selected = mutableStateOf(id)
+        val alias = "cursor-grok-4.7-high"
+        val response = CursorModelsResponse(
+            true,
+            listOf(id, fast, id.replace("high", "low"), fast.replace("high", "low")).map { CursorModelSummary(it) },
+            cliModelSkus = listOf(CursorModelSummary(alias)),
+        )
+        val selected = mutableStateOf(alias)
         val changes = mutableListOf<String>()
         compose.setContent {
             HapiTheme {
