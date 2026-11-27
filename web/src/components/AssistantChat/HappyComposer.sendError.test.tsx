@@ -1,11 +1,13 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import type { ReactNode, TextareaHTMLAttributes } from 'react'
+import type { ComponentProps, ReactNode, TextareaHTMLAttributes } from 'react'
 import { useEffect, useRef, useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '@/lib/i18n-context'
+import { DEFAULT_CHAT_SHORTCUTS } from '@/lib/chatShortcuts'
+import { setChatShortcuts } from '@/hooks/useChatShortcuts'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import type { ComposerSendIntent } from '@/lib/messageDelivery'
 import { HappyComposer, type ComposerSendError } from './HappyComposer'
@@ -183,6 +185,7 @@ function ComposerHarness(props: {
     initialSchedule?: PendingSchedule | null
     piRunning?: boolean
     abortPending?: boolean
+    composerOverrides?: Partial<ComponentProps<typeof HappyComposer>>
     controls: { current: HarnessControls | null }
 }) {
     const [snapshot, setSnapshot] = useState<FakeRuntimeState>(() => ({
@@ -252,6 +255,7 @@ function ComposerHarness(props: {
                 piModels={[{ provider: 'pi', modelId: 'pi-model', name: 'Pi model' }]}
                 onModelChange={(model) => runtime.modelChanges.push(model)}
                 pendingSendIntentRef={pendingSendIntentRef}
+                {...props.composerOverrides}
             />
         </I18nProvider>
     )
@@ -316,7 +320,123 @@ function input(): HTMLTextAreaElement {
 describe('HappyComposer send-error atomic restore', () => {
     afterEach(() => {
         cleanup()
+        setChatShortcuts(DEFAULT_CHAT_SHORTCUTS)
         runtime.setSnapshot = null
+    })
+
+    it.each([
+        { flavor: 'codex', modeProp: 'collaborationMode', handler: 'onCollaborationModeChange', workingMode: 'default' },
+        { flavor: 'copilot', modeProp: 'copilotAgentMode', handler: 'onCopilotAgentModeChange', workingMode: 'interactive' },
+        { flavor: 'claude', modeProp: 'permissionMode', handler: 'onPermissionModeChange', workingMode: 'default' },
+        { flavor: 'agy', modeProp: 'permissionMode', handler: 'onPermissionModeChange', workingMode: 'request-review' },
+    ] as const)('toggles plan mode through the $flavor mode control', ({ flavor, modeProp, handler, workingMode }) => {
+        setChatShortcuts({ ...DEFAULT_CHAT_SHORTCUTS, planMode: 'alt+p' })
+        const onModeChange = vi.fn()
+        const renderMode = (mode: typeof workingMode | 'plan') => (
+            <ComposerHarness initialText="" controls={{ current: null }} composerOverrides={{
+                agentFlavor: flavor,
+                [modeProp]: mode,
+                [handler]: onModeChange,
+            }} />
+        )
+        const view = render(renderMode(workingMode))
+        const shortcut = { key: 'p', altKey: true }
+        expect(fireEvent.keyDown(input(), shortcut)).toBe(false)
+        expect(onModeChange).toHaveBeenLastCalledWith('plan')
+
+        view.rerender(renderMode('plan'))
+        expect(fireEvent.keyDown(input(), shortcut)).toBe(false)
+        expect(onModeChange.mock.calls).toEqual([['plan'], [workingMode]])
+    })
+
+    it.each([
+        { agentFlavor: 'claude', disabled: true },
+        { agentFlavor: 'kimi', disabled: false },
+    ])('leaves the plan shortcut alone for $agentFlavor when the plan control is unavailable', (overrides) => {
+        setChatShortcuts({ ...DEFAULT_CHAT_SHORTCUTS, planMode: 'alt+p' })
+        const onPermissionModeChange = vi.fn()
+        render(<ComposerHarness initialText="" controls={{ current: null }} composerOverrides={{
+            ...overrides,
+            onPermissionModeChange,
+        }} />)
+
+        expect(fireEvent.keyDown(document.body, { key: 'p', altKey: true })).toBe(true)
+        expect(onPermissionModeChange).not.toHaveBeenCalled()
+    })
+
+    it.each(['Tab', 'ArrowUp', 'ArrowDown'])('cycles through all concrete Codex reasoning efforts with Shift+%s only from the composer', (key) => {
+        setChatShortcuts({ ...DEFAULT_CHAT_SHORTCUTS, permission: null, effort: `shift+${key}` })
+        const onModelReasoningEffortChange = vi.fn()
+        const onPermissionModeChange = vi.fn()
+
+        function CodexComposer() {
+            const [effort, setEffort] = useState('low')
+            return <ComposerHarness
+                initialText=""
+                controls={{ current: null }}
+                composerOverrides={{
+                    active: true,
+                    agentFlavor: 'codex',
+                    model: 'gpt-5.6',
+                    modelReasoningEffort: effort,
+                    availableModelReasoningEffortOptions: [
+                        { value: 'low' }, { value: 'medium' }, { value: 'high' },
+                    ],
+                    onModelReasoningEffortChange: (next) => {
+                        onModelReasoningEffortChange(next)
+                        setEffort(next ?? 'medium')
+                    },
+                    onPermissionModeChange,
+                }}
+            />
+        }
+
+        render(<CodexComposer />)
+
+        const shortcut = { key, shiftKey: true }
+        expect(fireEvent.keyDown(document.body, shortcut)).toBe(true)
+        expect(onModelReasoningEffortChange).not.toHaveBeenCalled()
+        for (const effort of ['medium', 'high', 'low']) {
+            expect(fireEvent.keyDown(input(), shortcut)).toBe(false)
+            expect(onModelReasoningEffortChange).toHaveBeenLastCalledWith(effort)
+        }
+        expect(onPermissionModeChange).not.toHaveBeenCalled()
+    })
+
+    it('raises and lowers Codex effort by one level from the model default and stops at either end', () => {
+        setChatShortcuts({ ...DEFAULT_CHAT_SHORTCUTS, effortDecrease: 'shift+ArrowDown', effortIncrease: 'shift+ArrowUp' })
+        const onModelReasoningEffortChange = vi.fn()
+
+        function CodexComposer() {
+            const [effort, setEffort] = useState<string | null>(null)
+            return <ComposerHarness
+                initialText=""
+                controls={{ current: null }}
+                composerOverrides={{
+                    active: true,
+                    agentFlavor: 'codex',
+                    modelReasoningEffort: effort,
+                    defaultModelReasoningEffort: 'medium',
+                    availableModelReasoningEffortOptions: [{ value: 'low' }, { value: 'medium' }, { value: 'high' }, { value: 'max' }],
+                    onModelReasoningEffortChange: (next) => {
+                        onModelReasoningEffortChange(next)
+                        setEffort(next)
+                    },
+                }}
+            />
+        }
+
+        render(<CodexComposer />)
+        const increase = { key: 'ArrowUp', shiftKey: true }
+        const decrease = { key: 'ArrowDown', shiftKey: true }
+        expect(fireEvent.keyDown(document.body, increase)).toBe(true)
+        expect(fireEvent.keyDown(document.body, decrease)).toBe(true)
+        expect(onModelReasoningEffortChange).not.toHaveBeenCalled()
+
+        for (const shortcut of [increase, increase, increase, decrease, decrease, decrease, decrease]) {
+            expect(fireEvent.keyDown(input(), shortcut)).toBe(false)
+        }
+        expect(onModelReasoningEffortChange.mock.calls.map(([effort]) => effort)).toEqual(['high', 'max', 'high', 'medium', 'low'])
     })
 
     it('collapses an expanded composer immediately when a send is submitted', () => {

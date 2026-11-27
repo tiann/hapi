@@ -74,6 +74,7 @@ import SettingsHubPage from '@/routes/settings'
 import SettingsGeneralPage from '@/routes/settings/general'
 import SettingsDisplayPage from '@/routes/settings/display'
 import SettingsChatPage from '@/routes/settings/chat'
+import SettingsShortcutsPage from '@/routes/settings/shortcuts'
 import SettingsVoicePage from '@/routes/settings/voice'
 import SettingsVoiceVoicesPage from '@/routes/settings/voice-voices'
 import SettingsVoiceAdvancedPage from '@/routes/settings/voice-advanced'
@@ -1431,6 +1432,12 @@ const settingsChatRoute = createRoute({
     component: SettingsChatPage,
 })
 
+const settingsShortcutsRoute = createRoute({
+    getParentRoute: () => settingsRoute,
+    path: 'shortcuts',
+    component: SettingsShortcutsPage,
+})
+
 const settingsVoiceRoute = createRoute({
     getParentRoute: () => settingsRoute,
     path: 'voice',
@@ -1502,6 +1509,7 @@ export const routeTree = rootRoute.addChildren([
         settingsGeneralRoute,
         settingsDisplayRoute,
         settingsChatRoute,
+        settingsShortcutsRoute,
         settingsVoiceRoute,
         settingsVoiceVoicesRoute,
         settingsVoiceAdvancedRoute,
