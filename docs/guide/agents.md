@@ -201,6 +201,8 @@ hapi cursor --cursor-worktree feature-x    # Cursor-native worktree (named)
 hapi cursor --cursor-add-dir ../shared     # Extra workspace root (repeatable)
 ```
 
+Single-file ACP edits can display the before/after diff even when Cursor delivers it separately from the file path.
+
 ### Permission modes
 
 | Mode | Description |
