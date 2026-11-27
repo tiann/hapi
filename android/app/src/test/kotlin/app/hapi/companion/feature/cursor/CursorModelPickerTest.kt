@@ -2,9 +2,11 @@ package app.hapi.companion.feature.cursor
 
 import app.hapi.protocol.wire.CursorModelSummary
 import app.hapi.protocol.wire.CursorModelsResponse
+import app.hapi.protocol.wire.HapiJson
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class CursorModelPickerTest {
     private fun catalog(vararg ids: String) = CursorModelsResponse(true, ids.map { CursorModelSummary(it) })
@@ -57,9 +59,25 @@ class CursorModelPickerTest {
         assertEquals(listOf("auto", selected, first), picker.models.map { it.value })
     }
 
+    @Test fun parameterizedBareBaseExposesOnlyAdvertisedSkuVariants() {
+        val bare = "grok-4.5"
+        val high = "cursor-grok-4.5-high"
+        val fast = "$high-fast"
+        val response = HapiJson.decodeFromString<CursorModelsResponse>(
+            """{"success":true,"parameterized":true,"availableModels":[{"modelId":"$bare"}],
+               "cliModelSkus":[{"modelId":"$high"},{"modelId":"$fast"}]}""",
+        )
+        assertTrue(CursorModelPicker.contains(response, fast))
+        assertFalse(CursorModelPicker.contains(response, "cursor-grok-4.5-low"))
+        val picker = CursorModelPicker(response, high)
+        assertEquals(listOf("auto", high), picker.models.map { it.value })
+        assertEquals(listOf(high, fast), picker.fields.getValue("fast").map { it.value })
+    }
+
     @Test fun bareOnlyRunnerAndExplicitAccountDefault() {
         val response = catalog("model", "default[]").copy(cliModelSkus = listOf(CursorModelSummary("model-high")))
         assertFalse(CursorModelPicker.contains(response, "model-high"))
+        assertFalse(CursorModelPicker.contains(response.copy(parameterized = false), "model-high"))
         val rows = CursorModelPicker(response, "default[]")
         assertEquals(listOf("auto", "default[]", "model"), rows.models.map { it.value })
     }

@@ -55,7 +55,23 @@ class CursorModelControlsTest {
             listOf(id, fast, id.replace("high", "low"), fast.replace("high", "low")).map { CursorModelSummary(it) },
             cliModelSkus = listOf(CursorModelSummary(alias)),
         )
-        val selected = mutableStateOf(alias)
+        verifySpeedChange(response, alias, fast)
+    }
+
+    @Test fun parameterizedBareFamilySendsTheAdvertisedFastSku() {
+        val high = "cursor-grok-4.5-high"
+        val fast = "$high-fast"
+        val response = CursorModelsResponse(
+            true,
+            listOf(CursorModelSummary("grok-4.5")),
+            cliModelSkus = listOf(CursorModelSummary(high), CursorModelSummary(fast)),
+            parameterized = true,
+        )
+        verifySpeedChange(response, high, fast)
+    }
+
+    private fun verifySpeedChange(response: CursorModelsResponse, initial: String, fast: String) {
+        val selected = mutableStateOf(initial)
         val changes = mutableListOf<String>()
         compose.setContent {
             HapiTheme {

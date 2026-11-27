@@ -25,8 +25,9 @@ internal class CursorModelPicker(catalog: CursorModelsResponse, val selected: St
         }
         val skusByBase = catalog.cliModelSkus.orEmpty().map { parse(it.modelId) }.groupBy { advertisedBase(it.base) }
         groups = wiresByBase.mapValues { (base, wires) ->
-            // Bare-only catalogs cannot reliably apply CLI SKU suffixes.
-            val offers = if (wires.any { '[' in it.id }) skusByBase[base].orEmpty() else emptyList()
+            // A parameterized runner applies SKU suffixes through separate ACP options, even for bare bases.
+            val supportsVariants = catalog.parameterized == true || wires.any { '[' in it.id }
+            val offers = if (supportsVariants) skusByBase[base].orEmpty() else emptyList()
             // Keep ACP combinations, then add only SKU choices not already
             // represented by a wire. Preserve the exact selected ID on readback.
             val choices = wires.distinctBy { it.id }.toMutableList()

@@ -302,6 +302,7 @@ data class CursorModelsResponse(
     val cliModelSkus: List<CursorModelSummary>? = null,
     val currentModelId: String? = null,
     val error: String? = null,
+    val parameterized: Boolean? = null,
 )
 
 /** `CodexModelSummary` (`shared/src/apiTypes.ts`). */
