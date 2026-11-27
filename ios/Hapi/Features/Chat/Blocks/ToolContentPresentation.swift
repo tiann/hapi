@@ -20,7 +20,7 @@ func toolSourceInput(_ input: JSONValue?, keys: [String]) -> String? {
 }
 
 func isPlanProposalTool(_ name: String) -> Bool {
-    name == "ExitPlanMode" || name == "exit_plan_mode"
+    name == "ExitPlanMode" || name == "exit_plan_mode" || name == "CursorCreatePlan"
 }
 
 /// Plans are documents in input.plan, not update_plan's checklist or a tool result.
@@ -29,6 +29,14 @@ func planProposalMarkdown(_ tool: ChatToolCall) -> String? {
           let plan = tool.input?[chatKey: "plan"]?.chatString,
           !plan.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
     return plan
+}
+
+func planProposalOverview(_ tool: ChatToolCall) -> String? {
+    guard tool.name == "CursorCreatePlan",
+          let overview = tool.input?[chatKey: "overview"]?.chatString?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !overview.isEmpty,
+          overview != planProposalMarkdown(tool)?.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
+    return overview
 }
 
 /// A synthesized Codex proposal completes with null output. Keep diagnostics,

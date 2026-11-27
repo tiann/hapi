@@ -113,7 +113,9 @@ describe('isEligibleForToolGrouping', () => {
     it('excludes interactive, subagent, and plan cards', () => {
         expect(isEligibleForToolGrouping(makeToolBlock('read-1', 'Read'))).toBe(true)
         expect(isEligibleForToolGrouping(makeToolBlock('task-1', 'Task'))).toBe(false)
+        expect(isEligibleForToolGrouping(makeToolBlock('task-2', 'CursorTask'))).toBe(false)
         expect(isEligibleForToolGrouping(makeToolBlock('plan-1', 'update_plan'))).toBe(false)
+        expect(isEligibleForToolGrouping(makeToolBlock('plan-2', 'CursorCreatePlan'))).toBe(false)
         expect(isEligibleForToolGrouping(makeToolBlock('ask-1', 'AskUserQuestion'))).toBe(false)
         expect(isEligibleForToolGrouping(makeToolBlock('perm-1', 'Bash', {}, {
             tool: {

@@ -22,12 +22,19 @@ internal fun toolSourceInput(input: JsonElement?, keys: List<String>): String? =
 
 private fun JsonElement?.textValue(): String? = (this as? JsonPrimitive)?.takeIf { it.isString }?.content
 
-internal fun isPlanProposalTool(name: String): Boolean = name == "ExitPlanMode" || name == "exit_plan_mode"
+internal fun isPlanProposalTool(name: String): Boolean =
+    name == "ExitPlanMode" || name == "exit_plan_mode" || name == "CursorCreatePlan"
 
 /** A proposal is input.plan Markdown, not update_plan's checklist or a result. */
 internal fun planProposalMarkdown(tool: ChatToolCall): String? =
     if (isPlanProposalTool(tool.name)) (tool.input as? JsonObject)?.get("plan").textValue()?.takeIf { it.isNotBlank() }
     else null
+
+internal fun planProposalOverview(tool: ChatToolCall): String? {
+    if (tool.name != "CursorCreatePlan") return null
+    return (tool.input as? JsonObject)?.get("overview").textValue()?.trim()
+        ?.takeIf { it.isNotEmpty() && it != planProposalMarkdown(tool)?.trim() }
+}
 
 internal fun planProposalShowsResult(tool: ChatToolCall): Boolean {
     if (tool.state == "error") return true

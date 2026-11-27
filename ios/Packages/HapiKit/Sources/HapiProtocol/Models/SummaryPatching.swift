@@ -31,6 +31,9 @@ public enum SummaryPatching {
     private static let inputRequestTools: Set<String> = [
         "AskUserQuestion",
         "ask_user_question",
+        "CursorAskQuestion",
+        "cursor_ask_question",
+        "CursorCreatePlan",
         "ExitPlanMode",
         "exit_plan_mode",
         "request_user_input",

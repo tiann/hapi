@@ -109,7 +109,7 @@ describe('CursorExtensionAdapter', () => {
         await expect(pending).resolves.toEqual({ outcome: { outcome: 'cancelled' } });
     });
 
-    it('resolves create_plan approval as accepted with nested outcome envelope', async () => {
+    it.each([undefined, 'approved'] as const)('resolves create_plan approval (%s) as accepted with nested outcome envelope', async (decision) => {
         // Regression for the plan-approval bug: operator clicks "Yes" on a Cursor
         // CreatePlan approval, but the agent received `User cancelled` because the
         // response outcome was returned flat instead of nested. Cursor reads
@@ -124,7 +124,7 @@ describe('CursorExtensionAdapter', () => {
         await adapter.handlePermissionResponse({
             id: 'plan-1',
             approved: true,
-            decision: 'approved'
+            decision
         });
 
         await expect(pending).resolves.toEqual({ outcome: { outcome: 'accepted' } });
@@ -188,14 +188,14 @@ describe('CursorExtensionAdapter', () => {
         expect(onCreatePlanAccepted).not.toHaveBeenCalled();
     });
 
-    it('resolves create_plan denial as rejected', async () => {
+    it.each([undefined, 'denied'] as const)('resolves create_plan denial (%s) as rejected', async (decision) => {
         const { handlers, adapter } = createHarness();
         const pending = handlers.get('cursor/create_plan')!({ toolCallId: 'plan-2' }, null);
 
         await adapter.handlePermissionResponse({
             id: 'plan-2',
             approved: false,
-            decision: 'denied'
+            decision
         });
 
         await expect(pending).resolves.toEqual({ outcome: { outcome: 'rejected' } });

@@ -60,6 +60,38 @@ describe('formatTerminalCommandTitle', () => {
     })
 })
 
+describe('getToolPresentation', () => {
+    it('displays Cursor task titles and previews like subagent cards', () => {
+        const presentation = getToolPresentation({
+            toolName: 'CursorTask',
+            input: { title: 'Review navigation', prompt: 'Inspect the session list' },
+            result: null,
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('Review navigation')
+        expect(presentation.subtitle).toBe('Inspect the session list')
+        expect(presentation.minimal).toBe(true)
+    })
+
+    it('labels Cursor plan proposals and retains the agent’s plan name', () => {
+        const presentation = getToolPresentation({
+            toolName: 'CursorCreatePlan',
+            input: { name: 'Update the navigation', plan: '# Steps' },
+            result: null,
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+
+        expect(presentation.title).toBe('Plan proposal')
+        expect(presentation.subtitle).toBe('Update the navigation')
+        expect(presentation.minimal).toBe(false)
+    })
+})
+
 describe('getToolPresentation — unknown tool semantic title + subtitle dedup', () => {
     it('routes shell-shaped unknown tools (Gemini ACP command-name card) to the terminal presentation', () => {
         const presentation = getToolPresentation({

@@ -70,8 +70,10 @@ struct SummaryPatchingTests {
         let permissionOnly = AgentState(requests: ["a": request("Bash"), "b": request("Edit")])
         #expect(SummaryPatching.computePendingRequestKinds(permissionOnly) == [.permission])
 
-        let inputOnly = AgentState(requests: ["a": request("AskUserQuestion")])
-        #expect(SummaryPatching.computePendingRequestKinds(inputOnly) == [.input])
+        for tool in ["AskUserQuestion", "CursorAskQuestion", "cursor_ask_question", "CursorCreatePlan"] {
+            let inputOnly = AgentState(requests: ["a": request(tool)])
+            #expect(SummaryPatching.computePendingRequestKinds(inputOnly) == [.input])
+        }
 
         // Input encountered first — canonical order is still permission,input.
         let both = AgentState(requests: [

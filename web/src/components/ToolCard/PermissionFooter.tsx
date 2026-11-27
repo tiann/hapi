@@ -120,7 +120,7 @@ export function PermissionFooter(props: {
         () => getPermissionReplyStyle(props.metadata?.flavor, props.tool.name),
         [props.metadata, props.tool.name]
     )
-    const decision = replyStyle === 'decision'
+    const decision = replyStyle === 'decision' && props.tool.name !== 'CursorCreatePlan'
     const allowTools = replyStyle === 'allowTools'
 
     if (!permission) return null

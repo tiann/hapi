@@ -103,7 +103,7 @@ struct PermissionActionOptions: Equatable {
     var hasMore: Bool { canAllowForSession || canAllowAllEdits }
 
     init(flavor: String?, toolName: String) {
-        let codex = isCodexPermissionUX(flavor: flavor, toolName: toolName)
+        let codex = toolName != "CursorCreatePlan" && isCodexPermissionUX(flavor: flavor, toolName: toolName)
         denyAction = codex ? .abort : .deny
         canAllowForSession = codex || !PermissionGates.hideAllowForSession.contains(toolName)
         canAllowAllEdits = flavor == "claude" && PermissionGates.editTools.contains(toolName)

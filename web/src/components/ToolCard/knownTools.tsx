@@ -199,6 +199,12 @@ const cursorAskQuestionPresentation = questionToolPresentation(
     (input) => parseCursorAskQuestionInput(input).questions
 )
 
+const planProposalPresentation = {
+    icon: () => <ClipboardIcon className={DEFAULT_ICON_CLASS} />,
+    title: () => 'Plan proposal',
+    minimal: false
+}
+
 export const knownTools: Record<string, {
     icon: (opts: ToolOpts) => ReactNode
     title: (opts: ToolOpts) => string
@@ -256,6 +262,15 @@ export const knownTools: Record<string, {
             return prompt ? truncate(prompt, 120) : null
         },
         minimal: (opts) => opts.childrenCount === 0
+    },
+    CursorTask: {
+        icon: () => <RocketIcon className={DEFAULT_ICON_CLASS} />,
+        title: ({ input }) => getInputStringAny(input, ['title', 'description']) ?? 'Task',
+        subtitle: ({ input }) => {
+            const prompt = getInputStringAny(input, ['prompt'])
+            return prompt ? truncate(prompt, 120) : null
+        },
+        minimal: true
     },
     TeamCreate: {
         icon: () => <UsersIcon className={DEFAULT_ICON_CLASS} />,
@@ -647,15 +662,11 @@ export const knownTools: Record<string, {
             return unified.length >= 2000 || countLines(unified) >= 50
         }
     },
-    ExitPlanMode: {
-        icon: () => <ClipboardIcon className={DEFAULT_ICON_CLASS} />,
-        title: () => 'Plan proposal',
-        minimal: false
-    },
-    exit_plan_mode: {
-        icon: () => <ClipboardIcon className={DEFAULT_ICON_CLASS} />,
-        title: () => 'Plan proposal',
-        minimal: false
+    ExitPlanMode: planProposalPresentation,
+    exit_plan_mode: planProposalPresentation,
+    CursorCreatePlan: {
+        ...planProposalPresentation,
+        subtitle: ({ input }) => getInputStringAny(input, ['name'])
     },
     AskUserQuestion: askUserQuestionPresentation,
     ask_user_question: askUserQuestionPresentation,
