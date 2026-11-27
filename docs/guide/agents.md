@@ -214,7 +214,7 @@ hapi cursor --cursor-add-dir ../shared     # Extra workspace root (repeatable)
 
 Set mode via `--plan` / `--mode` / `--permission-mode` / `--auto-review`, or change from the web UI during a session.
 
-Cursor ACP questions accept the options offered by the agent. Skip leaves the question unanswered; abort cancels it. Completed question cards retain the selected options.
+Cursor ACP questions accept the options offered by the agent. Skip leaves the question unanswered; abort cancels it. To provide text outside the listed options, send it as an ordinary chat message (it queues while the question is pending), then choose **Skip** to unblock the turn. The agent receives the text as a follow-up message when the queue drains. Completed question cards retain the selected options.
 
 ### Cursor-native worktree & multi-root
 
