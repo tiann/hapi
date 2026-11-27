@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { SessionTask, UpdateSessionTaskRequest } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
 import { isSessionTaskGone, useSessionTaskHistory, useSessionTaskMutations, useSessionTasks } from '@/hooks/queries/useSessionTasks'
-import { formatTaskInterval, taskStatus } from '@/lib/sessionTasks'
+import { formatTaskInterval, formatTaskIntervalCount, taskStatus } from '@/lib/sessionTasks'
 import { useOptionalAddToast } from '@/lib/toast-context'
 import { useTranslation } from '@/lib/use-translation'
 import { SessionTaskHistory } from './SessionTaskHistory'
@@ -84,9 +84,14 @@ export function displayedSessionTaskPrompt(task: SessionTask): string {
     return task.items[Math.min(Math.max(index, 0), task.items.length - 1)]?.text ?? ''
 }
 
-/** `Every 10 minutes` for a repeat task; `Gap 10 minutes` for a queue, whose clock starts when the agent takes a prompt. */
+/**
+ * `Every 10 minutes` for a repeat task; `Gap 10 minutes` for a queue, whose clock starts when the agent takes a prompt.
+ * A queue keeps the count of a one-unit gap ("Gap 1 minute"): "Every minute" reads well, "Gap minute" does not.
+ */
 export function taskCadenceLabel(task: SessionTask, t: Translate): string {
-    const interval = formatTaskInterval(task.intervalMs, t)
+    const interval = task.kind === 'queue'
+        ? formatTaskIntervalCount(task.intervalMs, t)
+        : formatTaskInterval(task.intervalMs, t)
     return t(task.kind === 'queue' ? 'tasks.gap' : 'tasks.every', { interval })
 }
 

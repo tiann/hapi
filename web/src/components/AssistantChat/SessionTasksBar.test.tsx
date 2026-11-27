@@ -220,6 +220,33 @@ describe('SessionTasksBar', () => {
         expect(row.textContent).not.toContain('Every 1 minutes')
     })
 
+    it('keeps the count of a one-unit gap for a queue: "Gap 1 minute", never "Gap minute"', async () => {
+        const queue = (id: string, text: string, intervalMs: number, createdAt: number) => task({
+            id,
+            kind: 'queue',
+            items: [{ text }],
+            totalRuns: 1,
+            intervalMs,
+            nextRunAt: Date.now() + intervalMs,
+            createdAt
+        })
+        setup({ tasks: [
+            queue('task-1', 'a', MINUTE, 1),
+            queue('task-2', 'b', 60 * MINUTE, 2),
+            queue('task-3', 'c', 24 * 60 * MINUTE, 3),
+            queue('task-4', 'd', 5 * MINUTE, 4)
+        ] })
+        const rows = await screen.findAllByRole('listitem')
+        // "Every minute" reads well without the count; a gap does not.
+        expect(rows[0].textContent).toContain('Gap 1 minute')
+        expect(rows[0].textContent).not.toContain('Gap minute')
+        expect(rows[1].textContent).toContain('Gap 1 hour')
+        expect(rows[1].textContent).not.toContain('Gap hour')
+        expect(rows[2].textContent).toContain('Gap 1 day')
+        expect(rows[2].textContent).not.toContain('Gap day')
+        expect(rows[3].textContent).toContain('Gap 5 minutes')
+    })
+
     it('shows the prompt that is out while it waits, then the next one', async () => {
         const queue = (pending: boolean) => task({
             kind: 'queue',
