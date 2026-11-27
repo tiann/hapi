@@ -1,0 +1,56 @@
+import { formatScheduledTime } from '@/lib/scheduledTime'
+import { taskRunLabel, taskRunOutcome } from '@/lib/sessionTasks'
+import type { SessionTaskRun } from '@hapi/protocol'
+import { useTranslation } from '@/lib/use-translation'
+
+/** `<time>` with an absolute, locale-formatted stamp that survives the minute tick. */
+export function TaskRunTime({ at }: { at: number }) {
+    return <time dateTime={new Date(at).toISOString()}>{formatScheduledTime(at)}</time>
+}
+
+/**
+ * The newest runs of the session's tasks: every prompt a task sent, every slot
+ * it skipped and every run that could not go out, with the reason. Finished
+ * tasks are gone from the list above, but their runs stay readable here.
+ */
+export function SessionTaskHistory({ runs, isLoading, error }: {
+    runs: SessionTaskRun[]
+    isLoading: boolean
+    error: string | null
+}) {
+    const { t } = useTranslation()
+
+    if (error) {
+        return <p role="alert" className="text-xs text-red-500">{t('tasks.historyFailed')}</p>
+    }
+    if (isLoading) {
+        return <p className="text-xs text-[var(--app-hint)]">{t('loading')}</p>
+    }
+    if (runs.length === 0) {
+        return <p className="text-xs text-[var(--app-hint)]">{t('tasks.historyEmpty')}</p>
+    }
+
+    return (
+        <ol aria-label={t('tasks.history')} className="flex flex-col gap-1.5">
+            {runs.map((run) => {
+                const outcome = run.outcome === 'sent' && run.takenAt !== null
+                    ? { text: t('tasks.run.takenAt', { time: formatScheduledTime(run.takenAt) }), tone: 'normal' as const }
+                    : taskRunOutcome(run, t)
+                return (
+                    <li key={run.id} className="flex flex-col gap-0.5 rounded-lg bg-[var(--app-secondary-bg)] px-3 py-2 shadow-sm">
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-[var(--app-hint)]">
+                            <TaskRunTime at={run.recordedAt} />
+                            <span>{taskRunLabel(run, t)}</span>
+                        </div>
+                        {run.preview ? (
+                            <span className="line-clamp-2 whitespace-pre-wrap break-words text-[var(--app-fg)]">{run.preview}</span>
+                        ) : null}
+                        <span className={`text-xs ${outcome.tone === 'warning' ? 'text-[var(--app-warning-text)]' : 'text-[var(--app-hint)]'}`}>
+                            {outcome.text}
+                        </span>
+                    </li>
+                )
+            })}
+        </ol>
+    )
+}

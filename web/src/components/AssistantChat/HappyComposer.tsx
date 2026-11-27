@@ -2571,7 +2571,10 @@ export function HappyComposer(props: {
                                 sessionTasks={props.createSessionTask ? {
                                     createTask: props.createSessionTask,
                                     composerDraft: composerText,
-                                    onComposerDraftConsumed: () => setComposerText('')
+                                    // Only the text that became the task; anything typed since is a new message.
+                                    onComposerDraftConsumed: (text) => {
+                                        if (api.composer().getState().text === text) setComposerText('')
+                                    }
                                 } : undefined}
                                 hasAttachments={blocksScheduling}
                                 attachmentsEnabled={props.attachmentsEnabled}

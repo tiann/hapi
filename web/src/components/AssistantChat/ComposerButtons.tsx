@@ -819,10 +819,10 @@ export function ComposerButtons(props: {
      */
     sessionTasks?: {
         createTask: (request: CreateSessionTaskRequest) => Promise<void>
-        /** The composer's text, offered as a repeat task's message. */
+        /** The composer's text, offered as a task's first prompt. */
         composerDraft: string
-        /** Empties the composer once its text became a task. */
-        onComposerDraftConsumed: () => void
+        /** Empties the composer once its text became a task, when it still holds that text. */
+        onComposerDraftConsumed: (text: string) => void
     }
     // The backend rejects scheduled-send + attachment combinations (the per-CLI
     // upload directory is torn down before a mature emit could read the files).
@@ -1090,8 +1090,8 @@ export function ComposerButtons(props: {
                         <button
                             ref={scheduleButtonRef}
                             type="button"
-                            aria-label={t('composer.scheduleSend')}
-                            title={t('composer.scheduleSend')}
+                            aria-label={t(props.sessionTasks ? 'composer.scheduleAndTasks' : 'composer.scheduleSend')}
+                            title={t(props.sessionTasks ? 'composer.scheduleAndTasks' : 'composer.scheduleSend')}
                             disabled={props.controlsDisabled || hasAttachments}
                             onClick={() => {
                                 if (hasSchedule && props.onClearSchedule) {

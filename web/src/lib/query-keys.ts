@@ -4,6 +4,8 @@ export const queryKeys = {
     session: (sessionId: string) => ['session', sessionId] as const,
     messages: (sessionId: string) => ['messages', sessionId] as const,
     sessionTasks: (sessionId: string) => ['session-tasks', sessionId] as const,
+    /** Under `sessionTasks(sessionId)`, so a task change refreshes the history too. */
+    sessionTaskHistory: (sessionId: string) => ['session-tasks', sessionId, 'history'] as const,
     sessionContentSearch: (sessionId: string, query: string) => ['session-content-search', sessionId, query] as const,
     machines: ['machines'] as const,
     sqliteStorage: ['sqlite-storage'] as const,

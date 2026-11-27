@@ -14,6 +14,8 @@ export function getAppSseResyncQueryKeys(
     return [
         queryKeys.sessions,
         queryKeys.scratchlistSessionIds,
-        ['session']
+        ['session'],
+        // Tasks another client changed during the gap would otherwise stay stale until the next task event.
+        ['session-tasks']
     ]
 }

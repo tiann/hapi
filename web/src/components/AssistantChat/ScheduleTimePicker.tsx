@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 import type { CreateSessionTaskRequest } from '@hapi/protocol'
 import { useTranslation } from '@/lib/use-translation'
 import {
@@ -7,7 +7,7 @@ import {
     type QueueTaskDraft,
     type RepeatTaskDraft
 } from '@/lib/sessionTasks'
-import { QueueTaskForm, RepeatTaskForm } from './SessionTaskForms'
+import { QueueTaskForm, RepeatTaskForm, type CreateTaskFromForm } from './SessionTaskForms'
 
 /** Repeat / queue form text, owned outside the panel so closing it loses nothing. */
 export type SessionTaskDrafts = { repeat: RepeatTaskDraft; queue: QueueTaskDraft }
@@ -20,13 +20,19 @@ export const EMPTY_SESSION_TASK_DRAFTS: SessionTaskDrafts = { repeat: EMPTY_REPE
  * scheduled send only.
  */
 export type SessionTaskPickerBridge = {
-    /** The composer's text: a repeat task's message until the user types their own. */
+    /** The composer's text: a task's first prompt until the user types their own. */
     composerDraft: string
     createTask: (request: CreateSessionTaskRequest) => Promise<void>
-    /** Empties the composer once its text became a task. */
-    consumeComposerDraft: () => void
+    /** Empties the composer once its text became a task, but only if it is still that text. */
+    consumeComposerDraft: (text: string) => void
     drafts: SessionTaskDrafts
-    onDraftsChange: (next: SessionTaskDrafts) => void
+    /** Takes an updater, so resetting one mode's draft never overwrites the other's. */
+    onDraftsChange: (update: (previous: SessionTaskDrafts) => SessionTaskDrafts) => void
+}
+
+/** Desktop keyboards get focus moved into the panel; a finger never opened a keyboard to begin with. */
+function prefersKeyboardFocus(): boolean {
+    return typeof window !== 'undefined' && window.matchMedia('(pointer: fine)').matches
 }
 
 // ---------------------------------------------------------------------------
@@ -168,6 +174,8 @@ const PICKER_MODE_LABEL: Record<PickerMode, string> = {
     repeat: 'composer.scheduleModeRepeat',
     queue: 'composer.scheduleModeQueue'
 }
+/** The keyboard offset on iOS: the layout viewport keeps its height while the visual one shrinks under the keyboard. */
+const KEYBOARD_OFFSET_CLASS = 'bottom-[calc(env(safe-area-inset-bottom)+12px+(100dvh-var(--app-viewport-height,100dvh)))]'
 
 // ---------------------------------------------------------------------------
 // Component
@@ -201,6 +209,40 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
     const [pos, setPos] = useState<SchedulePickerPlacement | null>(null)
     const [isMobilePanel, setIsMobilePanel] = useState(false)
     const [isContentConstrained, setIsContentConstrained] = useState(false)
+    const [creating, setCreating] = useState(0)
+    // A create in flight keeps the mode switch still: switching would unmount the
+    // form whose answer is on its way.
+    const createTask: CreateTaskFromForm = useCallback(async (request, consumed) => {
+        if (!tasks) return
+        setCreating((count) => count + 1)
+        try {
+            await tasks.createTask(request)
+            if (consumed) tasks.consumeComposerDraft(consumed.composerText)
+        } finally {
+            setCreating((count) => count - 1)
+        }
+    }, [tasks])
+
+    // Keyboard users step into the panel; wherever focus was when the panel
+    // closes, it goes back to the clock button (so Tab does not restart at the
+    // top of the page after a create unmounts the form).
+    useEffect(() => {
+        if (!prefersKeyboardFocus()) return
+        panelRef.current?.querySelector<HTMLElement>('button')?.focus()
+    }, [])
+    const close = useCallback(() => {
+        const panel = panelRef.current
+        if (panel && document.activeElement !== null && panel.contains(document.activeElement)) {
+            anchorRef.current?.focus()
+        }
+        onClose()
+    }, [anchorRef, onClose])
+    const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+        if (event.key !== 'Escape') return
+        event.preventDefault()
+        event.stopPropagation()
+        close()
+    }
 
     // Compute fixed position and keep it inside the visual viewport. On mobile,
     // use a bottom panel instead of anchoring to the tiny toolbar button.
@@ -267,11 +309,11 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
             const target = e.target as Node
             if (panelRef.current?.contains(target)) return
             if (anchorRef.current?.contains(target)) return
-            onClose()
+            close()
         }
         document.addEventListener('pointerdown', handlePointerDown)
         return () => document.removeEventListener('pointerdown', handlePointerDown)
-    }, [onClose, anchorRef])
+    }, [close, anchorRef])
 
     // Compute max value for datetime-local input (7 days from now)
     const maxDatetimeLocal = (() => {
@@ -291,7 +333,7 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
     const handlePresetClick = (preset: Preset) => {
         // Store the preset key only — absolute ms is computed at send time (send-time base).
         onSchedule({ type: 'preset', preset })
-        onClose()
+        close()
     }
 
     const handleSpecificSubmit = () => {
@@ -309,7 +351,7 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
             return
         }
         onSchedule({ type: 'absolute', ms: parsed })
-        onClose()
+        close()
     }
 
     const handleSpecificChange = (value: string) => {
@@ -328,7 +370,8 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
         <div
             ref={panelRef}
             role="dialog"
-            aria-label={t('composer.scheduleSend')}
+            aria-label={t(mode === 'send' ? 'composer.scheduleSend' : PICKER_MODE_LABEL[mode])}
+            onKeyDown={handleKeyDown}
             style={
                 isMobilePanel
                     ? { position: 'fixed' }
@@ -338,7 +381,7 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
             }
             className={
                 isMobilePanel
-                    ? `z-50 box-border max-h-[min(85dvh,calc(var(--app-viewport-height,100dvh)-24px))] ${isContentConstrained ? 'overflow-y-auto' : 'overflow-y-visible'} rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] shadow-lg fixed inset-x-3 bottom-[calc(env(safe-area-inset-bottom)+12px)] sm:left-1/2 sm:right-auto sm:w-80 sm:-translate-x-1/2`
+                    ? `z-50 box-border max-h-[min(85dvh,calc(var(--app-viewport-height,100dvh)-24px))] ${isContentConstrained ? 'overflow-y-auto' : 'overflow-y-visible'} rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] shadow-lg fixed inset-x-3 ${KEYBOARD_OFFSET_CLASS} sm:left-1/2 sm:right-auto sm:w-80 sm:-translate-x-1/2`
                     : `z-50 box-border w-80 max-w-[calc(100vw-16px)] ${isContentConstrained ? 'overflow-y-auto' : 'overflow-y-visible'} rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] shadow-lg`
             }
             onPointerDown={(e) => e.stopPropagation()}
@@ -346,7 +389,7 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
             {/* Header */}
             <div className="px-3 pt-3 pb-2">
                 <p className="text-xs font-semibold text-[var(--app-hint)]">
-                    {mode === 'repeat' ? t('composer.scheduleModeRepeat') : mode === 'queue' ? t('composer.scheduleModeQueue') : t('composer.scheduleSend')}
+                    {t(mode === 'send' ? 'composer.scheduleSend' : PICKER_MODE_LABEL[mode])}
                 </p>
             </div>
 
@@ -358,6 +401,7 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
                             key={candidate}
                             type="button"
                             aria-pressed={mode === candidate}
+                            disabled={creating > 0}
                             onClick={() => setMode(candidate)}
                             className={`flex-1 rounded-md px-2 py-1 text-xs font-medium transition-colors ${
                                 mode === candidate
@@ -456,23 +500,23 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
                     {mode === 'repeat' && tasks ? (
                         <RepeatTaskForm
                             draft={tasks.drafts.repeat}
-                            onDraftChange={(repeat) => tasks.onDraftsChange({ ...tasks.drafts, repeat })}
+                            onDraftChange={(repeat) => tasks.onDraftsChange((previous) => ({ ...previous, repeat }))}
                             composerDraft={tasks.composerDraft}
-                            createTask={tasks.createTask}
-                            onCreated={({ fromComposer }) => {
-                                tasks.onDraftsChange({ ...tasks.drafts, repeat: EMPTY_REPEAT_DRAFT })
-                                if (fromComposer) tasks.consumeComposerDraft()
-                                onClose()
+                            createTask={createTask}
+                            onCreated={() => {
+                                tasks.onDraftsChange((previous) => ({ ...previous, repeat: EMPTY_REPEAT_DRAFT }))
+                                close()
                             }}
                         />
                     ) : mode === 'queue' && tasks ? (
                         <QueueTaskForm
                             draft={tasks.drafts.queue}
-                            onDraftChange={(queue) => tasks.onDraftsChange({ ...tasks.drafts, queue })}
-                            createTask={tasks.createTask}
+                            composerDraft={tasks.composerDraft}
+                            onDraftChange={(queue) => tasks.onDraftsChange((previous) => ({ ...previous, queue }))}
+                            createTask={createTask}
                             onCreated={() => {
-                                tasks.onDraftsChange({ ...tasks.drafts, queue: EMPTY_QUEUE_DRAFT })
-                                onClose()
+                                tasks.onDraftsChange((previous) => ({ ...previous, queue: EMPTY_QUEUE_DRAFT }))
+                                close()
                             }}
                         />
                     ) : null}

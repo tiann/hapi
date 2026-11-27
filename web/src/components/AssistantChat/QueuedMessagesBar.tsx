@@ -13,6 +13,7 @@ import { useTranslation } from '@/lib/use-translation'
 import { useToast } from '@/lib/toast-context'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { formatScheduledTime } from '@/lib/scheduledTime'
+import { isSessionTaskMessageLocalId } from '@hapi/protocol'
 import {
     beginQueuedOperation,
     clearQueuedEditRecovery,
@@ -382,8 +383,12 @@ export function QueuedMessagesBar({
                         // on the same server-echo + no-pending-op conditions as
                         // Edit/Cancel, and never offered for future-scheduled rows
                         // (the hub rejects those).
+                        // A prompt a task inserted cannot be edited into a manual message or
+                        // steered: the task tracks that row, and treats its removal as a skip.
+                        const fromTask = isSessionTaskMessageLocalId(msg.localId)
                         const canSteerRow = Boolean(
                             canSteer
+                            && !fromTask
                             && msg.deliveryState !== 'indeterminate'
                             && msg.scheduledAt == null
                             && canCancel
@@ -514,7 +519,7 @@ export function QueuedMessagesBar({
                             }
                         }
 
-                        const canEdit = canCancel
+                        const canEdit = canCancel && !fromTask
 
                         return (
                             <li
@@ -522,6 +527,13 @@ export function QueuedMessagesBar({
                                 className="flex items-start gap-2 min-w-0 rounded-lg bg-[var(--app-secondary-bg)] px-3 py-2 shadow-sm"
                             >
                                 <div className="flex-1 min-w-0">
+                                    {fromTask ? (
+                                        <div className="mb-1">
+                                            <span className="inline-flex max-w-full items-center rounded-md bg-[var(--app-bg)] px-2 py-0.5 text-xs text-[var(--app-hint)]">
+                                                <span className="truncate">{t('queuedMessages.fromTask')}</span>
+                                            </span>
+                                        </div>
+                                    ) : null}
                                     {text ? (
                                         <span className="line-clamp-3 whitespace-pre-wrap break-words text-[var(--app-fg)]">
                                             {text}
@@ -591,32 +603,35 @@ export function QueuedMessagesBar({
                                             <SteerIcon />
                                         </button>
                                     ) : null}
-                                    <button
-                                        type="button"
-                                        aria-label="Edit queued message"
-                                        disabled={!canEdit}
-                                        onClick={handleEdit}
-                                        onMouseDown={(e) => e.preventDefault()}
-                                        className="flex h-6 w-6 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-border)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-40"
-                                    >
-                                        <svg
-                                            viewBox="0 0 16 16"
-                                            fill="none"
-                                            className="h-3.5 w-3.5"
-                                            aria-hidden="true"
+                                    {fromTask ? null : (
+                                        <button
+                                            type="button"
+                                            aria-label="Edit queued message"
+                                            disabled={!canEdit}
+                                            onClick={handleEdit}
+                                            onMouseDown={(e) => e.preventDefault()}
+                                            className="flex h-6 w-6 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-border)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-40"
                                         >
-                                            <path
-                                                d="M11.5 2.5a1.414 1.414 0 0 1 2 2L5 13H3v-2L11.5 2.5Z"
-                                                stroke="currentColor"
-                                                strokeWidth="1.4"
-                                                strokeLinecap="round"
-                                                strokeLinejoin="round"
-                                            />
-                                        </svg>
-                                    </button>
+                                            <svg
+                                                viewBox="0 0 16 16"
+                                                fill="none"
+                                                className="h-3.5 w-3.5"
+                                                aria-hidden="true"
+                                            >
+                                                <path
+                                                    d="M11.5 2.5a1.414 1.414 0 0 1 2 2L5 13H3v-2L11.5 2.5Z"
+                                                    stroke="currentColor"
+                                                    strokeWidth="1.4"
+                                                    strokeLinecap="round"
+                                                    strokeLinejoin="round"
+                                                />
+                                            </svg>
+                                        </button>
+                                    )}
                                     <button
                                         type="button"
-                                        aria-label="Cancel queued message"
+                                        aria-label={fromTask ? t('queuedMessages.skipTaskPrompt') : 'Cancel queued message'}
+                                        title={fromTask ? t('queuedMessages.skipTaskPrompt') : undefined}
                                         disabled={!canCancel}
                                         onClick={handleCancel}
                                         onMouseDown={(e) => e.preventDefault()}
