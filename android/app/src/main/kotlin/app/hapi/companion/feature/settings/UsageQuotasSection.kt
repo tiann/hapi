@@ -15,6 +15,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -47,7 +48,8 @@ internal fun UsageQuotasSection(state: QuotaUiState, onRefresh: () -> Unit) {
                 )
                 if (status != 403) {
                     TextButton(onClick = onRefresh, enabled = !state.loading) {
-                        Text(stringResource(if (state.loading) R.string.settings_storage_refreshing else R.string.settings_storage_refresh))
+                        val label = if (state.loading) R.string.settings_storage_refreshing else R.string.settings_storage_refresh
+                        Text(stringResource(label))
                     }
                 }
             }
@@ -67,9 +69,10 @@ internal fun UsageQuotasSection(state: QuotaUiState, onRefresh: () -> Unit) {
                 val unsupported = !machine.supported || (machine.accounts.isEmpty() &&
                     machine.error?.contains("RPC method not available") == true)
                 if (!unsupported && accounts.isEmpty() && machine.error.isNullOrBlank()) continue
+                if (shown) HorizontalDivider()
                 shown = true
                 if (machines.size > 1 || unsupported || machine.error != null) {
-                    Text(machine.machineName.ifBlank { machine.machineId }, style = MaterialTheme.typography.titleSmall)
+                    Text(machine.machineName.ifBlank { machine.machineId }, style = MaterialTheme.typography.labelMedium)
                 }
                 if (unsupported) {
                     Text(stringResource(R.string.quota_runner), style = MaterialTheme.typography.bodyMedium)
@@ -87,7 +90,6 @@ internal fun UsageQuotasSection(state: QuotaUiState, onRefresh: () -> Unit) {
 
 @Composable
 private fun QuotaAccount(account: AgentQuotaAccount) {
-    HorizontalDivider()
     val name = if (AgentFlavor.isKnown(account.agent)) Flavors.label(account.agent) else account.agent
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(name, style = MaterialTheme.typography.titleSmall)
@@ -106,7 +108,7 @@ private fun QuotaAccount(account: AgentQuotaAccount) {
                 modifier = Modifier.fillMaxWidth(),
             )
             bucket.resetsAt?.takeIf { it != 0L }?.let { timestamp ->
-                val locale = context.resources.configuration.locales[0]
+                val locale = LocalConfiguration.current.locales[0]
                 val skeleton = if (DateFormat.is24HourFormat(context)) "MMMdHm" else "MMMdhm"
                 val pattern = DateFormat.getBestDateTimePattern(locale, skeleton)
                 val date = SimpleDateFormat(pattern, locale).format(Date(timestamp))
