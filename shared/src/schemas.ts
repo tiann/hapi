@@ -475,15 +475,19 @@ export const AgentStateCompletedRequestSchema = z.object({
 
 export type AgentStateCompletedRequest = z.infer<typeof AgentStateCompletedRequestSchema>
 
+export const CursorTodoSnapshotSchema = z.array(z.object({
+    id: z.string().optional(),
+    content: z.string(),
+    priority: z.enum(['high', 'medium', 'low']),
+    status: z.enum(['pending', 'in_progress', 'completed', 'cancelled']),
+}))
+export type CursorTodoSnapshot = z.infer<typeof CursorTodoSnapshotSchema>
+
 export const AgentStateSchema = z.object({
     controlledByUser: z.boolean().nullish(),
-    // Latest Cursor todo snapshot seeds incremental updates after ACP resume.
-    cursorTodoSnapshot: z.array(z.object({
-        id: z.string().optional(),
-        content: z.string(),
-        priority: z.enum(['high', 'medium', 'low']),
-        status: z.enum(['pending', 'in_progress', 'completed', 'cancelled']),
-    })).optional(),
+    cursorTodoSnapshot: CursorTodoSnapshotSchema.optional(),
+    // A committed rewind starts a new timeline. Older pending writes must not replace its snapshot.
+    cursorTodoRevision: z.string().optional(),
     // Current actionable shared Codex proposal; content remains in the transcript.
     codexPlanProposalId: z.string().nullish(),
     // Observed dequeue during live context compaction; not a consumption ACK.

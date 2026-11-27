@@ -7,6 +7,7 @@ import type { AgentState } from '@/api/types';
 import type { AgentMessage } from '@/agent/types';
 import { AcpSdkBackend } from '@/agent/backends/acp';
 import { clearGeneratedImages, getGeneratedImage } from '@/modules/common/generatedImages';
+import { cursorTodosBySession } from './cursorTodoSnapshot';
 import { CursorExtensionAdapter } from './cursorExtensionAdapter';
 
 type ExtensionHandler = (params: unknown, requestId: string | number | null) => Promise<unknown>;
@@ -44,6 +45,7 @@ function createHarness(options?: { onCreatePlanAccepted?: () => void; state?: Ag
     return {
         handlers,
         adapter,
+        session,
         getAgentState: () => agentState,
         getMessages: () => messages
     };
@@ -239,6 +241,24 @@ describe('CursorExtensionAdapter', () => {
             { type: 'plan', items: [] }
         ]);
         expect(resumed.getAgentState().cursorTodoSnapshot).toEqual([]);
+    });
+
+    it('merges on the committed rewind baseline instead of discarded cached and persisted todos', async () => {
+        const { handlers, session, getMessages } = createHarness();
+        const update = handlers.get('cursor/update_todos')!;
+        await update({ todos: [{ id: 'discarded', content: 'discarded' }] }, null);
+        cursorTodosBySession.set(session, {
+            revision: 'rewound', items: [{ id: 'keep', content: 'keep', status: 'cancelled', priority: 'medium' }]
+        });
+        const write = vi.spyOn(session, 'updateAgentState');
+        await update({ merge: true, todos: [{ id: 'new', content: 'new' }] }, null);
+        expect(getMessages().at(-1)).toMatchObject({ type: 'plan', items: [
+            { id: 'keep', status: 'cancelled' }, { id: 'new', status: 'pending' }
+        ] });
+        const apply = write.mock.calls[0][0];
+        expect(apply({ cursorTodoRevision: 'rewound' }).cursorTodoSnapshot?.map(item => item.id)).toEqual(['keep', 'new']);
+        const nextRewind = { cursorTodoRevision: 'another', cursorTodoSnapshot: [] };
+        expect(apply(nextRewind)).toBe(nextRewind);
     });
 
     it('maps cursor/update_todos to plan agent messages', async () => {
