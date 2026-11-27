@@ -20,6 +20,7 @@ export class CursorSession extends AgentSessionBase<EnhancedMode> {
     /** Extra `--add-dir` roots for Cursor ACP spawn. */
     readonly cursorAddDirs?: readonly string[];
     model?: string;
+    availableSlashCommands?: ReadonlySet<string>;
     readonly startedBy: 'runner' | 'terminal';
     readonly startingMode: 'local' | 'remote';
     localLaunchFailure: LocalLaunchFailure | null = null;

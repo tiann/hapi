@@ -4,6 +4,7 @@ const mockCursorSession = vi.hoisted(() => ({
     setPermissionMode: vi.fn(),
     setModel: vi.fn(),
     getModel: vi.fn(() => undefined as string | undefined),
+    availableSlashCommands: new Set(['rename-chat']),
     pushKeepAlive: vi.fn(),
     stopKeepAlive: vi.fn(),
     canApplyModelConfig: vi.fn(() => false)
@@ -129,7 +130,7 @@ describe('runCursor', () => {
         expect(lifecycleMock.cleanupAndExit).toHaveBeenCalled();
     });
 
-    it('queues user turns with the live session model after startup remap', async () => {
+    it('queues user turns with the live session model and advertised slash commands', async () => {
         mockCursorSession.getModel.mockReturnValue('cursor-grok-4.5-medium');
 
         await runCursor({
@@ -142,16 +143,17 @@ describe('runCursor', () => {
             | undefined;
         expect(userMessageHandler).toBeDefined();
 
-        userMessageHandler!({ content: { text: 'hello' } }, 'local-1');
+        userMessageHandler!({ content: { text: '/rename-chat New title' } }, 'local-1');
 
         expect(enqueueCursorUserMessage).toHaveBeenCalledWith(
             expect.anything(),
-            'hello',
+            '/rename-chat New title',
             {
                 permissionMode: 'default',
                 model: 'cursor-grok-4.5-medium'
             },
-            'local-1'
+            'local-1',
+            mockCursorSession.availableSlashCommands
         );
     });
 });

@@ -228,6 +228,8 @@ These commands are isolated in the queue and forwarded to the agent (ACP prompt 
 
 `/compress` `/summarize` `/compact` `/model` `/multitask` `/best-of-n` `/worktree` `/apply-worktree` `/delete-worktree` `/add-dir` `/context` `/fork` `/auto-review`
 
+The slash menu also lists the commands and skills that the running Cursor ACP session advertises. HAPI sends a listed command in its own turn.
+
 Interactive TUI-only commands (`/config`, `/mcp`, `/sandbox`, `/btw`, `/rewind`, …) are not supported remotely.
 
 ### Modes
