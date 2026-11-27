@@ -452,7 +452,7 @@ describe('SessionTaskRunner', () => {
                 expect(h.task(taskId)).toMatchObject({ lastError: 'session_archived', nextRunAt: T0 + MINUTE })
                 const changesWhenStuck = h.changes.length
 
-                // The first slot that comes due while nobody can take the prompt is one line and one event; the next 59 are neither.
+                // The first slot that comes due while nobody can take the prompt is one line; the next 59 write none.
                 h.setClock(T0 + MINUTE)
                 await h.runner.tick()
                 expect(h.runs().map((run) => [run.outcome, run.scheduledFor, run.detail])).toEqual([
@@ -466,7 +466,8 @@ describe('SessionTaskRunner', () => {
                 }
                 expect(h.task(taskId)).toMatchObject({ state: 'active', lastError: 'session_archived', nextRunAt: T0 + 61 * MINUTE })
                 expect(h.runs()).toHaveLength(2)
-                expect(h.changes).toHaveLength(changesWhenStuck + 1)
+                // Each of them still moved the next run, so each is announced.
+                expect(h.changes).toHaveLength(changesWhenStuck + 60)
                 expect(h.sent).toHaveLength(1)
 
                 // An hour after that line, the next slot due is one more.
@@ -477,7 +478,7 @@ describe('SessionTaskRunner', () => {
                     ['skipped', T0 + MINUTE, T0 + MINUTE],
                     ['sent', T0, T0]
                 ])
-                expect(h.changes).toHaveLength(changesWhenStuck + 2)
+                expect(h.changes).toHaveLength(changesWhenStuck + 61)
 
                 // Un-archived and running again: the prompt is taken and the next slot is sent as usual.
                 h.session.archived = false
@@ -510,8 +511,27 @@ describe('SessionTaskRunner', () => {
                 }
                 expect(h.task(taskId)).toMatchObject({ lastError: 'prompt_not_taken', nextRunAt: T0 + 11 * MINUTE })
                 expect(h.runs()).toHaveLength(2)
-                expect(h.changes).toHaveLength(changesWhenStuck + 1)
+                // One line for ten slots, but an event for each: the next run moved each time.
+                expect(h.changes).toHaveLength(changesWhenStuck + 10)
                 expect(h.wakeCalls).toHaveLength(SESSION_TASK_MAX_PENDING_WAKE_ATTEMPTS)
+            })
+
+            it('announces every skipped slot, also one that writes no history line', async () => {
+                const h: Harness = makeHarness()
+                const taskId = await stuckPrompt(h)
+                for (let attempt = 0; attempt < SESSION_TASK_MAX_PENDING_WAKE_ATTEMPTS; attempt += 1) await h.runner.tick()
+                await h.runner.tick()
+                const changesWhenStuck = h.changes.length
+
+                // Three slots come due while the prompt waits: one history line, three
+                // events, so the task bar and the session list see the next run move.
+                for (const slot of [1, 2, 3]) {
+                    h.setClock(T0 + slot * MINUTE)
+                    await h.runner.tick()
+                    expect(h.task(taskId)?.nextRunAt).toBe(T0 + (slot + 1) * MINUTE)
+                    expect(h.changes).toHaveLength(changesWhenStuck + slot)
+                }
+                expect(h.runs().filter((run) => run.outcome === 'skipped')).toHaveLength(1)
             })
 
             it('writes the first skipped slot, then at most one line an hour, while the hub is trying to deliver the prompt', async () => {
@@ -531,7 +551,8 @@ describe('SessionTaskRunner', () => {
                 expect(skipped().map((run) => [run.scheduledFor, run.recordedAt, run.detail])).toEqual(
                     [421, 361, 301, 241, 181, 121, 61, 1].map((slot) => [T0 + slot * MINUTE, T0 + slot * MINUTE, 'previous_prompt_waiting'])
                 )
-                expect(h.changes).toHaveLength(changesBeforeOutage + 8)
+                // One event per skipped slot: each moved the next run.
+                expect(h.changes).toHaveLength(changesBeforeOutage + 8 * 60)
                 expect(h.task(taskId)).toMatchObject({ state: 'active', lastError: 'machine_offline', nextRunAt: T0 + 481 * MINUTE })
             })
 

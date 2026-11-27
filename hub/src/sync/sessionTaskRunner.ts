@@ -24,7 +24,8 @@ import type { SessionWakeResult, WakeableSession } from './sessionWakeGate'
  * A `repeat` task that comes due while its previous prompt is still waiting
  * skips that slot, so a busy agent never has a second prompt stacked on it.
  * The first skipped slot of a prompt is one line in the history, then at
- * most one an hour for as long as that prompt keeps waiting.
+ * most one an hour for as long as that prompt keeps waiting; every skipped
+ * slot is announced (`session-tasks-changed`), since the next run moves.
  *
  * Every run leaves a line in the run history (`session_task_runs`): a prompt
  * sent (stamped when the agent takes it, or flipped to `cancelled`), a slot
@@ -200,14 +201,18 @@ export class SessionTaskRunner {
         // while its previous prompt waits: skip the slot. The first skipped slot
         // of a prompt is a line in the history, then at most one an hour for as
         // long as that prompt keeps waiting, whatever kept it waiting (a busy
-        // agent, an offline machine, an archived session); a slot that writes
-        // no line announces nothing.
+        // agent, an offline machine, an archived session). Every skipped slot
+        // is announced all the same: the task's next run moved, and a client
+        // that is not told keeps showing a run as due long after the hub moved
+        // past it.
         if (task.kind === 'repeat' && task.state === 'active' && task.nextRunAt !== null && task.nextRunAt <= now) {
             const skippedFor = task.nextRunAt
             const nextRunAt = nextRepeatRunAt(task.nextRunAt, task.intervalMs, now)
-            if (store.skipDueSlot(task.id, nextRunAt, now) && this.skipIsWritable(task, localId, now)) {
-                this.skipRecordedAt.set(task.id, { pendingLocalId: localId, at: now })
-                this.recordRun(task, { outcome: 'skipped', scheduledFor: skippedFor, detail: 'previous_prompt_waiting', now })
+            if (store.skipDueSlot(task.id, nextRunAt, now)) {
+                if (this.skipIsWritable(task, localId, now)) {
+                    this.skipRecordedAt.set(task.id, { pendingLocalId: localId, at: now })
+                    this.recordRun(task, { outcome: 'skipped', scheduledFor: skippedFor, detail: 'previous_prompt_waiting', now })
+                }
                 this.changed(task)
             }
         }
