@@ -414,8 +414,9 @@ public final class ChatInteractor {
             return
         }
         let steerTurn = expectedFollowUpTurnId ?? followUpSteerTurnId
+        let legacyPiSteer = followUpIntent == .steer && currentFlavor() == "pi" && canChooseFollowUpMode
         if attachments.hasScratchlistAttachments {
-            sendComposerWithScratchlistAttachments(followUpIntent: followUpIntent, steerTurn: steerTurn)
+            sendComposerWithScratchlistAttachments(followUpIntent: followUpIntent, steerTurn: steerTurn, legacyPiSteer: legacyPiSteer)
             return
         }
         let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -427,7 +428,6 @@ public final class ChatInteractor {
         isSending = true
         let localId = makeLocalId()
         let createdAt = now()
-        let legacyPiSteer = followUpIntent == .steer && currentFlavor() == "pi" && canChooseFollowUpMode
         Task { [weak self] in
             guard let self else { return }
             self.drafts?.clear(sessionId: self.sessionId)
@@ -1648,7 +1648,7 @@ public final class ChatInteractor {
         if let target = scratchlistSendTarget, target != sessionId { emit(.sessionSuperseded(sessionId: target)) }
     }
 
-    private func sendComposerWithScratchlistAttachments(followUpIntent: FollowUpIntent, steerTurn: String?) {
+    private func sendComposerWithScratchlistAttachments(followUpIntent: FollowUpIntent, steerTurn: String?, legacyPiSteer: Bool) {
         let text = composerText
         let snapshot = attachments.snapshot
         isSending = true
@@ -1672,7 +1672,8 @@ public final class ChatInteractor {
                 _ = await performSend(text: text, localId: makeLocalId(), createdAt: now(),
                     attachments: staged, scheduledAt: nil, isRetry: false, targetSessionId: target,
                     followUpIntent: sameTurn ? followUpIntent : nil,
-                    expectedFollowUpTurnId: sameTurn && followUpIntent == .steer ? steerTurn : nil)
+                    expectedFollowUpTurnId: sameTurn && followUpIntent == .steer ? steerTurn : nil,
+                    legacyPiSteer: legacyPiSteer)
                 navigateAfterScratchlistSend()
             } catch {
                 scratchlistError = "Couldn't prepare the attachments — retry or remove the failed files"

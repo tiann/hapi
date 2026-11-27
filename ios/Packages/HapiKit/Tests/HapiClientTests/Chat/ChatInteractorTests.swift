@@ -387,18 +387,34 @@ struct ChatInteractorTests {
         #expect(sends == [#"{"expectedFollowUpTurnId":"observed-turn","followUpIntent":"steer","localId":"local-1","text":"steer this"}"#])
     }
 
-    @Test func livePiKeepsExplicitLegacySteerAndShowsQueueAsDefault() async throws {
+    @Test(arguments: [false, true])
+    func livePiKeepsExplicitLegacySteerAndShowsQueueAsDefault(borrowedAttachment: Bool) async throws {
         let harness = try await ChatInteractionHarness(detail: chatDetail(flavor: "pi", thinking: true))
         harness.interactor.followUpDefault = .steer
         #expect(harness.interactor.canChooseFollowUpMode)
         #expect(harness.interactor.effectiveFollowUpDefault == .queue)
+        if borrowedAttachment {
+            harness.interactor.attachments.restoreScratchlist([
+                ScratchlistAttachment(id: "attachment-1", filename: "notes.txt", mimeType: "text/plain", size: 2,
+                    path: "hapi-hub:scratchlist/default/sess-1/attachment-1")
+            ])
+            await harness.performer.serve("POST", "/api/sessions/sess-1/upload", json: #"{"success":true,"path":"/uploads/notes.txt"}"#)
+        }
 
         harness.interactor.setComposerText("steer Pi")
         harness.interactor.sendMessage(followUpIntent: .steer)
 
         #expect(await eventually { await harness.row(localId: "local-1")?.status == .queued })
         let sends = await harness.performer.bodies("POST", pathSuffix: "/api/sessions/sess-1/messages")
-        #expect(sends == [#"{"deliveryMode":"steer","localId":"local-1","text":"steer Pi"}"#])
+        #expect(sends.count == 1)
+        let body = try #require(sends.first)
+        let json = try #require(JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any])
+        #expect(json["deliveryMode"] as? String == "steer")
+        #expect(json["followUpIntent"] == nil)
+        #expect(json["expectedFollowUpTurnId"] == nil)
+        #expect(json["localId"] as? String == "local-1")
+        #expect(json["text"] as? String == "steer Pi")
+        #expect(body.contains("/uploads/notes.txt") == borrowedAttachment)
     }
 
     @Test func failedSendMarksTheRowFailedAndRetryRefiresWithTheSameLocalId() async throws {
