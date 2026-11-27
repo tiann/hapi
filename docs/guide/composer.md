@@ -91,9 +91,9 @@ How the hub runs them:
 - If the session's machine is offline, the task waits and shows **Sends once the machine is back online**. Other reasons are shown the same way — the session cannot be resumed right now, the session is archived, the prompt was sent but whether the agent took it is unknown (retry or discard it in the queued messages), the agent has not taken the prompt, or the send failed. None of these pauses the task: it stays due and goes on by itself once the cause is gone.
 - A finished task removes itself from the list; its prompts stay in the conversation and its runs in the history. A session may hold at most 20 active tasks.
 
-In the queued-message bar, a prompt a task sent is marked **From task**. It offers **Skip this message** (the task moves on to the next one and records the skip) and, when its delivery is uncertain, **Retry** — but not **Edit** or **Steer**: the task tracks that row.
+In the queued-message bar, a prompt a task sent is marked **From task**. It offers **Skip this message** (the task moves on to the next one and records the skip) and, when its delivery is uncertain, **Retry** — but not **Edit** or **Steer**: the task tracks that row. Once it has gone out, the message keeps the **From task** mark in the conversation, so it does not read as something you typed.
 
-Tasks are text-only and have no 7-day limit. The iOS and Android apps cannot create them yet; prompts a task sends show up in their threads like any other message, and the session list there does not mark them yet.
+Tasks are text-only and have no 7-day limit. The iOS and Android apps cannot create them yet; prompts a task sends show up in their threads like any other message (without the **From task** mark), and the session list there does not mark them yet.
 
 ## Model and effort
 

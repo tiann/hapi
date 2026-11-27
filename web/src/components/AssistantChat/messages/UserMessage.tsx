@@ -1,10 +1,11 @@
 import { useState } from 'react'
+import { isSessionTaskMessageLocalId } from '@hapi/protocol'
 import { MessagePrimitive, useAuiState, type TextMessagePart } from '@assistant-ui/react'
 import { useHappyChatContext } from '@/components/AssistantChat/context'
 import type { HappyChatMessageMetadata } from '@/lib/assistant-runtime'
 import { MessageStatusIndicator } from '@/components/AssistantChat/messages/MessageStatusIndicator'
 import { MessageAttachments } from '@/components/AssistantChat/messages/MessageAttachments'
-import { UserBubbleContent, getUserBubbleClassName, shouldShowMessageStatus } from '@/components/AssistantChat/messages/user-bubble'
+import { FromTaskChip, UserBubbleContent, getUserBubbleClassName, shouldShowMessageStatus } from '@/components/AssistantChat/messages/user-bubble'
 import { CliOutputBlock } from '@/components/CliOutputBlock'
 import { getConversationMessageAnchorId } from '@/chat/outline'
 import { MessageActions, isConversationHistoryBlocked } from '@/components/AssistantChat/messages/MessageActions'
@@ -158,6 +159,8 @@ export function HappyUserMessage() {
     const visibleText = isTranslated && !showSentText ? translatedFrom : sentText
     const hasText = visibleText.length > 0
     const hasAttachments = attachments && attachments.length > 0
+    // A prompt a task sent is stored with the task's localId; in the thread it would read as something the user typed.
+    const fromTask = isSessionTaskMessageLocalId(localId)
 
     return (
         <MessagePrimitive.Root
@@ -167,6 +170,11 @@ export function HappyUserMessage() {
             className="happy-message flex flex-col items-end scroll-mt-4"
         >
             <div className={getUserBubbleClassName(status)}>
+                {fromTask ? (
+                    <div className="mb-1.5">
+                        <FromTaskChip label={t('queuedMessages.fromTask')} />
+                    </div>
+                ) : null}
                 <div className="flex items-start gap-2">
                     <div className="min-w-0 flex-1">
                         {hasText ? <UserBubbleContent text={visibleText} /> : null}

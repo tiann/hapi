@@ -58,6 +58,15 @@ export function DirectiveChip(props: { value: string }) {
     )
 }
 
+/** Marks a prompt a task sent, as the queued-message bar does, so it does not read as something the user typed. */
+export function FromTaskChip(props: { label: string }) {
+    return (
+        <span className="inline-flex max-w-full items-center rounded-md bg-[var(--app-bg)] px-2 py-0.5 text-xs text-[var(--app-hint)]">
+            <span className="truncate">{props.label}</span>
+        </span>
+    )
+}
+
 export function UserBubbleContent(props: { text: string }) {
     const { directives, body } = extractLeadingDirectives(props.text)
     const hasBody = body.trim().length > 0

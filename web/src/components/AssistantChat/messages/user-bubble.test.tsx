@@ -13,7 +13,19 @@ vi.mock('@/components/LazyRainbowText', () => ({
     )
 }))
 
-import { UserBubbleContent, extractLeadingDirectives, formatDirectiveLabel, getUserBubbleClassName } from '@/components/AssistantChat/messages/user-bubble'
+import { FromTaskChip, UserBubbleContent, extractLeadingDirectives, formatDirectiveLabel, getUserBubbleClassName } from '@/components/AssistantChat/messages/user-bubble'
+
+describe('FromTaskChip', () => {
+    it('is the small hint-coloured chip the queued bar and the thread share for a task\'s prompt', () => {
+        const { container } = render(<FromTaskChip label="From task" />)
+        expect(screen.getByText('From task')).toBeTruthy()
+        const chip = container.firstElementChild as HTMLElement
+        expect(chip.className).toContain('rounded-md')
+        expect(chip.className).toContain('bg-[var(--app-bg)]')
+        expect(chip.className).toContain('text-xs')
+        expect(chip.className).toContain('text-[var(--app-hint)]')
+    })
+})
 
 describe('extractLeadingDirectives', () => {
     it('extracts leading skill and command directives', () => {

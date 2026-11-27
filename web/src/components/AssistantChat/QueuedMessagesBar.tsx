@@ -12,6 +12,7 @@ import { useRetryIndeterminateMessage } from '@/hooks/mutations/useRetryIndeterm
 import { useTranslation } from '@/lib/use-translation'
 import { useToast } from '@/lib/toast-context'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
+import { FromTaskChip } from '@/components/AssistantChat/messages/user-bubble'
 import { formatScheduledTime } from '@/lib/scheduledTime'
 import { isSessionTaskMessageLocalId } from '@hapi/protocol'
 import {
@@ -529,9 +530,7 @@ export function QueuedMessagesBar({
                                 <div className="flex-1 min-w-0">
                                     {fromTask ? (
                                         <div className="mb-1">
-                                            <span className="inline-flex max-w-full items-center rounded-md bg-[var(--app-bg)] px-2 py-0.5 text-xs text-[var(--app-hint)]">
-                                                <span className="truncate">{t('queuedMessages.fromTask')}</span>
-                                            </span>
+                                            <FromTaskChip label={t('queuedMessages.fromTask')} />
                                         </div>
                                     ) : null}
                                     {text ? (
