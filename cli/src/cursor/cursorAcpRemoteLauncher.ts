@@ -1,5 +1,6 @@
 import React from 'react';
 import { settleAcpLauncherShutdown } from '@/modules/common/remote/settleAcpLauncherShutdown';
+import { restoreCursorRewindSettings } from './utils/restoreCursorRewindSettings';
 import { CursorConversationHistory, loadCursorHistoryStore } from './cursorConversationHistory';
 import { randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
@@ -34,7 +35,7 @@ import {
     resolveCursorModeAfterPlanApproval,
     wireIdForCursorSessionState
 } from './utils/cursorModeConfig';
-import { CURSOR_AUTO_MODEL_ID, cursorSpawnModelId, isCursorAutoModelId } from '@hapi/protocol';
+import { CURSOR_AUTO_MODEL_ID, cursorSpawnModelId, isCursorAutoModelId, isPermissionModeAllowedForFlavor } from '@hapi/protocol';
 import { CURSOR_PLAN_CONTINUE } from './utils/cursorPlanContinue';
 import { cursorPassThroughStatusMessage, parseCursorSpecialCommand } from './cursorSpecialCommands';
 import { buildCursorModelsSeedPayload, seedCursorModelsCache } from '@/modules/common/cursorModels';
@@ -167,7 +168,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private history: CursorConversationHistory | null = null;
     private processingBatch = false;
     private historyGate: ReturnType<typeof Promise.withResolvers<void>> | null = null;
-    private preparedRewind: { id: string; localId: string; backend: AcpSdkBackend } | null = null;
+    private preparedRewind: { id: string; localId: string; backend: AcpSdkBackend; mode: PermissionMode } | null = null;
     /**
      * Set in handleAbort before session/cancel. Cursor often rejects the
      * in-flight prompt as `Error: T: [canceled] Operation aborted`, which the
@@ -1532,7 +1533,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 await this.disconnectBackend();
                 if (this.shouldExit) throw new Error('Cursor session ended during rewind');
                 this.wireReplacementBackend(prepared.backend, () => {});
-                await this.activateLoadedBackend(prepared.backend, prepared.id, this.spawnedWithAutoReview);
+                await this.activateLoadedBackend(prepared.backend, prepared.id, this.spawnedWithAutoReview, prepared.mode);
                 this.session.onSessionFoundWithProtocol(prepared.id, 'acp');
                 this.lastRecordedModelError = null;
                 this.turnHasModelError = false;
@@ -1548,6 +1549,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
             const source = this.idleHistorySource();
             if (params.cursorSourceSessionId !== source) throw new Error('Cursor rewind requires a matching two-phase Hub');
+            const original = this.backend!; // idleHistorySource checked the active connection.
             this.historyGate = Promise.withResolvers<void>();
             let candidate: AcpSdkBackend | undefined;
             try {
@@ -1567,9 +1569,14 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 }) !== id || this.shouldExit || this.sessionTeardownStarted) {
                     throw new Error('Cursor could not load the exact rewind point');
                 }
+                const currentMode = this.session.getPermissionMode() ?? 'default';
+                if (!isPermissionModeAllowedForFlavor(currentMode, 'cursor')) throw new Error('Unknown Cursor permission mode');
+                const mode = currentMode as PermissionMode;
+                await restoreCursorRewindSettings(original, source, candidate, id, mode);
+                if (this.shouldExit || this.sessionTeardownStarted) throw new Error('Cursor session ended during rewind');
                 // No more source-side title rows after the Hub begins its cut.
                 this.backend?.setSessionInfoUpdateListener(null);
-                this.preparedRewind = { id, localId: messageLocalId, backend: candidate };
+                this.preparedRewind = { id, localId: messageLocalId, backend: candidate, mode };
                 return { success: true, nativeSessionId: id, truncateFromLocalId: messageLocalId, messages: [] };
             } catch (error) {
                 try {
@@ -2735,7 +2742,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         this.wireStderrErrorListener(backend, onStderr);
     }
 
-    private async activateLoadedBackend(backend: AcpSdkBackend, acpSessionId: string, autoReview: boolean): Promise<void> {
+    private async activateLoadedBackend(backend: AcpSdkBackend, acpSessionId: string, autoReview: boolean, confirmedMode?: PermissionMode): Promise<void> {
         const session = this.session;
         this.extensionAdapter = new CursorExtensionAdapter(
             session.client,
@@ -2772,8 +2779,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
         // Apply current mode after publish so Auto-review changes made while the
         // backend was null during relaunch still take effect (slash if needed).
-        const modeAfterLoad = session.getPermissionMode() as PermissionMode;
-        await applyCursorAcpMode(backend, acpSessionId, modeAfterLoad);
+        const modeAfterLoad = confirmedMode ?? (session.getPermissionMode() as PermissionMode);
+        if (!confirmedMode) await applyCursorAcpMode(backend, acpSessionId, modeAfterLoad);
         syncCursorModelsFromAcp(backend, acpSessionId);
         this.applyDisplayMode(modeAfterLoad);
         this.maybeQueueAutoReviewSlash(modeAfterLoad);
