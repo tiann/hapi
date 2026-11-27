@@ -2,7 +2,7 @@ import { StrictMode } from 'react'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type { ApiClient } from '@/api/client'
-import type { ChatToolCall, ToolCallBlock } from '@/chat/types'
+import type { ChatToolCall } from '@/chat/types'
 
 vi.mock('@/hooks/usePlatform', () => ({
     usePlatform: () => ({ haptic: { notification: vi.fn(), selection: vi.fn() } })
@@ -173,12 +173,12 @@ describe('AskUserQuestionFooter draft persistence (hapi#1734)', () => {
     })
 
     it('marks the chosen Cursor option by ID when a completed question is reopened', () => {
-        const tool = { ...makeTool('cursor-q'), name: 'CursorAskQuestion', input: {
+        const tool: ChatToolCall = { ...makeTool('cursor-q'), name: 'CursorAskQuestion', input: {
             questions: [{ id: 'branch', prompt: 'Which branch?', options: [
                 { id: 'dev', label: 'Development' }, { id: 'main', label: 'Main branch' }
             ] }]
         }, permission: { id: 'p', status: 'approved', answers: { branch: ['dev'] } } }
-        render(<AskUserQuestionView block={{ tool } as ToolCallBlock} metadata={null} />)
+        render(<AskUserQuestionView block={{ kind: 'tool-call', id: 'q', localId: null, createdAt: 1, children: [], tool }} metadata={null} />)
         const selected = document.querySelector('div[class*="border-[var(--app-md-quote-border)]"][class*="p-[2px]"]')
         expect(selected?.textContent).toContain('Development')
         expect(selected?.textContent).not.toContain('Main branch')
@@ -186,7 +186,7 @@ describe('AskUserQuestionFooter draft persistence (hapi#1734)', () => {
     })
 
     it('submits only an advertised option ID from a Cursor question', async () => {
-        const tool = { ...makeTool('cursor-q'), name: 'CursorAskQuestion', input: {
+        const tool: ChatToolCall = { ...makeTool('cursor-q'), name: 'CursorAskQuestion', input: {
             questions: [{ id: 'branch', prompt: 'Which branch?', options: [{ id: 'dev', label: 'Development' }] }]
         } }
         const { approvePermission } = renderFooter('session-A', tool)
