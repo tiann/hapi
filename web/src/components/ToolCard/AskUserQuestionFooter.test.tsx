@@ -171,6 +171,19 @@ describe('AskUserQuestionFooter draft persistence (hapi#1734)', () => {
         expect(document.activeElement).not.toBe(field)
     })
 
+    it('submits only an advertised option ID from a Cursor question', async () => {
+        const tool = { ...makeTool('cursor-q'), name: 'CursorAskQuestion', input: {
+            questions: [{ id: 'branch', prompt: 'Which branch?', options: [{ id: 'dev', label: 'Development' }] }]
+        } }
+        const { approvePermission } = renderFooter('session-A', tool)
+        expect(screen.queryByText('tool.other')).toBeNull()
+        fireEvent.click(screen.getByRole('radio', { name: /Development/ }))
+        fireEvent.click(screen.getByRole('button', { name: 'tool.submit' }))
+        await vi.waitFor(() => expect(approvePermission).toHaveBeenCalledWith(
+            'session-A', 'permission-1', { answers: { branch: ['dev'] } }
+        ))
+    })
+
     it('hides Other when the question does not allow free text, and submits an option as accept', async () => {
         const { approvePermission } = renderFooter('session-A', makeTool('tool-1', false))
 

@@ -57,7 +57,7 @@ struct QuestionAnswerForm: Equatable {
         }
 
         var allowsCustomAnswer: Bool {
-            if case .ask = self { return true }
+            if case .ask(_, _, false) = self { return true }
             return false
         }
 
@@ -80,6 +80,7 @@ struct QuestionAnswerForm: Equatable {
             if case .request = self {
                 return requestUserInputAnswerValues(selected: picked, note: text)
             }
+            guard allowsCustomAnswer else { return picked }
             let custom = text.trimmingCharacters(in: .whitespacesAndNewlines)
             return picked + (custom.isEmpty ? [] : [custom])
         }

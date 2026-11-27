@@ -214,6 +214,8 @@ hapi cursor --cursor-add-dir ../shared     # Extra workspace root (repeatable)
 
 Set mode via `--plan` / `--mode` / `--permission-mode` / `--auto-review`, or change from the web UI during a session.
 
+Cursor ACP questions accept the options offered by the agent. Skip leaves the question unanswered; abort cancels it. Completed question cards retain the selected options.
+
 ### Cursor-native worktree & multi-root
 
 - New Session **Worktree** for Cursor uses Cursor's `--worktree` (`~/.cursor/worktrees/<repo>/<name>`), not HAPI's sibling-directory worktree.

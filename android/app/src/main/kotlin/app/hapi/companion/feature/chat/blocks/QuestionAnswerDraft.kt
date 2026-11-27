@@ -43,7 +43,7 @@ internal class QuestionAnswerForm(tool: ChatToolCall) {
             override val options get() = ask.options
             override val multiple get() = ask.multiSelect
             override val required get() = true
-            override val allowsCustomAnswer get() = true
+            override val allowsCustomAnswer get() = !stableOptionIds
             override val prefill get() = ""
             override val placeholder: String? get() = null
 
@@ -52,6 +52,7 @@ internal class QuestionAnswerForm(tool: ChatToolCall) {
                     val option = options[index]
                     if (stableOptionIds) option.id ?: option.label else option.label
                 }
+                if (!allowsCustomAnswer) return picked
                 val custom = text.trim()
                 return if (custom.isEmpty()) picked else picked + custom
             }

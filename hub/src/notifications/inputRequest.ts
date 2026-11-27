@@ -52,7 +52,7 @@ export function formatInputRequestPreview(args: unknown, limit: number = BODY_LI
     const questions = isObject(args) && Array.isArray(args.questions)
         ? args.questions.flatMap((question) => {
             if (!isObject(question)) return []
-            const text = oneLine(question.question) || oneLine(question.header)
+            const text = oneLine(question.question) || oneLine(question.prompt) || oneLine(question.header)
             return text ? [text] : []
         })
         : []

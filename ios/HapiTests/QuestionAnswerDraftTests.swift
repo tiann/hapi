@@ -135,15 +135,15 @@ final class QuestionAnswerDraftTests: XCTestCase {
         XCTAssertEqual(draft.submission(in: form), .flatAnswers(["0": ["A (Recommended)"]]))
     }
 
-    func testCursorIDsAndAskMultiselectCustomValuesRemainUnchanged() throws {
+    func testCursorAnswersUseOnlyAdvertisedIDs() throws {
         let form = try QuestionAnswerForm(tool: tool(#"{"questions":[{"id":"target","prompt":"Choose","allowMultiple":true,"options":[{"id":"stable-a","label":"A (Recommended)"},{"id":"stable-b","label":"B"}]}]}"#, name: "CursorAskQuestion"))
         var draft = QuestionAnswerDraft()
         draft.select(1, at: 0, in: form)
         draft.select(0, at: 0, in: form)
         draft.setText("Custom", at: 0, in: form)
-        XCTAssertEqual(draft.submission(in: form), .flatAnswers(["target": ["stable-a", "stable-b", "Custom"]]))
+        XCTAssertEqual(draft.submission(in: form), .flatAnswers(["target": ["stable-a", "stable-b"]]))
         draft.select(0, at: 0, in: form)
-        XCTAssertEqual(draft.submission(in: form), .flatAnswers(["target": ["stable-b", "Custom"]]))
+        XCTAssertEqual(draft.submission(in: form), .flatAnswers(["target": ["stable-b"]]))
     }
 
     func testTextExpansionPrefillAndRestorationDoNotEraseDrafts() throws {
