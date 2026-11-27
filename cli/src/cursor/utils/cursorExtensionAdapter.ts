@@ -67,17 +67,17 @@ export class CursorExtensionAdapter {
         this.backend.registerExtensionRequestHandler('cursor/update_todos', async (params) => {
             this.handleTodoUpdate(params);
             return {};
-        });
+        }, { acceptNotification: true });
 
         this.backend.registerExtensionRequestHandler('cursor/task', async (params) => {
             this.handleTaskNotification(params);
             return {};
-        });
+        }, { acceptNotification: true });
 
         this.backend.registerExtensionRequestHandler('cursor/generate_image', async (params) => {
             await this.handleGenerateImage(params);
             return {};
-        });
+        }, { acceptNotification: true });
     }
 
     /**
