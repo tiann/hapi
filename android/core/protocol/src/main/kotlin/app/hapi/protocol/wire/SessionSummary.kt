@@ -60,6 +60,7 @@ data class SessionSummaryMetadata(
     val agentSessionId: String? = null,
     val lifecycleState: String? = null,
     val hapiMcpUrl: String? = null,
+    val lastModelError: ModelError? = null,
 )
 
 @Serializable

@@ -1,6 +1,8 @@
 package app.hapi.data.store
 
 import app.hapi.data.sse.SseSubscriptionKey
+import app.hapi.protocol.wire.ModelError
+import app.hapi.protocol.wire.SessionSummaryMetadata
 import java.io.File
 import java.nio.file.Files
 import kotlin.test.Test
@@ -59,6 +61,32 @@ class SessionStoreTest {
         store.refresh()
         assertEquals(listOf("a", "b"), store.sessions.value.map { it.id })
         assertEquals(300L, store.sessions.value.first().lastUserMessageAt)
+    }
+
+    @Test
+    fun `stale detail and list readback cannot undo a newer model error patch`() = runStoreTest { store, server ->
+        val stale = session("s1", metadataVersion = 1)
+        val staleJson = fullSessionJson(stale)
+        store.applySessionEvent(globalScope, sessionUpdatedEvent("s1", staleJson))
+        val metadata = """{"path":"/repo","host":"h","lastModelError":{"eventId":"e2","kind":"timeout",""" +
+            """"transient":true,"rawSnippet":"busy","atTs":3,"priorAssistantClaimsDone":false}}"""
+        store.applySessionEvent(globalScope, sessionUpdatedEvent("s1", """{"metadata":{"version":2,"value":$metadata}}"""))
+
+        store.applySessionEvent(globalScope, sessionUpdatedEvent("s1", staleJson))
+        server.enqueueJson("""{"session":$staleJson}""")
+        val detail = store.loadSessionDetail("s1")
+        assertEquals(2L, detail.metadataVersion)
+        assertEquals("e2", detail.metadata?.lastModelError?.eventId)
+        // Older summary responses can omit the metadata watermark entirely.
+        server.enqueueJson("""{"sessions":[{"id":"s1","active":true}]}""")
+        store.refresh()
+        assertEquals(2L, store.sessions.value.single().metadataVersion)
+        assertEquals(detail.metadata?.lastModelError, store.sessions.value.single().metadata?.lastModelError)
+
+        val clear = """{"metadata":{"version":3,"value":{"path":"/repo","host":"h"}}}"""
+        store.applySessionEvent(globalScope, sessionUpdatedEvent("s1", clear))
+        assertNull(store.currentDetail("s1")?.metadata?.lastModelError)
+        assertNull(store.sessions.value.single().metadata?.lastModelError)
     }
 
     @Test
@@ -414,9 +442,11 @@ class SessionStoreTest {
         server.start()
         try {
             val store = SessionStore(apiFor(server), backgroundScope, dir)
+            val modelError = ModelError("evt", "timeout", true, "deadline exceeded", 42, false)
             server.enqueueJson(
                 sessionsResponseJson(
-                    summary("pinned", updatedAt = 100, pinned = true),
+                    summary("pinned", updatedAt = 100, pinned = true,
+                        metadata = SessionSummaryMetadata(path = "/repo", lastModelError = modelError)),
                     summary("recent", updatedAt = 900),
                 )
             )
@@ -426,6 +456,7 @@ class SessionStoreTest {
             val cold = SessionStore(apiFor(server), backgroundScope, dir)
             assertEquals(listOf("pinned", "recent"), cold.sessions.value.map { it.id })
             assertTrue(cold.sessions.value.first().pinned == true)
+            assertEquals(modelError, cold.sessions.value.first().metadata?.lastModelError)
             assertTrue(File(dir, "sessions.json").isFile)
         } finally {
             server.shutdown()

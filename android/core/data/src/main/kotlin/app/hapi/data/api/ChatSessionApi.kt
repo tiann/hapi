@@ -1,5 +1,6 @@
 package app.hapi.data.api
 
+import app.hapi.protocol.wire.ModelErrorActionResponse
 import app.hapi.protocol.wire.ApprovePermissionRequest
 import app.hapi.protocol.wire.CancelMessageResponse
 import app.hapi.protocol.wire.RetryIndeterminateMessageResponse
@@ -45,6 +46,9 @@ interface AttachmentUploadApi {
  * and [AttachmentUploadApi] for the composer attachment flow (B-M3f).
  */
 interface ChatSessionApi : MessagesApi, AttachmentUploadApi {
+    suspend fun bridgeModelError(sessionId: String, eventId: String): ModelErrorActionResponse
+    suspend fun acknowledgeModelError(sessionId: String, eventId: String)
+
     /** Shared root creation; only the initiating client navigates. */
     suspend fun clearConversation(sessionId: String): ResumeSessionResponse
 

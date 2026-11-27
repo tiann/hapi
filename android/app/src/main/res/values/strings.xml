@@ -827,4 +827,19 @@
     <string name="sessions_other_project">Other</string>
     <string name="sessions_folder_expanded">Expanded</string>
     <string name="sessions_folder_collapsed">Collapsed</string>
+    <string name="chat_model_error">Model error · %1$s</string>
+    <string name="chat_model_error_recovered">Last message resent · %1$s</string>
+    <string name="chat_model_error_retry_failed">Retry failed · %1$s</string>
+    <string name="chat_model_error_claimed_done">The agent reported completion before this error. Check the work.</string>
+    <string name="chat_model_error_bridge">Bridge &amp; retry</string>
+    <string name="chat_model_error_bridging">Bridging…</string>
+    <string name="chat_model_error_hide_details">Hide details</string>
+    <string name="model_error_action_failed">Could not update the model error.</string>
+    <string name="model_error_ack_unconfirmed">Dismissal is still unconfirmed.</string>
+    <string name="model_error_reason_model_error_changed">The model error has changed.</string>
+    <string name="model_error_reason_no_model_error">No current model error.</string>
+    <string name="model_error_reason_prompt_in_flight">A turn is already running.</string>
+    <string name="model_error_reason_superseded_by_newer_turn">A newer turn replaced this one.</string>
+    <string name="model_error_reason_not_bridgeable">This error cannot be retried through the bridge.</string>
+    <string name="model_error_reason_missing_last_user_message">No previous message to resend.</string>
 </resources>

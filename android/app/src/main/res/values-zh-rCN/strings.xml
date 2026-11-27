@@ -827,4 +827,19 @@
     <string name="sessions_other_project">其他</string>
     <string name="sessions_folder_expanded">已展开</string>
     <string name="sessions_folder_collapsed">已收起</string>
+    <string name="chat_model_error">模型错误 · %1$s</string>
+    <string name="chat_model_error_recovered">已重新发送上一条消息 · %1$s</string>
+    <string name="chat_model_error_retry_failed">重试失败 · %1$s</string>
+    <string name="chat_model_error_claimed_done">智能体在报错前报告了完成。请检查工作结果。</string>
+    <string name="chat_model_error_bridge">桥接并重试</string>
+    <string name="chat_model_error_bridging">正在桥接…</string>
+    <string name="chat_model_error_hide_details">收起详情</string>
+    <string name="model_error_action_failed">无法更新模型错误状态。</string>
+    <string name="model_error_ack_unconfirmed">尚未确认已忽略此错误。</string>
+    <string name="model_error_reason_model_error_changed">模型错误已更改。</string>
+    <string name="model_error_reason_no_model_error">当前没有模型错误。</string>
+    <string name="model_error_reason_prompt_in_flight">已有一轮对话正在运行。</string>
+    <string name="model_error_reason_superseded_by_newer_turn">新一轮对话已取代本轮。</string>
+    <string name="model_error_reason_not_bridgeable">此错误无法通过桥接重试。</string>
+    <string name="model_error_reason_missing_last_user_message">没有可重新发送的消息。</string>
 </resources>

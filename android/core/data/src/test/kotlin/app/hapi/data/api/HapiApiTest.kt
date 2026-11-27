@@ -69,6 +69,47 @@ class HapiApiTest {
         }
     }
 
+    @Test
+    fun `model error actions send the exact event id and encode session as one path segment`() = runBlocking {
+        val eventId = "evt/#:123"
+        for (action in listOf("bridge", "acknowledge")) {
+            server.enqueue(ok("""{"ok":true}"""))
+            if (action == "bridge") assertTrue(session.api.bridgeModelError("s/1", eventId).ok)
+            else session.api.acknowledgeModelError("s/1", eventId)
+            val sent = server.takeRequest()
+            assertEquals("POST", sent.method)
+            assertEquals("/api/sessions/s%2F1/model-error/$action", sent.path)
+            assertEquals(buildJsonObject { put("eventId", eventId) }, Json.parseToJsonElement(sent.body.readUtf8()))
+        }
+    }
+
+    @Test
+    fun `bridge returns CLI refusals and preserves ordinary conflicts as API errors`() = runBlocking {
+        server.enqueue(ok("""{"ok":false,"reason":"superseded_by_newer_turn"}""").setResponseCode(409))
+        val refused = session.api.bridgeModelError("s", "evt")
+        assertEquals(false, refused.ok)
+        assertEquals("superseded_by_newer_turn", refused.reason)
+
+        server.enqueue(ok("""{"error":"Session is inactive","code":"session_inactive"}""").setResponseCode(409))
+        assertEquals("session_inactive", assertFailsWith<ApiError> { session.api.bridgeModelError("s", "evt") }.code)
+        server.enqueue(ok("""{"error":"Model error changed"}""").setResponseCode(409))
+        assertEquals("Model error changed", assertFailsWith<ApiError> { session.api.acknowledgeModelError("s", "evt") }.code)
+    }
+
+    @Test
+    fun `gateway HTML and malformed success envelopes cannot accept a model error action`() = runBlocking {
+        for (body in listOf("<html>Sign in</html>", "{}", """{"ok":"true"}""")) {
+            server.enqueue(ok(body))
+            assertFailsWith<java.io.IOException> { session.api.bridgeModelError("s", "evt") }
+            server.enqueue(ok(body))
+            assertFailsWith<java.io.IOException> { session.api.acknowledgeModelError("s", "evt") }
+        }
+        server.enqueue(ok("""{"ok":false,"reason":"unconfirmed"}"""))
+        assertEquals("unconfirmed", assertFailsWith<java.io.IOException> {
+            session.api.acknowledgeModelError("s", "evt")
+        }.message)
+    }
+
     // ------------------------------------------------------------ ApiError --
 
     @Test

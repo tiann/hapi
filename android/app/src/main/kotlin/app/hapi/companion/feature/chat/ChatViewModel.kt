@@ -398,6 +398,7 @@ class ChatViewModel(
     // with Compose callbacks. Use queued Main (not Main.immediate), so a
     // synchronous completion cannot clear a job before its handle is assigned.
     private val uiScope = CoroutineScope(scope.coroutineContext + uiDispatcher)
+    internal val modelErrorRecovery = ModelErrorRecovery(sessionId, api, sessionStore, uiScope)
     private val workerContext = scope.coroutineContext.minusKey(Job)
     private val router = SyncEventRouter(syncTargets)
     private val subscriptionKey = SseSubscriptionKey.Session(sessionId)
@@ -1505,6 +1506,7 @@ class ChatViewModel(
         scope.launch {
             try {
                 api.abortSession(sessionId)
+                withContext(uiScope.coroutineContext.minusKey(Job)) { modelErrorRecovery.onAbort() }
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (error: Exception) {
