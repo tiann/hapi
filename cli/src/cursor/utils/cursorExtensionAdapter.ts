@@ -44,6 +44,10 @@ export class CursorExtensionAdapter {
         this.registerHandlers();
     }
 
+    hasPendingRequests(): boolean {
+        return this.pending.size > 0;
+    }
+
     handlePermissionResponse = async (response: PermissionResponseMessage): Promise<boolean> => {
         if (!this.pending.has(response.id)) {
             return false;

@@ -674,6 +674,18 @@ class ChatViewModelInteractionTest {
     }
 
     @Test
+    fun `ordinary Pi send carries the observed turn`() = runTest {
+        val harness = InteractionHarness(this, detail(flavor = "pi", thinking = true, agentState = AgentState(followUpSteerTurnId = "pi-turn")))
+        harness.viewModel.start()
+        harness.viewModel.composer.first { it.followUpSteerTurnId == "pi-turn" }
+        harness.viewModel.setComposerText("update")
+        harness.viewModel.sendMessage()
+        val (_, request) = harness.api.sendCalls.first { it.isNotEmpty() }.single()
+        assertEquals(FollowUpIntent.Default, request.followUpIntent)
+        assertEquals("pi-turn", request.expectedFollowUpTurnId)
+    }
+
+    @Test
     fun `live Pi offers and sends explicit legacy steer`() = runTest {
         val harness = InteractionHarness(this, detail(flavor = "pi", thinking = true))
         harness.viewModel.start()

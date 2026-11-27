@@ -584,9 +584,10 @@ struct ChatComposerView: View {
             .accessibilityLabel("Stop the current turn")
         case .send(let enabled):
             let label = sendLabel(enabled: enabled)
+            let presentedTurn = interactor.followUpSteerTurnId
             if scheduled {
                 Button {
-                    interactor.sendMessage()
+                    interactor.sendMessage(followUpIntent: .default, expectedFollowUpTurnId: presentedTurn)
                 } label: {
                     label
                 }
@@ -594,7 +595,6 @@ struct ChatComposerView: View {
                 .disabled(!enabled)
                 .accessibilityLabel("Schedule send")
             } else if interactor.canChooseFollowUpMode && enabled {
-                let presentedTurn = interactor.followUpSteerTurnId
                 Menu {
                     Button {
                         interactor.sendMessage(followUpIntent: .queue)
@@ -609,7 +609,7 @@ struct ChatComposerView: View {
                 } label: {
                     label
                 } primaryAction: {
-                    interactor.sendMessage()
+                    interactor.sendMessage(followUpIntent: .default, expectedFollowUpTurnId: presentedTurn)
                 }
                 .menuStyle(.button)
                 .menuIndicator(.hidden)
@@ -619,7 +619,7 @@ struct ChatComposerView: View {
                 .id(presentedTurn)
             } else {
                 Button {
-                    interactor.sendMessage()
+                    interactor.sendMessage(followUpIntent: .default, expectedFollowUpTurnId: presentedTurn)
                 } label: {
                     label
                 }

@@ -1298,7 +1298,7 @@ export function HappyComposer(props: {
             if (pendingSendIntentRef) {
                 pendingSendIntentRef.current = {
                     intent: effectiveIntent,
-                    expectedFollowUpTurnId: effectiveIntent === 'steer' || effectiveIntent === 'alternate'
+                    expectedFollowUpTurnId: pendingSchedule == null && effectiveIntent !== 'queue'
                         ? props.followUpTurnId
                         : undefined,
                 }

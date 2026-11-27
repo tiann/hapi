@@ -269,7 +269,7 @@ public final class ChatInteractor {
     public var followUpDefault: MessageDeliveryMode = .queue
 
     public var effectiveFollowUpDefault: MessageDeliveryMode {
-        currentFlavor() == "pi" ? .queue : followUpDefault
+        currentFlavor() == "pi" && followUpSteerTurnId == nil ? .queue : followUpDefault
     }
 
     public var followUpSteerTurnId: String? {
@@ -399,7 +399,11 @@ public final class ChatInteractor {
     /// Ready attachments are consumed into `SendMessageRequest.attachments`;
     /// an unsettled chip (uploading/failed) blocks the send with a notice.
     /// Text may be empty when attachments exist (wire: text OR attachments).
-    public func sendMessage(followUpIntent: FollowUpIntent = .default, expectedFollowUpTurnId: String? = nil) {
+    public func sendMessage(followUpIntent: FollowUpIntent = .default) {
+        sendMessage(followUpIntent: followUpIntent, expectedFollowUpTurnId: followUpSteerTurnId)
+    }
+
+    public func sendMessage(followUpIntent: FollowUpIntent, expectedFollowUpTurnId steerTurn: String?) {
         guard !isSending, !scratchlistBusy else { return }
         if composerDestination == .scratchlist {
             parkComposerDraft()
@@ -413,8 +417,7 @@ public final class ChatInteractor {
             emit(.notice("Attachments are still uploading — wait, or retry/remove the failed ones"))
             return
         }
-        let steerTurn = expectedFollowUpTurnId ?? followUpSteerTurnId
-        let legacyPiSteer = followUpIntent == .steer && currentFlavor() == "pi" && canChooseFollowUpMode
+        let legacyPiSteer = followUpIntent == .steer && steerTurn == nil && followUpSteerTurnId == nil && currentFlavor() == "pi" && canChooseFollowUpMode
         if attachments.hasScratchlistAttachments {
             sendComposerWithScratchlistAttachments(followUpIntent: followUpIntent, steerTurn: steerTurn, legacyPiSteer: legacyPiSteer)
             return
@@ -453,7 +456,7 @@ public final class ChatInteractor {
                 scheduledAt: nil,
                 isRetry: false,
                 followUpIntent: followUpIntent,
-                expectedFollowUpTurnId: followUpIntent == .steer ? steerTurn : nil,
+                expectedFollowUpTurnId: followUpIntent == .queue ? nil : steerTurn,
                 legacyPiSteer: legacyPiSteer
             )
         }
@@ -1672,7 +1675,7 @@ public final class ChatInteractor {
                 _ = await performSend(text: text, localId: makeLocalId(), createdAt: now(),
                     attachments: staged, scheduledAt: nil, isRetry: false, targetSessionId: target,
                     followUpIntent: sameTurn ? followUpIntent : nil,
-                    expectedFollowUpTurnId: sameTurn && followUpIntent == .steer ? steerTurn : nil,
+                    expectedFollowUpTurnId: sameTurn && followUpIntent != .queue ? steerTurn : nil,
                     legacyPiSteer: legacyPiSteer)
                 navigateAfterScratchlistSend()
             } catch {

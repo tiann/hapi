@@ -43,7 +43,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryInChat: false,
             autoBridgeTransientModelErrors: false,
             translateInputByDefault: false,
-            followUpDefault: 'queue',
+            followUpDefault: 'steer',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
     })
@@ -61,7 +61,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryInChat: false,
             autoBridgeTransientModelErrors: false,
             translateInputByDefault: false,
-            followUpDefault: 'queue',
+            followUpDefault: 'steer',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
 
@@ -71,7 +71,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryInChat: false,
             autoBridgeTransientModelErrors: false,
             translateInputByDefault: false,
-            followUpDefault: 'queue',
+            followUpDefault: 'steer',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
     })
@@ -91,7 +91,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryInChat: true,
             autoBridgeTransientModelErrors: false,
             translateInputByDefault: false,
-            followUpDefault: 'queue',
+            followUpDefault: 'steer',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
     })
@@ -109,7 +109,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryInChat: false,
             autoBridgeTransientModelErrors: true,
             translateInputByDefault: false,
-            followUpDefault: 'queue',
+            followUpDefault: 'steer',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
     })
@@ -133,7 +133,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryInChat: false,
             autoBridgeTransientModelErrors: false,
             translateInputByDefault: false,
-            followUpDefault: 'queue',
+            followUpDefault: 'steer',
             peerSpawnDefaults: {
                 agent: 'cursor',
                 permissionMode: 'yolo',
@@ -176,7 +176,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryInChat: false,
             autoBridgeTransientModelErrors: false,
             translateInputByDefault: false,
-            followUpDefault: 'queue',
+            followUpDefault: 'steer',
             peerSpawnDefaults: {
                 agent: 'codex',
                 permissionMode: 'default',
@@ -238,13 +238,13 @@ describe('GET/PUT /api/hub-settings', () => {
         const updated = await app.request('/api/hub-settings', {
             method: 'PUT',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ followUpDefault: 'steer' })
+            body: JSON.stringify({ followUpDefault: 'queue' })
         })
         expect(updated.status).toBe(200)
-        expect(await updated.json()).toMatchObject({ followUpDefault: 'steer' })
+        expect(await updated.json()).toMatchObject({ followUpDefault: 'queue' })
 
         const reader = createHubSettingsRoutes(dataDir)
-        expect(await (await reader.request('/hub-settings')).json()).toMatchObject({ followUpDefault: 'steer' })
+        expect(await (await reader.request('/hub-settings')).json()).toMatchObject({ followUpDefault: 'queue' })
     })
 
     it('rejects non-default namespaces for PUT but allows GET', async () => {
@@ -265,7 +265,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryInChat: true,
             autoBridgeTransientModelErrors: false,
             translateInputByDefault: false,
-            followUpDefault: 'queue',
+            followUpDefault: 'steer',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
 
@@ -288,7 +288,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryInChat: true,
             autoBridgeTransientModelErrors: true,
             translateInputByDefault: false,
-            followUpDefault: 'queue',
+            followUpDefault: 'steer',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
     })

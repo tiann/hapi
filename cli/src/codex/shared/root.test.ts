@@ -111,7 +111,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
         },
         rpcHandlerManager: { registerHandler: (name: string, handler: (raw: unknown) => Promise<unknown>) => rpc.set(name, handler) },
         sendSessionEvent: events, sendAgentMessage: send, emitSessionReady: sessionReady,
-        sendUserMessage() {}, emitMessagesConsumed: consumed, emitSteerIndeterminate: uncertain, syncNativeQueuedMessage() {},
+        setSteerDeliveryState: vi.fn(async () => true), sendUserMessage() {}, emitMessagesConsumed: consumed, emitSteerIndeterminate: uncertain, syncNativeQueuedMessage() {},
         sendSessionDeath() {}, async flush() {}, close() {}
     } as unknown as ApiSessionClient;
     const end = opts?.end ?? (async () => { throw new Error('Unexpected root archive'); });
@@ -887,8 +887,12 @@ describe('shared steering availability', () => {
         const rpc = f.rpc.get(RPC_METHODS.SteerFollowUpMessage)!;
         await expect(rpc({ localId: 'follow-up', expectedFollowUpTurnId: 'turn' })).resolves.toEqual({ steered: true });
         expect(request).toHaveBeenCalledWith('turn/steer', expect.objectContaining({ expectedTurnId: 'turn' }));
-        expect(f.consumed).toHaveBeenCalledWith(['follow-up'], { steered: true });
+        expect(f.consumed).not.toHaveBeenCalledWith(['follow-up'], { steered: true });
         expect(f.native.queue).toHaveLength(0);
+        f.native.notify('item/started', { threadId: 'thread', turnId: 'turn', item: {
+            type: 'userMessage', id: 'native-follow-up', clientId: 'follow-up', content: [{ type: 'text', text: 'Also lint' }]
+        } });
+        await vi.waitFor(() => expect(f.consumed).toHaveBeenCalledWith(['follow-up'], { steered: true }));
     });
 
     it('keeps a queued follow-up out of a newer turn that started while it waited for the queue', async () => {

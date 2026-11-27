@@ -7,10 +7,10 @@ import { isIndeterminateError } from '../codexAppServerClient';
 
 const InputSchema = z.array(z.object({ type: z.string() }).passthrough());
 export const SubmissionSchema = z.object({ id: z.string(), input: InputSchema, clientUserMessageId: z.string() });
-const StateSchema = z.enum(['unknown', 'queued', 'consumed', 'canceled', 'rejected', 'released']);
+const StateSchema = z.enum(['unknown', 'queued', 'consumed', 'canceled', 'rejected', 'released', 'awaitingPickup']);
 const EntrySchema = z.object({
     input: InputSchema, state: StateSchema, nativeId: z.string().optional(), batchId: z.string().optional(),
-    detachedSteer: z.boolean().optional()
+    detachedSteer: z.boolean().optional(), followUpTurnId: z.string().optional()
 });
 const MemberSchema = z.object({ id: z.string(), input: InputSchema });
 const RemovalSchema = z.object({
@@ -80,7 +80,8 @@ export class SharedCodexQueue {
         private readonly file: string, private readonly consumed: (ids: string[], steered?: boolean) => void,
         private readonly uncertain: (ids: string[]) => void,
         private readonly mirror?: (id: string, input: QueueInput | null) => void,
-        private readonly requeued?: (ids: string[]) => Promise<unknown>) {}
+        private readonly requeued?: (ids: string[]) => Promise<unknown>,
+        private readonly dispatching?: (ids: string[]) => Promise<boolean>) {}
 
     async load(): Promise<void> {
         let raw: unknown;
@@ -89,6 +90,11 @@ export class SharedCodexQueue {
         const current = LedgerV2Schema.safeParse(raw);
         if (current.success) {
             this.entries = current.data.entries; this.batches = current.data.batches;
+            // A previous process may have died on either side of turn/steer.
+            // Replay native history before exposing an unresolved dispatch.
+            for (const entry of Object.values(this.entries)) {
+                if (entry.state === 'awaitingPickup') entry.state = 'unknown';
+            }
             // Earlier v2 ledgers recorded confirmed shrink versions but no detached flag.
             for (const batch of Object.values(this.batches)) {
                 const version = this.currentVersion(batch);
@@ -119,7 +125,7 @@ export class SharedCodexQueue {
     state(id: string): Entry['state'] | undefined { return this.entries[id]?.state; }
 
     private nativeIdFor(entry: Entry): string | undefined {
-        if (entry.detachedSteer) return undefined;
+        if (entry.detachedSteer || entry.followUpTurnId) return undefined;
         // An append can lose its ACK before the new member receives nativeId.
         // Its persisted group still identifies the sole native submission.
         return (entry.batchId ? this.batches[entry.batchId]?.nativeId : undefined) || entry.nativeId;
@@ -203,13 +209,14 @@ export class SharedCodexQueue {
      * redelivery. For a batch synthetic client ID, only an exact accepted
      * content match may acknowledge that version's original members. */
     async committed(id: string): Promise<void>;
-    async committed(id: string, actualContent: unknown): Promise<Array<{ id: string; input: QueueInput }> | undefined>;
-    async committed(id: string, actualContent?: unknown): Promise<Array<{ id: string; input: QueueInput }> | undefined | void> {
+    async committed(id: string, actualContent: unknown, turnId?: string): Promise<Array<{ id: string; input: QueueInput }> | undefined>;
+    async committed(id: string, actualContent?: unknown, turnId?: string): Promise<Array<{ id: string; input: QueueInput }> | undefined | void> {
         const batch = this.batches[id];
         if (!batch) {
             const entry = this.entries[id] ??= { state: 'consumed', input: [] };
+            if (entry.followUpTurnId !== turnId) delete entry.followUpTurnId;
             entry.state = 'consumed';
-            await this.save(); this.consumed([id]);
+            await this.save(); this.acknowledgeEntry(id, entry);
             return undefined;
         }
         const version = this.matchAccepted(batch, normalizeContent(actualContent));
@@ -240,6 +247,28 @@ export class SharedCodexQueue {
         const ids = version.members.map(member => member.id);
         if (ids.length) this.consumed(ids);
         return version.members.map(member => ({ id: member.id, input: member.input }));
+    }
+
+    private acknowledgeEntry(id: string, entry: Entry): void {
+        if (entry.followUpTurnId) this.consumed([id], true);
+        else this.consumed([id]);
+    }
+
+    /** Final notifications (and refresh after disconnect) can arrive without a pickup. */
+    finishUnconfirmedSteers(ended: (turnId: string) => boolean): Promise<void> {
+        return this.serial(async () => {
+            const unresolved: string[] = [];
+            for (const [id, entry] of Object.entries(this.entries)) {
+                if (entry.state === 'awaitingPickup' && entry.followUpTurnId && ended(entry.followUpTurnId)) {
+                    entry.state = 'unknown';
+                    unresolved.push(id);
+                }
+            }
+            if (unresolved.length) {
+                await this.save();
+                this.uncertain(unresolved);
+            }
+        });
     }
 
     async list(): Promise<Submission[]> {
@@ -344,6 +373,9 @@ export class SharedCodexQueue {
      * Run only after all frontends stop submitting; no second native drainer. */
     suspend(): Promise<void> {
         return this.serial(async () => {
+            for (const entry of Object.values(this.entries)) {
+                if (entry.state === 'awaitingPickup') entry.state = 'unknown';
+            }
             try { await this.reconcileLocked(); } catch {
                 // Without a fresh snapshot even the input may have been edited.
                 // Do not delete and later restore stale contents from the ledger.
@@ -496,7 +528,7 @@ export class SharedCodexQueue {
     private async enqueueLegacy(id: string, input: QueueInput, resumeInterrupted: boolean): Promise<void> {
         const existing = this.entries[id];
         if (existing && !['rejected', 'canceled', 'released'].includes(existing.state)) {
-            if (existing.state === 'consumed') this.consumed([id]);
+            if (existing.state === 'consumed') this.acknowledgeEntry(id, existing);
             else await this.reconcileLocked();
             return;
         }
@@ -526,7 +558,7 @@ export class SharedCodexQueue {
     private async enqueueBatched(id: string, input: QueueInput, resumeInterrupted: boolean, batchKey: string): Promise<void> {
         const existing = this.entries[id];
         if (existing && !['rejected', 'canceled', 'released'].includes(existing.state)) {
-            if (existing.state === 'consumed') this.consumed([id]);
+            if (existing.state === 'consumed') this.acknowledgeEntry(id, existing);
             else await this.reconcileLocked();
             return;
         }
@@ -615,6 +647,7 @@ export class SharedCodexQueue {
             const entry = this.entries[id];
             if (!entry) return 'indeterminate';
             if (entry.state === 'consumed') return 'consumed';
+            if (entry.followUpTurnId) return 'indeterminate';
             if (entry.state === 'canceled' || entry.state === 'rejected' || entry.state === 'released') {
                 entry.state = 'canceled'; await this.save(); return true;
             }
@@ -693,6 +726,10 @@ export class SharedCodexQueue {
             if (refusal) return { steered: false, error: refusal };
             let entry = this.entries[id];
             if (entry?.state === 'consumed') return { steered: false, error: 'Message already consumed' };
+            if (entry?.followUpTurnId) {
+                if (guard && entry.state === 'awaitingPickup' && entry.followUpTurnId === expectedTurnId) return { steered: true };
+                return { steered: false, indeterminate: true };
+            }
             if (entry?.batchId) return this.steerBatchMember(entry, id, expectedTurnId, freshInput, guard);
             if (entry) {
                 try { await this.reconcileLocked(); }
@@ -710,11 +747,15 @@ export class SharedCodexQueue {
                 entry = { input: freshInput, state: 'unknown' }; this.entries[id] = entry; await this.save();
             } else return { steered: false, error: 'Message not queued' };
             try {
-                await this.dispatchSteer(id, expectedTurnId, entry.input, guard);
-                entry.state = 'consumed'; await this.save(); this.consumed([id], true); return { steered: true };
+                await this.dispatchSteer(id, expectedTurnId, entry, entry.input, guard);
+                return { steered: true };
             } catch (error) {
                 if (this.state(id) === 'consumed') return { steered: true };
-                if (isIndeterminateError(error)) { this.uncertain([id]); return { steered: false, indeterminate: true }; }
+                if (isIndeterminateError(error)) {
+                    entry.state = 'unknown'; await this.save();
+                    this.uncertain([id]); return { steered: false, indeterminate: true };
+                }
+                delete entry.followUpTurnId;
                 // Definitely rejected; restoring a removed queued item is safe. Never restore an unknown dispatch.
                 if (!freshInput) {
                     try {
@@ -776,11 +817,13 @@ export class SharedCodexQueue {
         // The confirmed shrink/delete separates this request from its siblings.
         entry.detachedSteer = true; await this.save();
         try {
-            await this.dispatchSteer(id, expectedTurnId, input, guard);
-            entry.state = 'consumed'; await this.save(); this.consumed([id], true); return { steered: true };
+            await this.dispatchSteer(id, expectedTurnId, entry, input, guard);
+            return { steered: true };
         } catch (error) {
             if (this.state(id) === 'consumed') return { steered: true };
-            if (isIndeterminateError(error)) { batch.state = 'unknown'; this.uncertain([id]); await this.save(); return { steered: false, indeterminate: true }; }
+            if (isIndeterminateError(error)) { entry.state = 'unknown'; batch.state = 'unknown'; this.uncertain([id]); await this.save(); return { steered: false, indeterminate: true }; }
+            delete entry.followUpTurnId;
+            entry.state = 'unknown';
             // Definite rejection: restore the removed input safely, keeping siblings.
             if (proposal) {
                 const restoration = this.version(version.input, version.members);
@@ -812,10 +855,23 @@ export class SharedCodexQueue {
         }
     }
 
-    private async dispatchSteer(id: string, expectedTurnId: string, input: QueueInput, guard?: () => string | null): Promise<void> {
-        const refusal = guard?.();
-        if (refusal) throw new Error(refusal);
+    private async dispatchSteer(id: string, expectedTurnId: string, entry: Entry, input: QueueInput, guard?: () => string | null): Promise<void> {
+        if (guard) {
+            // Journal the target before sending. An item notification may race the
+            // RPC reply, and only native user-message evidence acknowledges pickup.
+            if (this.dispatching && !await this.dispatching([id])) throw new Error('Cannot persist follow-up dispatch');
+            if (this.state(id) === 'consumed') return;
+            entry.followUpTurnId = expectedTurnId;
+            entry.state = 'awaitingPickup';
+            await this.save();
+            if (this.state(id) === 'consumed') return;
+            const refusal = guard();
+            if (refusal) throw new Error(refusal);
+        }
         await this.client.request('turn/steer', { threadId: this.threadId, expectedTurnId, input, clientUserMessageId: id });
+        if (!guard) {
+            entry.state = 'consumed'; await this.save(); this.consumed([id], true);
+        }
     }
 
     private async restoreDetachedSteer(entry: Entry, id: string, input: QueueInput): Promise<void> {

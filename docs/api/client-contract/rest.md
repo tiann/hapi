@@ -126,7 +126,7 @@ Source: `hub/src/web/routes/messages.ts`; schemas `MessagesQuerySchema`, `SendMe
 
 The hub stamps `sentFrom: 'webapp'` on REST-sent messages server-side; the request body has no such field.
 
-Interactive composers use `followUpIntent: 'default' | 'alternate' | 'queue' | 'steer'`. The Hub reads `followUpDefault` for `default` and uses the other mode for `alternate`. A nonempty `agentState.followUpSteerTurnId` advertises a turn eligible for a Steer attempt. Use that value as `expectedFollowUpTurnId` for one-shot Steer or alternate sends. A mismatched turn queues the message. The Hub saves the row before attempting delivery, so `{ok: true}` confirms the send, and SSE reports delivery. A retry with the same `localId` keeps the original row. Scheduled messages queue and exclude attachments. Requests without `followUpIntent` use the existing `deliveryMode: 'queue' | 'steer'` contract, which rejects explicit Steer on scheduled messages.
+Interactive composers use `followUpIntent: 'default' | 'alternate' | 'queue' | 'steer'`. The Hub reads `followUpDefault` for `default` and uses the other mode for `alternate`. A nonempty `agentState.followUpSteerTurnId` advertises a turn eligible for a Steer attempt. Capture that value as `expectedFollowUpTurnId` when submitting default, alternate, or Steer. A missing or mismatched turn queues the message. The factory default is Steer for ordinary text. The Hub saves the row before attempting delivery, so `{ok: true}` confirms the send, and SSE reports delivery. A retry with the same `localId` keeps the original row. Scheduled messages queue and exclude attachments. Requests without `followUpIntent` use the existing `deliveryMode: 'queue' | 'steer'` contract, which rejects explicit Steer on scheduled messages.
 
 ### Permissions
 
@@ -371,7 +371,7 @@ Source: `hub/src/web/routes/hubSettings.ts`.
 
 | Method & path | Response |
 |---|---|
-| `GET /api/hub-settings` | Includes `{sessionSummaryContract: boolean, sessionSummaryInChat: boolean, followUpDefault?: 'queue'\|'steer'}` — readable by any namespace. Missing `followUpDefault` means Queue. |
+| `GET /api/hub-settings` | Includes `{sessionSummaryContract: boolean, sessionSummaryInChat: boolean, followUpDefault?: 'queue'\|'steer'}` — readable by any namespace. Older Hub responses without this field use Queue. |
 
 ### SSE
 

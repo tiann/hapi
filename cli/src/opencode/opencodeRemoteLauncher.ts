@@ -59,6 +59,7 @@ import { getProcessStartMarker } from '@/utils/process';
 import { fetchOpencodeUserMessages } from './utils/opencodeInputReceipt';
 
 type OpencodeRemoteLauncherOptions = {
+    preparingMessage?: (localId: string) => Promise<void> | undefined;
     onSteerCancelHandlerChange?: (handler: OpencodeSteerCancelHandler | null) => void;
     onModelRollback?: (model: string | null) => void;
     onReasoningEffortRollback?: (effort: string | null) => void;
@@ -257,6 +258,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
      * own turn's requests.
      */
     private steerTurnEpoch = 0;
+    private followUpSteerTurnId: string | null = null;
     /**
      * Steer operations that still own queue/bookkeeping state. Registered the
      * moment a reservation is taken — *before* the durable-state await — and
@@ -1572,9 +1574,6 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 this.activePromptModeHash = session.queue.modeHasher({ ...batch.mode, model: steeringModel });
                 this.activePromptText = messageText;
                 this.steerTurnEpoch += 1;
-                // Advertise steerability so the web's queued-message Steer button
-                // is reachable at all; only a normal active prompt may set it.
-                this.setSteeringActive(true);
                 const nativeInput = { uncertain: false };
                 try {
                     // Native automatic compaction can append both a user-role
@@ -1612,6 +1611,13 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     try {
                         await backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
                             this.handleAgentMessage(message);
+                        }, {
+                            timing: {
+                                onSent: () => {
+                                    if (this.promptInFlight && !waitSignal.aborted && !this.shouldExit) this.setSteeringActive(true);
+                                },
+                                onAnswered: () => this.setSteeringActive(false)
+                            }
                         });
                     } catch (error) {
                         if (isDefiniteAcpError(error)) {
@@ -1731,17 +1737,31 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         session: OpencodeSession,
         acpSessionId: string
     ): void {
-        session.client.rpcHandlerManager.registerHandler(
-            RPC_METHODS.SteerQueuedMessage,
-            async (payload: unknown) => {
-                const localId = typeof (payload as { localId?: unknown } | null)?.localId === 'string'
-                    ? (payload as { localId: string }).localId
-                    : '';
-                if (!localId) {
+        const steerQueuedMessage =
+            async (payload: unknown, guarded: boolean) => {
+                const { localId, expectedFollowUpTurnId } = (payload ?? {}) as {
+                    localId?: unknown; expectedFollowUpTurnId?: unknown
+                };
+                if (typeof localId !== 'string' || !localId) {
                     return { steered: false, error: 'Missing localId' };
                 }
                 if (this.majorVersion === 'v2' && !this.v2RestInfo) {
                     return { steered: false, error: 'OpenCode v2 internal API unavailable' };
+                }
+                if (guarded) {
+                    if (!this.followUpSteerTurnId || expectedFollowUpTurnId !== this.followUpSteerTurnId) {
+                        return { steered: false, error: 'Active turn changed' };
+                    }
+                    // The socket update precedes the RPC, but slash/config preparation
+                    // can defer inserting this particular row in the runner queue.
+                    const preparing = this.options.preparingMessage?.(localId);
+                    if (preparing) await preparing;
+                    if (expectedFollowUpTurnId !== this.followUpSteerTurnId) {
+                        return { steered: false, error: 'Active turn changed' };
+                    }
+                    if (this.permissionHandler?.hasPendingPermissionRequests()) {
+                        return { steered: false, error: 'Waiting for a user decision' };
+                    }
                 }
                 const backend = this.backend;
                 // isPromptRequestInFlight(), not processingMessage: after ACP
@@ -1763,7 +1783,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 // takeByLocalId is atomic: a duplicate Steer for the same row
                 // finds no queue entry (the live one is held as a reservation)
                 // and is rejected.
-                const taken = session.queue.takeByLocalId(localId);
+                // Only an explicit retry may take over an indeterminate reservation.
+                const taken = session.queue.takeByLocalId(localId, { retryIndeterminate: !guarded });
                 if (!taken) {
                     return { steered: false, error: 'Message not in queue' };
                 }
@@ -1913,12 +1934,18 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     || this.backend !== backend
                     || this.activeAcpSessionId !== acpSessionId
                     || !backend.isPromptRequestInFlight()
-                    || backend.getPromptGeneration() !== targetPromptGeneration) {
+                    || backend.getPromptGeneration() !== targetPromptGeneration
+                    || (guarded && expectedFollowUpTurnId !== this.followUpSteerTurnId)) {
                     await restoreQueuedReservation();
                     releaseOperation();
                     return { steered: false, error: 'Active turn changed' };
                 }
 
+                if (guarded && this.permissionHandler?.hasPendingPermissionRequests()) {
+                    await restoreQueuedReservation();
+                    releaseOperation();
+                    return { steered: false, error: 'Waiting for a user decision' };
+                }
                 if (this.majorVersion === 'v2') {
                     return this.dispatchV2Steer(session, acpSessionId, localId, taken, releaseOperation, restoreQueuedReservation);
                 }
@@ -2065,8 +2092,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 // reconciling while this request owns the active turn, without
                 // holding the hub RPC open or inferring acceptance from dispatch.
                 return { steered: true };
-            }
-        );
+            };
+        session.client.rpcHandlerManager.registerHandler(RPC_METHODS.SteerQueuedMessage, (payload) => steerQueuedMessage(payload, false));
+        session.client.rpcHandlerManager.registerHandler(RPC_METHODS.SteerFollowUpMessage, (payload) => steerQueuedMessage(payload, true));
     }
 
     private handleV2SteerEvent(type: string, properties: Record<string, unknown>): void {
@@ -2315,7 +2343,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         // v2 uses its experimental durable REST inbox, never concurrent ACP.
         const steeringActive = active && !this.runtimeGate.isBlocked()
             && (this.majorVersion !== 'v2' || this.v2RestInfo !== null);
-        this.session.client.updateAgentState?.((state) => ({ ...state, steeringActive }));
+        const followUpSteerTurnId = steeringActive ? randomUUID() : null;
+        this.followUpSteerTurnId = followUpSteerTurnId;
+        this.session.client.updateAgentState?.((state) => ({ ...state, steeringActive, followUpSteerTurnId }));
     }
 
     /**
@@ -2455,10 +2485,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         await Promise.all(Array.from(this.v2Steers.values(), entry => entry.cancel('teardown')));
         for (const entry of this.v2Steers.values()) entry.abandon();
         this.v2Steers.clear();
-        this.session.client.rpcHandlerManager.registerHandler(RPC_METHODS.SteerQueuedMessage, async () => ({
-            steered: false,
-            error: 'Session ending'
-        }));
+        const sessionEnding = async () => ({ steered: false, error: 'Session ending' });
+        this.session.client.rpcHandlerManager.registerHandler(RPC_METHODS.SteerQueuedMessage, sessionEnding);
+        this.session.client.rpcHandlerManager.registerHandler(RPC_METHODS.SteerFollowUpMessage, sessionEnding);
         // Before anything that can fail: a stream left open would keep
         // reconnecting to a subprocess that is on its way out.
         this.nativeTranscript?.close();

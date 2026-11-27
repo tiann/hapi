@@ -43,40 +43,98 @@ describe('composer follow-up delivery', () => {
             return { steered: true }
         })
         try {
-            await engine.sendMessage(session.id, { text: 'initial default', localId: 'stock', followUpIntent: 'default' })
-            await engine.sendMessage(otherSession.id, { text: 'initial default', localId: 'other-stock', followUpIntent: 'default' })
+            await engine.sendMessage(session.id, { text: 'unobserved turn', localId: 'stock', followUpIntent: 'default' })
             expect(steer).not.toHaveBeenCalled()
-            await engine.sendMessage(session.id, { text: 'steer on purpose', localId: 'override', followUpIntent: 'steer' })
+            await engine.sendMessage(session.id, { text: 'steer on purpose', localId: 'override', expectedFollowUpTurnId: 'turn-1', followUpIntent: 'steer' })
             expect(steer).toHaveBeenCalledWith(session.id, 'override', 'turn-1')
-            await engine.sendMessage(session.id, { text: 'other mode', localId: 'opposite-queue', followUpIntent: 'alternate' })
-            expect(steer).toHaveBeenLastCalledWith(session.id, 'opposite-queue', 'turn-1')
             steer.mockClear()
-            await updateSettings(getSettingsFile(dataDir), current => ({
-                settings: { ...current, followUpDefault: 'steer' }, result: undefined
-            }))
-            await engine.sendMessage(session.id, { text: 'queued on purpose', localId: 'queue', followUpIntent: 'queue' })
-            await engine.sendMessage(session.id, { text: 'other mode', localId: 'opposite-steer', followUpIntent: 'alternate' })
+            await engine.sendMessage(session.id, { text: 'other mode', localId: 'opposite', followUpIntent: 'alternate', expectedFollowUpTurnId: 'turn-1' })
+            await engine.sendMessage(session.id, { text: 'queued on purpose', localId: 'queue', followUpIntent: 'queue', expectedFollowUpTurnId: 'turn-1' })
             await engine.sendMessage(session.id, { text: 'legacy client', localId: 'legacy' })
-            await engine.sendMessage(session.id, { text: '/compact', localId: 'command', followUpIntent: 'default' })
+            await engine.sendMessage(session.id, { text: '/compact', localId: 'command', followUpIntent: 'default', expectedFollowUpTurnId: 'turn-1' })
             await engine.sendMessage(session.id, {
                 text: 'correction for an ended turn', localId: 'stale-request',
-                followUpIntent: 'steer', expectedFollowUpTurnId: 'turn-0'
+                followUpIntent: 'default', expectedFollowUpTurnId: 'turn-0'
             })
             expect(store.messages.lookupQueuedMessage(session.id, 'stale-request').status).toBe('queued')
             expect(steer).not.toHaveBeenCalled()
 
-            const correction = { text: 'new direction', localId: 'same-id', followUpIntent: 'default' as const }
+            const correction = { text: 'new direction', localId: 'same-id', expectedFollowUpTurnId: 'turn-1', followUpIntent: 'default' as const }
             await Promise.all([engine.sendMessage(session.id, correction), engine.sendMessage(session.id, correction)])
             expect(steer).toHaveBeenCalledTimes(1)
             expect(steer).toHaveBeenCalledWith(session.id, 'same-id', 'turn-1')
-            await engine.sendMessage(otherSession.id, { text: 'use updated default', localId: 'other-update', followUpIntent: 'default' })
-            expect(steer).toHaveBeenCalledWith(otherSession.id, 'other-update', 'other-turn')
+            await engine.sendMessage(otherSession.id, { ...correction, localId: 'other-stock', expectedFollowUpTurnId: 'other-turn' })
+            expect(steer).toHaveBeenCalledWith(otherSession.id, 'other-stock', 'other-turn')
+            await updateSettings(getSettingsFile(dataDir), current => ({
+                settings: { ...current, followUpDefault: 'queue' }, result: undefined
+            }))
+            steer.mockClear()
+            await engine.sendMessage(session.id, { ...correction, localId: 'configured-queue' })
+            await engine.sendMessage(otherSession.id, { ...correction, localId: 'other-update', expectedFollowUpTurnId: 'other-turn' })
+            expect(steer).not.toHaveBeenCalled()
+            await engine.sendMessage(session.id, { ...correction, localId: 'opposite-steer', followUpIntent: 'alternate' })
+            expect(steer).toHaveBeenCalledWith(session.id, 'opposite-steer', 'turn-1')
         } finally {
             steer.mockRestore()
             engine.stop()
             await rm(dataDir, { recursive: true, force: true })
         }
     })
+
+    it.each(['same turn', 'new turn', 'cancelled', 'unknown', 'dispatching', 'consumed', 'disconnected', 'manual steer'] as const)(
+        'reconsiders a blocked follow-up once after a decision: %s', async (outcome) => {
+            const { store, engine } = createEngine()
+            const requests = { approval: { tool: 'Bash', arguments: {} } }
+            const session = engine.getOrCreateSession(
+                'decision', { path: '/tmp', host: 'localhost', flavor: 'codex' },
+                { followUpSteerTurnId: 'A', requests }, 'default'
+            )
+            engine.handleSessionAlive({ sid: session.id, time: Date.now(), thinking: true })
+            const steer = spyOn(RpcGateway.prototype, 'steerQueuedMessage').mockResolvedValue({ steered: true })
+            const localId = 'original'
+            try {
+                await engine.sendMessage(session.id, { text: 'correction', localId, followUpIntent: 'steer', expectedFollowUpTurnId: 'A' })
+                expect(steer).not.toHaveBeenCalled()
+                const row = store.messages.lookupQueuedMessage(session.id, localId)
+                expect(row.status).toBe('queued')
+                if (row.status !== 'queued') throw new Error('Missing queue row')
+                if (outcome === 'cancelled') {
+                    store.messages.deleteQueuedMessageById(session.id, row.resolvedId)
+                    engine.handleRealtimeEvent({ type: 'message-cancelled', sessionId: session.id, messageId: row.resolvedId })
+                    store.messages.addMessage(session.id, { text: 'a replacement' }, localId)
+                } else if (outcome === 'unknown' || outcome === 'dispatching') {
+                    store.messages.setMessagesDeliveryState(session.id, [localId], outcome === 'unknown' ? 'indeterminate' : 'dispatching')
+                } else if (outcome === 'consumed') {
+                    store.messages.markMessagesInvoked(session.id, [localId], Date.now())
+                } else if (outcome === 'disconnected') {
+                    engine.handleSessionEnd({ sid: session.id, time: Date.now() })
+                    engine.handleSessionAlive({ sid: session.id, time: Date.now(), thinking: true })
+                } else if (outcome === 'manual steer') {
+                    steer.mockRejectedValueOnce(new Error('lost reply'))
+                    await engine.steerQueuedMessage(session.id, row.resolvedId)
+                    expect(steer).toHaveBeenCalledTimes(1)
+                    steer.mockClear()
+                }
+                // A nonblocking native Codex question can coexist with normal work.
+                const state = {
+                    followUpSteerTurnId: outcome === 'new turn' ? 'B' : 'A',
+                    requests: { optional: { tool: 'request_user_input', arguments: { isBlocking: false } } }
+                }
+                const updated = store.sessions.updateSessionAgentState(session.id, state, session.agentStateVersion, 'default')
+                if (updated.result !== 'success') throw new Error('Could not update agent state')
+                const data = { agentState: { version: updated.version, value: state } }
+                engine.handleRealtimeEvent({ type: 'session-updated', sessionId: session.id, data })
+                engine.handleRealtimeEvent({ type: 'session-updated', sessionId: session.id, data })
+                expect(steer).toHaveBeenCalledTimes(outcome === 'same turn' ? 1 : 0)
+                if (outcome === 'same turn') expect(steer).toHaveBeenCalledWith(session.id, localId, 'A')
+                await Promise.resolve()
+            } finally {
+                steer.mockRestore()
+                engine.stop()
+                store.close()
+            }
+        }
+    )
 
     it('queues with an older runner and rejects a stale guarded steer', async () => {
         const { store, engine } = createEngine()

@@ -43,13 +43,9 @@ export function getRestoredComposerSendIntent(
 /**
  * Resolve the web composer intent into the durable message delivery mode.
  *
- * Every composer submission queues by default — for every flavor. The Pi
- * automatic steer (deliveryMode 'steer' while the main session is thinking)
- * was removed in favor of the explicit per-queued-message Steer action
- * (issue #1466), matching Codex/Claude behavior: a mid-turn message waits,
- * and the operator presses Steer to deliver it into the running turn.
- * Scheduled messages, scratchlist additions, and retries always queued
- * already.
+ * Store one queue row first. A separate follow-up intent and observed turn ID let
+ * the Hub promote that row after admission. Scheduled and retried sends keep
+ * their ordinary queue semantics.
  */
 export function resolveMessageDeliveryMode(input: {
     agentFlavor: string | null | undefined

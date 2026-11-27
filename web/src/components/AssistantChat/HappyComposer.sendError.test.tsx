@@ -589,6 +589,13 @@ describe('HappyComposer send intent gestures', () => {
         },
     )
 
+    it('binds ordinary Enter to the turn visible at submit', () => {
+        renderComposer('correction', null, true, 'send', 'steer')
+        fireEvent.keyDown(input(), { key: 'Enter' })
+        expect(runtime.sentIntents).toEqual(['default'])
+        expect(runtime.sentTurnIds).toEqual(['active-observed-turn'])
+    })
+
     it('uses default intent for the configured normal Enter send', () => {
         renderComposer('ordinary send', null, true)
 

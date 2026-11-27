@@ -1286,7 +1286,7 @@ class ChatViewModel(
      */
     fun sendMessage(
         followUpIntent: FollowUpIntent = FollowUpIntent.Default,
-        expectedFollowUpTurnId: String? = null,
+        expectedFollowUpTurnId: String? = currentDetail()?.agentState?.followUpSteerTurnId,
     ) {
         if (sendInFlight.value || importingShare.value) return
         if (attachments.hasUnsettled()) {
@@ -1309,9 +1309,9 @@ class ChatViewModel(
         if (text.isEmpty() && attachmentMetadata == null) return
         val explicitSteer = followUpIntent == FollowUpIntent.Steer && scheduledAt == null
         val detail = currentDetail()
-        val legacyPiSteer = explicitSteer && isLivePiSteerTurn(detail)
-        val steerTurn = if (explicitSteer && !legacyPiSteer) {
-            expectedFollowUpTurnId ?: detail?.agentState?.followUpSteerTurnId
+        val legacyPiSteer = explicitSteer && expectedFollowUpTurnId == null && detail?.agentState?.followUpSteerTurnId == null && isLivePiSteerTurn(detail)
+        val steerTurn = if (scheduledAt == null && followUpIntent != FollowUpIntent.Queue && !legacyPiSteer) {
+            expectedFollowUpTurnId
         } else {
             null
         }

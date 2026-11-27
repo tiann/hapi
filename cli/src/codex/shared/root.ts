@@ -288,9 +288,10 @@ export class SharedCodexRoot {
                 this.publishCompaction();
             }, ids => this.session.emitSteerIndeterminate(ids),
             (id, input) => this.session.syncNativeQueuedMessage(id, input === null ? null : inputText(input)),
-            ids => this.session.setSteerDeliveryState(ids, 'queued'));
+            ids => this.session.setSteerDeliveryState(ids, 'queued'),
+            ids => this.session.setSteerDeliveryState(ids, 'dispatching'));
         await this.queue.load();
-        this.projection = new SharedCodexProjection(this.session, threadId, (id, content) => this.queue.committed(id, content),
+        this.projection = new SharedCodexProjection(this.session, threadId, (id, content, turnId) => this.queue.committed(id, content, turnId),
             undefined, async () => record(await this.client.request('thread/read', { threadId, includeTurns: false })).thread,
             (threadId, item) => this.asyncQuestions.observeItem(threadId, item));
         this.session.updateMetadata(metadata => ({ ...metadata, codexSessionId: threadId, capabilities: {
@@ -427,6 +428,9 @@ export class SharedCodexRoot {
         }
         if (this.host.attached && method === 'turn/started' && !this.stopping) await this.refresh();
         await this.projection.notification(method, params, modelAtReceipt, receivedAt);
+        if (method === 'turn/completed') {
+            await this.queue.finishUnconfirmedSteers(id => id === record(p.turn).id);
+        }
         if (this.host.attached && method === 'turn/completed' && !this.stopping) await this.refresh();
         this.publishCompaction(); this.alive();
     }
@@ -496,7 +500,9 @@ export class SharedCodexRoot {
                     conversationHistory: { ...metadata.capabilities?.conversationHistory, forkLatestCompleted: canForkLatest } }
             }));
         }
-        await this.projectHistory(this.projection, thread); await this.queue.reconcile(); this.alive();
+        await this.projectHistory(this.projection, thread); await this.queue.reconcile();
+        await this.queue.finishUnconfirmedSteers(id => id !== this.currentTurn);
+        this.alive();
     }
     private async refreshChildren(subscribe: boolean): Promise<void> {
         // 历史回放可省略，子代理发现与实时订阅仍需在重连后恢复。
@@ -717,11 +723,15 @@ export class SharedCodexRoot {
             if (expectedFollowUpTurnId !== this.steerableTurnId()) return { steered: false, error: 'Active turn changed' };
             // The preceding socket message enqueues asynchronously; let it reach the native queue.
             await this.work;
-            return this.queue.steer(localId, expectedFollowUpTurnId, undefined, () => {
+            const result = await this.queue.steer(localId, expectedFollowUpTurnId, undefined, () => {
                 if (expectedFollowUpTurnId !== this.steerableTurnId()) return 'Active turn changed';
                 if (this.permissions.hasPendingRequests(this.threadId, expectedFollowUpTurnId)) return 'Waiting for a user decision';
                 return null;
             });
+            if (!result.steered && !result.indeterminate && this.queue.state(localId) === 'queued') {
+                await this.session.setSteerDeliveryState([localId], 'queued');
+            }
+            return result;
         });
         rpc.registerHandler(RPC_METHODS.ClearConversation, async () => {
             const child = await this.newConversation(); return { sessionId: child.session.sessionId };

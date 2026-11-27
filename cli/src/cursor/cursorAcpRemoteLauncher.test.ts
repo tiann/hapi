@@ -73,6 +73,7 @@ const harness = vi.hoisted(() => ({
     deferBeforeSend: null as Promise<void> | null,
     releaseBeforeSend: null as (() => void) | null,
     promptSends: 0,
+    pendingExtensionRequest: false,
     /** When cancelPrompt runs, reject the deferred prompt with this error. */
     rejectPromptOnCancel: null as Error | null,
     disconnectError: null as Error | null,
@@ -262,7 +263,7 @@ vi.mock('./utils/cursorAcpBackend', () => ({
                 _sessionId: string,
                 content: unknown[],
                 onMessage?: (message: AgentMessage) => void,
-                options?: { shouldSend?: () => boolean }
+                options?: { shouldSend?: () => boolean; timing?: { onSent?: () => void; onAnswered?: () => void } }
             ) => {
                 harness.promptCalls++;
                 harness.activeOnMessage = onMessage ?? null;
@@ -273,6 +274,7 @@ vi.mock('./utils/cursorAcpBackend', () => ({
                     }
                 }
                 harness.promptSends++;
+                options?.timing?.onSent?.();
                 harness.prompts.push(content);
                 harness.lastPromptOnUpdate = onMessage ?? null;
                 // Real AcpSdkBackend bumps generation after the pre-swap drain and
@@ -289,6 +291,7 @@ vi.mock('./utils/cursorAcpBackend', () => ({
                     harness.stderrErrorHandler(harness.emitStderrOnPrompt);
                 }
                 if (harness.deferPrompt) await harness.deferPrompt;
+                options?.timing?.onAnswered?.();
                 const error = harness.promptErrors.shift();
                 if (error) throw error;
                 if (harness.promptReject) {
@@ -304,6 +307,7 @@ vi.mock('./utils/cursorAcpBackend', () => ({
                 }
             }),
             getPromptGeneration: vi.fn(() => harness.promptGeneration),
+            isPromptRequestInFlight: vi.fn(() => !!harness.deferPrompt),
             beginSoftSteerPrompt: vi.fn(() => ({
                 dispatched: harness.softSteerDispatchError
                     ? Promise.reject(harness.softSteerDispatchError)
@@ -337,6 +341,7 @@ vi.mock('./utils/cursorAcpBackend', () => ({
 
 vi.mock('./utils/cursorExtensionAdapter', () => ({
     CursorExtensionAdapter: class {
+        hasPendingRequests = () => harness.pendingExtensionRequest;
         handlePermissionResponse = vi.fn(async () => false);
         cancelAll = vi.fn(async () => {});
     }
@@ -344,6 +349,7 @@ vi.mock('./utils/cursorExtensionAdapter', () => ({
 
 vi.mock('@/agent/permissionAdapter', () => ({
     PermissionAdapter: class {
+        hasPendingRequests = () => false;
         constructor(
             client: { rpcHandlerManager?: { registerHandler?: (method: string, handler: (payload: unknown) => Promise<unknown>) => void } },
             _backend: unknown,
@@ -463,6 +469,7 @@ function makeClient() {
         },
         getMetadata: vi.fn(() => null),
         updateMetadata: vi.fn(),
+        updateAgentState: vi.fn(),
         flushMetadata: vi.fn(async () => true),
         sendSessionEvent: vi.fn(),
         sendAgentMessage: vi.fn(),
@@ -672,6 +679,44 @@ describe('cursorAcpRemoteLauncher', () => {
         _resetSharedCursorModelsCacheForTests();
         resetSessionSummaryContractForTests();
         delete process.env.HAPI_SESSION_SUMMARY_CONTRACT;
+    });
+
+    it('binds ordinary follow-ups to the native request and keeps a row queued when a question opens before dispatch', async () => {
+        const release = Promise.withResolvers<void>();
+        harness.deferPrompt = release.promise;
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('run command', mode, 'first');
+        const run = cursorAcpRemoteLauncher(session);
+        try {
+            await vi.waitFor(() => expect(harness.promptSends).toBe(1));
+            const token = vi.mocked(session.client.updateAgentState).mock.calls
+                .map(([update]) => update({}).followUpSteerTurnId).find(id => typeof id === 'string');
+            expect(token).toEqual(expect.any(String));
+            const handlers = (session.client.rpcHandlerManager as unknown as {
+                handlers: Map<string, (payload: unknown) => Promise<unknown>>
+            }).handlers;
+            const followUp = handlers.get(RPC_METHODS.SteerFollowUpMessage)!;
+            session.queue.push('check stderr', mode, 'correction');
+            await expect(followUp({ localId: 'correction', expectedFollowUpTurnId: 'previous' }))
+                .resolves.toMatchObject({ steered: false });
+            vi.mocked(session.client.setSteerDeliveryState).mockImplementationOnce(async () => {
+                harness.pendingExtensionRequest = true;
+                return true;
+            });
+            await expect(followUp({ localId: 'correction', expectedFollowUpTurnId: token }))
+                .resolves.toEqual({ steered: false, error: 'Waiting for a user decision' });
+            expect(session.queue.size()).toBe(1);
+            harness.pendingExtensionRequest = false;
+            await expect(followUp({ localId: 'correction', expectedFollowUpTurnId: token }))
+                .resolves.toEqual({ steered: true });
+            expect(session.queue.size()).toBe(0);
+        } finally {
+            harness.pendingExtensionRequest = false;
+            session.queue.close();
+            release.resolve();
+            await run;
+        }
     });
 
     it('does not auto-bridge after a soft-steer accepted newer input', async () => {

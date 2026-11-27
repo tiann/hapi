@@ -169,7 +169,7 @@
     "followUpDefault": {
       "type": "string",
       "enum": ["queue", "steer"],
-      "default": "queue",
+      "default": "steer",
       "description": "Hub-wide delivery default for interactive follow-up messages."
     },
     "sessionSummaryInChat": {

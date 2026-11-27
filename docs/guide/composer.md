@@ -10,7 +10,7 @@ This page covers the web app and PWA, plus the iOS and Android apps where they d
 
 ## Sending while the agent is working
 
-The Hub owner can choose **Queue** or **Steer** under **Settings → Chat → Input → Follow-up default**. The setting applies to new and existing sessions across Web, iOS and Android. A new Hub starts with Queue.
+The Hub owner can choose **Queue** or **Steer** under **Settings → Chat → Input → Follow-up default**. The setting applies to new and existing sessions across Web, iOS and Android. A new Hub starts with Steer. A saved Queue preference continues to apply.
 
 To choose how to send just one message, right-click **Send** on desktop Web or long-press it on a touchscreen. On desktop Web, **Alt/Option+Enter** sends that message with the other mode. Your next ordinary send follows the Hub default again.
 
@@ -26,7 +26,7 @@ Each queued row has:
 
 ### Steer
 
-**Steer** delivers a queued message into the turn that is already running, instead of waiting for it to finish. The agent picks it up at its next safe point. A delivered message is marked **↳ Steered** in the conversation.
+**Steer** delivers a queued message into the turn that is already running, instead of waiting for it to finish. The agent picks it up at its next safe point. The **↳ Steered** label records the runner’s confirmation. Pi confirms when its native runtime accepts the steer. Claude remote and guarded Codex follow-ups can confirm pickup from a native user-message event.
 
 | Agent | Steer support |
 |-------|---------------|
@@ -35,7 +35,7 @@ Each queued row has:
 | OpenCode | Yes |
 | Cursor | Yes for ACP sessions. Older stream-json Cursor sessions cannot steer. |
 | Antigravity | Yes when running over `agy acp`. The steer is folded in after any running tool call finishes. |
-| Pi | Yes |
+| Pi | Yes. Automatic follow-ups require Pi 0.58.4 or later, which lets the running tool batch finish. |
 | Gemini, Kimi, Copilot, Grok Build, DeepSeek Harness | No — messages always queue |
 
 Steer appears only while the session is active, a turn is running, and the session is controlled remotely (not from the local terminal). Scheduled messages cannot be steered.
@@ -44,9 +44,9 @@ If HAPI cannot confirm whether a steer reached the agent, the row says so and of
 
 ### Steer when sending
 
-With an updated Claude remote or Codex runner, choosing Steer at send time offers the message to the active turn. Claude's running tools can finish and Claude then reads the follow-up. When Claude is waiting for an answer or approval, or when the active turn ends before delivery, the message stays queued. Other runners can still offer the per-message **Steer** action listed above.
+Updated Claude remote, Codex, Pi, OpenCode, Cursor ACP and Antigravity ACP runners advertise the turn that can accept follow-ups. Ordinary text goes to that turn at the provider’s next opportunity. While a decision is pending, the Hub keeps the message queued and can offer it when the decision clears in the same turn. If that turn ends first, the message stays queued for the next one. Scheduled sends, commands and ordinary sends with attachments use the queue.
 
-On iOS and Android, long-press **Send** to pick a mode for the draft. An ordinary tap uses the Hub default, just as it does on Web. Native Pi sessions also offer an explicit Steer choice while a turn is running, with Queue as the default.
+On iOS and Android, long-press **Send** to pick a mode for the draft. An ordinary tap uses the Hub default, just as it does on Web. Older Pi runners also offer an explicit Steer choice while a turn is running.
 
 ## Scheduled send
 

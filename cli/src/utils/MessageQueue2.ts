@@ -461,7 +461,7 @@ export class MessageQueue2<T> {
      * or null if not found. Pair with {@link restoreTakenItem} when an async
      * operation may need to put the item back in order.
      */
-    takeByLocalId(localId: string): QueueReservation<T> | null {
+    takeByLocalId(localId: string, { retryIndeterminate = true } = {}): QueueReservation<T> | null {
         if (!localId) return null;
 
         // An indeterminate steer is deliberately held outside the normal queue.
@@ -469,7 +469,7 @@ export class MessageQueue2<T> {
         // request's late callbacks cannot mutate its replacement.
         const existing = this.reservations.get(localId);
         if (existing) {
-            if (existing.state !== 'indeterminate') return null;
+            if (!retryIndeterminate || existing.state !== 'indeterminate') return null;
             const retry: QueueReservation<T> = { ...existing, state: 'reserved', cancelReason: undefined };
             existing.state = 'cancelled';
             existing.cancelReason = 'explicit';

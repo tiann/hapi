@@ -66,7 +66,7 @@ export type PingPeerSessionSummary = {
     id: string
     active: boolean
     thinking?: boolean
-    agentState?: { steeringActive?: boolean; controlledByUser?: boolean } | null
+    agentState?: { steeringActive?: boolean; controlledByUser?: boolean; followUpSteerTurnId?: string | null } | null
     updatedAt?: number
     metadata?: {
         name?: string
@@ -442,7 +442,7 @@ async function sendMessage(
     message: string,
     localId: string,
     http: AxiosInstance,
-    deliveryMode: MessageDeliveryMode,
+    deliveryMode: MessageDeliveryMode | { expectedFollowUpTurnId: string },
     autoSteerFallback = false,
     onProgress?: (message: string) => void
 ): Promise<{ delivery: PingPeerResult['delivery']; steerNote?: string }> {
@@ -450,7 +450,9 @@ async function sendMessage(
     // Both modes retain the peer identity so only runtime ACKs prove delivery.
     const response = await http.post(
         `${apiUrl}/api/sessions/${encodeURIComponent(sessionId)}/messages`,
-        { text: message, localId },
+        typeof deliveryMode === 'object'
+            ? { text: message, localId, followUpIntent: 'steer', ...deliveryMode }
+            : { text: message, localId },
         {
             headers: authHeaders(jwt),
             timeout: 30_000,
@@ -464,7 +466,7 @@ async function sendMessage(
     if (response.status >= 200 && response.status < 300 && response.data?.ok === true) {
         // HTTP success means hub-accepted, not proof the row is still queued:
         // the recipient runtime's consumption ACK may race this response.
-        if (deliveryMode === 'queue') return { delivery: 'accepted' }
+        if (deliveryMode !== 'steer') return { delivery: 'accepted' }
         let hubRejection: string | null = null
         try {
             const steer = await http.post(
@@ -707,6 +709,13 @@ const AUTO_NOT_ATTEMPTED: Record<SteeringIneligibility, string> = {
     idle: 'target is idle'
 }
 
+/** Updated runners recheck this turn and pending user decisions at native dispatch. */
+function guardedPeerTurn(session: PingPeerSessionSummary): string | undefined {
+    if (!session.active || !isSteeringSupportedForSession(session.metadata)) return undefined
+    if (session.agentState?.controlledByUser && !session.metadata?.capabilities?.concurrentClients) return undefined
+    return session.agentState?.followUpSteerTurnId ?? undefined
+}
+
 function getSteeringUnavailableReason(session: PingPeerSessionSummary): string | null {
     const ineligibility = getSteeringIneligibility(session)
     return ineligibility === null ? null : EXPLICIT_STEER_REFUSAL[ineligibility]
@@ -801,18 +810,24 @@ export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult
     // their message rather than opportunistically steering the resumed turn.
     const steeringError = getSteeringUnavailableReason(live)
     const ineligibility = getSteeringIneligibility(live)
+    const canSteer = matched.active && !resumed
+    const guardedTurn = requestedDeliveryMode === 'auto' && canSteer ? guardedPeerTurn(live) : undefined
+    // A null token is the updated runner explicitly closing its window. Its older
+    // manual steer flag can still be true while the native response drains.
+    const legacySteer = live.agentState?.followUpSteerTurnId === undefined && steeringError === null
     const deliveryMode: MessageDeliveryMode = requestedDeliveryMode === 'auto'
-        ? (matched.active && !resumed && steeringError === null ? 'steer' : 'queue')
+        ? (canSteer && (guardedTurn || legacySteer) ? 'steer' : 'queue')
         : requestedDeliveryMode
-    if (deliveryMode === 'steer' && steeringError !== null) {
+    if (requestedDeliveryMode === 'steer' && steeringError !== null) {
         throw new PingPeerError('bad_args', steeringError)
     }
 
     onProgress?.(`sending message (${message.length} chars, ${deliveryMode}${requestedDeliveryMode === 'auto' ? ' via auto' : ''})...`)
     const localId = createPeerMessageLocalId()
-    const sent = await sendMessage(apiUrl, jwt, matched.id, message, localId, http, deliveryMode, requestedDeliveryMode === 'auto', onProgress)
+    const sent = await sendMessage(apiUrl, jwt, matched.id, message, localId, http,
+        guardedTurn ? { expectedFollowUpTurnId: guardedTurn } : deliveryMode, requestedDeliveryMode === 'auto', onProgress)
     // Auto queued without trying: say why, so a caller can tell it from a steer that failed.
-    const steerNote = sent.steerNote ?? (requestedDeliveryMode === 'auto' && deliveryMode === 'queue'
+    const steerNote = sent.steerNote ?? (requestedDeliveryMode === 'auto' && deliveryMode === 'queue' && !guardedTurn
         ? `steer not attempted: ${resumed ? 'target was just resumed' : !matched.active ? 'target was not active' : ineligibility ? AUTO_NOT_ATTEMPTED[ineligibility] : 'steering unavailable'}`
         : undefined)
     if (steerNote && sent.steerNote === undefined) onProgress?.(`${steerNote}; message queued`)
@@ -1292,10 +1307,17 @@ export async function forwardPeerReply(options: ForwardPeerReplyOptions): Promis
             : `Peer ${link} stopped without replying.`
     // One localId across retries so a resend after a lost response is not stored twice.
     const localId = createPeerMessageLocalId()
+    // Capture the caller's turn once. Retrying after a lost receipt must never target a newer turn.
+    let replyTurn: string | undefined
     for (let attempt = 1; ; attempt++) {
         try {
             const jwt = await exchangeJwt(apiUrl, accessToken, http)
-            await sendMessage(apiUrl, jwt, options.callerSessionId, text, localId, http, 'queue')
+            if (attempt === 1 && finished() && !canceled && (reply || latest)) {
+                const caller = await getSession(apiUrl, jwt, options.callerSessionId, http).catch(() => null)
+                if (caller) replyTurn = guardedPeerTurn(caller)
+            }
+            await sendMessage(apiUrl, jwt, options.callerSessionId, text, localId, http,
+                replyTurn ? { expectedFollowUpTurnId: replyTurn } : 'queue')
             return
         } catch (error) {
             if (attempt >= SEND_ATTEMPTS) throw error

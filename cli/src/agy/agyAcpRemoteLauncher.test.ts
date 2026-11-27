@@ -792,6 +792,33 @@ describe('AgyAcpRemoteLauncher steer', () => {
         return { session, queue, client, run, created, handlers, releaseFirst: () => releaseFirst() };
     }
 
+    it('keeps the follow-up token valid across a superseding request and closes it before late output drains', async () => {
+        const backend = new FakeAgyBackend();
+        const { queue, client, run, handlers, releaseFirst } = await startHeldTurn(backend);
+        const token = () => client.updateAgentState.mock.calls
+            .map(([update]) => update({})).filter(state => 'followUpSteerTurnId' in state).at(-1)?.followUpSteerTurnId;
+        const expectedFollowUpTurnId = token();
+        expect(expectedFollowUpTurnId).toEqual(expect.any(String));
+        const followUp = handlers.get(RPC_METHODS.SteerFollowUpMessage)!;
+        queue.push('check the output', REVIEW, 'one');
+        expect(await followUp({ localId: 'one', expectedFollowUpTurnId: 'old-turn' })).toMatchObject({ steered: false });
+        expect(await followUp({ localId: 'one', expectedFollowUpTurnId })).toEqual({ steered: true });
+        releaseFirst();
+        await vi.waitFor(() => expect(backend.promptInFlight).toBe(false));
+        queue.push('also check errors', REVIEW, 'two');
+        expect(await followUp({ localId: 'two', expectedFollowUpTurnId })).toEqual({ steered: true });
+        for (const steer of backend.steerCompletions) steer.answer();
+        await vi.waitFor(() => expect(token()).toBeNull());
+        queue.push('next turn', REVIEW, 'three');
+        expect(await followUp({ localId: 'three', expectedFollowUpTurnId })).toMatchObject({ steered: false });
+        expect(queue.size()).toBe(1);
+        expect(backend.steerPrompts).toHaveLength(2);
+        queue.cancelByLocalId('three');
+        queue.close();
+        for (const steer of backend.steerCompletions) steer.resolve('end_turn');
+        await run;
+    });
+
     it('injects a queued message into the running turn and ends the turn with the steer', async () => {
         const backend = new FakeAgyBackend();
         const { queue, client, run, handlers, releaseFirst } = await startHeldTurn(backend);

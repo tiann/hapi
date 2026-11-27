@@ -20,7 +20,7 @@ function toHubSettings(settings: Settings): HubSettingsResponse {
         sessionSummaryInChat: settings.sessionSummaryInChat === true,
         autoBridgeTransientModelErrors: settings.autoBridgeTransientModelErrors === true,
         translateInputByDefault: settings.translateInputByDefault === true,
-        followUpDefault: settings.followUpDefault === 'steer' ? 'steer' : 'queue',
+        followUpDefault: settings.followUpDefault ?? 'steer',
         peerSpawnDefaults: mergePeerSpawnDefaults(settings.peerSpawnDefaults)
     }
 }

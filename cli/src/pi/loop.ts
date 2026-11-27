@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { logger } from '@/ui/logger';
 import { convertAgentMessage } from '@/agent/messageConverter';
 import { createNativeSessionTitleMetadataSync } from '@/agent/nativeSessionTitle';
@@ -429,6 +430,7 @@ async function publishPiTurnUsage(
 // --- Wire transport events to session ---
 
 export type PiTransportEventController = {
+    canSteerFollowUp: (expectedTurnId: string) => boolean;
     flush: () => void;
     cancelPendingExtensionUi: (reason: string, options?: { sendResponse?: boolean }) => void;
     terminatePendingRpc: (error: Error) => void;
@@ -437,6 +439,7 @@ export type PiTransportEventController = {
 };
 
 type PiTransportEventOptions = {
+    onFollowUpTurnChanged?: (id: string | null) => void;
     onStartupFailure?: (error: Error) => void;
     onReady?: () => void;
     /** Observes each Pi agent_start/turn_start without releasing the prompt queue. */
@@ -548,6 +551,17 @@ export function wireTransportEvents(
     // Retain that exact local ID so a later matching response failure can reject
     // the history registration even after pendingLocalIds has been drained.
     let activePromptLocalId: string | undefined;
+    // agent_end may precede actual prompt settlement. Close the native steer
+    // window there, while the ordinary FIFO continues waiting for settlement.
+    let followUpTurn: { id: string; generation: number } | null = null;
+    options.onFollowUpTurnChanged?.(null);
+    const setFollowUpActive = (active: boolean): void => {
+        const generation = active ? session.currentStreamingGeneration : null;
+        if (generation != null && followUpTurn?.generation === generation) return;
+        if (generation == null && followUpTurn === null) return;
+        followUpTurn = generation == null ? null : { id: randomUUID(), generation };
+        options.onFollowUpTurnChanged?.(followUpTurn?.id ?? null);
+    };
 
     const clearLegacySettleFallback = (): void => {
         if (legacySettleTimer) clearTimeout(legacySettleTimer);
@@ -563,6 +577,7 @@ export function wireTransportEvents(
         compactionRetryTimer = null;
     };
     const beginPromptLifecycle = (promptId: string): void => {
+        setFollowUpActive(false);
         lifecycleGeneration += 1;
         activePromptId = promptId;
         promptLifecycleAborted = false;
@@ -578,6 +593,7 @@ export function wireTransportEvents(
         clearPromptLifecycleFallback();
     };
     const abortPromptLifecycle = (): void => {
+        setFollowUpActive(false);
         lifecycleGeneration += 1;
         activePromptId = null;
         promptLifecycleAborted = true;
@@ -593,6 +609,7 @@ export function wireTransportEvents(
         clearPromptLifecycleFallback();
     };
     const rejectPromptLifecycle = (): void => {
+        setFollowUpActive(false);
         // A rejected prompt is terminal for this generation. Invalidate all
         // delayed settlement work before notifying runPi so it can immediately
         // resume FIFO pumping without a stale grace timer changing its state.
@@ -841,6 +858,9 @@ export function wireTransportEvents(
         } else if (event.type === 'summarization_retry_finished') {
             maintenanceActive.delete('summary');
         }
+        if (maintenanceActive.size > 0 || event.type === 'agent_end' || event.type === 'agent_settled') {
+            setFollowUpActive(false);
+        }
         lifecycleTimeline.emit(event, session);
         sendMessages(assistantMessageAccumulator.handleEvent(event));
 
@@ -854,8 +874,10 @@ export function wireTransportEvents(
 
         if (event.type === 'agent_start') {
             session.updateThinkingState(true);
+            setFollowUpActive(maintenanceActive.size === 0);
         } else if (event.type === 'turn_start') {
             session.updateThinkingState(true);
+            setFollowUpActive(maintenanceActive.size === 0);
             if (pendingLocalIds.length > 0) {
                 const oldestLocalId = pendingLocalIds.shift()!;
                 activePromptLocalId = oldestLocalId;
@@ -899,6 +921,9 @@ export function wireTransportEvents(
     });
 
     return {
+        canSteerFollowUp: (id) => followUpTurn !== null && id === followUpTurn.id
+            && session.currentStreamingGeneration === followUpTurn.generation
+            && !extensionUi.hasPendingRequests && !session.isHistoryTransactionActive,
         flush: flushAccumulator,
         cancelPendingExtensionUi: (reason, options) => extensionUi.cancelAll(reason, options),
         terminatePendingRpc: (error) => session.rpcResolver?.rejectAll(error),

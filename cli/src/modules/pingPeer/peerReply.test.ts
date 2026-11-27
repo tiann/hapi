@@ -17,7 +17,7 @@ type Poll = {
     active?: boolean
 }
 
-function hub(options: { polls?: Poll[]; scheduled?: string; canceled?: boolean; offPage?: boolean } = {}) {
+function hub(options: { polls?: Poll[]; scheduled?: string; canceled?: boolean; offPage?: boolean; callerTurn?: string } = {}) {
     const posts: Array<{ url: string; body: any }> = []
     const polls = [...(options.polls ?? [])]
     let current = polls[0]
@@ -29,6 +29,10 @@ function hub(options: { polls?: Poll[]; scheduled?: string; canceled?: boolean; 
             return { status: 200, data: { ok: true } }
         },
         get: async (url: string, config?: { params?: Record<string, number> }) => {
+            if (url.endsWith('/sessions/caller')) {
+                return { status: 200, data: { session: { id: 'caller', active: true, metadata: { flavor: 'codex' },
+                    agentState: { followUpSteerTurnId: options.callerTurn } } } }
+            }
             if (url.endsWith('/api/sessions')) return { status: 200, data: { sessions: [peer] } }
             if (url.endsWith('/messages')) {
                 // Rows in hub position order (invokedAt ?? createdAt); the task sits at 10.
@@ -76,6 +80,14 @@ async function forwarded(polls: Poll[], scheduled?: string, canceled?: boolean, 
 
 describe('forwardPeerReply', () => {
     const done = (reply?: string): Poll => ({ thinking: false, invoked: true, reply, ready: true })
+
+    it('offers the completed reply to the caller’s observed turn using the stored reply id', async () => {
+        const { posts, auth } = hub({ polls: [done('answer'), done('answer')], callerTurn: 'caller-turn' })
+        await forwardPeerReply({ ...auth, peerSessionId: 'peer-1', taskLocalId: 'task-1', callerSessionId: 'caller', sleep: async () => {} })
+        const replies = posts.filter(p => p.url.endsWith('/sessions/caller/messages'))
+        expect(replies).toHaveLength(1)
+        expect(replies[0].body).toMatchObject({ followUpIntent: 'steer', expectedFollowUpTurnId: 'caller-turn' })
+    })
 
     it('posts the full reply once the turn after the task ends', async () => {
         const long = `line 1\n\n${'x'.repeat(2_000)}`

@@ -59,6 +59,28 @@ function transport(initial: PingPeerSessionSummary, options: {
 }
 
 describe.each(flavors)('auto delivery to %s', (flavor) => {
+    it('keeps a closed guarded window queued while the manual steer flag is still true', async () => {
+        const live = target(flavor)
+        live.agentState = { steeringActive: true, followUpSteerTurnId: null }
+        const t = transport(live)
+        const result = await pingPeer(t.input)
+        expect(result.delivery).toBe('accepted')
+        expect(t.rows).toEqual([{ text: t.input.message, localId: result.localId }])
+        expect(t.steers).toEqual([])
+    })
+
+    it('sends guarded auto once with the observed turn, independently of the manual steering flag', async () => {
+        const live = target(flavor)
+        live.agentState = { steeringActive: false, followUpSteerTurnId: 'observed-turn' }
+        const t = transport(live)
+        const result = await pingPeer(t.input)
+        expect(result.delivery).toBe('accepted')
+        expect(t.rows).toEqual([{ text: t.input.message, localId: result.localId,
+            followUpIntent: 'steer', expectedFollowUpTurnId: 'observed-turn' }])
+        expect(t.steers).toEqual([])
+        expect(result.steerNote).toBeUndefined()
+    })
+
     it.each([undefined, 'auto'] as const)('steers an eligible active turn with mode %s using one ordinary queued row', async (deliveryMode) => {
         const t = transport(target(flavor))
         const result = await pingPeer({ ...t.input, deliveryMode })

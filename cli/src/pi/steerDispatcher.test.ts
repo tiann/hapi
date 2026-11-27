@@ -9,6 +9,8 @@ function createHarness(options: { streaming?: boolean } = {}) {
     const client = {
         keepAlive: vi.fn(),
         emitMessagesConsumed: vi.fn(),
+        setSteerDeliveryState: vi.fn(async () => true),
+        emitSteerIndeterminate: vi.fn(),
         sendSessionEvent: vi.fn(),
         updateMetadata: vi.fn(),
         emitSessionReady: vi.fn(),
@@ -39,6 +41,7 @@ function createHarness(options: { streaming?: boolean } = {}) {
         conversationHistory: history,
         enqueuePrompt,
         onIndeterminateTimeout,
+        canSteerFollowUp: (id) => id === 'target',
         onPendingStateChange,
     });
     return { client, dispatcher, enqueuePrompt, history, onIndeterminateTimeout, onPendingStateChange, session, transport };
@@ -235,6 +238,40 @@ describe('PiSteerDispatcher', () => {
             { clearQueuedThinkingGrace: true },
         );
         expect(steerCommands(h.transport)).toHaveLength(1);
+    });
+
+    it.each([undefined, 'queued', 'handled'])('records a guarded native acceptance (%s) once the steer RPC answers', async disposition => {
+        const h = createHarness();
+        h.dispatcher.enqueue({
+            message: 'correction', images: [], localId: 'follow', outboundSequence: 1,
+            expectedFollowUpTurnId: 'target', targetStreamingGeneration: h.session.currentStreamingGeneration,
+        });
+        await vi.waitFor(() => expect(steerCommands(h.transport)).toHaveLength(1));
+        expect(h.client.emitMessagesConsumed).not.toHaveBeenCalled();
+        h.session.rpcResolver!.resolveResponse({
+            type: 'response', command: 'steer', id: steerCommands(h.transport)[0]!.id,
+            success: true, data: disposition ? { disposition } : undefined,
+        });
+        await vi.waitFor(() => expect(h.client.emitMessagesConsumed).toHaveBeenCalledExactlyOnceWith(
+            ['follow'], disposition === 'handled' ? undefined : { steered: true }
+        ));
+        if (disposition === 'handled') expect(h.history.rejectPendingEntry).toHaveBeenCalledWith('follow');
+        expect(h.enqueuePrompt).not.toHaveBeenCalled();
+    });
+
+    it('leaves a guarded steer pending resolution when the native acceptance reply is lost', async () => {
+        vi.useFakeTimers();
+        const h = createHarness();
+        h.dispatcher.enqueue({
+            message: 'correct the parser', localId: 'follow', images: [], outboundSequence: 1,
+            expectedFollowUpTurnId: 'target', targetStreamingGeneration: h.session.currentStreamingGeneration,
+        });
+        await vi.advanceTimersByTimeAsync(10_001);
+        expect(steerCommands(h.transport)).toHaveLength(1);
+        expect(h.client.setSteerDeliveryState).toHaveBeenCalledWith(['follow'], 'dispatching');
+        expect(h.client.emitSteerIndeterminate).toHaveBeenCalledWith(['follow']);
+        expect(h.client.emitMessagesConsumed).not.toHaveBeenCalled();
+        expect(h.enqueuePrompt).not.toHaveBeenCalled();
     });
 
     it('stops local steers during transport cleanup without falling back to prompts', async () => {

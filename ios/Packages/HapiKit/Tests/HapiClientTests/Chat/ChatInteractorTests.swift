@@ -387,6 +387,18 @@ struct ChatInteractorTests {
         #expect(sends == [#"{"expectedFollowUpTurnId":"observed-turn","followUpIntent":"steer","localId":"local-1","text":"steer this"}"#])
     }
 
+    @Test func ordinaryPiFollowUpUsesTheObservedTurn() async throws {
+        let state = AgentState(followUpSteerTurnId: "pi-turn")
+        let harness = try await ChatInteractionHarness(detail: chatDetail(flavor: "pi", thinking: true, agentState: state))
+        harness.interactor.followUpDefault = .steer
+        #expect(harness.interactor.effectiveFollowUpDefault == .steer)
+        harness.interactor.setComposerText("update")
+        harness.interactor.sendMessage()
+        #expect(await eventually { await harness.row(localId: "local-1")?.status == .queued })
+        let sends = await harness.performer.bodies("POST", pathSuffix: "/api/sessions/sess-1/messages")
+        #expect(sends == [#"{"expectedFollowUpTurnId":"pi-turn","followUpIntent":"default","localId":"local-1","text":"update"}"#])
+    }
+
     @Test(arguments: [false, true])
     func livePiKeepsExplicitLegacySteerAndShowsQueueAsDefault(borrowedAttachment: Bool) async throws {
         let harness = try await ChatInteractionHarness(detail: chatDetail(flavor: "pi", thinking: true))

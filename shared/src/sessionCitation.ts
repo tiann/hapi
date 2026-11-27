@@ -68,7 +68,7 @@ export const PEER_WAKE_PARAM_DESCRIPTION =
 
 /** Zod `.describe` for ping_peer / spawn_peer `waitForReply`. */
 export const PEER_WAIT_FOR_REPLY_PARAM_DESCRIPTION =
-    'Post the peer\'s reply into this session when its turn ends (default false). End your turn after calling; do not poll.'
+    'Post the peer\'s reply into this session when its turn ends (default false). You can continue working. A supported active caller can receive the reply during its turn; an idle caller receives it next.'
 
 /** Zod `.describe` for list_peers `includeInactive`. */
 export const LIST_PEERS_INCLUDE_INACTIVE_PARAM_DESCRIPTION =

@@ -356,7 +356,7 @@ internal fun ChatScreen(
                     val presentedSteerTurn = composerState.followUpSteerTurnId
                     ChatComposer(
                         state = composerState,
-                        followUpDefaultIsSteer = state.flavor != "pi" && hubSettings.followUpDefault == "steer",
+                        followUpDefaultIsSteer = presentedSteerTurn != null && hubSettings.followUpDefault == "steer",
                         onTextChange = viewModel::onComposerChange,
                         onSend = { intent -> viewModel.sendMessage(intent, presentedSteerTurn) },
                         onAbort = viewModel::abortSession,

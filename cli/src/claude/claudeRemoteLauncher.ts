@@ -209,7 +209,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                 if (fromComposer && permissionHandler.hasPendingPermissionRequests()) {
                     return { steered: false, error: 'Waiting for a user decision' };
                 }
-                const taken = session.queue.takeByLocalId(localId);
+                const taken = session.queue.takeByLocalId(localId, { retryIndeterminate: !fromComposer });
                 if (!taken) {
                     return { steered: false, error: 'Message not in queue' };
                 }

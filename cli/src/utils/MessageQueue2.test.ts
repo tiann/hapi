@@ -847,6 +847,17 @@ describe('MessageQueue2', () => {
         expect(queue.queue.map((item) => item.localId)).toEqual(['a', 'b', 'c', 'd']);
     });
 
+    it('leaves a held steer with its original owner when a guarded duplicate arrives', () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        queue.push('first', 'mode', 'id');
+        const original = queue.takeByLocalId('id', { retryIndeterminate: false })!;
+        expect(queue.beginReservationDispatch(original)).toBe(true);
+        expect(queue.markReservationIndeterminate(original)).toBe(true);
+        expect(queue.takeByLocalId('id', { retryIndeterminate: false })).toBeNull();
+        expect(queue.commitReservation(original)).toBe(true);
+        expect(queue.cancelByLocalId('id')).toBe('consumed');
+    });
+
     it('retries an indeterminate reservation without automatic replay', () => {
         const queue = new MessageQueue2<string>(mode => mode);
         queue.push('b', 'B', 'b');

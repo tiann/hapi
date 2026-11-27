@@ -117,6 +117,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private defaultBackendModel: string | null = null;
     private unregisterModelApplyHandler: (() => void) | null = null;
     private readonly modelApplyLock = new AsyncLock();
+    private followUpTurnId: string | null = null;
     private activePromptModeHash: string | null = null;
     /** Concurrent soft-steer session/prompt RPCs still running after kickoff. */
     private softSteerWaiters: Promise<void>[] = [];
@@ -251,7 +252,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     protected async runMainLoop(): Promise<void> {
         const session = this.session;
         const messageBuffer = this.messageBuffer;
-        session.client.updateAgentState?.((state) => ({ ...state, steeringActive: false }));
+        session.client.updateAgentState?.((state) => ({ ...state, steeringActive: false, followUpSteerTurnId: null }));
 
         const titleSync = this.titleSync;
         const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client, {
@@ -602,9 +603,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         // Soft steer = Cursor GUI "Send" (next-opportune / soft inject): fire a
         // concurrent session/prompt without canceling the in-flight turn. Abort
         // remains the hard stop path (GUI "Stop & send").
-        session.client.rpcHandlerManager.registerHandler(
-            RPC_METHODS.SteerQueuedMessage,
-            async (payload: unknown) => {
+        const steerQueued =
+            async (payload: unknown, followUp: boolean) => {
                 const localId = typeof (payload as { localId?: unknown } | null)?.localId === 'string'
                     ? (payload as { localId: string }).localId
                     : '';
@@ -616,8 +616,20 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 if (!this.promptInFlight || !acpSessionId || !backend) {
                     return { steered: false, error: 'No active steerable turn' };
                 }
+                const expectedTurnId = (payload as { expectedFollowUpTurnId?: unknown }).expectedFollowUpTurnId;
+                const followUpRefusal = (): string | null => {
+                    if (!followUp) return null;
+                    if (!this.followUpTurnId || expectedTurnId !== this.followUpTurnId
+                        || this.userAbortRequested || !backend.isPromptRequestInFlight()) return 'Active turn changed';
+                    if (this.permissionAdapter?.hasPendingRequests() || this.extensionAdapter?.hasPendingRequests()) {
+                        return 'Waiting for a user decision';
+                    }
+                    return null;
+                };
+                const refusal = followUpRefusal();
+                if (refusal) return { steered: false, error: refusal };
                 const targetPromptGeneration = backend.getPromptGeneration();
-                const taken = session.queue.takeByLocalId(localId);
+                const taken = session.queue.takeByLocalId(localId, { retryIndeterminate: !followUp });
                 if (!taken) {
                     return { steered: false, error: 'Message not in queue' };
                 }
@@ -714,6 +726,11 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     await restoreQueuedReservation();
                     return { steered: false, error: 'Active turn changed' };
                 }
+                const lateRefusal = followUpRefusal();
+                if (lateRefusal) {
+                    await restoreQueuedReservation();
+                    return { steered: false, error: lateRefusal };
+                }
                 let steer: { dispatched: Promise<void>; completed: Promise<string | null> };
                 try {
                     // Mark before dispatch so a 429 that settles after steer
@@ -801,8 +818,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     });
                 });
                 return { steered: true };
-            }
-        );
+            };
+        session.client.rpcHandlerManager.registerHandler(RPC_METHODS.SteerQueuedMessage, (payload: unknown) => steerQueued(payload, false));
+        session.client.rpcHandlerManager.registerHandler(RPC_METHODS.SteerFollowUpMessage, (payload: unknown) => steerQueued(payload, true));
 
         // Restart / resume: hub metadata may still hold an unresolved error from
         // the previous process. Hydrate before the queue loop so the first newer
@@ -1184,6 +1202,18 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                                 if (message.type === 'turn_complete') turnCompleted = true;
                                 this.handleAgentMessage(message);
                             }, {
+                                timing: {
+                                    onSent: () => {
+                                        if (this.userAbortRequested || this.shouldExit) return;
+                                        const followUpSteerTurnId = randomUUID();
+                                        this.followUpTurnId = followUpSteerTurnId;
+                                        session.client.updateAgentState?.((state) => ({ ...state, followUpSteerTurnId }));
+                                    },
+                                    onAnswered: () => {
+                                        this.followUpTurnId = null;
+                                        session.client.updateAgentState?.((state) => ({ ...state, followUpSteerTurnId: null }));
+                                    }
+                                },
                                 shouldSend: () => !this.userAbortRequested
                                     && !this.shouldExit
                                     && !(this.bridgingForEventId !== null
@@ -1378,7 +1408,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             } finally {
                 this.activePromptGenerationAtStart = null;
                 this.promptInFlight = false;
-                session.client.updateAgentState?.((state) => ({ ...state, steeringActive: false }));
+                session.client.updateAgentState?.((state) => ({ ...state, steeringActive: false, followUpSteerTurnId: null }));
                 // Soft-steers share the ACP session; wait for them before ready /
                 // the next prompt so message handlers are not swapped mid-inject.
                 if (!this.shouldExit) {
@@ -1496,12 +1526,11 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 RPC_METHODS.BridgeModelError,
                 async () => ({ ok: false, reason: 'session_ended' })
             );
-            this.session.client.rpcHandlerManager.registerHandler(RPC_METHODS.SteerQueuedMessage, async () => ({
-                steered: false,
-                error: 'Session ending'
-            }));
+            const ending = async () => ({ steered: false, error: 'Session ending' });
+            this.session.client.rpcHandlerManager.registerHandler(RPC_METHODS.SteerQueuedMessage, ending);
+            this.session.client.rpcHandlerManager.registerHandler(RPC_METHODS.SteerFollowUpMessage, ending);
             this.promptInFlight = false;
-            this.session.client.updateAgentState?.((state) => ({ ...state, steeringActive: false }));
+            this.session.client.updateAgentState?.((state) => ({ ...state, steeringActive: false, followUpSteerTurnId: null }));
             this.softSteerWaiters = [];
             this.unregisterModelApplyHandler?.();
             this.unregisterModelApplyHandler = null;
@@ -2808,7 +2837,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         // is unbounded and may never settle. Soft counters were already reset
         // above; only the foreground prompt was drained before continuing.
         this.softSteerWaiters = [];
-        this.session.client.updateAgentState?.((state) => ({ ...state, steeringActive: false }));
+        this.session.client.updateAgentState?.((state) => ({ ...state, steeringActive: false, followUpSteerTurnId: null }));
         this.session.onThinkingChange(false);
         this.abortController.abort();
         this.abortController = new AbortController();

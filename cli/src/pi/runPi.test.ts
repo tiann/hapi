@@ -24,6 +24,8 @@ const harness = vi.hoisted(() => ({
         sendSessionEvent: vi.fn(),
         sendAgentMessage: vi.fn(),
         updateAgentState: vi.fn(),
+        setSteerDeliveryState: vi.fn(async (_localIds: string[], _state: string) => true),
+        emitSteerIndeterminate: vi.fn(),
         updateMetadata: vi.fn(),
         getMetadata: vi.fn(() => null),
         emitSessionReady: vi.fn(),
@@ -96,6 +98,8 @@ vi.mock('./piTransport', () => ({
         onEvent(callback: (event: Record<string, unknown>) => void): void {
             harness.onEvent = callback;
         }
+
+        supportsToolBoundarySteering = async () => true;
 
         start(): void {}
 
@@ -1159,6 +1163,60 @@ describe('Pi steer-queued-message RPC', () => {
         await vi.advanceTimersByTimeAsync(0);
         return { running };
     }
+
+    function publishedFollowUpTurn(): string | null {
+        for (const [update] of [...harness.session.updateAgentState.mock.calls].reverse()) {
+            const state = update({});
+            if ('followUpSteerTurnId' in state) return state.followUpSteerTurnId;
+        }
+        return null;
+    }
+
+    it('steers a preparing composer follow-up once into the same Pi agent run across tool steps', async () => {
+        const { running } = await startReadySession(true);
+        harness.onEvent!({ type: 'agent_start' });
+        const turn = publishedFollowUpTurn();
+        expect(turn).toEqual(expect.any(String));
+        harness.onEvent!({ type: 'turn_end' });
+        harness.onEvent!({ type: 'turn_start' });
+        expect(publishedFollowUpTurn()).toBe(turn);
+        const send = harness.session.onUserMessage.mock.calls.at(-1)![0];
+        send({ role: 'user', content: { type: 'text', text: 'check parser' } }, 'follow');
+        const follow = harness.rpcHandlers.get(RPC_METHODS.SteerFollowUpMessage)!;
+        expect(await follow({ localId: 'follow', expectedFollowUpTurnId: turn })).toEqual({ steered: true });
+        await vi.advanceTimersByTimeAsync(0);
+        const steers = harness.sent.filter((c) => (c as { type: string }).type === 'steer') as { id: string; message: string }[];
+        expect(steers).toHaveLength(1);
+        expect(steers[0]!.message).toBe('check parser');
+        harness.onEvent!({ type: 'response', id: steers[0]!.id, command: 'steer', success: true });
+        harness.onEvent!({ type: 'agent_end', messages: [] });
+        expect(publishedFollowUpTurn()).toBeNull();
+        harness.onError?.(new Error('stop test transport'));
+        await running;
+    });
+
+    it('keeps a composer follow-up queued when a Pi dialog opens during durable dispatch admission', async () => {
+        const { running } = await startReadySession(true);
+        harness.onEvent!({ type: 'agent_start' });
+        const turn = publishedFollowUpTurn();
+        const send = harness.session.onUserMessage.mock.calls.at(-1)![0];
+        send({ role: 'user', content: { type: 'text', text: 'later' } }, 'follow');
+        await vi.advanceTimersByTimeAsync(0);
+        const follow = harness.rpcHandlers.get(RPC_METHODS.SteerFollowUpMessage)!;
+        expect(await follow({ localId: 'follow', expectedFollowUpTurnId: 'old' })).toMatchObject({ steered: false });
+        harness.session.setSteerDeliveryState.mockImplementationOnce(async () => {
+            harness.onEvent!({ type: 'extension_ui_request', id: 'decision', method: 'input', title: 'Answer?' });
+            return true;
+        });
+        expect(await follow({ localId: 'follow', expectedFollowUpTurnId: turn })).toMatchObject({ steered: true });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(harness.session.setSteerDeliveryState).toHaveBeenCalledWith(['follow'], 'queued');
+        expect(harness.sent).not.toContainEqual(expect.objectContaining({ type: 'steer' }));
+        expect(harness.sent).not.toContainEqual(expect.objectContaining({ type: 'extension_ui_response' }));
+        expect(harness.session.onCancelQueuedMessage.mock.calls.at(-1)![0]('follow')).toBe(true);
+        harness.onError?.(new Error('stop test transport'));
+        await running;
+    });
 
     it('registers the steer-queued-message RPC handler', async () => {
         const { running } = await startReadySession(false);
