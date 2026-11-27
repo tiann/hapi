@@ -983,18 +983,20 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         emitFromDom()
     }, [clearMentionTooltip, emitFromDom, onEdit])
 
-    const insertPlainClipboardText = useCallback((text: string, selection: ComposerSelection) => {
+    const insertPlainClipboardText = useCallback((text: string, selection?: ComposerSelection) => {
         const root = rootRef.current
         if (!root || !text) return
         const segments = segmentsFromEditor(root)
         // Parse wire markdown so `[title](/sessions/<id>)` paste restores chips
         // (copy/cut put that format on the clipboard). Plain prose stays text.
+        const end = selection?.end ?? mirrorComposerSegments(segments).length
+        const insertion = selection ?? { start: end, end }
         const result = insertSegmentsInComposerSegments(
             segments,
-            selection,
+            insertion,
             parseComposerSegments(text),
         )
-        recordUndo(segments, selection)
+        recordUndo(segments, insertion)
         commitSegments(root, result.segments, result.selection)
         onEdit?.()
     }, [commitSegments, onEdit, recordUndo])
@@ -1029,7 +1031,11 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         const text = e.clipboardData?.getData('text/plain') ?? ''
         if (!root || !text) return
         const selection = getMirrorSelection(root)
-        const insert = () => insertPlainClipboardText(text, selection)
+        const draft = lastEmittedRef.current
+        const insert = () => insertPlainClipboardText(
+            text,
+            lastEmittedRef.current === draft ? selection : undefined,
+        )
         if (!onTextPaste?.(text, insert)) insert()
     }, [insertPlainClipboardText, onPaste, onTextPaste])
 

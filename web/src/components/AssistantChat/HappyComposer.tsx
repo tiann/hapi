@@ -619,6 +619,18 @@ export function HappyComposer(props: {
     const setPendingSchedule = isControlled ? onScheduleProp : setPendingScheduleLocal
 
     const textareaRef = useRef<HTMLTextAreaElement>(null)
+    const textareaPasteHistory = useRef<{
+        before: TextInputState
+        after: TextInputState
+        applied: boolean
+    } | null>(null)
+
+    useEffect(() => {
+        const history = textareaPasteHistory.current
+        if (history && composerText !== (history.applied ? history.after.text : history.before.text)) {
+            textareaPasteHistory.current = null
+        }
+    }, [composerText])
     const richInputRef = useRef<RichComposerInputHandle>(null)
     const richComposerFueAnchorRef = useRef<HTMLDivElement>(null)
     const settingsButtonRef = useRef<HTMLButtonElement>(null)
@@ -1365,12 +1377,38 @@ export function HappyComposer(props: {
         trigger?.focus({ preventScroll: true })
     }, [dismissSettings, settingsSection])
 
+    const applyTextareaEdit = useCallback((input: HTMLTextAreaElement, next: TextInputState) => {
+        api.composer().setText(next.text)
+        setInputState(next)
+        handleUserEdit()
+        requestAnimationFrame(() => {
+            if (textareaRef.current === input && input.value === next.text) {
+                input.setSelectionRange(next.selection.start, next.selection.end)
+            }
+        })
+    }, [api, handleUserEdit])
+
     const handleKeyDown = useCallback((e: ReactKeyboardEvent<HTMLTextAreaElement | HTMLDivElement>) => {
         const key = e.key
 
         // Avoid intercepting IME composition keystrokes (Enter, arrows, etc.)
         if (e.nativeEvent.isComposing) {
             return
+        }
+
+        const history = textareaPasteHistory.current
+        const input = e.currentTarget
+        if (history && input instanceof HTMLTextAreaElement && (e.ctrlKey || e.metaKey) && !e.altKey) {
+            const shortcut = key.toLowerCase()
+            const undo = shortcut === 'z' && !e.shiftKey
+            const redo = (shortcut === 'z' && e.shiftKey) || (shortcut === 'y' && !e.shiftKey)
+            const from = history.applied ? history.after : history.before
+            if ((history.applied ? undo : redo) && input.value === from.text) {
+                e.preventDefault()
+                history.applied = redo
+                applyTextareaEdit(input, redo ? history.after : history.before)
+                return
+            }
         }
 
         // Alt+S is an explicit send shortcut, independent of the Enter setting.
@@ -1476,6 +1514,7 @@ export function HappyComposer(props: {
             haptic('light')
         }
     }, [
+        applyTextareaEdit,
         suggestions,
         selectedIndex,
         moveUp,
@@ -1521,6 +1560,7 @@ export function HappyComposer(props: {
     }, [model, onModelChange, haptic, agentFlavor, availableModelOptions])
 
     const handleChange = useCallback((e: ReactChangeEvent<HTMLTextAreaElement>) => {
+        textareaPasteHistory.current = null
         const selection = {
             start: e.target.selectionStart,
             end: e.target.selectionEnd
@@ -1538,6 +1578,7 @@ export function HappyComposer(props: {
     }, [])
 
     const [longPaste, setLongPaste] = useState<{ text: string; insert: () => void } | null>(null)
+    const pasteOnCloseRef = useRef<(() => void) | null>(null)
     const canAttachPaste = !controlsDisabled && pendingSchedule == null && props.attachmentsEnabled !== false
 
     const offerLongPaste = useCallback((text: string, insert: () => void) => {
@@ -1565,15 +1606,23 @@ export function HappyComposer(props: {
             const { value, selectionStart, selectionEnd } = input
             const text = e.clipboardData.getData('text/plain')
             const handled = offerLongPaste(text, () => {
+                if (textareaRef.current !== input) return
                 const pastedText = text.replace(/\r\n?/g, '\n')
-                const nextText = value.slice(0, selectionStart) + pastedText + value.slice(selectionEnd)
-                const cursor = selectionStart + pastedText.length
-                api.composer().setText(nextText)
-                setInputState({ text: nextText, selection: { start: cursor, end: cursor } })
-                handleUserEdit()
-                requestAnimationFrame(() => {
-                    if (textareaRef.current === input) input.setSelectionRange(cursor, cursor)
-                })
+                const currentText = input.value
+                // A draft may be restored while the choice is open.
+                const start = currentText === value ? selectionStart : currentText.length
+                const end = currentText === value ? selectionEnd : start
+                const cursor = start + pastedText.length
+                const after = {
+                    text: currentText.slice(0, start) + pastedText + currentText.slice(end),
+                    selection: { start: cursor, end: cursor },
+                }
+                textareaPasteHistory.current = {
+                    before: { text: currentText, selection: { start, end } },
+                    after,
+                    applied: true,
+                }
+                applyTextareaEdit(input, after)
             })
             if (handled) e.preventDefault()
             return
@@ -1592,7 +1641,7 @@ export function HappyComposer(props: {
         e.preventDefault()
 
         void addPastedFiles(files)
-    }, [addPastedFiles, api, handleUserEdit, offerLongPaste, pendingSchedule])
+    }, [addPastedFiles, applyTextareaEdit, offerLongPaste, pendingSchedule])
 
     // Opens (or closes) the settings sheet. `section` anchors the sheet to a
     // single section ('model' / 'effort'); the gear passes nothing = full sheet.
@@ -2648,6 +2697,9 @@ export function HappyComposer(props: {
                             event.preventDefault()
                             if (richMentionsEnabled) richInputRef.current?.focus()
                             else textareaRef.current?.focus({ preventScroll: true })
+                            const insert = pasteOnCloseRef.current
+                            pasteOnCloseRef.current = null
+                            insert?.()
                         }}
                     >
                         <DialogHeader>
@@ -2659,7 +2711,7 @@ export function HappyComposer(props: {
                                 variant="secondary"
                                 disabled={controlsDisabled}
                                 onClick={() => {
-                                    longPaste?.insert()
+                                    pasteOnCloseRef.current = longPaste?.insert ?? null
                                     setLongPaste(null)
                                 }}
                             >

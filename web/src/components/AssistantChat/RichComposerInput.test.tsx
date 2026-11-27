@@ -396,6 +396,26 @@ describe('RichComposerInput paste', () => {
         expect(onValueChange).toHaveBeenLastCalledWith('before 已選😀 after')
     })
 
+    it('appends deferred paste when another action restores the draft', () => {
+        const onTextPaste = vi.fn((_text: string, _insert: () => void) => true)
+        const onValueChange = vi.fn()
+        const input = (value: string) => (
+            <RichComposerInput
+                value={value}
+                onValueChange={onValueChange}
+                onMirrorChange={() => {}}
+                onTextPaste={onTextPaste}
+            />
+        )
+        const { rerender } = render(input(''))
+        fireEvent.paste(screen.getByTestId('rich-composer-input'), {
+            clipboardData: { files: [], getData: () => 'pasted text' },
+        })
+        rerender(input('restored draft: '))
+        act(onTextPaste.mock.calls[0][1])
+        expect(onValueChange).toHaveBeenLastCalledWith('restored draft: pasted text')
+    })
+
     it('inserts plain text without calling onPaste when no files are pasted', () => {
         const onPaste = vi.fn()
         const onValueChange = vi.fn()
