@@ -109,13 +109,27 @@ describe('applyCursorAcpMode', () => {
         expect(setMode).toHaveBeenCalledWith('session-1', 'ask');
     });
 
-    it('swallows setMode errors', async () => {
+    it('rejects a fresh config response that confirms a different mode', async () => {
+        const modeOption = { id: 'mode-opt', currentValue: 'agent', options: [{ value: 'ask' }] };
+        const backend = {
+            getConfigOptionByCategory: vi.fn()
+                .mockReturnValueOnce(modeOption)
+                .mockReturnValueOnce({ ...modeOption, currentValue: 'plan' }),
+            setConfigOption: vi.fn(async () => {}),
+            setMode: vi.fn()
+        } as unknown as AcpSdkBackend;
+
+        await expect(applyCursorAcpMode(backend, 'session-1', 'ask')).rejects.toThrow('confirmed mode plan, expected ask');
+        expect(backend.setMode).not.toHaveBeenCalled();
+    });
+
+    it('rejects if Cursor did not apply the mode', async () => {
         const setMode = vi.fn(async () => {
             throw new Error('method not found');
         });
         const backend = { setMode } as unknown as AcpSdkBackend;
 
-        await expect(applyCursorAcpMode(backend, 'session-1', 'ask')).resolves.toBeUndefined();
+        await expect(applyCursorAcpMode(backend, 'session-1', 'ask')).rejects.toThrow('method not found');
     });
 });
 

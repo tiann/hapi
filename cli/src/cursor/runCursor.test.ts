@@ -7,6 +7,7 @@ const mockCursorSession = vi.hoisted(() => ({
     availableSlashCommands: new Set(['rename-chat']),
     pushKeepAlive: vi.fn(),
     stopKeepAlive: vi.fn(),
+    applyPermissionModeConfig: vi.fn(),
     canApplyModelConfig: vi.fn(() => false)
 }));
 
@@ -95,6 +96,8 @@ vi.mock('./cursorUserMessageQueue', () => ({
 
 import { runCursor } from './runCursor';
 import { enqueueCursorUserMessage } from './cursorUserMessageQueue';
+import type { PermissionMode } from './loop';
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 
 describe('runCursor', () => {
     beforeEach(() => {
@@ -113,6 +116,8 @@ describe('runCursor', () => {
         lifecycleMock.setSessionEndReason.mockClear();
         mockCursorSession.getModel.mockReset();
         mockCursorSession.getModel.mockReturnValue(undefined);
+        mockCursorSession.applyPermissionModeConfig.mockReset();
+        mockCursorSession.pushKeepAlive.mockClear();
         vi.mocked(enqueueCursorUserMessage).mockReset();
     });
 
@@ -155,5 +160,39 @@ describe('runCursor', () => {
             'local-1',
             mockCursorSession.availableSlashCommands
         );
+    });
+
+    it('publishes mode and queues new turns only after native acknowledgement', async () => {
+        const acknowledgment = Promise.withResolvers<PermissionMode>();
+        await runCursor({ startedBy: 'runner', permissionMode: 'default' });
+        mockCursorSession.pushKeepAlive.mockClear();
+        const onPermissionModeChanged = harness.loopArgs[0]!.onPermissionModeChanged as (mode: PermissionMode) => void;
+        mockCursorSession.applyPermissionModeConfig.mockImplementation(async () => {
+            const mode = await acknowledgment.promise;
+            onPermissionModeChanged(mode);
+            return mode;
+        });
+
+        const updateConfig = harness.session.rpcHandlerManager.registerHandler.mock.calls
+            .find(([method]) => method === RPC_METHODS.SetSessionConfig)![1] as (config: unknown) => Promise<unknown>;
+        const onUserMessage = harness.session.onUserMessage.mock.calls[0]![0] as
+            (message: { content: { text: string } }, localId: string) => void;
+        const change = updateConfig({ permissionMode: 'plan' });
+        onUserMessage({ content: { text: 'Before acknowledgement' } }, 'before');
+        expect(mockCursorSession.applyPermissionModeConfig).toHaveBeenCalledWith('plan');
+        expect(mockCursorSession.pushKeepAlive).not.toHaveBeenCalled();
+        expect(vi.mocked(enqueueCursorUserMessage).mock.lastCall?.[2].permissionMode).toBe('default');
+
+        acknowledgment.resolve('plan');
+        await expect(change).resolves.toEqual({ applied: { permissionMode: 'plan' } });
+        expect(mockCursorSession.pushKeepAlive).toHaveBeenCalledOnce();
+        onUserMessage({ content: { text: 'After acknowledgement' } }, 'after');
+        expect(vi.mocked(enqueueCursorUserMessage).mock.lastCall?.[2].permissionMode).toBe('plan');
+
+        mockCursorSession.applyPermissionModeConfig.mockRejectedValueOnce(new Error('Cursor refused the mode'));
+        await expect(updateConfig({ permissionMode: 'debug' })).rejects.toThrow('Cursor refused the mode');
+        expect(mockCursorSession.pushKeepAlive).toHaveBeenCalledOnce();
+        onUserMessage({ content: { text: 'After failure' } }, 'failed');
+        expect(vi.mocked(enqueueCursorUserMessage).mock.lastCall?.[2].permissionMode).toBe('plan');
     });
 });

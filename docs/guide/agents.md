@@ -61,7 +61,7 @@ Most remote integrations speak the [Agent Client Protocol](https://agentclientpr
 
 ### Permission modes
 
-Permission modes are per-agent — each flavor exposes its own set (see the matrix above). Set the mode at launch with `--permission-mode <mode>` or a shortcut flag (`--yolo`, `--plan`, `--auto-review`, depending on the agent), and switch it mid-session from the web UI or with `hapi set-mode <session-id-or-prefix> <mode>` (active sessions switch immediately; inactive ones use it on their next resume). Semantics vary per agent; see the per-agent sections below.
+Each agent exposes its own permission modes. Set the mode at launch with `--permission-mode <mode>` or a supported shortcut such as `--yolo`, `--plan` or `--auto-review`. Change it from the web UI or with `hapi set-mode <session-id-or-prefix> <mode>`. Inactive sessions use the selected mode on their next resume. See the per-agent sections below for live switching behavior.
 
 ### Local and remote mode
 
@@ -212,7 +212,7 @@ hapi cursor --cursor-add-dir ../shared     # Extra workspace root (repeatable)
 | `autoReview` | Auto (Smart Auto) - allowlist/sandbox/classifier instead of full YOLO |
 | `yolo` | Bypass approval prompts |
 
-Set mode via `--plan` / `--mode` / `--permission-mode` / `--auto-review`, or change from the web UI during a session.
+Use `--plan`, `--mode`, `--permission-mode` or `--auto-review` at launch. Change a remote ACP session's permission mode between turns from the web UI or with `hapi set-mode`. HAPI waits for Cursor to acknowledge the ACP mode. Smart Auto uses a launch flag or a queued `/auto-review` command, so changing modes in a running process may still leave its native Smart Auto policy in place. For an active terminal session, change modes in Cursor or hand off to HAPI first. A legacy stream-json session uses the new mode for messages queued after the change.
 
 ### Cursor-native worktree & multi-root
 
@@ -241,7 +241,7 @@ Cursor plan cards show the overview when supplied, followed by the Markdown plan
 
 ### Model errors
 
-Cursor sometimes reports a transient model error inside a turn instead of failing it. HAPI detects these, shows a banner in the chat and an indicator in the session list, and sends a notification. **Bridge & retry** re-sends your last message as a one-shot recovery prompt; a new message from you always takes precedence. The hub owner can opt in to automatic retry (off by default).
+Cursor sometimes reports a transient model error inside a turn instead of failing it. HAPI detects these, shows a banner in the chat and an indicator in the session list, and sends a notification. **Bridge & retry** re-sends your last message as a one-shot recovery prompt; a new message from you always takes precedence. The hub owner can enable one automatic retry for eligible transient errors in the default namespace (off by default). An exhausted quota requires account action or a reset. Settings → Usage links to [Cursor’s guide to account usage](https://cursor.com/help/models-and-usage/usage-limits#how-do-i-check-my-usage) for the dashboard that matches the subscription.
 
 ### Limitations
 

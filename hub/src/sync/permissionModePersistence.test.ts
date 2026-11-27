@@ -43,6 +43,21 @@ describe('permission mode persistence', () => {
         expect(reloadedSession?.permissionMode).toBe('bypassPermissions')
     })
 
+    it.each(['plan', 'ask'] as const)('keeps the confirmed Cursor mode after a native rejection of %s', async (requested) => {
+        const store = new Store(':memory:')
+        const engine = createEngine(store)
+        const session = engine.getOrCreateSession(
+            'cursor-mode-rejection',
+            { path: '/tmp/project', host: 'localhost', flavor: 'cursor', cursorSessionProtocol: 'acp' },
+            { requests: {}, completedRequests: {} }, 'default'
+        )
+        engine.handleSessionAlive({ sid: session.id, time: Date.now(), permissionMode: 'default' })
+        engine['rpcGateway'].requestSessionConfig = async () => ({ error: 'Native mode rejected' })
+        await expect(engine.applySessionConfig(session.id, { permissionMode: requested })).rejects.toThrow('Native mode rejected')
+        expect(engine.getSession(session.id)?.permissionMode).toBe('default')
+        expect(simulateHubRestart(store).getSession(session.id)?.permissionMode).toBe('default')
+    })
+
     it('restores permission mode from applySessionConfig after hub restart', async () => {
         const store = new Store(':memory:')
         const engine = createEngine(store)
