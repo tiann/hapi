@@ -53,9 +53,11 @@ export type SessionTaskRunnerDeps = {
 /**
  * The task error that a wake failure leaves on a task. Everything that says
  * the session could not be resumed is `session_unavailable`; `send_failed`
- * is kept for a run whose insert threw (see `run`).
+ * is kept for a run whose insert threw (see `run`). The engine reads the
+ * same classification to tell a user about a scheduled message whose
+ * session will not resume (`SyncEngine.reportUnresumableScheduledMessages`).
  */
-function taskErrorCodeFor(wakeCode: string): SessionTaskErrorCode {
+export function taskErrorCodeFor(wakeCode: string): SessionTaskErrorCode {
     switch (wakeCode) {
         case 'no_machine_online':
             return 'machine_offline'

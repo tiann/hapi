@@ -52,14 +52,15 @@ import {
     type SessionTaskRun,
     type UpdateSessionTaskRequest
 } from '@hapi/protocol'
-import { SessionTaskRunner } from './sessionTaskRunner'
+import { SessionTaskRunner, taskErrorCodeFor } from './sessionTaskRunner'
 import type {
     CreateSessionTaskResult,
     DeleteSessionTaskResult,
     RunSessionTaskNowResult,
     UpdateSessionTaskResult
 } from './sessionTaskTypes'
-import { SessionWakeGate, type WakeableSession } from './sessionWakeGate'
+import { SessionWakeGate, type SessionWakeResult, type WakeableSession } from './sessionWakeGate'
+import { getSessionName } from '../notifications/sessionInfo'
 import {
     buildJobTerminalWakePrompt,
     buildJobWakeLocalId,
@@ -1412,6 +1413,9 @@ export class SyncEngine {
         }
     }
 
+    /** Mature scheduled messages a toast was sent for (see `reportUnresumableScheduledMessages`). */
+    private readonly reportedScheduledMessages = new Set<string>()
+
     /** Lazily built: `resumeSession` and `sessionCache` are only wired after construction. */
     private get deliveryWakeGate(): SessionWakeGate {
         this.wakeGate ??= new SessionWakeGate({
@@ -1457,7 +1461,46 @@ export class SyncEngine {
      */
     private wakeSessionsWithMatureMessages(sessionIds: readonly string[]): void {
         for (const sessionId of sessionIds) {
-            void this.deliveryWakeGate.wake(sessionId).catch(() => undefined)
+            void this.deliveryWakeGate
+                .wake(sessionId)
+                .then((outcome) => this.reportUnresumableScheduledMessages(sessionId, outcome))
+                .catch(() => undefined)
+        }
+    }
+
+    /**
+     * A scheduled message that came due on a session the hub cannot resume
+     * needs the user: the hub goes on retrying with backoff for as long as
+     * the message waits, and nobody would see why it never goes out. Say so
+     * through a toast, once per scheduled message and hub process. A machine
+     * that is offline clears by itself and an archived session is a state
+     * the user chose, so neither is reported; the toast is offered again on
+     * the next refused wake while no visible connection has received it.
+     */
+    private reportUnresumableScheduledMessages(sessionId: string, outcome: SessionWakeResult): void {
+        if (outcome.type !== 'refused' || taskErrorCodeFor(outcome.failure.code) !== 'session_unavailable') return
+        const session = this.getSession(sessionId)
+        if (!session) return
+        const name = getSessionName(session)
+        for (const message of this.store.messages.getMatureScheduledMessages(Date.now())) {
+            if (message.sessionId !== sessionId || this.reportedScheduledMessages.has(message.id)) continue
+            this.reportedScheduledMessages.add(message.id)
+            const preview = createPromptTitle(message.content)
+            const what = preview ? `"${preview}"` : 'A scheduled message'
+            void this.eventPublisher
+                .sendToast(session.namespace, {
+                    type: 'toast',
+                    data: {
+                        title: 'Scheduled message not sent',
+                        body: `${what} is waiting in ${name}: the session could not be resumed. The hub keeps retrying.`,
+                        sessionId,
+                        url: `/sessions/${sessionId}`
+                    }
+                })
+                .then((delivered) => {
+                    if (delivered === 0) this.reportedScheduledMessages.delete(message.id)
+                })
+                .catch(() => this.reportedScheduledMessages.delete(message.id))
         }
     }
 

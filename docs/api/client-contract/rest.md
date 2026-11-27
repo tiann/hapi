@@ -126,6 +126,8 @@ Source: `hub/src/web/routes/messages.ts`; schemas `MessagesQuerySchema`, `SendMe
 
 The hub stamps `sentFrom: 'webapp'` on REST-sent messages server-side; the request body has no such field.
 
+A scheduled message (`scheduledAt`) that comes due while its session is inactive makes the hub resume the session, so the agent takes the message at the scheduled time; a refused resume is retried with backoff for as long as the message waits. When the session cannot be resumed at all — the resume fails with `resume_unavailable`, `resume_failed`, `session_not_found` or `access_denied`; a machine that is offline clears by itself and says nothing — the hub tells the user through a `toast` SSE frame titled `Scheduled message not sent` (see [SSE](./sse.md#syncevent-union-17-types)): once per scheduled message and hub process, offered again on the next refused attempt while no visible connection has received it. An archived session is neither released into nor resumed, and is not reported either.
+
 ### Session tasks
 
 Source: `hub/src/web/routes/sessionTasks.ts`; schemas `CreateSessionTaskRequestSchema`, `UpdateSessionTaskRequestSchema`, `SessionTaskSchema`, `SessionTaskRunSchema`, `SessionTaskRunListQuerySchema`, `SessionTaskDeleteResponseSchema` (`shared/src/sessionTasks.ts`). A task is a schedule the hub owns: each run sends one ordinary user message into the session, so its prompts reach clients through the message stream like any other.

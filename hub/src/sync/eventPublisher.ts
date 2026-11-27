@@ -31,4 +31,14 @@ export class EventPublisher {
 
         this.sseManager.broadcast(enrichedEvent)
     }
+
+    /**
+     * A toast reaches the visible connections of one namespace only, and is
+     * neither recorded nor replayed (`SSEManager.sendToast`), so it does not
+     * go through `emit`: nothing persistent happens because of it. Resolves
+     * to the number of connections that received it.
+     */
+    sendToast(namespace: string, event: Extract<SyncEvent, { type: 'toast' }>): Promise<number> {
+        return this.sseManager.sendToast(namespace, event)
+    }
 }
