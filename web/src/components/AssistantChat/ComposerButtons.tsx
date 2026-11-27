@@ -5,7 +5,7 @@ import { useTranslation } from '@/lib/use-translation'
 import { ScheduleIcon } from '@/components/icons'
 import { AttachmentPicker } from './AttachmentPicker'
 import { EMPTY_SESSION_TASK_DRAFTS, ScheduleTimePicker } from './ScheduleTimePicker'
-import type { PendingSchedule } from './ScheduleTimePicker'
+import type { PendingSchedule, SessionTaskHistorySource } from './ScheduleTimePicker'
 import { useFue } from '@/lib/use-fue'
 import { FueCallout, FueDot } from '@/components/Fue'
 import { Children, isValidElement, useCallback, useRef, useState, type ReactElement, type ReactNode, type Ref } from 'react'
@@ -825,6 +825,8 @@ export function ComposerButtons(props: {
         onComposerDraftConsumed: (text: string) => void
         /** The session's stored permission mode, which a task's prompts run with. */
         permissionMode?: PermissionMode
+        /** Where the panel reads the run history of the session's tasks. */
+        history?: SessionTaskHistorySource
     }
     // The backend rejects scheduled-send + attachment combinations (the per-CLI
     // upload directory is torn down before a mature emit could read the files).
@@ -1125,7 +1127,8 @@ export function ComposerButtons(props: {
                                     consumeComposerDraft: props.sessionTasks.onComposerDraftConsumed,
                                     drafts: taskDrafts,
                                     onDraftsChange: setTaskDrafts,
-                                    permissionMode: props.sessionTasks.permissionMode
+                                    permissionMode: props.sessionTasks.permissionMode,
+                                    history: props.sessionTasks.history
                                 } : undefined}
                             />
                         )}

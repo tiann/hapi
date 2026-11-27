@@ -388,6 +388,11 @@ export function HappyComposer(props: {
      * becomes one.
      */
     createSessionTask?: (request: CreateSessionTaskRequest) => Promise<void>
+    /**
+     * The hub, for the clock panel's History: the runs of the session's tasks.
+     * Given with a session id, it is where the panel reads them, as the task bar does.
+     */
+    api?: ApiClient | null
     // Scratchlist drawer props - SessionChat owns the state. Threaded
     // straight through to ComposerButtons. When undefined, the toggle
     // button doesn't render (back-compat for any other consumer).
@@ -2576,7 +2581,8 @@ export function HappyComposer(props: {
                                         if (api.composer().getState().text === text) setComposerText('')
                                     },
                                     // A task's prompts run with the session's permission mode; the forms warn where it does not ask first.
-                                    permissionMode
+                                    permissionMode,
+                                    history: props.api && props.sessionId ? { api: props.api, sessionId: props.sessionId } : undefined
                                 } : undefined}
                                 hasAttachments={blocksScheduling}
                                 attachmentsEnabled={props.attachmentsEnabled}

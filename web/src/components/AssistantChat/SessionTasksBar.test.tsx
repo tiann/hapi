@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { describe, expect, it, vi, type Mock } from 'vitest'
-import type { SessionTask, SessionTaskDeleteResponse, SessionTaskRun, UpdateSessionTaskRequest } from '@hapi/protocol'
+import type { SessionTask, SessionTaskDeleteResponse, UpdateSessionTaskRequest } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
 import { ApiError } from '@/api/client'
 import { I18nProvider } from '@/lib/i18n-context'
@@ -32,32 +32,15 @@ function task(overrides: Partial<SessionTask> = {}): SessionTask {
     }
 }
 
-function run(overrides: Partial<SessionTaskRun> = {}): SessionTaskRun {
-    return {
-        id: 'run-1',
-        sessionId: 'session-1',
-        taskId: 'task-1',
-        taskKind: 'queue',
-        runNumber: 1,
-        outcome: 'sent',
-        scheduledFor: Date.now() - 30 * MINUTE,
-        recordedAt: Date.now() - 30 * MINUTE,
-        takenAt: null,
-        detail: null,
-        preview: 'first prompt',
-        ...overrides
-    }
-}
-
 type HubOptions = {
     tasks?: SessionTask[]
     /** Rejects the task list with this error, every time. */
     listError?: unknown
     /** Lets the first list call through, then rejects the refetch, so a rollback cannot be repaired by a refetch. */
     listFailsAfterFirst?: unknown
-    runs?: SessionTaskRun[]
-    historyError?: unknown
     updateError?: unknown
+    /** Like the hub when the CLI confirms the cancel: a pause pulls a waiting prompt back (one send less, to go out again on resume). */
+    pausePullsBack?: boolean
     runError?: unknown
     deleteError?: unknown
     deleteResult?: SessionTaskDeleteResponse
@@ -83,6 +66,8 @@ function fakeHub(options: HubOptions = {}) {
                     // Like the hub: no next run while paused; a resumed task is due one interval from now.
                     nextRunAt: request.paused === true ? null : request.paused === false ? Date.now() + entry.intervalMs : entry.nextRunAt,
                     lastError: request.paused === false ? null : entry.lastError,
+                    pending: request.paused === true && entry.pending && options.pausePullsBack ? false : entry.pending,
+                    runCount: request.paused === true && entry.pending && options.pausePullsBack ? entry.runCount - 1 : entry.runCount,
                     items: request.text !== undefined ? [{ text: request.text }] : entry.items,
                     intervalMs: request.intervalMs ?? entry.intervalMs,
                     maxRuns: request.maxRuns === undefined ? entry.maxRuns : request.maxRuns
@@ -102,10 +87,8 @@ function fakeHub(options: HubOptions = {}) {
                 : entry)
             return { task: current.find((entry) => entry.id === taskId) ?? task() }
         }),
-        listSessionTaskRuns: vi.fn(async () => {
-            if (options.historyError) throw options.historyError
-            return { runs: options.runs ?? [] }
-        }),
+        // The bar has no history any more; a call here would be the clock panel's job done in the wrong place.
+        listSessionTaskRuns: vi.fn(async () => ({ runs: [] })),
     }
     return {
         api,
@@ -175,6 +158,49 @@ describe('SessionTasksBar', () => {
         expect(screen.queryByText('Tasks')).toBeNull()
         expect(screen.queryByRole('alert')).toBeNull()
         expect(document.body.textContent).toBe('')
+    })
+
+    it('renders nothing while the list has not loaded: no header that a moment later has nothing under it', async () => {
+        const hub = fakeHub({ tasks: [task()] })
+        const answerList = deferResponse(hub.api.listSessionTasks)
+        mount(hub)
+        await waitFor(() => expect(hub.api.listSessionTasks).toHaveBeenCalled())
+        expect(document.body.textContent).toBe('')
+        expect(screen.queryByText('Tasks')).toBeNull()
+        expect(screen.queryByRole('alert')).toBeNull()
+
+        await act(async () => {
+            answerList()
+            await Promise.resolve()
+        })
+        expect(await screen.findByRole('listitem')).toBeTruthy()
+    })
+
+    it('renders nothing with runs in the history but no task, and never asks for the history', async () => {
+        // The runs of a finished or deleted task are the clock panel's History; nothing of them stays in the chat.
+        const { api } = setup({ tasks: [] })
+        await settleList(api)
+        await act(async () => { await Promise.resolve() })
+        expect(document.body.textContent).toBe('')
+        expect(screen.queryByText('Tasks')).toBeNull()
+        expect(screen.queryByRole('button', { name: 'History' })).toBeNull()
+        expect(api.listSessionTaskRuns).not.toHaveBeenCalled()
+
+        // Nor once a task came and went again: the last row takes the whole bar with it.
+        cleanup()
+        const withTask = setup({ tasks: [task()] })
+        await screen.findByRole('listitem')
+        expect(withTask.api.listSessionTaskRuns).not.toHaveBeenCalled()
+        fireEvent.click(screen.getByRole('button', { name: 'Delete task' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+        await waitFor(() => expect(screen.queryByRole('listitem')).toBeNull())
+        await act(async () => { await Promise.resolve() })
+        await act(async () => { await Promise.resolve() })
+        expect(document.querySelector('[data-testid="toasts"]')?.textContent).toBe('Task deleted. It will not send again.')
+        expect(screen.queryByText('Tasks')).toBeNull()
+        expect(screen.queryByText('If the session is not running, the hub resumes it first.')).toBeNull()
+        expect(screen.queryByRole('button', { name: 'History' })).toBeNull()
+        expect(withTask.api.listSessionTaskRuns).not.toHaveBeenCalled()
     })
 
     it('hides itself on a hub that has no task routes, without retrying or showing an error', async () => {
@@ -333,6 +359,59 @@ describe('SessionTasksBar', () => {
         await waitFor(() => expect(screen.getByRole('listitem').textContent).toContain('Next in 10m'))
     })
 
+    it('says nothing when a pause pulled the waiting prompt back, and the row shows the prompt as not sent', async () => {
+        // The hub answers with the task afterwards: the prompt is no longer pending and will be sent again on resume.
+        const hub = fakeHub({ tasks: [task({ kind: 'queue', items: [{ text: 'a' }, { text: 'b' }], runCount: 2, totalRuns: 2, pending: true, nextRunAt: null })], pausePullsBack: true })
+        const answerUpdate = deferResponse(hub.api.updateSessionTask)
+        mount(hub, true)
+        await screen.findByRole('listitem')
+        expect(screen.getByRole('listitem').textContent).toContain('Sent, waiting')
+
+        fireEvent.click(screen.getByRole('button', { name: 'Pause task' }))
+        await waitFor(() => expect(hub.api.updateSessionTask).toHaveBeenCalledWith('session-1', 'task-1', { paused: true }))
+        await act(async () => {
+            answerUpdate()
+            await Promise.resolve()
+        })
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Resume task' })).not.toBeDisabled())
+        // Pulled back: the row counts one send less, so the prompt is the one to go out next; nothing is claimed out loud.
+        expect(screen.getByTestId('toasts').textContent).toBe('')
+        expect(screen.getByRole('listitem').querySelector('span.line-clamp-2')?.textContent).toBe('b')
+    })
+
+    it('says that the prompt will still be sent when a pause could not pull it back', async () => {
+        const hub = fakeHub({ tasks: [task({ kind: 'queue', items: [{ text: 'a' }, { text: 'b' }], runCount: 1, totalRuns: 2, pending: true, nextRunAt: null })] })
+        const answerUpdate = deferResponse(hub.api.updateSessionTask)
+        mount(hub, true)
+        await screen.findByRole('listitem')
+
+        fireEvent.click(screen.getByRole('button', { name: 'Pause task' }))
+        await waitFor(() => expect(hub.api.updateSessionTask).toHaveBeenCalledWith('session-1', 'task-1', { paused: true }))
+        // The pause took a while (the hub asked the CLI), and the row already says paused; nothing is said until the hub has.
+        expect(screen.getByRole('listitem').textContent).toContain('Paused')
+        expect(screen.getByTestId('toasts').textContent).toBe('')
+        await act(async () => {
+            answerUpdate()
+            await Promise.resolve()
+        })
+        // The hub's answer still has the prompt pending: it stays queued and goes out, which is said.
+        await waitFor(() => expect(screen.getByTestId('toasts').textContent).toBe('Paused. The prompt already in the queue could not be pulled back; it will still be sent.'))
+        expect(screen.getByRole('listitem').textContent).toContain('Paused')
+        expect(screen.getByRole('listitem').querySelector('span.line-clamp-2')?.textContent).toBe('a')
+    })
+
+    it('says nothing of a kept prompt on a resume, whatever the hub answers', async () => {
+        const hub = fakeHub({ tasks: [task({ state: 'paused', nextRunAt: null })] })
+        hub.api.updateSessionTask.mockImplementation(async () => ({ task: task({ state: 'active', pending: true, runCount: 1, nextRunAt: null }) }))
+        mount(hub, true)
+        await screen.findByRole('listitem')
+        fireEvent.click(screen.getByRole('button', { name: 'Resume task' }))
+        await waitFor(() => expect(hub.api.updateSessionTask).toHaveBeenCalledWith('session-1', 'task-1', { paused: false }))
+        await act(async () => { await Promise.resolve() })
+        await act(async () => { await Promise.resolve() })
+        expect(screen.getByTestId('toasts').textContent).toBe('')
+    })
+
     it('drops the stale error of a resumed task before the hub answers', async () => {
         const hub = fakeHub({ tasks: [task({ state: 'paused', nextRunAt: null, lastError: 'session_unavailable' })] })
         const answerUpdate = deferResponse(hub.api.updateSessionTask)
@@ -447,10 +526,28 @@ describe('SessionTasksBar', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Delete task' }))
         fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
         await waitFor(() => expect(screen.getByTestId('toasts').textContent).toBe(
-            'Task deleted, but its pending prompt could not be cancelled. Retry or discard it in the queued messages.'
+            'Task deleted, but its prompt is still in the queue: the cancel could not be confirmed. Retry or discard it in the queued messages.'
         ))
         await waitFor(() => expect(screen.queryByRole('listitem')).toBeNull())
         expect(unconfirmed.api.deleteSessionTask).toHaveBeenCalledWith('session-1', 'task-9')
+    })
+
+    it('says that the waiting prompt was pulled back when the hub confirms the cancel', async () => {
+        setup({ tasks: [task({ pending: true, runCount: 1 })], deleteResult: { ok: true, prompt: 'cancelled' } })
+        await screen.findByRole('listitem')
+        fireEvent.click(screen.getByRole('button', { name: 'Delete task' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+        await waitFor(() => expect(screen.getByTestId('toasts').textContent).toBe('Task deleted. The prompt that was still waiting has been pulled back.'))
+        await waitFor(() => expect(screen.queryByRole('listitem')).toBeNull())
+    })
+
+    it('says of a task that had no prompt out simply that it is deleted and will not send again', async () => {
+        setup({ tasks: [task()], deleteResult: { ok: true, prompt: 'none' } })
+        await screen.findByRole('listitem')
+        fireEvent.click(screen.getByRole('button', { name: 'Delete task' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+        await waitFor(() => expect(screen.getByTestId('toasts').textContent).toBe('Task deleted. It will not send again.'))
+        await waitFor(() => expect(screen.queryByRole('listitem')).toBeNull())
     })
 
     it('keeps a task deleted when the delete answers 404 although the refetch fails', async () => {
@@ -470,7 +567,7 @@ describe('SessionTasksBar', () => {
         await screen.findByRole('listitem')
         fireEvent.click(screen.getByRole('button', { name: 'Delete task' }))
         fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
-        await waitFor(() => expect(screen.getByTestId('toasts').textContent).toBe('Task deleted. The agent had already taken its prompt.'))
+        await waitFor(() => expect(screen.getByTestId('toasts').textContent).toBe('Task deleted. The agent had already taken its prompt and will run it.'))
     })
 
     it('shows a failed load with a retry instead of a silent empty bar', async () => {
@@ -766,201 +863,28 @@ describe('SessionTasksBar', () => {
         await waitFor(() => expect(screen.queryByRole('listitem')).toBeNull())
     })
 
-    it('shows the runs behind the History toggle, each with its outcome', async () => {
-        const now = Date.now()
-        const { api } = setup({
-            tasks: [task()],
-            runs: [
-                run({ id: 'r5', recordedAt: now - MINUTE, runNumber: 3, preview: 'third' }),
-                run({ id: 'r4', recordedAt: now - 2 * MINUTE, runNumber: 2, takenAt: now - 90_000, preview: 'second' }),
-                run({ id: 'r3', recordedAt: now - 3 * MINUTE, outcome: 'skipped', detail: 'previous_prompt_waiting', runNumber: null, preview: null, taskKind: 'repeat' }),
-                run({ id: 'r2', recordedAt: now - 4 * MINUTE, outcome: 'failed', detail: 'machine_offline', runNumber: null, preview: null }),
-                run({ id: 'r1', recordedAt: now - 5 * MINUTE, outcome: 'cancelled', runNumber: 1, preview: 'first' })
-            ]
-        })
-        // The runs load with the bar but stay hidden until asked for.
-        await waitFor(() => expect(api.listSessionTaskRuns).toHaveBeenCalledWith('session-1', 50))
-        const toggle = await screen.findByRole('button', { name: 'History' })
-        expect(toggle).toHaveAttribute('aria-pressed', 'false')
-        expect(screen.queryByRole('list', { name: 'History' })).toBeNull()
-
-        fireEvent.click(toggle)
-        const history = await screen.findByRole('list', { name: 'History' })
-        expect(toggle).toHaveAttribute('aria-pressed', 'true')
-        const entries = within(history).getAllByRole('listitem')
-        expect(entries).toHaveLength(5)
-        expect(entries[0].textContent).toContain('third')
-        expect(entries[0].textContent).toContain('Sent, waiting for the agent')
-        expect(entries[1].textContent).toContain('Taken by the agent')
-        expect(entries[1].textContent).toContain('second')
-        expect(entries[2].textContent).toContain('Skipped: the previous prompt was still waiting')
-        expect(entries[2].textContent).toContain('Repeat')
-        expect(entries[3].textContent).toContain('Failed: the machine was offline')
-        expect(entries[4].textContent).toContain('Cancelled')
-        expect(entries[4].textContent).toContain('Queue #1')
-
-        fireEvent.click(toggle)
-        await waitFor(() => expect(screen.queryByRole('list', { name: 'History' })).toBeNull())
-    })
-
-    it('gives a failed run in the history the reason it failed, not the row\'s sentence for a task still held up', async () => {
-        const now = Date.now()
-        setup({
-            tasks: [task({ lastError: 'session_unavailable' })],
-            runs: [
-                run({ id: 'r4', recordedAt: now - MINUTE, outcome: 'failed', detail: 'send_failed', runNumber: null, preview: null }),
-                run({ id: 'r3', recordedAt: now - 2 * MINUTE, outcome: 'failed', detail: 'session_archived', runNumber: null, preview: null }),
-                run({ id: 'r2', recordedAt: now - 3 * MINUTE, outcome: 'failed', detail: 'session_unavailable', runNumber: null, preview: null }),
-                run({ id: 'r1', recordedAt: now - 4 * MINUTE, outcome: 'failed', detail: 'machine_offline', runNumber: null, preview: null })
-            ]
-        })
-        // The row is about a task that is still trying, so it says what it is waiting for.
-        const row = await screen.findByRole('listitem')
-        expect(row.textContent).toContain('The session cannot be resumed right now; retrying')
-
-        fireEvent.click(screen.getByRole('button', { name: 'History' }))
-        const history = await screen.findByRole('list', { name: 'History' })
-        const entries = within(history).getAllByRole('listitem')
-        expect(entries.map((entry) => entry.textContent)).toEqual([
-            expect.stringContaining('Failed: the send failed'),
-            expect.stringContaining('Failed: the session was archived'),
-            expect.stringContaining('Failed: the session could not be resumed'),
-            expect.stringContaining('Failed: the machine was offline')
-        ])
-        // A run is over: nothing of "retrying" or of what the task does once the machine is back.
-        expect(history.textContent).not.toContain('retrying')
-        expect(history.textContent).not.toContain('Sends once the machine is back online')
-        expect(history.textContent).not.toContain('nothing runs until it is reopened')
-    })
-
-    it('keeps the bar for the history alone once the last task is gone', async () => {
-        setup({ tasks: [], runs: [run()] })
-        fireEvent.click(await screen.findByRole('button', { name: 'History' }))
-        const history = await screen.findByRole('list', { name: 'History' })
-        expect(within(history).getAllByRole('listitem')).toHaveLength(1)
-        expect(screen.queryByRole('list', { name: 'Tasks' })).toBeNull()
-    })
-
-    it('says when there are no runs yet, or when the history could not be loaded', async () => {
-        setup({ tasks: [task()], runs: [] })
-        fireEvent.click(await screen.findByRole('button', { name: 'History' }))
-        expect(await screen.findByText('No runs recorded yet.')).toBeTruthy()
-
-        cleanup()
-        setup({ tasks: [task()], historyError: new ApiError('HTTP 502 Bad Gateway', 502) })
-        fireEvent.click(await screen.findByRole('button', { name: 'History' }))
-        const alert = await screen.findByRole('alert', {}, { timeout: 6000 })
-        expect(within(alert).getByText('The history could not be loaded.')).toBeTruthy()
-        expect(screen.queryByText('No runs recorded yet.')).toBeNull()
-    })
-
-    it('retries a failed history load, like a failed task list', async () => {
-        const { api } = setup({ tasks: [task()], historyError: new ApiError('HTTP 502 Bad Gateway', 502) })
-        fireEvent.click(await screen.findByRole('button', { name: 'History' }))
-        const alert = await screen.findByRole('alert', {}, { timeout: 6000 })
-        // The query's own policy tried the 5xx twice more before the bar gave up.
-        expect(api.listSessionTaskRuns).toHaveBeenCalledTimes(3)
-
-        vi.mocked(api.listSessionTaskRuns).mockResolvedValue({ runs: [run()] })
-        fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }))
-        const history = await screen.findByRole('list', { name: 'History' })
-        expect(within(history).getAllByRole('listitem')).toHaveLength(1)
-        expect(history.textContent).toContain('first prompt')
-        expect(screen.queryByRole('alert')).toBeNull()
-        expect(api.listSessionTaskRuns).toHaveBeenCalledTimes(4)
-    })
-
-    it('offers neither History, Edit nor Run now on a hub that has no history route', async () => {
-        const { api } = setup({ tasks: [task()], historyError: new ApiError('HTTP 404 Not Found: {"error":"Not Found"}', 404) })
-        await waitFor(() => expect(api.listSessionTaskRuns).toHaveBeenCalled())
-        await waitFor(() => expect(screen.queryByRole('button', { name: 'History' })).toBeNull())
-        const row = screen.getByRole('listitem')
-        // The three controls that need the later routes are not offered where they cannot work...
-        expect(within(row).queryByRole('button', { name: 'Edit task' })).toBeNull()
-        expect(within(row).queryByRole('button', { name: 'Run now' })).toBeNull()
-        // ...while the task and its pause and delete stay.
-        expect(row.textContent).toContain('check progress')
-        expect(within(row).getByRole('button', { name: 'Pause task' })).toBeTruthy()
-        expect(within(row).getByRole('button', { name: 'Delete task' })).toBeTruthy()
-        // Not an error: there is nothing to retry, and nothing to say.
-        expect(screen.queryByRole('alert')).toBeNull()
-        expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
-    })
-
-    it('offers Run now, Edit and History only once the hub has said whether it has the history route', async () => {
+    it('offers Run now and Edit without asking the history route, and never asks for it', async () => {
+        // The runs are the clock panel's; the bar no longer learns anything from the history route, so a hub
+        // that answers it with 404 changes nothing here, and no request is spent on a session's open.
         const hub = fakeHub({ tasks: [task()] })
-        let answerHistory!: () => void
-        hub.api.listSessionTaskRuns.mockImplementation(() => new Promise((resolve) => {
-            answerHistory = () => resolve({ runs: [] })
-        }))
-        mount(hub)
-        // The task list is in while the history request is still out: the row shows, without the controls that need the route.
-        const row = await screen.findByRole('listitem')
-        expect(within(row).getByRole('button', { name: 'Pause task' })).toBeTruthy()
-        expect(within(row).getByRole('button', { name: 'Delete task' })).toBeTruthy()
-        expect(within(row).queryByRole('button', { name: 'Run now' })).toBeNull()
-        expect(within(row).queryByRole('button', { name: 'Edit task' })).toBeNull()
-        expect(screen.queryByRole('button', { name: 'History' })).toBeNull()
-
-        // Shown at once, they would appear and vanish again on a hub without the route; a hub that has it gets them once.
-        await act(async () => {
-            answerHistory()
-            await Promise.resolve()
-        })
-        await waitFor(() => expect(within(row).getByRole('button', { name: 'Run now' })).toBeTruthy())
-        expect(within(row).getByRole('button', { name: 'Edit task' })).toBeTruthy()
-        expect(screen.getByRole('button', { name: 'History' })).toBeTruthy()
-    })
-
-    it('never shows Run now, Edit or History on a hub that answers the history request with 404, not even for a frame', async () => {
-        const hub = fakeHub({ tasks: [task()] })
-        let refuseHistory!: () => void
-        hub.api.listSessionTaskRuns.mockImplementation(() => new Promise((_resolve, reject) => {
-            refuseHistory = () => reject(new ApiError('HTTP 404 Not Found: {"error":"Not Found"}', 404))
-        }))
-        mount(hub)
-        const row = await screen.findByRole('listitem')
-        expect(within(row).queryByRole('button', { name: 'Run now' })).toBeNull()
-        expect(within(row).queryByRole('button', { name: 'Edit task' })).toBeNull()
-        expect(screen.queryByRole('button', { name: 'History' })).toBeNull()
-
-        await act(async () => {
-            refuseHistory()
-            await Promise.resolve()
-        })
-        await act(async () => { await Promise.resolve() })
-        expect(within(row).queryByRole('button', { name: 'Run now' })).toBeNull()
-        expect(screen.queryByRole('button', { name: 'History' })).toBeNull()
-        expect(within(row).getByRole('button', { name: 'Pause task' })).toBeTruthy()
-    })
-
-    it('keeps Run now, Edit and History hidden on a hub without the route while its history is asked for again', async () => {
-        const notFound = new ApiError('HTTP 404 Not Found: {"error":"Not Found"}', 404)
-        const hub = fakeHub({ tasks: [task()], historyError: notFound })
+        hub.api.listSessionTaskRuns.mockRejectedValue(new ApiError('HTTP 404 Not Found: {"error":"Not Found"}', 404))
         const { queryClient } = mount(hub)
-        await screen.findByRole('listitem')
-        await waitFor(() => expect(hub.api.listSessionTaskRuns).toHaveBeenCalled())
-        await waitFor(() => expect(screen.queryByRole('button', { name: 'History' })).toBeNull())
+        const row = await screen.findByRole('listitem')
+        expect(within(row).getByRole('button', { name: 'Run now' })).toBeTruthy()
+        expect(within(row).getByRole('button', { name: 'Edit task' })).toBeTruthy()
+        expect(within(row).getByRole('button', { name: 'Pause task' })).toBeTruthy()
+        expect(within(row).getByRole('button', { name: 'Delete task' })).toBeTruthy()
 
-        // Every task change and SSE resync asks again. The refetch clears the query's error until the
-        // answer comes, which must not bring the controls back for that moment.
-        let refuseAgain!: () => void
-        hub.api.listSessionTaskRuns.mockImplementation(() => new Promise((_resolve, reject) => {
-            refuseAgain = () => reject(notFound)
-        }))
+        // Every task change and SSE resync asks for the list again; the history stays out of it.
         await act(async () => {
             void queryClient.invalidateQueries({ queryKey: ['session-tasks', 'session-1'] })
             await Promise.resolve()
         })
-        await waitFor(() => expect(hub.api.listSessionTaskRuns).toHaveBeenCalledTimes(2))
+        await waitFor(() => expect(hub.api.listSessionTasks).toHaveBeenCalledTimes(2))
+        await act(async () => { await Promise.resolve() })
+        expect(hub.api.listSessionTaskRuns).not.toHaveBeenCalled()
         expect(screen.queryByRole('button', { name: 'History' })).toBeNull()
-        expect(within(screen.getByRole('listitem')).queryByRole('button', { name: 'Edit task' })).toBeNull()
-
-        await act(async () => {
-            refuseAgain()
-            await Promise.resolve()
-        })
-        expect(screen.queryByRole('button', { name: 'History' })).toBeNull()
+        expect(screen.queryByRole('alert')).toBeNull()
     })
 
     it('says why when the hub refuses to resume a task because the session already holds too many active tasks', async () => {

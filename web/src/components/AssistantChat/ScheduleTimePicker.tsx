@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 import type { CreateSessionTaskRequest, PermissionMode } from '@hapi/protocol'
+import type { ApiClient } from '@/api/client'
+import { useSessionTaskHistory } from '@/hooks/queries/useSessionTasks'
 import { useTranslation } from '@/lib/use-translation'
 import {
     EMPTY_QUEUE_DRAFT,
@@ -8,11 +10,19 @@ import {
     type RepeatTaskDraft
 } from '@/lib/sessionTasks'
 import { QueueTaskForm, RepeatTaskForm, type CreateTaskFromForm } from './SessionTaskForms'
+import { TEXT_BUTTON_CLASS } from './SessionTaskFields'
+import { SessionTaskHistory } from './SessionTaskHistory'
 
 /** Repeat / queue form text, owned outside the panel so closing it loses nothing. */
 export type SessionTaskDrafts = { repeat: RepeatTaskDraft; queue: QueueTaskDraft }
 
 export const EMPTY_SESSION_TASK_DRAFTS: SessionTaskDrafts = { repeat: EMPTY_REPEAT_DRAFT, queue: EMPTY_QUEUE_DRAFT }
+
+/**
+ * Where the panel reads the run history: the session's tasks' runs, from the
+ * hub the task bar talks to as well.
+ */
+export type SessionTaskHistorySource = { api: ApiClient | null; sessionId: string }
 
 /**
  * Lets the panel create repeat and queue tasks besides one-shot scheduled
@@ -30,6 +40,8 @@ export type SessionTaskPickerBridge = {
     onDraftsChange: (update: (previous: SessionTaskDrafts) => SessionTaskDrafts) => void
     /** The session's stored permission mode, which the task's prompts run with; the forms say so where it does not ask first. */
     permissionMode?: PermissionMode
+    /** Adds History to the panel's header: the runs of the session's tasks, finished or deleted ones included. */
+    history?: SessionTaskHistorySource
 }
 
 /** Desktop keyboards get focus moved into the panel; a finger never opened a keyboard to begin with. */
@@ -201,13 +213,67 @@ interface ScheduleTimePickerProps {
 
 type PickerMode = 'send' | 'repeat' | 'queue'
 
+/**
+ * The header's History toggle. Hidden once the hub has answered the history
+ * route with 404: nothing behind it could work. The runs themselves are asked
+ * for only while the view is open, so on such a hub the first open is what
+ * finds out, and the view falls back to the forms at once.
+ */
+function ScheduleTaskHistoryToggle({ history, open, disabled, onToggle }: {
+    history: SessionTaskHistorySource
+    open: boolean
+    disabled: boolean
+    onToggle: () => void
+}) {
+    const { t } = useTranslation()
+    const { unsupported } = useSessionTaskHistory(history.api, history.sessionId, open)
+    if (unsupported) return null
+    return (
+        <button
+            type="button"
+            aria-pressed={open}
+            disabled={disabled}
+            onClick={onToggle}
+            className={`${TEXT_BUTTON_CLASS} text-[var(--app-hint)] hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)]`}
+        >
+            {t('tasks.history')}
+        </button>
+    )
+}
+
+/** The runs, in place of the forms; fetched while shown, and shown alone. */
+function ScheduleTaskHistoryView({ history, onUnsupported }: {
+    history: SessionTaskHistorySource
+    /** The hub has no history route: the view has nothing to show and gives way to the forms. */
+    onUnsupported: () => void
+}) {
+    const { runs, isLoading, error, unsupported, refetch } = useSessionTaskHistory(history.api, history.sessionId, true)
+    useEffect(() => {
+        if (unsupported) onUnsupported()
+    }, [unsupported, onUnsupported])
+    return (
+        <div className="max-h-64 overflow-y-auto px-3 pb-3">
+            <SessionTaskHistory
+                runs={runs}
+                isLoading={isLoading}
+                error={error}
+                onRetry={() => { void refetch() }}
+            />
+        </div>
+    )
+}
+
 export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSchedule, tasks }: ScheduleTimePickerProps) {
     const { t } = useTranslation()
     const [mode, setMode] = useState<PickerMode>('send')
     const [tab, setTab] = useState<'relative' | 'specific'>('relative')
     const [specificValue, setSpecificValue] = useState('')
     const [specificError, setSpecificError] = useState<string | null>(null)
+    // The runs replace the forms while open. The state lives here, so closing the panel forgets it.
+    const [historyOpen, setHistoryOpen] = useState(false)
     const panelRef = useRef<HTMLDivElement>(null)
+    // The first control of the panel's body, which is where the keyboard is taken: the header's History toggle comes first in the DOM.
+    const bodyRef = useRef<HTMLDivElement>(null)
     const [pos, setPos] = useState<SchedulePickerPlacement | null>(null)
     const [isMobilePanel, setIsMobilePanel] = useState(false)
     const [isContentConstrained, setIsContentConstrained] = useState(false)
@@ -236,7 +302,7 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
         if (focusMovedRef.current || !prefersKeyboardFocus()) return
         if (!isMobilePanel && pos === null) return
         focusMovedRef.current = true
-        panelRef.current?.querySelector<HTMLElement>('button')?.focus()
+        bodyRef.current?.querySelector<HTMLElement>('button')?.focus()
     }, [pos, isMobilePanel])
     const close = useCallback(() => {
         const panel = panelRef.current
@@ -302,8 +368,9 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
             window.visualViewport?.removeEventListener('scroll', measure)
             resizeObserver?.disconnect()
         }
-    // anchorRef is a useRef object — stable identity, so this effect runs once on mount.
-    }, [anchorRef, tab, mode])
+    // anchorRef is a useRef object — stable identity, so this effect runs once on mount,
+    // and again when the content swaps (a mode, a tab, the history for the forms).
+    }, [anchorRef, tab, mode, historyOpen])
 
     // Click-outside closes the panel.
     //
@@ -395,144 +462,163 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
             }
             onPointerDown={(e) => e.stopPropagation()}
         >
-            {/* Header */}
-            <div className="px-3 pt-3 pb-2">
-                <p className="text-xs font-semibold text-[var(--app-hint)]">
+            {/* Header: the mode's name, and History where the hub has it */}
+            <div className="flex items-center gap-2 px-3 pt-3 pb-2">
+                <p className="flex-1 text-xs font-semibold text-[var(--app-hint)]">
                     {t(mode === 'send' ? 'composer.scheduleSend' : PICKER_MODE_LABEL[mode])}
                 </p>
+                {tasks?.history ? (
+                    <ScheduleTaskHistoryToggle
+                        history={tasks.history}
+                        open={historyOpen}
+                        disabled={creating > 0}
+                        onToggle={() => setHistoryOpen((open) => !open)}
+                    />
+                ) : null}
             </div>
 
-            {tasks ? (
-                /* Mode switch: scheduled send, or a task the hub keeps running. */
-                <div className="flex px-3 gap-1 mb-2">
-                    {PICKER_MODES.map((candidate) => (
-                        <button
-                            key={candidate}
-                            type="button"
-                            aria-pressed={mode === candidate}
-                            disabled={creating > 0}
-                            onClick={() => setMode(candidate)}
-                            className={`flex-1 rounded-md px-2 py-1 text-xs font-medium transition-colors ${
-                                mode === candidate
-                                    ? 'bg-[var(--app-secondary-bg)] text-[var(--app-fg)]'
-                                    : 'text-[var(--app-hint)] hover:text-[var(--app-fg)]'
-                            }`}
-                        >
-                            {t(PICKER_MODE_LABEL[candidate])}
-                        </button>
-                    ))}
-                </div>
-            ) : null}
-
-            {mode === 'send' ? (
-            <>
-            {/* Tab buttons */}
-            <div className="flex px-3 gap-1 mb-2">
-                <button
-                    type="button"
-                    onClick={() => setTab('relative')}
-                    className={`flex-1 rounded-md px-2 py-1 text-xs font-medium transition-colors ${
-                        tab === 'relative'
-                            ? 'bg-[var(--app-secondary-bg)] text-[var(--app-fg)]'
-                            : 'text-[var(--app-hint)] hover:text-[var(--app-fg)]'
-                    }`}
-                >
-                    {t('composer.scheduleRelativeTab')}
-                </button>
-                <button
-                    type="button"
-                    onClick={() => setTab('specific')}
-                    className={`flex-1 rounded-md px-2 py-1 text-xs font-medium transition-colors ${
-                        tab === 'specific'
-                            ? 'bg-[var(--app-secondary-bg)] text-[var(--app-fg)]'
-                            : 'text-[var(--app-hint)] hover:text-[var(--app-fg)]'
-                    }`}
-                >
-                    {t('composer.scheduleSpecificTab')}
-                </button>
-            </div>
-
-            {/* Tab content */}
-            <div className="px-3 pb-3">
-                {tab === 'relative' ? (
-                    <div className="grid grid-cols-2 gap-1.5">
-                        {PRESETS.map((preset) => {
-                            const isSelected = pendingSchedule?.type === 'preset' && pendingSchedule.preset === preset
-                            return (
-                                <button
-                                    key={preset}
-                                    type="button"
-                                    onClick={() => handlePresetClick(preset)}
-                                    className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
-                                        isSelected
-                                            ? 'border-blue-500 bg-blue-500 text-white'
-                                            : 'border-[var(--app-border)] text-[var(--app-fg)] hover:bg-[var(--app-secondary-bg)] hover:border-[var(--app-link)]'
-                                    }`}
-                                >
-                                    {preset}
-                                </button>
-                            )
-                        })}
-                    </div>
+            <div ref={bodyRef}>
+                {historyOpen && tasks?.history ? (
+                    <ScheduleTaskHistoryView
+                        history={tasks.history}
+                        onUnsupported={() => setHistoryOpen(false)}
+                    />
                 ) : (
-                    <div className="flex flex-col gap-2">
-                        <input
-                            type="datetime-local"
-                            value={specificValue}
-                            min={minDatetimeLocal}
-                            max={maxDatetimeLocal}
-                            onChange={(e) => handleSpecificChange(e.target.value)}
-                            onKeyDown={handleSpecificKeyDown}
-                            className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm text-[var(--app-fg)] focus:outline-none focus:ring-1 focus:ring-[var(--app-link)]"
-                        />
-                        {specificError ? (
-                            <p className="text-xs text-red-500">{specificError}</p>
-                        ) : (
-                            <p className="break-words text-xs text-[var(--app-hint)]">
-                                {t('composer.scheduleSpecificHint')}
-                            </p>
-                        )}
-                        <button
-                            type="button"
-                            disabled={!specificValue}
-                            onClick={handleSpecificSubmit}
-                            className="w-full rounded-lg bg-blue-500 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-40"
-                        >
-                            {t('composer.scheduleSend')}
-                        </button>
+                <>
+                {tasks ? (
+                    /* Mode switch: scheduled send, or a task the hub keeps running. */
+                    <div className="flex px-3 gap-1 mb-2">
+                        {PICKER_MODES.map((candidate) => (
+                            <button
+                                key={candidate}
+                                type="button"
+                                aria-pressed={mode === candidate}
+                                disabled={creating > 0}
+                                onClick={() => setMode(candidate)}
+                                className={`flex-1 rounded-md px-2 py-1 text-xs font-medium transition-colors ${
+                                    mode === candidate
+                                        ? 'bg-[var(--app-secondary-bg)] text-[var(--app-fg)]'
+                                        : 'text-[var(--app-hint)] hover:text-[var(--app-fg)]'
+                                }`}
+                            >
+                                {t(PICKER_MODE_LABEL[candidate])}
+                            </button>
+                        ))}
                     </div>
+                ) : null}
+    
+                {mode === 'send' ? (
+                <>
+                {/* Tab buttons */}
+                <div className="flex px-3 gap-1 mb-2">
+                    <button
+                        type="button"
+                        onClick={() => setTab('relative')}
+                        className={`flex-1 rounded-md px-2 py-1 text-xs font-medium transition-colors ${
+                            tab === 'relative'
+                                ? 'bg-[var(--app-secondary-bg)] text-[var(--app-fg)]'
+                                : 'text-[var(--app-hint)] hover:text-[var(--app-fg)]'
+                        }`}
+                    >
+                        {t('composer.scheduleRelativeTab')}
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => setTab('specific')}
+                        className={`flex-1 rounded-md px-2 py-1 text-xs font-medium transition-colors ${
+                            tab === 'specific'
+                                ? 'bg-[var(--app-secondary-bg)] text-[var(--app-fg)]'
+                                : 'text-[var(--app-hint)] hover:text-[var(--app-fg)]'
+                        }`}
+                    >
+                        {t('composer.scheduleSpecificTab')}
+                    </button>
+                </div>
+    
+                {/* Tab content */}
+                <div className="px-3 pb-3">
+                    {tab === 'relative' ? (
+                        <div className="grid grid-cols-2 gap-1.5">
+                            {PRESETS.map((preset) => {
+                                const isSelected = pendingSchedule?.type === 'preset' && pendingSchedule.preset === preset
+                                return (
+                                    <button
+                                        key={preset}
+                                        type="button"
+                                        onClick={() => handlePresetClick(preset)}
+                                        className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+                                            isSelected
+                                                ? 'border-blue-500 bg-blue-500 text-white'
+                                                : 'border-[var(--app-border)] text-[var(--app-fg)] hover:bg-[var(--app-secondary-bg)] hover:border-[var(--app-link)]'
+                                        }`}
+                                    >
+                                        {preset}
+                                    </button>
+                                )
+                            })}
+                        </div>
+                    ) : (
+                        <div className="flex flex-col gap-2">
+                            <input
+                                type="datetime-local"
+                                value={specificValue}
+                                min={minDatetimeLocal}
+                                max={maxDatetimeLocal}
+                                onChange={(e) => handleSpecificChange(e.target.value)}
+                                onKeyDown={handleSpecificKeyDown}
+                                className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm text-[var(--app-fg)] focus:outline-none focus:ring-1 focus:ring-[var(--app-link)]"
+                            />
+                            {specificError ? (
+                                <p className="text-xs text-red-500">{specificError}</p>
+                            ) : (
+                                <p className="break-words text-xs text-[var(--app-hint)]">
+                                    {t('composer.scheduleSpecificHint')}
+                                </p>
+                            )}
+                            <button
+                                type="button"
+                                disabled={!specificValue}
+                                onClick={handleSpecificSubmit}
+                                className="w-full rounded-lg bg-blue-500 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                                {t('composer.scheduleSend')}
+                            </button>
+                        </div>
+                    )}
+                </div>
+                </>
+                ) : (
+                    <div className="px-3 pb-3">
+                        {mode === 'repeat' && tasks ? (
+                            <RepeatTaskForm
+                                draft={tasks.drafts.repeat}
+                                onDraftChange={(repeat) => tasks.onDraftsChange((previous) => ({ ...previous, repeat }))}
+                                composerDraft={tasks.composerDraft}
+                                createTask={createTask}
+                                permissionMode={tasks.permissionMode}
+                                onCreated={() => {
+                                    tasks.onDraftsChange((previous) => ({ ...previous, repeat: EMPTY_REPEAT_DRAFT }))
+                                    close()
+                                }}
+                            />
+                        ) : mode === 'queue' && tasks ? (
+                            <QueueTaskForm
+                                draft={tasks.drafts.queue}
+                                composerDraft={tasks.composerDraft}
+                                onDraftChange={(queue) => tasks.onDraftsChange((previous) => ({ ...previous, queue }))}
+                                createTask={createTask}
+                                permissionMode={tasks.permissionMode}
+                                onCreated={() => {
+                                    tasks.onDraftsChange((previous) => ({ ...previous, queue: EMPTY_QUEUE_DRAFT }))
+                                    close()
+                                }}
+                            />
+                            ) : null}
+                        </div>
+                    )}
+                    </>
                 )}
             </div>
-            </>
-            ) : (
-                <div className="px-3 pb-3">
-                    {mode === 'repeat' && tasks ? (
-                        <RepeatTaskForm
-                            draft={tasks.drafts.repeat}
-                            onDraftChange={(repeat) => tasks.onDraftsChange((previous) => ({ ...previous, repeat }))}
-                            composerDraft={tasks.composerDraft}
-                            createTask={createTask}
-                            permissionMode={tasks.permissionMode}
-                            onCreated={() => {
-                                tasks.onDraftsChange((previous) => ({ ...previous, repeat: EMPTY_REPEAT_DRAFT }))
-                                close()
-                            }}
-                        />
-                    ) : mode === 'queue' && tasks ? (
-                        <QueueTaskForm
-                            draft={tasks.drafts.queue}
-                            composerDraft={tasks.composerDraft}
-                            onDraftChange={(queue) => tasks.onDraftsChange((previous) => ({ ...previous, queue }))}
-                            createTask={createTask}
-                            permissionMode={tasks.permissionMode}
-                            onCreated={() => {
-                                tasks.onDraftsChange((previous) => ({ ...previous, queue: EMPTY_QUEUE_DRAFT }))
-                                close()
-                            }}
-                        />
-                    ) : null}
-                </div>
-            )}
         </div>
-    )
+        )
 }

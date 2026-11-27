@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import type { SessionTask, UpdateSessionTaskRequest } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
-import { isSessionTaskGone, useSessionTaskHistory, useSessionTaskMutations, useSessionTasks } from '@/hooks/queries/useSessionTasks'
+import { isSessionTaskGone, useSessionTaskMutations, useSessionTasks } from '@/hooks/queries/useSessionTasks'
 import { formatTaskInterval, formatTaskIntervalCount, taskStatus } from '@/lib/sessionTasks'
 import { useOptionalAddToast } from '@/lib/toast-context'
 import { useTranslation } from '@/lib/use-translation'
-import { SessionTaskHistory } from './SessionTaskHistory'
 import { SessionTaskInlineEditor } from './SessionTaskInlineEditor'
 import { taskRequestErrorMessage, TEXT_BUTTON_CLASS } from './SessionTaskFields'
 
@@ -95,14 +94,12 @@ export function taskCadenceLabel(task: SessionTask, t: Translate): string {
     return t(task.kind === 'queue' ? 'tasks.gap' : 'tasks.every', { interval })
 }
 
-function SessionTaskRow({ task, mutations, editing, onEditChange, hasRunHistory }: {
+function SessionTaskRow({ task, mutations, editing, onEditChange }: {
     task: SessionTask
     mutations: ReturnType<typeof useSessionTaskMutations>
     editing: boolean
     /** Names the row to edit, or none. Only one editor is open at a time. */
     onEditChange: (taskId: string | null) => void
-    /** The hub has the history route, and with it "Run now" and "Edit"; a hub without them gets neither. */
-    hasRunHistory: boolean
 }) {
     const { t } = useTranslation()
     const addToast = useOptionalAddToast()
@@ -127,10 +124,12 @@ function SessionTaskRow({ task, mutations, editing, onEditChange, hasRunHistory 
     const confirmDelete = () => {
         setConfirming(false)
         mutations.deleteTask.mutate(task.id, {
+            // The row leaves on its own; what became of a prompt the task had out is said, every time.
             onSuccess: (result) => {
-                // The prompt the agent had not taken: say when it could not be pulled back.
-                if (result.prompt === 'unconfirmed') toast(t('tasks.deleteUnconfirmed'))
-                else if (result.prompt === 'taken') toast(t('tasks.deletePromptTaken'))
+                if (result.prompt === 'none') toast(t('tasks.deleted'))
+                else if (result.prompt === 'cancelled') toast(t('tasks.deletedPromptCancelled'))
+                else if (result.prompt === 'unconfirmed') toast(t('tasks.deleteUnconfirmed'))
+                else toast(t('tasks.deletePromptTaken'))
             },
             onError: (error) => {
                 // A 404 means the task is gone, which the row shows by leaving.
@@ -245,6 +244,12 @@ function SessionTaskRow({ task, mutations, editing, onEditChange, hasRunHistory 
                             title={t(paused ? 'tasks.resume' : 'tasks.pause')}
                             disabled={busy}
                             onClick={() => mutations.setPaused.mutate({ taskId: task.id, paused: !paused }, {
+                                // A pause tries to pull a waiting prompt back and may take a few seconds. The hub's
+                                // answer is the task afterwards: with the prompt still pending, it stays queued and
+                                // will be sent, which is said here; pulled back, the row simply stops waiting.
+                                onSuccess: (answer) => {
+                                    if (!paused && answer.pending) toast(t('tasks.pausedPromptKept'))
+                                },
                                 // A refusal flips the row back; say so, with the hub's reason where it gave one
                                 // (a resume counts against the cap, and can be refused as too_many_tasks).
                                 // A 404 means the task is gone, which the row shows by leaving.
@@ -257,34 +262,30 @@ function SessionTaskRow({ task, mutations, editing, onEditChange, hasRunHistory 
                         >
                             {paused ? <PlayIcon /> : <PauseIcon />}
                         </button>
-                        {hasRunHistory ? (
-                            <>
-                                <button
-                                    type="button"
-                                    aria-label={t('tasks.runNow')}
-                                    title={runNowTitle}
-                                    disabled={busy || task.pending}
-                                    onClick={runNow}
-                                    onMouseDown={(e) => e.preventDefault()}
-                                    className={ICON_BUTTON_CLASS}
-                                >
-                                    <RunNowIcon />
-                                </button>
-                                <button
-                                    ref={editButtonRef}
-                                    type="button"
-                                    aria-label={t('tasks.edit')}
-                                    title={t('tasks.edit')}
-                                    aria-expanded={editing}
-                                    disabled={busy}
-                                    onClick={() => (editing ? stopEditing(false) : onEditChange(task.id))}
-                                    onMouseDown={(e) => e.preventDefault()}
-                                    className={ICON_BUTTON_CLASS}
-                                >
-                                    <EditIcon />
-                                </button>
-                            </>
-                        ) : null}
+                        <button
+                            type="button"
+                            aria-label={t('tasks.runNow')}
+                            title={runNowTitle}
+                            disabled={busy || task.pending}
+                            onClick={runNow}
+                            onMouseDown={(e) => e.preventDefault()}
+                            className={ICON_BUTTON_CLASS}
+                        >
+                            <RunNowIcon />
+                        </button>
+                        <button
+                            ref={editButtonRef}
+                            type="button"
+                            aria-label={t('tasks.edit')}
+                            title={t('tasks.edit')}
+                            aria-expanded={editing}
+                            disabled={busy}
+                            onClick={() => (editing ? stopEditing(false) : onEditChange(task.id))}
+                            onMouseDown={(e) => e.preventDefault()}
+                            className={ICON_BUTTON_CLASS}
+                        >
+                            <EditIcon />
+                        </button>
                         <button
                             ref={deleteButtonRef}
                             type="button"
@@ -300,7 +301,7 @@ function SessionTaskRow({ task, mutations, editing, onEditChange, hasRunHistory 
                     </div>
                 )}
             </div>
-            {editing && hasRunHistory ? (
+            {editing ? (
                 <SessionTaskInlineEditor task={task} save={save} onCancel={stopEditing} />
             ) : null}
         </li>
@@ -309,28 +310,20 @@ function SessionTaskRow({ task, mutations, editing, onEditChange, hasRunHistory 
 
 /**
  * The session's repeat and queue tasks, above the queued-message bar: what
- * runs next, pause / resume, run now, edit and delete per task, and the runs
- * behind a History toggle. Renders nothing on a hub without task routes, or
- * when the session has neither tasks nor runs; a failed load says so and
- * offers a retry. "Run now", Edit and History came with the history route, so
- * a hub without it shows the bar without them.
+ * runs next, pause / resume, run now, edit and delete per task. Renders
+ * nothing on a hub without task routes, while the list is loading, and once
+ * the session has no task: the runs of finished or deleted tasks are the
+ * clock panel's History, so nothing of the tasks stays here. A failed load
+ * says so and offers a retry.
  */
 export function SessionTasksBar({ api, sessionId }: { api: ApiClient | null; sessionId: string }) {
     const { t } = useTranslation()
     const { tasks, error, unsupported, refetch } = useSessionTasks(api, sessionId)
-    // The runs outlive their tasks: once the last task finishes and goes, the
-    // history is the only place that says what it did, so the bar stays for it.
-    const history = useSessionTaskHistory(api, sessionId, true)
-    // A hub that answers 404 for the runs has none of the later controls either. Until it has answered
-    // at all, they stay hidden: shown at once, they would appear and vanish again on such a hub.
-    const hasRunHistory = history.answered && !history.unsupported
     const mutations = useSessionTaskMutations(api, sessionId)
     const [editingTaskId, setEditingTaskId] = useState<string | null>(null)
-    const [historyOpen, setHistoryOpen] = useState(false)
     // The "next run" line counts down; re-render often enough for it to stay honest.
     const [, setTick] = useState(0)
     const headingId = `tasks-heading-${sessionId}`
-    const historyId = `tasks-history-${sessionId}`
     const countsDown = tasks.some((task) => task.state === 'active' && task.lastError === null && !task.pending && task.nextRunAt !== null)
 
     useEffect(() => {
@@ -348,9 +341,9 @@ export function SessionTasksBar({ api, sessionId }: { api: ApiClient | null; ses
         if (editingGone) setEditingTaskId(null)
     }, [editingGone])
 
-    // A loading history is no reason to show a header that then vanishes.
+    // Nothing to show, nothing stays: not before the first answer, and not once the last task is gone.
     if (unsupported) return null
-    if (tasks.length === 0 && !historyOpen && !error && history.runs.length === 0) return null
+    if (tasks.length === 0 && !error) return null
 
     const hasRepeat = tasks.some((task) => task.kind === 'repeat')
 
@@ -360,18 +353,6 @@ export function SessionTasksBar({ api, sessionId }: { api: ApiClient | null; ses
                 <div className="flex items-center gap-1.5 mb-1.5 text-xs font-medium text-[var(--app-hint)]">
                     <RepeatIcon />
                     <span id={headingId}>{t('tasks.title')}</span>
-                    <span className="flex-1" />
-                    {hasRunHistory ? (
-                        <button
-                            type="button"
-                            aria-pressed={historyOpen}
-                            aria-controls={historyId}
-                            onClick={() => setHistoryOpen((open) => !open)}
-                            className={`${TEXT_BUTTON_CLASS} text-[var(--app-hint)] hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)]`}
-                        >
-                            {t('tasks.history')}
-                        </button>
-                    ) : null}
                 </div>
                 {error ? (
                     <p role="alert" className="mb-1.5 flex items-center gap-2 text-xs text-[var(--app-warning-text)]">
@@ -397,7 +378,6 @@ export function SessionTasksBar({ api, sessionId }: { api: ApiClient | null; ses
                                 mutations={mutations}
                                 editing={editingTaskId === task.id}
                                 onEditChange={setEditingTaskId}
-                                hasRunHistory={hasRunHistory}
                             />
                         ))}
                     </ul>
@@ -405,16 +385,6 @@ export function SessionTasksBar({ api, sessionId }: { api: ApiClient | null; ses
                 {/* The open editor carries these rules for the task being edited; the bar's own lines would say them twice. */}
                 {editingTaskId === null && hasRepeat ? <p className="mt-1 text-xs text-[var(--app-hint)]">{t('composer.taskHintSkip')}</p> : null}
                 {editingTaskId === null && tasks.length > 0 ? <p className="mt-0.5 text-xs text-[var(--app-hint)]">{t('composer.taskHintWake')}</p> : null}
-                {historyOpen && hasRunHistory ? (
-                    <div id={historyId} className="mt-1.5 max-h-64 overflow-y-auto pb-1">
-                        <SessionTaskHistory
-                            runs={history.runs}
-                            isLoading={history.isLoading}
-                            error={history.error}
-                            onRetry={() => { void history.refetch() }}
-                        />
-                    </div>
-                ) : null}
             </div>
         </div>
     )

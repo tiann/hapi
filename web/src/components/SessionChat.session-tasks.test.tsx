@@ -95,6 +95,32 @@ describe('session tasks in the chat', () => {
         expect(screen.getByRole('button', { name: 'Queue' })).toBeTruthy()
     })
 
+    it('offers History in the clock panel, where the runs of finished or deleted tasks live, and asks for them only once it is opened', async () => {
+        // The bar is gone with the last task; what the tasks did stays reachable from the clock button alone.
+        const api = {
+            listSessionTasks: vi.fn(async () => ({ tasks: [] })),
+            listSessionTaskRuns: vi.fn(async () => ({
+                runs: [{ id: 'r1', sessionId: 'ses-1', taskId: 't1', taskKind: 'repeat', runNumber: 1, outcome: 'sent', scheduledFor: 1000, recordedAt: 1000, takenAt: 2000, detail: null, preview: 'check progress' }]
+            }))
+        }
+        render(shell(api))
+        const clock = await screen.findByRole('button', { name: 'Schedule and tasks' })
+        await waitFor(() => expect(api.listSessionTasks).toHaveBeenCalled())
+        expect(screen.queryByText('Tasks')).toBeNull()
+
+        fireEvent.click(clock)
+        const toggle = await screen.findByRole('button', { name: 'History' })
+        expect(api.listSessionTaskRuns).not.toHaveBeenCalled()
+        expect(screen.queryByRole('button', { name: 'History' })).toHaveAttribute('aria-pressed', 'false')
+
+        fireEvent.click(toggle)
+        const history = await screen.findByRole('list', { name: 'History' })
+        expect(api.listSessionTaskRuns).toHaveBeenCalledWith('ses-1', 50)
+        expect(history.textContent).toContain('check progress')
+        expect(history.textContent).toContain('Taken by the agent')
+        expect(screen.queryByText('Tasks')).toBeNull()
+    })
+
     it('keeps the clock panel to scheduled send on a hub without the task routes', async () => {
         const api = {
             listSessionTasks: vi.fn(async () => { throw new ApiError('HTTP 404 Not Found: {"error":"Not Found"}', 404) }),

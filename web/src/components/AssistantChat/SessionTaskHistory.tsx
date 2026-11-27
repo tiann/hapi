@@ -1,5 +1,5 @@
 import { formatScheduledTime } from '@/lib/scheduledTime'
-import { taskRunLabel, taskRunOutcome } from '@/lib/sessionTasks'
+import { isTaskRunCancelUnconfirmed, taskRunLabel, taskRunOutcome } from '@/lib/sessionTasks'
 import type { SessionTaskRun } from '@hapi/protocol'
 import { useTranslation } from '@/lib/use-translation'
 import { TEXT_BUTTON_CLASS } from './SessionTaskFields'
@@ -12,7 +12,8 @@ export function TaskRunTime({ at }: { at: number }) {
 /**
  * The newest runs of the session's tasks: every prompt a task sent, every slot
  * it skipped and every run that could not go out, with the reason. Finished
- * tasks are gone from the list above, but their runs stay readable here.
+ * tasks are gone from the list in the bar, but their runs stay readable here.
+ * A run whose cancel the hub could not confirm yet says so, and only such a run.
  */
 export function SessionTaskHistory({ runs, isLoading, error, onRetry }: {
     runs: SessionTaskRun[]
@@ -62,6 +63,10 @@ export function SessionTaskHistory({ runs, isLoading, error, onRetry }: {
                         <span className={`text-xs ${outcome.tone === 'warning' ? 'text-[var(--app-warning-text)]' : 'text-[var(--app-hint)]'}`}>
                             {outcome.text}
                         </span>
+                        {isTaskRunCancelUnconfirmed(run) ? (
+                            // The hub asks the CLI again; once the cancel is confirmed this note goes with the refetch.
+                            <span className="text-xs text-[var(--app-warning-text)]">{t('tasks.cancelUnconfirmed')}</span>
+                        ) : null}
                     </li>
                 )
             })}

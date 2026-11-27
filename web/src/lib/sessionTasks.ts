@@ -385,6 +385,18 @@ export function taskErrorText(code: SessionTaskErrorCode, t: Translate): string 
     }
 }
 
+/**
+ * `detail` of a run whose cancel the hub could not confirm with the CLI: the
+ * hub removed the queued row itself (outcome `cancelled`), or the row is still
+ * waiting in the queue (outcome `sent`). The hub asks the CLI again and clears
+ * the detail once it is confirmed.
+ */
+export const TASK_RUN_CANCEL_UNCONFIRMED = 'cancel_unconfirmed'
+
+export function isTaskRunCancelUnconfirmed(run: SessionTaskRun): boolean {
+    return run.detail === TASK_RUN_CANCEL_UNCONFIRMED
+}
+
 export type TaskRunOutcome = { text: string; tone: 'normal' | 'warning' }
 
 /**

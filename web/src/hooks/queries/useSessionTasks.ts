@@ -11,7 +11,7 @@ import { ApiError, type ApiClient } from '@/api/client'
 import { queryKeys } from '@/lib/query-keys'
 import { applySessionTaskEdit } from '@/lib/sessionTasks'
 
-/** Runs shown when the History toggle is open; the hub caps a page at 200. */
+/** Runs shown in the clock panel's History; the hub caps a page at 200. */
 export const SESSION_TASK_HISTORY_LIMIT = 50
 
 /** A hub without the task routes answers 404; retrying cannot change that. */
@@ -117,15 +117,19 @@ export function useSessionTasks(api: ApiClient | null, sessionId: string): {
     }
 }
 
-/** The newest runs of the session's tasks, fetched while the History toggle is open. */
+/**
+ * The newest runs of the session's tasks. Fetched only while `enabled`: the
+ * clock panel's History view is open. Nothing else asks for them, so a session
+ * opened without a look at its history costs no request.
+ */
 export function useSessionTaskHistory(api: ApiClient | null, sessionId: string, enabled: boolean): {
     runs: SessionTaskRun[]
     isLoading: boolean
-    /** The hub has answered the history request at least once (a failed attempt being retried counts), so `unsupported` is known; until then, the controls that need the route stay hidden. */
+    /** The hub has answered the history request at least once (a failed attempt being retried counts). */
     answered: boolean
     /** Set when the runs could not be loaded on a hub that has the route. */
     error: string | null
-    /** The hub predates the history route (and with it, editing and "run now"), so their UI stays hidden. */
+    /** The hub predates the history route, so its UI stays hidden. */
     unsupported: boolean
     refetch: () => unknown
 } {

@@ -129,4 +129,30 @@ describe('session task strings', () => {
             expect(dict['tasks.run.failedReason.machine_offline'], locale).not.toBe(en['tasks.run.failedReason.machine_offline'])
         }
     })
+
+    it('says of a delete, a kept prompt and an unconfirmed cancel what became of them, in every locale', () => {
+        // Every delete speaks: deleted and done, the waiting prompt pulled back, the agent got there first, or the prompt still queued.
+        const marks: Record<string, Record<string, string>> = {
+            'zh-CN': { deleted: '已删除', pulledBack: '已撤回', paused: '暂停', kept: '仍会发送', taken: '接走', unconfirmed: '尚未确认', unconfirmedToast: '未能确认' },
+            ja: { deleted: '削除', pulledBack: '取り下げ', paused: '一時停止', kept: '送信されます', taken: '取り込', unconfirmed: '未確認', unconfirmedToast: '確認できませんでした' },
+            ru: { deleted: 'удалена', pulledBack: 'отозвано', paused: 'Приостановлено', kept: 'будет отправлено', taken: 'принял', unconfirmed: 'не подтверждена', unconfirmedToast: 'подтвердить не удалось' }
+        }
+        for (const [locale, dict] of locales) {
+            expect(dict['tasks.deleted'], locale).not.toBe(dict['tasks.deletedPromptCancelled'])
+            expect(dict['tasks.deletePromptTaken'], locale).not.toBe(dict['tasks.deleteUnconfirmed'])
+            if (locale === 'en') continue
+            const mark = marks[locale]
+            expect(dict['tasks.deleted'], locale).toContain(mark.deleted)
+            expect(dict['tasks.deletedPromptCancelled'], locale).toContain(mark.deleted)
+            expect(dict['tasks.deletedPromptCancelled'], locale).toContain(mark.pulledBack)
+            expect(dict['tasks.pausedPromptKept'], locale).toContain(mark.paused)
+            expect(dict['tasks.pausedPromptKept'], locale).toContain(mark.kept)
+            expect(dict['tasks.deletePromptTaken'], locale).toContain(mark.taken)
+            expect(dict['tasks.deleteUnconfirmed'], locale).toContain(mark.unconfirmedToast)
+            expect(dict['tasks.cancelUnconfirmed'], locale).toContain(mark.unconfirmed)
+            for (const key of ['tasks.deleted', 'tasks.deletedPromptCancelled', 'tasks.pausedPromptKept', 'tasks.cancelUnconfirmed'] as const) {
+                expect(dict[key], `${locale} ${key}`).not.toBe(en[key])
+            }
+        }
+    })
 })
