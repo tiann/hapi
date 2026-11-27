@@ -31,6 +31,16 @@ func planProposalMarkdown(_ tool: ChatToolCall) -> String? {
     return plan
 }
 
+func planProposalSections(_ tool: ChatToolCall) -> [JSONValue] {
+    guard tool.name == "CursorCreatePlan", let input = tool.input else { return [] }
+    let phases = (input[chatKey: "phases"]?.chatArray ?? []).filter {
+        !($0[chatKey: "name"]?.chatString ?? "").isEmpty || !checklistItems($0).isEmpty
+    }
+    if !phases.isEmpty { return phases }
+    guard let todos = input[chatKey: "todos"], !(todos.chatArray ?? []).isEmpty else { return [] }
+    return [.object(["todos": todos])]
+}
+
 func planProposalOverview(_ tool: ChatToolCall) -> String? {
     guard tool.name == "CursorCreatePlan",
           let overview = tool.input?[chatKey: "overview"]?.chatString?.trimmingCharacters(in: .whitespacesAndNewlines),

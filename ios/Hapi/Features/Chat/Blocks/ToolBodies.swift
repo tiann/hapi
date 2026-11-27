@@ -24,13 +24,14 @@ struct ToolCallBody: View {
     var body: some View {
         let questionTool = isQuestionDetailsTool(tool.name)
         let answers = questionTool ? tool.permission?.answers : nil
+        let sections = planProposalSections(tool)
         let overview = planProposalOverview(tool)
         let plan = planProposalMarkdown(tool)
         VStack(alignment: .leading, spacing: 12) {
             if questionTool {
                 QuestionToolBody(tool: tool)
-            } else if overview != nil || plan != nil {
-                PlanProposalContent(overview: overview, markdown: plan)
+            } else if overview != nil || plan != nil || !sections.isEmpty {
+                PlanProposalContent(overview: overview, markdown: plan, sections: sections)
                 if planProposalShowsResult(tool) { ToolResultSection(tool: tool) }
             } else {
                 SectionLabel(text: String(localized: "Input"))
@@ -64,6 +65,7 @@ struct ToolCallBody: View {
 struct PlanProposalContent: View {
     let overview: String?
     let markdown: String?
+    var sections: [JSONValue] = []
     @Environment(\.hapiTheme) private var theme
     @Environment(\.hapiTypography) private var typography
 
@@ -77,6 +79,14 @@ struct PlanProposalContent: View {
             }
             if let markdown {
                 CachedMarkdownView(markdown: markdown)
+            }
+            ForEach(Array(sections.enumerated()), id: \.offset) { _, section in
+                if let name = section[chatKey: "name"]?.chatString {
+                    Text(verbatim: name).font(typography.bodyFont.weight(.semibold))
+                }
+                ForEach(Array(checklistItems(section).enumerated()), id: \.offset) { _, item in
+                    Text(verbatim: "\(item.glyph) \(item.text)")
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -446,6 +456,7 @@ func checklistItems(_ input: JSONValue?) -> [(glyph: String, text: String)] {
         let glyph: String
         switch item["status"]?.chatString {
         case "completed", "complete", "done": glyph = "☑"
+        case "cancelled": glyph = "⊘"
         case "in_progress": glyph = "◐"
         default: glyph = "☐"
         }

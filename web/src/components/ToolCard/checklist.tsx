@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { isObject } from '@hapi/protocol'
 
-export type ChecklistStatus = 'pending' | 'in_progress' | 'completed'
+export type ChecklistStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled'
 
 export type ChecklistItem = {
     id?: string
@@ -10,6 +10,7 @@ export type ChecklistItem = {
 }
 
 function normalizeChecklistStatus(value: unknown): ChecklistStatus {
+    if (value === 'cancelled') return 'cancelled'
     if (value === 'completed') return 'completed'
     if (value === 'in_progress') return 'in_progress'
     return 'pending'
@@ -78,12 +79,14 @@ export function extractUpdatePlanChecklist(input: unknown, result: unknown): Che
 }
 
 function checklistTone(item: ChecklistItem): string {
+    if (item.status === 'cancelled') return 'text-[var(--app-hint)] line-through'
     if (item.status === 'completed') return 'text-emerald-600 line-through'
     if (item.status === 'in_progress') return 'text-[var(--app-link)]'
     return 'text-[var(--app-hint)]'
 }
 
 function checklistIcon(item: ChecklistItem): ReactNode {
+    if (item.status === 'cancelled') return '⊘'
     if (item.status === 'completed') return '☑'
     if (item.status === 'in_progress') return '◉'
     return '☐'

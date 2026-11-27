@@ -11,12 +11,13 @@ import { CursorExtensionAdapter } from './cursorExtensionAdapter';
 
 type ExtensionHandler = (params: unknown, requestId: string | number | null) => Promise<unknown>;
 
-function createHarness(options?: { onCreatePlanAccepted?: () => void }) {
+function createHarness(options?: { onCreatePlanAccepted?: () => void; state?: AgentState }) {
     const handlers = new Map<string, ExtensionHandler>();
-    let agentState: AgentState = { requests: {}, completedRequests: {} };
+    let agentState: AgentState = options?.state ?? { requests: {}, completedRequests: {} };
     const messages: AgentMessage[] = [];
 
     const session = {
+        getAgentStateSnapshot: () => agentState,
         updateAgentState(handler: (state: AgentState) => AgentState) {
             agentState = handler(agentState);
         }
@@ -221,6 +222,23 @@ describe('CursorExtensionAdapter', () => {
             approved: true
         });
         expect(handled).toBe(false);
+    });
+
+    it('merges a resumed todo update by ID, preserves cancellation, and clears on an empty replacement', async () => {
+        const first = createHarness();
+        await first.handlers.get('cursor/update_todos')!({ merge: false, todos: [
+            { id: 'x', content: 'X', status: 'pending' }, { id: 'y', content: 'Y', status: 'completed' }
+        ] }, null);
+        const resumed = createHarness({ state: first.getAgentState() });
+        await resumed.handlers.get('cursor/update_todos')!({ merge: true, todos: [
+            { id: 'x', content: 'X', status: 'cancelled' }
+        ] }, null);
+        await resumed.handlers.get('cursor/update_todos')!({ merge: false, todos: [] }, null);
+        expect(resumed.getMessages()).toMatchObject([
+            { type: 'plan', items: [{ id: 'x', status: 'cancelled' }, { id: 'y', status: 'completed' }] },
+            { type: 'plan', items: [] }
+        ]);
+        expect(resumed.getAgentState().cursorTodoSnapshot).toEqual([]);
     });
 
     it('maps cursor/update_todos to plan agent messages', async () => {

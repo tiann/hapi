@@ -110,6 +110,7 @@ private fun normalizeCodexTokenUsage(value: JsonElement?, data: JsonObject?): Us
 
 private fun normalizePlanStatus(value: JsonElement?): String {
     val raw = asString(value)?.trim()?.lowercase()?.replace(Regex("[\\s-]"), "_") ?: ""
+    if (raw == "cancelled") return "cancelled"
     if (raw == "completed" || raw == "complete" || raw == "done") return "completed"
     if (raw == "in_progress" || raw == "inprogress" || raw == "active" || raw == "running") return "in_progress"
     return "pending"
@@ -1040,8 +1041,9 @@ fun normalizeAgentRecord(
         }
 
         if (dataType == "plan") {
-            val plan = normalizePlanEntries(data["entries"].orNull() ?: data["items"].orNull() ?: data)
-            if (plan.isEmpty()) return null
+            val entries = data["entries"].orNull() ?: data["items"].orNull() ?: data
+            val plan = normalizePlanEntries(entries)
+            if (plan.isEmpty() && (entries as? JsonArray)?.isEmpty() != true) return null
             val uuid = asString(data["id"]) ?: messageId
             val planJson = planToJson(plan)
             return NormalizedMessage.Agent(

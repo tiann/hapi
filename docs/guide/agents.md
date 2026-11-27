@@ -235,7 +235,7 @@ Interactive TUI-only commands (`/config`, `/mcp`, `/sandbox`, `/btw`, `/rewind`,
 - **Local mode** - Run `hapi cursor` from terminal. Full interactive experience.
 - **Remote mode** - Spawn from web/phone when no terminal. New Cursor sessions use `agent acp` with HAPI permission approval, plan/question UI, and richer tool updates. Legacy sessions created before the ACP migration may still resume via the old `agent -p` stream-json path temporarily.
 
-Cursor plan cards show the overview when supplied, followed by the Markdown plan and approval controls in the web, iOS, and Android apps. A pending plan or question marks the session as waiting for input.
+Cursor plan cards show the overview when supplied, followed by the Markdown plan and approval controls in the web, iOS, and Android apps. When Cursor supplies named phases, cards group the corresponding tasks under each phase. Incremental todo updates preserve the other tasks, cancelled tasks retain their status in the transcript, and an empty replacement clears the current list. A pending plan or question marks the session as waiting for input.
 
 ### Model errors
 

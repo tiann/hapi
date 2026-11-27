@@ -261,14 +261,15 @@ function normalizeCodexTokenUsage(value: unknown, data?: Record<string, unknown>
     }
 }
 
-function normalizePlanStatus(value: unknown): 'pending' | 'in_progress' | 'completed' {
+function normalizePlanStatus(value: unknown): 'pending' | 'in_progress' | 'completed' | 'cancelled' {
     const raw = typeof value === 'string' ? value.trim().toLowerCase().replace(/[\s-]/g, '_') : ''
+    if (raw === 'cancelled') return 'cancelled'
     if (raw === 'completed' || raw === 'complete' || raw === 'done') return 'completed'
     if (raw === 'in_progress' || raw === 'inprogress' || raw === 'active' || raw === 'running') return 'in_progress'
     return 'pending'
 }
 
-function normalizePlanEntries(value: unknown): Array<{ step: string; status: 'pending' | 'in_progress' | 'completed' }> {
+function normalizePlanEntries(value: unknown): Array<{ step: string; status: 'pending' | 'in_progress' | 'completed' | 'cancelled' }> {
     const record = isObject(value) ? value : null
     const entries = Array.isArray(value)
         ? value
@@ -280,7 +281,7 @@ function normalizePlanEntries(value: unknown): Array<{ step: string; status: 'pe
                     ? record.steps
                     : []
 
-    const plan: Array<{ step: string; status: 'pending' | 'in_progress' | 'completed' }> = []
+    const plan: Array<{ step: string; status: 'pending' | 'in_progress' | 'completed' | 'cancelled' }> = []
     for (const entry of entries) {
         if (typeof entry === 'string') {
             plan.push({ step: entry, status: 'pending' })
@@ -1397,8 +1398,9 @@ export function normalizeAgentRecord(
         }
 
         if (data.type === 'plan') {
-            const plan = normalizePlanEntries(data.entries ?? data.items ?? data)
-            if (plan.length === 0) return null
+            const entries = data.entries ?? data.items ?? data
+            const plan = normalizePlanEntries(entries)
+            if (!plan.length && !(Array.isArray(entries) && entries.length === 0)) return null
             const uuid = asString(data.id) ?? messageId
             return {
                 id: messageId,

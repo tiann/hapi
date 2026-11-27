@@ -59,6 +59,14 @@ class ToolContentPresentationTest {
         assertNull(planProposalMarkdown(tool("update_plan", json("""{"plan":[{"step":"Inspect","status":"completed"}]}"""))))
     }
 
+    @Test fun cursorPhaseHierarchyPreservesCancelledTodosWithoutFlatDuplicates() {
+        val input = json("""{"todos":[{"content":"duplicate"}],"phases":[{"name":"Design","todos":[{"content":"Retired","status":"cancelled"}]}]}""")
+        val phase = planProposalSections(tool("CursorCreatePlan", input)).single()
+        assertEquals("Design", (phase["name"] as JsonPrimitive).content)
+        assertEquals(listOf("⊘" to "Retired"), checklistItems(phase))
+        assertTrue(planProposalSections(tool("ExitPlanMode", input)).isEmpty())
+    }
+
     @Test fun cursorPlanOverviewCanStandAloneAndOmitsDuplicates() {
         val both = json("""{"overview":" Review the changes. ","plan":"## Steps"}""")
         assertEquals("Review the changes.", planProposalOverview(tool("CursorCreatePlan", both)))

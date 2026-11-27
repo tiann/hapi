@@ -32,6 +32,9 @@ export type CursorExtensionMessageHandler = (message: AgentMessage) => void;
 /** Invoked when the operator accepts a CreatePlan request (Yes / Yes for session). */
 export type CursorCreatePlanAcceptedHandler = () => void;
 
+// ACP backends can be replaced before a just-written agent-state snapshot is acknowledged.
+const cursorTodosBySession = new WeakMap<ApiSessionClient, PlanItem[]>();
+
 export class CursorExtensionAdapter {
     private readonly pending = new Map<string, PendingExtensionRequest>();
 
@@ -180,22 +183,25 @@ export class CursorExtensionAdapter {
 
     private handleTodoUpdate(params: unknown): void {
         if (!isObject(params)) return;
-        const todos = Array.isArray(params.todos) ? params.todos : [];
-        const items: PlanItem[] = [];
-        for (const entry of todos) {
+        if (!Array.isArray(params.todos)) return;
+        const previous = cursorTodosBySession.get(this.session) ?? this.session.getAgentStateSnapshot?.()?.cursorTodoSnapshot ?? [];
+        const items = params.merge === true ? [...previous] : [];
+        for (const entry of params.todos) {
             if (!isObject(entry)) continue;
-            const content = asString(entry.content) ?? asString(entry.title) ?? '';
+            const content = asString(entry.content) ?? asString(entry.title);
             if (!content) continue;
-            const status = normalizeTodoStatus(asString(entry.status));
-            items.push({
-                content,
-                priority: 'medium',
-                status
-            });
+            const id = asString(entry.id);
+            const item: PlanItem = {
+                ...(id ? { id } : {}), content, priority: 'medium',
+                status: normalizeTodoStatus(asString(entry.status))
+            };
+            const index = id ? items.findIndex(existing => existing.id === id) : -1;
+            if (index < 0) items.push(item);
+            else items[index] = item;
         }
-        if (items.length > 0) {
-            this.onMessage({ type: 'plan', items });
-        }
+        cursorTodosBySession.set(this.session, items);
+        this.session.updateAgentState(state => ({ ...state, cursorTodoSnapshot: items }));
+        this.onMessage({ type: 'plan', items });
     }
 
     private handleTaskNotification(params: unknown): void {
@@ -391,7 +397,7 @@ function formatQuestionAnswers(
 }
 
 function normalizeTodoStatus(status: string | null): PlanItem['status'] {
-    if (status === 'in_progress' || status === 'completed' || status === 'pending') {
+    if (status === 'in_progress' || status === 'completed' || status === 'cancelled' || status === 'pending') {
         return status;
     }
     return 'pending';

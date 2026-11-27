@@ -51,6 +51,15 @@ final class ToolContentPresentationTests: XCTestCase {
         XCTAssertEqual(checklistItems(try json(#"{"plan":[{"step":"Inspect","status":"completed"}]}"#)).first?.glyph, "☑")
     }
 
+    func testCursorPhaseHierarchyPreservesCancelledTodosAndSuppressesFlatDuplicates() throws {
+        let input = try json(#"{"todos":[{"content":"duplicate"}],"phases":[{"name":"Design","todos":[{"content":"Retired","status":"cancelled"}]}]}"#)
+        let phases = planProposalSections(tool("CursorCreatePlan", input: input))
+        XCTAssertEqual(phases.count, 1)
+        XCTAssertEqual(phases.first?[chatKey: "name"]?.chatString, "Design")
+        XCTAssertEqual(checklistItems(phases.first).first?.glyph, "⊘")
+        XCTAssertTrue(planProposalSections(tool("ExitPlanMode", input: input)).isEmpty)
+    }
+
     func testCursorPlanOverviewCanStandAloneAndOmitsDuplicates() throws {
         let both: JSONValue = .object(["overview": .string(" Review the changes. "), "plan": .string("## Steps")])
         XCTAssertEqual(planProposalOverview(tool("CursorCreatePlan", input: both)), "Review the changes.")
