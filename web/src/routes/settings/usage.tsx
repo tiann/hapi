@@ -304,6 +304,14 @@ export default function SettingsUsagePage() {
                         ))
                     )}
                 </div>
+                <a
+                    href="https://cursor.com/help/models-and-usage/usage-limits#how-do-i-check-my-usage"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-2 inline-block text-sm text-[var(--app-link)] hover:underline"
+                >
+                    {t('settings.usage.quotas.cursorUsageGuide')}
+                </a>
             </section>
 
             <div className="inline-flex overflow-hidden rounded-lg border border-[var(--app-border)]" role="radiogroup" aria-label={t('settings.usage.range.label')}>
