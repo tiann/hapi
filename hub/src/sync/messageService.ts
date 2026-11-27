@@ -20,13 +20,19 @@ import type {
 } from '@hapi/protocol/apiTypes'
 import type { Server } from 'socket.io'
 import { randomUUID } from 'node:crypto'
-import type { Store, CancelQueuedMessageResult } from '../store'
+import type { Store, CancelQueuedMessageOptions, CancelQueuedMessageResult } from '../store'
 import { EventPublisher } from './eventPublisher'
 import { JOB_WAKE_MESSAGE_LOCAL_ID_PREFIX } from './sessionJobWake'
 import type { InputTranslationService } from './inputTranslation'
 
 type StoredMessageForDelivery = ReturnType<Store['messages']['getMessages']>[number]
 type MessagePosition = { at: number; seq: number }
+
+/** What the CLI answered a cancel-queued-message request with (`MessageService.requestCliCancelAck`). */
+export type CliCancelAckResult = 'removed' | 'in-flight' | 'indeterminate' | 'consumed' | 'not-found' | 'timeout'
+
+/** How long a cancel waits for the CLI's answer unless the caller asks for more. */
+export const CANCEL_PROBE_DEFAULT_MS = 500
 
 // Search jumps only need a compact render window around the hit. Keeping this
 // bounded to 41 rows avoids transferring large historical attachments and
@@ -598,10 +604,18 @@ export class MessageService {
         }))
     }
 
+    /**
+     * Cancel a queued message. The row is deleted only once the CLI confirms
+     * it dropped its copy (`probeTimeoutMs` says how long the hub waits for
+     * that answer), or when there is no CLI socket in the room to ask — the
+     * latter result carries `unconfirmed: true`.
+     */
     async cancelQueuedMessage(
         sessionId: string,
-        messageId: string
+        messageId: string,
+        options: CancelQueuedMessageOptions = {}
     ): Promise<CancelQueuedMessageResult> {
+        const probeTimeoutMs = options.probeTimeoutMs ?? CANCEL_PROBE_DEFAULT_MS
         // Phase 1: look up the row WITHOUT deleting it.
         // This lets us ask the CLI first and only DELETE if the CLI confirms removal.
         const lookup = this.store.messages.lookupQueuedMessage(sessionId, messageId)
@@ -645,7 +659,7 @@ export class MessageService {
         // A live dispatch is not cancellable by timeout. Convert it to the
         // durable unknown state and require a second explicit resolution.
         if (isDispatching) {
-            const ackResult = await this.requestCliCancelAck(sessionId, localId, messageId, 500)
+            const ackResult = await this.requestCliCancelAck(sessionId, localId, messageId, probeTimeoutMs)
             if (ackResult === 'consumed') {
                 return this.recordConsumedAcknowledgement(sessionId, localId)
             }
@@ -670,7 +684,7 @@ export class MessageService {
             const roomName = `session:${sessionId}`
             const cliCount = this.io.of('/cli').adapter.rooms.get(roomName)?.size ?? 0
             const ackResult = cliCount > 0
-                ? await this.requestCliCancelAck(sessionId, localId, messageId, 500)
+                ? await this.requestCliCancelAck(sessionId, localId, messageId, probeTimeoutMs)
                 : 'timeout' as const
             if (ackResult === 'consumed') {
                 return this.recordConsumedAcknowledgement(sessionId, localId)
@@ -720,7 +734,9 @@ export class MessageService {
         // Phase 2a: if no CLI socket is currently in the session room, the CLI is
         // offline and there is nobody to ack with.  Delete the row immediately so a
         // later CLI reconnect cannot pick it up via seq-backfill and re-enqueue the
-        // cancelled message.
+        // cancelled message. The result says the cancel was not confirmed: a
+        // wrapper that is alive with its socket down still holds the prompt in
+        // its own memory and may feed it to the agent when the agent is free.
         //
         // TOCTOU note: deleteQueuedMessageById already has an invoked_at IS NULL guard,
         // so if a CLI socket joins between the cliCount read and the DELETE and wins the
@@ -745,7 +761,7 @@ export class MessageService {
                 })
                 return recheck
             }
-            // Row is gone (absent) — clean cancel.
+            // Row is gone (absent) — clean cancel, but nobody confirmed the CLI's copy.
             this.forgetScheduledMatureNotified([localId])
             this.publisher.emit({
                 type: 'message-cancelled',
@@ -753,10 +769,10 @@ export class MessageService {
                 messageId,
                 localId,
             })
-            return { status: 'cancelled', localId }
+            return { status: 'cancelled', localId, unconfirmed: true }
         }
 
-        const ackResult = await this.requestCliCancelAck(sessionId, localId, messageId, 500)
+        const ackResult = await this.requestCliCancelAck(sessionId, localId, messageId, probeTimeoutMs)
 
         if (ackResult === 'consumed') {
             return this.recordConsumedAcknowledgement(sessionId, localId)
@@ -898,6 +914,11 @@ export class MessageService {
         }
     }
 
+    /** Whether a CLI socket is in the session's room: somebody who can be asked about a queued prompt. */
+    hasCliSocket(sessionId: string): boolean {
+        return (this.io.of('/cli').adapter.rooms.get(`session:${sessionId}`)?.size ?? 0) > 0
+    }
+
     /**
      * Ask the CLI (via socket.io ack) whether it removed the in-memory queue item.
      * Returns 'removed', 'not-found', or 'timeout'.
@@ -905,13 +926,17 @@ export class MessageService {
      * Re-uses the existing 'update' event channel with a cancel-queued-message body,
      * matching the ack pattern already used by rpcGateway
      * (socket.timeout(ms).emitWithAck / BroadcastOperator.timeout(ms).emit + ack cb).
+     *
+     * Public for the hub's follow-up of a cancelled task prompt whose row is
+     * gone already: the question is then only whether the CLI still holds a
+     * copy (`SyncEngine.probeCancelledPrompt`).
      */
-    private requestCliCancelAck(
+    requestCliCancelAck(
         sessionId: string,
         localId: string,
         messageId: string,
         timeoutMs: number
-    ): Promise<'removed' | 'in-flight' | 'indeterminate' | 'consumed' | 'not-found' | 'timeout'> {
+    ): Promise<CliCancelAckResult> {
         return new Promise((resolve) => {
             const room = this.io.of('/cli').to(`session:${sessionId}`)
             // socket.io v4 BroadcastOperator: .timeout(ms).emit(event, data, ackCb)

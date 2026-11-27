@@ -99,6 +99,38 @@ function makePublisher() {
     }
 }
 
+/**
+ * A room whose cancel probe behaves like socket.io's: the ack is called once,
+ * with the CLI's answer `answerAfterMs` after the request, or with the timeout
+ * error when `timeout()`'s budget runs out first. The budgets asked for are
+ * recorded in `timeouts`.
+ */
+function makeTimedIo(answerAfterMs: number, answer: (callback: AckCallback) => void, socketCount = 1) {
+    const timeouts: number[] = []
+    const socketSet = socketCount > 0 ? new Set(['socket-0']) : undefined
+    const io = {
+        of: (_ns: string) => ({
+            to: (_room: string) => ({
+                timeout: (ms: number) => {
+                    timeouts.push(ms)
+                    return {
+                        emit: (_event: string, _data: unknown, callback: AckCallback) => {
+                            const answerTimer = setTimeout(() => answer(callback), answerAfterMs)
+                            setTimeout(() => {
+                                clearTimeout(answerTimer)
+                                callback(new Error('operation has timed out'), [])
+                            }, ms)
+                        }
+                    }
+                },
+                emit: () => {}
+            }),
+            adapter: { rooms: { get: (_roomName: string) => socketSet } }
+        })
+    } as unknown as Server
+    return { io, timeouts }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -899,6 +931,105 @@ describe('MessageService.cancelQueuedMessage race scenarios', () => {
             // No invoked_at stamped (row deleted, not marked invoked)
             const rows = store.messages.getMessages(session.id)
             expect(rows.find(r => r.id === msg.id)).toBeUndefined()
+        })
+    })
+
+    describe('the cancel probe budget', () => {
+        function queuedMessage(store: Store, tag: string) {
+            const session = makeSession(store, tag)
+            const msg = store.messages.addMessage(
+                session.id,
+                { role: 'user', content: { type: 'text', text: 'hello' } },
+                `local-${tag}`
+            )
+            return { session, msg }
+        }
+
+        it('confirms a CLI that answers after 900 ms when the caller waits 3000 ms, and not with the default budget', async () => {
+            const confirmed = makeTimedIo(900, (callback) => callback(null, [{ removed: true }]))
+            {
+                const store = makeStore()
+                const { session, msg } = queuedMessage(store, 'slow-confirmed')
+                const service = new MessageService(store, confirmed.io, makePublisher() as any)
+                const started = Date.now()
+                const result = await service.cancelQueuedMessage(session.id, msg.id, { probeTimeoutMs: 3000 })
+                expect(result).toEqual({ status: 'cancelled', localId: 'local-slow-confirmed' })
+                expect(Date.now() - started).toBeGreaterThanOrEqual(850)
+                expect(store.messages.lookupQueuedMessage(session.id, msg.id)).toEqual({ status: 'absent' })
+            }
+            expect(confirmed.timeouts).toEqual([3000])
+
+            const impatient = makeTimedIo(900, (callback) => callback(null, [{ removed: true }]))
+            {
+                const store = makeStore()
+                const { session, msg } = queuedMessage(store, 'slow-default')
+                const service = new MessageService(store, impatient.io, makePublisher() as any)
+                const result = await service.cancelQueuedMessage(session.id, msg.id)
+                // The hub gave up at 500 ms: the row is held as indeterminate, not cancelled.
+                expect(result).toEqual({ status: 'busy', localId: 'local-slow-default' })
+                expect(store.messages.lookupQueuedMessage(session.id, msg.id)).toMatchObject({ status: 'indeterminate' })
+            }
+            expect(impatient.timeouts).toEqual([500])
+        })
+
+        it('passes the budget to the probe of a dispatching row and of an indeterminate row', async () => {
+            const dispatching = makeTimedIo(0, (callback) => callback(null, [{ removed: true }]))
+            {
+                const store = makeStore()
+                const { session, msg } = queuedMessage(store, 'dispatching')
+                store.messages.setMessagesDeliveryState(session.id, [msg.localId!], 'dispatching')
+                const service = new MessageService(store, dispatching.io, makePublisher() as any)
+                // A live dispatch is never deleted on an ack; it only waits longer for one.
+                expect(await service.cancelQueuedMessage(session.id, msg.id, { probeTimeoutMs: 3000 })).toEqual({ status: 'busy', localId: 'local-dispatching' })
+                expect(dispatching.timeouts).toEqual([3000])
+            }
+            const indeterminate = makeTimedIo(0, (callback) => callback(null, [{ removed: true }]))
+            {
+                const store = makeStore()
+                const { session, msg } = queuedMessage(store, 'indeterminate')
+                store.messages.markMessagesIndeterminate(session.id, [msg.localId!])
+                const service = new MessageService(store, indeterminate.io, makePublisher() as any)
+                expect(await service.cancelQueuedMessage(session.id, msg.id, { probeTimeoutMs: 3000 })).toEqual({ status: 'cancelled', localId: 'local-indeterminate' })
+                expect(indeterminate.timeouts).toEqual([3000])
+            }
+        })
+
+        it('a caller without options gets the 500 ms budget and the result as before', async () => {
+            const timed = makeTimedIo(0, (callback) => callback(null, [{ removed: true }]))
+            const store = makeStore()
+            const { session, msg } = queuedMessage(store, 'plain')
+            const service = new MessageService(store, timed.io, makePublisher() as any)
+            const result = await service.cancelQueuedMessage(session.id, msg.id)
+            expect(result).toEqual({ status: 'cancelled', localId: 'local-plain' })
+            expect('unconfirmed' in result).toBe(false)
+            expect(timed.timeouts).toEqual([500])
+            // An empty options object is the same as none.
+            const second = queuedMessage(store, 'plain2')
+            expect(await service.cancelQueuedMessage(second.session.id, second.msg.id, {})).toEqual({ status: 'cancelled', localId: 'local-plain2' })
+            expect(timed.timeouts).toEqual([500, 500])
+        })
+
+        it('reports unconfirmed when it removed the row with no CLI socket in the room', async () => {
+            const store = makeStore()
+            const { session, msg } = queuedMessage(store, 'no-socket')
+            let ackCalled = false
+            const service = new MessageService(store, makeIo(() => { ackCalled = true }, 0), makePublisher() as any)
+
+            const result = await service.cancelQueuedMessage(session.id, msg.id, { probeTimeoutMs: 3000 })
+            expect(result).toEqual({ status: 'cancelled', localId: 'local-no-socket', unconfirmed: true })
+            expect(ackCalled).toBe(false)
+            expect(store.messages.lookupQueuedMessage(session.id, msg.id)).toEqual({ status: 'absent' })
+
+            // The row is gone, as before, so a second cancel has nothing to report on.
+            expect(await service.cancelQueuedMessage(session.id, msg.id)).toEqual({ status: 'cancelled', localId: null })
+        })
+
+        it('hasCliSocket says whether a CLI is in the session\'s room', () => {
+            const store = makeStore()
+            const online = new MessageService(store, makeIo(() => {}), makePublisher() as any)
+            const offline = new MessageService(store, makeIo(() => {}, 0), makePublisher() as any)
+            expect(online.hasCliSocket('s1')).toBe(true)
+            expect(offline.hasCliSocket('s1')).toBe(false)
         })
     })
 
