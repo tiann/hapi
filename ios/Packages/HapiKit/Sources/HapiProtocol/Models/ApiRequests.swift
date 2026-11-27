@@ -14,6 +14,13 @@ public enum MessageDeliveryMode: String, Codable, Sendable {
     case steer
 }
 
+/// Choice for an ordinary composer send. The hub resolves its default.
+public enum FollowUpIntent: String, Codable, Sendable {
+    case `default`
+    case queue
+    case steer
+}
+
 /// Body of `POST /api/sessions/:id/messages`.
 ///
 /// Mirrors `SendMessageRequestSchema` (`shared/src/apiTypes.ts`). Server-side
@@ -28,19 +35,22 @@ public struct SendMessageRequest: Codable, Equatable, Sendable {
     /// Future send time (epoch ms).
     public var scheduledAt: Int?
     public var deliveryMode: MessageDeliveryMode?
+    public var followUpIntent: FollowUpIntent?
 
     public init(
         text: String,
         localId: String? = nil,
         attachments: [AttachmentMetadata]? = nil,
         scheduledAt: Int? = nil,
-        deliveryMode: MessageDeliveryMode? = nil
+        deliveryMode: MessageDeliveryMode? = nil,
+        followUpIntent: FollowUpIntent? = nil
     ) {
         self.text = text
         self.localId = localId
         self.attachments = attachments
         self.scheduledAt = scheduledAt
         self.deliveryMode = deliveryMode
+        self.followUpIntent = followUpIntent
     }
 }
 

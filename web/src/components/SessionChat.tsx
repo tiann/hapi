@@ -2,7 +2,7 @@ import { BranchConversationDialog } from '@/components/BranchConversationDialog'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { PRESERVE_SESSION_SIDEBAR_SCROLL } from '@/lib/sessionNavigation'
 import { AssistantRuntimeProvider, useAui, useAuiState } from '@assistant-ui/react'
 import { DragDropZone } from '@/components/AssistantChat/DragDropZone'
@@ -65,7 +65,6 @@ import { assignThreadMessageIds, findLatestCompletedBoundaryId, useHappyRuntime 
 import { resolveAssistantForkPointsForCanonicalBlocks } from '@/lib/assistant-fork-points'
 import {
     getRestoredComposerSendIntent,
-    resolveMessageDeliveryMode,
     type ComposerSendIntent,
 } from '@/lib/messageDelivery'
 import type { MessageDeliveryMode } from '@hapi/protocol'
@@ -701,6 +700,7 @@ type SessionChatProps = {
         attachments?: AttachmentMetadata[],
         scheduledAt?: number | null,
         deliveryMode?: MessageDeliveryMode,
+        followUpIntent?: ComposerSendIntent,
     ) => Promise<SendMessageAcceptance | false>
     resolveSessionIdForUpload?: (sessionId: string) => Promise<string>
     onUploadSessionResolved?: (sessionId: string) => void
@@ -1131,7 +1131,7 @@ function SessionChatInner(props: SessionChatProps) {
             text: string,
             attachments?: AttachmentMetadata[],
             scheduledAt?: number | null,
-            deliveryMode: MessageDeliveryMode = 'queue',
+            followUpIntent?: ComposerSendIntent,
         ): Promise<{ attemptId: string | null } | false> => {
             if (
                 scratchlistMode
@@ -1169,7 +1169,8 @@ function SessionChatInner(props: SessionChatProps) {
                     text,
                     ordered,
                     scheduledAt,
-                    deliveryMode,
+                    'queue',
+                    followUpIntent,
                 )
                 if (accepted) {
                     // Hub blobs were copied into the normal upload dir; drop the
@@ -1186,7 +1187,9 @@ function SessionChatInner(props: SessionChatProps) {
                 await navigate({ to: '/sessions/$sessionId', params: { sessionId: result.sessionId }, ...PRESERVE_SESSION_SIDEBAR_SCROLL })
                 return { attemptId: null }
             }
-            return props.onSend(text, attachments, scheduledAt, deliveryMode)
+            return followUpIntent
+                ? props.onSend(text, attachments, scheduledAt, 'queue', followUpIntent)
+                : props.onSend(text, attachments, scheduledAt, 'queue')
         },
         [props.onSend, props.api, props.session.id, props.session.metadata?.capabilities?.concurrentClients, navigate, scratchlist, scratchlistMode],
     )
@@ -1321,6 +1324,16 @@ function SessionChatInner(props: SessionChatProps) {
     const sessionMachineId = props.session.metadata?.machineId ?? null
     const addToast = useOptionalAddToast()
     const inputTranslation = useSessionInputTranslation(props.api, props.session)
+    const canSteerFollowUp = props.session.active && props.session.thinking && !controlledByUser
+        && Boolean(props.session.agentState?.followUpSteerTurnId)
+        && Object.keys(props.session.agentState?.requests ?? {}).length === 0
+    const followUpSettingsQuery = useQuery({
+        queryKey: queryKeys.hubSettings,
+        queryFn: () => props.api.getHubSettings(),
+        enabled: canSteerFollowUp,
+        staleTime: 30_000,
+        retry: false,
+    })
     const inputTranslationToggle = inputTranslation.toggle
     const handleToggleInputTranslation = useCallback(() => {
         void inputTranslationToggle().catch((error: unknown) => {
@@ -2220,16 +2233,10 @@ function SessionChatInner(props: SessionChatProps) {
         // upstream review on PR #798: [Major] "Clear accepted scheduled
         // chat sends after scratchlist fallback".)
         const routedToScratchlist = shouldRouteToScratchlist(scratchlistMode, attachments, scheduledAt)
-        const deliveryMode = resolveMessageDeliveryMode({
-            agentFlavor,
-            // Do not use assistant-ui's broader `isRunning` here: a
-            // child-agent run is not the Pi main session's steer target.
-            isSessionThinking: props.session.thinking,
-            intent,
-            scheduledAt,
-            routesToScratchlist: routedToScratchlist,
-        })
-        const accepted = await onSendForComposer(text, attachments, scheduledAt, deliveryMode)
+        const followUpIntent = props.session.active && scheduledAt == null && !scratchlistMode
+            ? intent
+            : undefined
+        const accepted = await onSendForComposer(text, attachments, scheduledAt, followUpIntent)
         if (!accepted) return
         if (!routedToScratchlist) {
             // Clear pendingSchedule only after the mutation is actually
@@ -2242,7 +2249,7 @@ function SessionChatInner(props: SessionChatProps) {
             updatePendingSchedule(null)
             setForceScrollToken((token) => token + 1)
         }
-    }, [agentFlavor, onSendForComposer, props.session.thinking, scratchlistMode, updatePendingSchedule])
+    }, [onSendForComposer, props.session.active, scratchlistMode, updatePendingSchedule])
 
     const attachmentAdapter = useMemo(() => {
         if (props.session.active && scratchlistMode) {
@@ -2613,6 +2620,7 @@ function SessionChatInner(props: SessionChatProps) {
                         resolveSessionMentionTooltip={resolveSessionMentionTooltip}
                         disabled={props.isSending}
                         pendingSchedule={pendingSchedule}
+                        followUpDefault={canSteerFollowUp ? followUpSettingsQuery.data?.followUpDefault : undefined}
                         onSchedule={updatePendingSchedule}
                         onClearSchedule={() => updatePendingSchedule(null)}
                         permissionMode={props.session.permissionMode}

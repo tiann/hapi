@@ -3,6 +3,7 @@ import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promi
 import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { withSettingsFileLock } from '@hapi/protocol/settingsFileLock'
+import type { MessageDeliveryMode } from '@hapi/protocol/apiTypes'
 
 export interface Settings {
     machineId?: string
@@ -60,6 +61,7 @@ export interface Settings {
      * `metadata.translateInput` follow it. Default off.
      */
     translateInputByDefault?: boolean
+    followUpDefault?: MessageDeliveryMode
     /**
      * Hub-side provider API keys / endpoints managed from Settings.
      * Env vars still win when set at process start (ops override).

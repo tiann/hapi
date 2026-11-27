@@ -88,7 +88,7 @@ import type {
 } from '@hapi/protocol/apiTypes'
 import { fetchThroughAuthProxy } from '@/api/authProxy'
 import { FOLLOW_SESSION_REDIRECTS_HEADER } from '@hapi/protocol'
-import type { SessionReadState, SessionReadStateRequest, AgentFlavor, MessageDeliveryMode } from '@hapi/protocol'
+import type { SessionReadState, SessionReadStateRequest, AgentFlavor, FollowUpIntent, MessageDeliveryMode } from '@hapi/protocol'
 import type { PasskeyListResponse, PasskeyBrowserStartRequest, PasskeyBrowserStartResponse, PasskeyBrowserExchangeResponse } from '@hapi/protocol'
 
 import type { CancelMessageResponse, SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
@@ -878,6 +878,7 @@ export class ApiClient {
         attachments?: AttachmentMetadata[],
         scheduledAt?: number | null,
         deliveryMode?: MessageDeliveryMode,
+        followUpIntent?: FollowUpIntent,
     ): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/messages`, {
             method: 'POST',
@@ -887,6 +888,7 @@ export class ApiClient {
                 attachments: attachments ?? undefined,
                 scheduledAt: scheduledAt ?? undefined,
                 deliveryMode: deliveryMode ?? undefined,
+                followUpIntent,
             })
         })
     }

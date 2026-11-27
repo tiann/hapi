@@ -484,6 +484,8 @@ export const AgentStateSchema = z.object({
     // True while the CLI is delivering a queued message into the active turn
     // (Steer). Surfaced so the web can reflect the inject in progress.
     steeringActive: z.boolean().nullish(),
+    // The active turn that accepts a one-shot composer steer.
+    followUpSteerTurnId: z.string().nullish(),
     // The mode the session was started in. Persisted so reopen/resume can
     // re-spawn in the same mode — notably 'pty', which has no agent terminal
     // otherwise (a reopened PTY session would silently fall back to 'remote').

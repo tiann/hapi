@@ -11,7 +11,7 @@ import {
 } from '@/lib/message-window-store'
 import { usePlatform } from '@/hooks/usePlatform'
 import type { MessageDeliveryMode } from '@hapi/protocol'
-import { getRetryDeliveryMode } from '@/lib/messageDelivery'
+import { getRetryDeliveryMode, type ComposerSendIntent } from '@/lib/messageDelivery'
 
 type SendMessageInput = {
     sessionId: string
@@ -21,6 +21,7 @@ type SendMessageInput = {
     attachments?: AttachmentMetadata[]
     scheduledAt?: number | null
     deliveryMode: MessageDeliveryMode
+    followUpIntent?: ComposerSendIntent
 }
 
 export type SendMessageAcceptance = {
@@ -194,6 +195,7 @@ export function useSendMessage(
         attachments?: AttachmentMetadata[],
         scheduledAt?: number | null,
         deliveryMode?: MessageDeliveryMode,
+        followUpIntent?: ComposerSendIntent,
     ) => Promise<SendMessageAcceptance | false>
     retryMessage: (localId: string) => boolean
     isSending: boolean
@@ -216,6 +218,7 @@ export function useSendMessage(
                 input.attachments,
                 input.scheduledAt,
                 input.deliveryMode,
+                ...(input.followUpIntent ? [input.followUpIntent] : []),
             )
         },
         onMutate: async (input) => {
@@ -270,6 +273,7 @@ export function useSendMessage(
         attachments?: AttachmentMetadata[],
         scheduledAt?: number | null,
         deliveryMode: MessageDeliveryMode = 'queue',
+        followUpIntent?: ComposerSendIntent,
     ): Promise<SendMessageAcceptance | false> => {
         if (!api) {
             options?.onBlocked?.('no-api')
@@ -296,6 +300,7 @@ export function useSendMessage(
                 const resolved = await options.resolveSessionId(sessionId)
                 targetSessionId = resolved.sessionId
                 if (resolved.resumed) {
+                    followUpIntent = undefined
                     // Await draft transfer / navigation before the mutation so
                     // hidden inactive attachments move with the resumed id
                     // (including same-id PTY/Pi/Cursor resumes).
@@ -346,6 +351,7 @@ export function useSendMessage(
             attachments: sendAttachments,
             scheduledAt,
             deliveryMode,
+            followUpIntent,
         })
         return { attemptId: localId }
     }

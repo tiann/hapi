@@ -209,6 +209,10 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
     protected onResponseReceived(_response: TResponse): void {
     }
 
+    hasPendingPermissionRequests(): boolean {
+        return this.pendingRequests.size > 0 || this.inFlightResponses.size > 0;
+    }
+
     protected resolveAutoApprovalDecision(
         mode: PermissionMode | undefined,
         toolName: string,

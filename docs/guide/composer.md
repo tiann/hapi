@@ -20,7 +20,9 @@ Each queued row has:
 - **Cancel** — removes it.
 - **Steer** — shown only when the agent supports it (see below).
 
-Sending in the web app always queues. To push a queued message into the running turn, press its **Steer** button.
+Set **Follow-up default** under **Settings → Chat → Input** to choose Queue or Steer for this Hub. Queue is the initial default. You can still steer a queued message from its **Steer** button.
+
+For a single follow-up, right-click **Send** on desktop Web or long-press it on a touchscreen and choose a delivery mode. On desktop Web, **Alt/Option+Enter** sends the draft with the other mode.
 
 ### Steer
 
@@ -40,9 +42,11 @@ Steer appears only while the session is active, a turn is running, and the sessi
 
 If HAPI cannot confirm whether a steer reached the agent, the row says so and offers **Retry** or **Cancel**. A failed steer leaves the message in the queue.
 
-### On iOS and Android
+### Steer when sending
 
-The queued-message bar works the same way, with **Steer**, **Edit**, and **Cancel** per row. The native apps also let you steer at send time: while a steerable turn is running, **long-press Send** and choose **Send & steer into current turn**. A normal tap queues.
+With an updated Claude remote or Codex runner, choosing Steer at send time offers the message to the active turn. Claude's running tools can finish and Claude then reads the follow-up. When Claude is waiting for an answer or approval, or when the active turn ends before delivery, the message stays queued. Other runners can still offer the per-message **Steer** action listed above.
+
+On iOS and Android, long-press **Send** to pick a mode for the draft. An ordinary tap uses the Hub default, just as it does on Web.
 
 ## Scheduled send
 

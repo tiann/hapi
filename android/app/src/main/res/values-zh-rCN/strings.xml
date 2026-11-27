@@ -356,7 +356,9 @@
     <string name="chat_composer_send">发送</string>
     <string name="chat_composer_abort">中止当前回合</string>
     <string name="chat_mention_suggestions">提及建议</string>
-    <string name="chat_send_steer">发送并插入当前回合</string>
+    <string name="chat_send_queue">排到下一回合</string>
+    <string name="chat_send_steer">插入当前回合</string>
+    <string name="chat_send_default">%1$s（默认）</string>
     <string name="chat_schedule_send">定时发送</string>
     <string name="chat_schedule_capsule">定时发送 · %1$s</string>
     <string name="chat_schedule_clear">取消定时</string>

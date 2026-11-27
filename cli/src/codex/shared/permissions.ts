@@ -131,6 +131,11 @@ export class SharedCodexPermissions {
         }
     }
 
+    hasPendingRequests(threadId: string, turnId: string): boolean {
+        return [...this.pending.values()].some(request =>
+            request.threadId === threadId && (request.turnId === undefined || request.turnId === turnId));
+    }
+
     close(): void {
         this.closed = true;
         for (const request of [...this.pending.values()]) this.resolved(request.threadId, request.nativeId, 'canceled');

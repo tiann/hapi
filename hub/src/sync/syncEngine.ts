@@ -12,7 +12,7 @@ import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
 } from '@hapi/protocol/runnerCapabilities'
-import type { AbortChunkedUploadResponse, CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, InitChunkedUploadRequest, InitChunkedUploadResponse, MessageContextResponse, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse, UploadChunkResponse } from '@hapi/protocol/apiTypes'
+import type { AbortChunkedUploadResponse, CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, FollowUpIntent, InitChunkedUploadRequest, InitChunkedUploadResponse, MessageContextResponse, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse, UploadChunkResponse } from '@hapi/protocol/apiTypes'
 import { FORK_PREVIEW_TAIL_ROWS, type ForkBoundary, type ForkBoundaryErrorCode, type ForkPreviewRequest, type ForkPreviewResponse, type ForkPreviewRow } from '@hapi/protocol/forkBoundary'
 import type { UsageQueryAgent, UsageQueryAgentSettings, UsageQueryResult, UsageQuerySettingsResponse, UsageQueryTemplate } from '@hapi/protocol/usageQuery'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
@@ -2050,15 +2050,25 @@ export class SyncEngine {
             sentFrom?: 'telegram-bot' | 'webapp' | 'hapi-system'
             scheduledAt?: number | null
             deliveryMode?: MessageDeliveryMode
+            followUpIntent?: FollowUpIntent
         }
     ): Promise<void> {
         if (this.historyActionsInFlight.has(sessionId) || this.openCodeRewindPending(sessionId)) {
             throw new Error('Conversation history action already in progress')
         }
-        if (!this.sessionCache.getSession(sessionId)?.thinking) {
+        const session = this.sessionCache.getSession(sessionId)
+        const expectedFollowUpTurnId = session?.active && payload.scheduledAt == null
+            && !payload.text.trimStart().startsWith('/')
+            && (payload.followUpIntent === 'default' || payload.followUpIntent === 'steer')
+            ? session.agentState?.followUpSteerTurnId
+            : null
+        if (!session?.thinking) {
             this.automaticTitleSuggestionService.onTurnStarted(sessionId)
         }
-        const { actualSessionId, createdAt: activeTurnStartedAt } = await this.messageService.sendMessage(sessionId, payload)
+        const { actualSessionId, createdAt: activeTurnStartedAt, insertedMessageId } = await this.messageService.sendMessage(
+            sessionId,
+            payload.followUpIntent === undefined ? payload : { ...payload, deliveryMode: 'queue' }
+        )
         const current = this.store.sessions.getSession(actualSessionId)
         const metadata = current?.metadata as Record<string, unknown> | null | undefined
         if (current && typeof metadata?.codexImportedAt === 'number') {
@@ -2069,6 +2079,23 @@ export class SyncEngine {
         }
         this.sessionCache.markMessageQueued(actualSessionId, Date.now(), activeTurnStartedAt)
         this.sessionCache.recordSessionActivity(actualSessionId, Date.now())
+        if (insertedMessageId && expectedFollowUpTurnId && actualSessionId === sessionId
+            && (payload.followUpIntent === 'steer' || await this.isFollowUpSteerDefault())) {
+            // The durable send is complete even if the runner takes time to confirm steering.
+            void this.steerQueuedMessage(sessionId, insertedMessageId, expectedFollowUpTurnId)
+                .catch((error) => console.warn('[follow-up] Failed to attempt steer:', error))
+        }
+    }
+
+    private async isFollowUpSteerDefault(): Promise<boolean> {
+        const dataDir = this.resolveSettingsDataDir()
+        if (!dataDir) return false
+        try {
+            const settings = await readSettingsOrThrowCached(getSettingsFile(dataDir))
+            return settings.followUpDefault === 'steer'
+        } catch {
+            return false
+        }
     }
 
     async cancelQueuedMessage(
@@ -2095,12 +2122,17 @@ export class SyncEngine {
      */
     async steerQueuedMessage(
         sessionId: string,
-        messageId: string
+        messageId: string,
+        expectedFollowUpTurnId?: string
     ): Promise<SteerQueuedMessageResponse> {
         if (this.openCodeRewindPending(sessionId)) return { status: 'failed', error: 'OpenCode rewind requires reconciliation', localId: null }
         const session = this.getSession(sessionId)
         if (!session) {
             return { status: 'failed', error: 'Session not found', localId: null }
+        }
+        if (expectedFollowUpTurnId !== undefined
+            && (!session.active || session.agentState?.followUpSteerTurnId !== expectedFollowUpTurnId)) {
+            return { status: 'failed', error: 'Active turn changed', localId: null }
         }
         if (!isSteeringSupportedForSession(session.metadata)) {
             // An agy session gets its ACP marker only once its CLI has picked
@@ -2146,7 +2178,9 @@ export class SyncEngine {
 
         let failure: string
         try {
-            const result = await this.rpcGateway.steerQueuedMessage(sessionId, localId)
+            const result = expectedFollowUpTurnId === undefined
+                ? await this.rpcGateway.steerQueuedMessage(sessionId, localId)
+                : await this.rpcGateway.steerQueuedMessage(sessionId, localId, expectedFollowUpTurnId)
             const settled = this.store.messages.lookupQueuedMessage(sessionId, messageId)
             if (settled.status === 'invoked') return { status: 'invoked', message: settled.message }
             if (result.steered) {

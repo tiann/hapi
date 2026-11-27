@@ -182,6 +182,7 @@ function ComposerHarness(props: {
     initialText: string
     initialSchedule?: PendingSchedule | null
     piRunning?: boolean
+    followUpDefault?: 'queue' | 'steer'
     abortPending?: boolean
     controls: { current: HarnessControls | null }
 }) {
@@ -248,6 +249,7 @@ function ComposerHarness(props: {
                 )}
                 agentFlavor="pi"
                 thinking={props.piRunning}
+                followUpDefault={props.followUpDefault}
                 model="pi-model"
                 piModels={[{ provider: 'pi', modelId: 'pi-model', name: 'Pi model' }]}
                 onModelChange={(model) => runtime.modelChanges.push(model)}
@@ -262,12 +264,13 @@ function renderComposer(
     initialSchedule: PendingSchedule | null = { type: 'absolute', ms: 1234 },
     piRunning = false,
     composerEnterBehavior: 'send' | 'newline' = 'send',
+    followUpDefault?: 'queue' | 'steer',
 ) {
     const controls: { current: HarnessControls | null } = { current: null }
     runtime.sentIntents = []
     runtime.modelChanges = []
     runtime.composerEnterBehavior = composerEnterBehavior
-    render(<ComposerHarness initialText={initialText} initialSchedule={initialSchedule} piRunning={piRunning} controls={controls} />)
+    render(<ComposerHarness initialText={initialText} initialSchedule={initialSchedule} piRunning={piRunning} followUpDefault={followUpDefault} controls={controls} />)
     return controls
 }
 
@@ -557,16 +560,29 @@ describe('HappyComposer send intent gestures', () => {
         runtime.sentIntents = []
     })
 
-    it('ignores Alt/Option+Enter (the old explicit-queue gesture) entirely', () => {
+    it('ignores Alt/Option+Enter when the turn cannot steer', () => {
         renderComposer('follow-up', null, true)
 
         fireEvent.keyDown(input(), { key: 'Enter', altKey: true })
 
-        // Every send now queues by default (issue #1466); the Alt+Enter
-        // gesture was removed with the Pi automatic steer.
         expect(runtime.sentIntents).toEqual([])
         expect(runtime.pendingSendIntentRef?.current).toBe('default')
     })
+
+    it.each([['queue', 'steer'], ['steer', 'queue']] as const)(
+        'uses the opposite of the %s default for one Alt/Option+Enter send',
+        (followUpDefault, expected) => {
+            renderComposer('follow-up', null, true, 'newline', followUpDefault)
+
+            fireEvent.keyDown(input(), { key: 'Enter', shiftKey: true })
+            fireEvent.keyDown(input(), { key: 'Enter', altKey: true, isComposing: true })
+            expect(runtime.sentIntents).toEqual([])
+
+            fireEvent.keyDown(input(), { key: 'Enter', altKey: true })
+            expect(runtime.sentIntents).toEqual([expected])
+            expect(runtime.pendingSendIntentRef?.current).toBe('default')
+        },
+    )
 
     it('uses default intent for the configured normal Enter send', () => {
         renderComposer('ordinary send', null, true)

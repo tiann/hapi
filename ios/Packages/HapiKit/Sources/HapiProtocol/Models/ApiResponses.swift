@@ -84,14 +84,16 @@ public struct HubFeaturesResponse: Codable, Equatable, Sendable {
 }
 
 /// Typed subset of `GET /api/hub-settings` — only what the app reads.
-/// Readable by every namespace; missing fields (older hubs) decode as off.
+/// Readable by every namespace; older hubs may omit fields.
 public struct HubSettingsResponse: Codable, Equatable, Sendable {
     /// Hub-wide input-translation default for sessions without an explicit
     /// `metadata.translateInput`.
     public var translateInputByDefault: Bool?
+    public var followUpDefault: MessageDeliveryMode?
 
-    public init(translateInputByDefault: Bool? = nil) {
+    public init(translateInputByDefault: Bool? = nil, followUpDefault: MessageDeliveryMode? = nil) {
         self.translateInputByDefault = translateInputByDefault
+        self.followUpDefault = followUpDefault
     }
 
     public var isTranslateInputByDefault: Bool {

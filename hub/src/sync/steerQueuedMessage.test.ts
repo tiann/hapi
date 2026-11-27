@@ -1,4 +1,8 @@
 import { describe, expect, it, spyOn } from 'bun:test'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { getSettingsFile, updateSettings } from '../config/settings'
 import { Store } from '../store'
 import { RpcRegistry } from '../socket/rpcRegistry'
 import { SyncEngine } from './syncEngine'
@@ -14,6 +18,70 @@ function createEngine() {
     const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
     return { store, engine }
 }
+
+describe('composer follow-up delivery', () => {
+    it('uses the Hub default, preserves one-shot and legacy queue, and steers a duplicate only once', async () => {
+        const dataDir = await mkdtemp(join(tmpdir(), 'hapi-follow-up-'))
+        const { store, engine } = createEngine()
+        engine.setSettingsDataDirForTests(dataDir)
+        const session = engine.getOrCreateSession(
+            'composer-follow-up',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            { followUpSteerTurnId: 'turn-1' },
+            'default'
+        )
+        engine.handleSessionAlive({ sid: session.id, time: Date.now(), thinking: true })
+        const steer = spyOn(RpcGateway.prototype, 'steerQueuedMessage').mockImplementation(async (sid, localId) => {
+            expect(store.messages.lookupQueuedMessage(sid, localId).status).toBe('queued')
+            return { steered: true }
+        })
+        try {
+            await engine.sendMessage(session.id, { text: 'initial default', localId: 'stock', followUpIntent: 'default' })
+            expect(steer).not.toHaveBeenCalled()
+            await engine.sendMessage(session.id, { text: 'steer on purpose', localId: 'override', followUpIntent: 'steer' })
+            expect(steer).toHaveBeenCalledWith(session.id, 'override', 'turn-1')
+            steer.mockClear()
+            await updateSettings(getSettingsFile(dataDir), current => ({
+                settings: { ...current, followUpDefault: 'steer' }, result: undefined
+            }))
+            await engine.sendMessage(session.id, { text: 'queued on purpose', localId: 'queue', followUpIntent: 'queue' })
+            await engine.sendMessage(session.id, { text: 'legacy client', localId: 'legacy' })
+            await engine.sendMessage(session.id, { text: '/compact', localId: 'command', followUpIntent: 'default' })
+            expect(steer).not.toHaveBeenCalled()
+
+            const correction = { text: 'new direction', localId: 'same-id', followUpIntent: 'default' as const }
+            await Promise.all([engine.sendMessage(session.id, correction), engine.sendMessage(session.id, correction)])
+            expect(steer).toHaveBeenCalledTimes(1)
+            expect(steer).toHaveBeenCalledWith(session.id, 'same-id', 'turn-1')
+        } finally {
+            steer.mockRestore()
+            engine.stop()
+            await rm(dataDir, { recursive: true, force: true })
+        }
+    })
+
+    it('queues with an older runner and rejects a stale guarded steer', async () => {
+        const { store, engine } = createEngine()
+        const session = engine.getOrCreateSession(
+            'composer-no-steer',
+            { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
+            null,
+            'default'
+        )
+        engine.handleSessionAlive({ sid: session.id, time: Date.now(), thinking: true })
+        const steer = spyOn(RpcGateway.prototype, 'steerQueuedMessage').mockResolvedValue({ steered: true })
+        try {
+            await engine.sendMessage(session.id, { text: 'correction', localId: 'one', followUpIntent: 'steer' })
+            expect(store.messages.lookupQueuedMessage(session.id, 'one').status).toBe('queued')
+            expect(await engine.steerQueuedMessage(session.id, 'one', 'ended-turn'))
+                .toMatchObject({ status: 'failed', error: 'Active turn changed' })
+            expect(steer).not.toHaveBeenCalled()
+        } finally {
+            steer.mockRestore()
+            engine.stop()
+        }
+    })
+})
 
 describe('SyncEngine.steerQueuedMessage', () => {
     it.each(['negative reply', 'lost reply'] as const)('returns the consumed row when a %s races native acceptance', async (outcome) => {

@@ -88,13 +88,17 @@ struct EndpointRequestTests {
         #expect(bodyString(requests.last) == "{\"translateInput\":true}")
     }
 
-    @Test func hubSettingsDecodesTheTranslationDefault() async throws {
+    @Test func hubSettingsDecodesTheTranslationAndFollowUpDefaults() async throws {
         let harness = try makeHarness(jwt: freshJWT())
-        await harness.performer.enqueue(json: #"{"sessionSummaryContract":false,"translateInputByDefault":true}"#)
+        await harness.performer.enqueue(json: #"{"translateInputByDefault":true,"followUpDefault":"steer"}"#)
         await harness.performer.enqueue(json: #"{"sessionSummaryContract":false}"#)
 
-        #expect(try await harness.client.hubSettings().isTranslateInputByDefault)
-        #expect(try await !harness.client.hubSettings().isTranslateInputByDefault)
+        let settings = try await harness.client.hubSettings()
+        #expect(settings.isTranslateInputByDefault)
+        #expect(settings.followUpDefault == .steer)
+        let legacy = try await harness.client.hubSettings()
+        #expect(!legacy.isTranslateInputByDefault)
+        #expect(legacy.followUpDefault == nil)
         let requests = await harness.performer.requests
         #expect(requests.first?.url?.absoluteString == "\(testHubURLString)/api/hub-settings")
         #expect(requests.first?.httpMethod == "GET")

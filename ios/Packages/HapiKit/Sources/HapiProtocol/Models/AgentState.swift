@@ -98,6 +98,8 @@ public struct AgentState: Codable, Equatable, Sendable {
     /// Current actionable shared Codex proposal's tool-call id. Nil withdraws
     /// the plan menu; proposals are not entries in `requests`.
     public var codexPlanProposalId: String?
+    /// A live turn that supports a guarded follow-up.
+    public var followUpSteerTurnId: String?
     /// Pending requests keyed by request id.
     public var requests: [String: AgentStateRequest]?
     /// Resolved requests keyed by request id.
@@ -108,11 +110,13 @@ public struct AgentState: Codable, Equatable, Sendable {
         startingMode: SessionStartingMode? = nil,
         requests: [String: AgentStateRequest]? = nil,
         completedRequests: [String: AgentStateCompletedRequest]? = nil,
-        codexPlanProposalId: String? = nil
+        codexPlanProposalId: String? = nil,
+        followUpSteerTurnId: String? = nil
     ) {
         self.controlledByUser = controlledByUser
         self.startingMode = startingMode
         self.codexPlanProposalId = codexPlanProposalId
+        self.followUpSteerTurnId = followUpSteerTurnId
         self.requests = requests
         self.completedRequests = completedRequests
     }

@@ -43,6 +43,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryInChat: false,
             autoBridgeTransientModelErrors: false,
             translateInputByDefault: false,
+            followUpDefault: 'queue',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
     })
@@ -60,6 +61,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryInChat: false,
             autoBridgeTransientModelErrors: false,
             translateInputByDefault: false,
+            followUpDefault: 'queue',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
 
@@ -69,6 +71,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryInChat: false,
             autoBridgeTransientModelErrors: false,
             translateInputByDefault: false,
+            followUpDefault: 'queue',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
     })
@@ -88,6 +91,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryInChat: true,
             autoBridgeTransientModelErrors: false,
             translateInputByDefault: false,
+            followUpDefault: 'queue',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
     })
@@ -105,6 +109,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryInChat: false,
             autoBridgeTransientModelErrors: true,
             translateInputByDefault: false,
+            followUpDefault: 'queue',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
     })
@@ -128,6 +133,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryInChat: false,
             autoBridgeTransientModelErrors: false,
             translateInputByDefault: false,
+            followUpDefault: 'queue',
             peerSpawnDefaults: {
                 agent: 'cursor',
                 permissionMode: 'yolo',
@@ -170,6 +176,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryInChat: false,
             autoBridgeTransientModelErrors: false,
             translateInputByDefault: false,
+            followUpDefault: 'queue',
             peerSpawnDefaults: {
                 agent: 'codex',
                 permissionMode: 'default',
@@ -226,6 +233,20 @@ describe('GET/PUT /api/hub-settings', () => {
         expect(response.status).toBe(400)
     })
 
+    it('persists the Hub follow-up default across route instances', async () => {
+        const { app, dataDir } = await createApp()
+        const updated = await app.request('/api/hub-settings', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ followUpDefault: 'steer' })
+        })
+        expect(updated.status).toBe(200)
+        expect(await updated.json()).toMatchObject({ followUpDefault: 'steer' })
+
+        const reader = createHubSettingsRoutes(dataDir)
+        expect(await (await reader.request('/hub-settings')).json()).toMatchObject({ followUpDefault: 'steer' })
+    })
+
     it('rejects non-default namespaces for PUT but allows GET', async () => {
         const { app, dataDir } = await createApp('default')
         await writeSessionSummaryInChatEnabled(dataDir, true)
@@ -244,13 +265,14 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryInChat: true,
             autoBridgeTransientModelErrors: false,
             translateInputByDefault: false,
+            followUpDefault: 'queue',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
 
         const put = await tenantApp.request('/api/hub-settings', {
             method: 'PUT',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ sessionSummaryContract: true })
+            body: JSON.stringify({ followUpDefault: 'steer' })
         })
         expect(put.status).toBe(403)
     })
@@ -266,6 +288,7 @@ describe('GET/PUT /api/hub-settings', () => {
             sessionSummaryInChat: true,
             autoBridgeTransientModelErrors: true,
             translateInputByDefault: false,
+            followUpDefault: 'queue',
             peerSpawnDefaults: stockPeerSpawnDefaults
         })
     })

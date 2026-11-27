@@ -53,6 +53,17 @@ vi.mock('../codexAppServerClient', () => ({
                 this.queue.push(entry);
                 return { queuedSubmission: entry };
             }
+            if (method === 'thread/queue/delete') {
+                const length = this.queue.length;
+                this.queue = this.queue.filter(item => item.id !== params.queuedSubmissionId);
+                return { deleted: this.queue.length < length };
+            }
+            if (method === 'turn/steer') {
+                if (!this.thread.turns.some(turn => turn.id === params.expectedTurnId && turn.status === 'inProgress')) {
+                    throw new Error('Active turn changed');
+                }
+                return { turnId: params.expectedTurnId };
+            }
             throw new Error(`Unexpected request: ${method}`);
         }
     },
@@ -849,8 +860,10 @@ describe('shared steering availability', () => {
     it('publishes root turn transitions, ignores child turns, and clears on shutdown', async () => {
         const f = await fixture();
         expect(f.state().steeringActive).toBe(false);
+        expect(f.state().followUpSteerTurnId).toBe(null);
         f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'turn' } });
         expect(f.state().steeringActive).toBe(true);
+        expect(f.state().followUpSteerTurnId).toBe('turn');
         f.native.notify('turn/completed', { threadId: 'thread', turn: { id: 'old-turn' } });
         expect(f.state().steeringActive).toBe(true);
         f.native.notify('turn/completed', { threadId: 'thread', turn: { id: 'turn', status: 'completed' } });
@@ -860,6 +873,64 @@ describe('shared steering availability', () => {
         f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'next' } });
         f.root.stopAccepting();
         expect(f.state().steeringActive).toBe(false);
+        expect(f.state().followUpSteerTurnId).toBe(null);
+    });
+
+    it('steers a composer follow-up after the message reaches the native queue', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        const request = vi.spyOn(f.root.client, 'request');
+        f.native.thread.turns = [{ id: 'turn', status: 'inProgress', items: [] }];
+        f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'turn' } });
+        f.submit('Also lint', 'follow-up');
+
+        const rpc = f.rpc.get(RPC_METHODS.SteerFollowUpMessage)!;
+        await expect(rpc({ localId: 'follow-up', expectedFollowUpTurnId: 'turn' })).resolves.toEqual({ steered: true });
+        expect(request).toHaveBeenCalledWith('turn/steer', expect.objectContaining({ expectedTurnId: 'turn' }));
+        expect(f.consumed).toHaveBeenCalledWith(['follow-up'], { steered: true });
+        expect(f.native.queue).toHaveLength(0);
+    });
+
+    it('keeps a queued follow-up out of a newer turn that started while it waited for the queue', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        const request = vi.spyOn(f.root.client, 'request');
+        f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'turn' } });
+        f.submit('Also lint', 'follow-up');
+        const rpc = f.rpc.get(RPC_METHODS.SteerFollowUpMessage)!;
+        const pending = rpc({ localId: 'follow-up', expectedFollowUpTurnId: 'turn' });
+        f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'next' } });
+
+        await expect(pending).resolves.toEqual({ steered: false, error: 'Active turn changed' });
+        expect(f.state().followUpSteerTurnId).toBe('next');
+        expect(request).not.toHaveBeenCalledWith('turn/steer', expect.anything());
+        expect(f.native.queue).toHaveLength(1);
+    });
+
+    it('restores the follow-up if a Codex question appears during native queue removal', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'turn' } });
+        const request = f.root.client.request.bind(f.root.client);
+        const spy = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            const response = await request(method, params);
+            if (method === 'thread/queue/delete') {
+                f.native.serverRequest({ id: 'native-question', method: 'item/tool/requestUserInput', params: {
+                    threadId: 'thread', turnId: 'turn', itemId: 'question',
+                    questions: [{ id: 'choice', header: 'Choose', question: 'Which?', options: [{ label: 'A', description: 'A' }] }]
+                } });
+                await vi.waitFor(() => expect(Object.keys(f.state().requests ?? {})).toHaveLength(1));
+            }
+            return response;
+        });
+        f.submit('Also lint', 'follow-up');
+
+        const rpc = f.rpc.get(RPC_METHODS.SteerFollowUpMessage)!;
+        await expect(rpc({ localId: 'follow-up', expectedFollowUpTurnId: 'turn' }))
+            .resolves.toEqual({ steered: false, error: 'Waiting for a user decision' });
+        expect(spy).not.toHaveBeenCalledWith('turn/steer', expect.anything());
+        expect(f.native.queue).toHaveLength(1);
+        expect(f.native.responses).toEqual([]);
     });
 
     it('reconciles native and Hub reconnects without publishing on every refresh', async () => {

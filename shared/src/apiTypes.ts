@@ -82,6 +82,9 @@ export const CreateSessionResponseSchema = z.object({
 
 export type CreateSessionResponse = z.infer<typeof CreateSessionResponseSchema>
 
+export const MessageDeliveryModeSchema = z.enum(['queue', 'steer'])
+export type MessageDeliveryMode = z.infer<typeof MessageDeliveryModeSchema>
+
 export const HubSettingsResponseSchema = z.object({
     sessionSummaryContract: z.boolean(),
     /** Show compact AGENT_NOTIFY_SUMMARY in chat (default off / hide). */
@@ -89,6 +92,7 @@ export const HubSettingsResponseSchema = z.object({
     autoBridgeTransientModelErrors: z.boolean(),
     /** Translate user prompts to English in sessions without an explicit per-session choice. */
     translateInputByDefault: z.boolean(),
+    followUpDefault: MessageDeliveryModeSchema.optional(),
     peerSpawnDefaults: ResolvedPeerSpawnDefaultsSchema
 })
 
@@ -100,6 +104,7 @@ export const UpdateHubSettingsRequestSchema = z
         sessionSummaryInChat: z.boolean().optional(),
         autoBridgeTransientModelErrors: z.boolean().optional(),
         translateInputByDefault: z.boolean().optional(),
+        followUpDefault: MessageDeliveryModeSchema.optional(),
         peerSpawnDefaults: PeerSpawnDefaultsSchema.optional()
     })
     .refine(
@@ -108,6 +113,7 @@ export const UpdateHubSettingsRequestSchema = z
             || data.sessionSummaryInChat !== undefined
             || data.autoBridgeTransientModelErrors !== undefined
             || data.translateInputByDefault !== undefined
+            || data.followUpDefault !== undefined
             || data.peerSpawnDefaults !== undefined,
         { message: 'At least one hub setting field is required' }
     )
@@ -792,15 +798,15 @@ export const MessagesQuerySchema = z.object({
 
 export type MessagesQuery = z.infer<typeof MessagesQuerySchema>
 
-export const MessageDeliveryModeSchema = z.enum(['queue', 'steer'])
-export type MessageDeliveryMode = z.infer<typeof MessageDeliveryModeSchema>
+export type FollowUpIntent = 'default' | MessageDeliveryMode
 
 export const SendMessageRequestSchema = z.object({
     text: z.string(),
     localId: z.string().min(1).optional(),
     attachments: z.array(AttachmentMetadataSchema).optional(),
     scheduledAt: z.number().int().positive().nullable().optional(),
-    deliveryMode: MessageDeliveryModeSchema.optional()
+    deliveryMode: MessageDeliveryModeSchema.optional(),
+    followUpIntent: z.enum(['default', ...MessageDeliveryModeSchema.options]).optional()
 }).refine(
     (data) => data.scheduledAt == null || typeof data.localId === 'string',
     { message: 'scheduledAt requires localId', path: ['localId'] }

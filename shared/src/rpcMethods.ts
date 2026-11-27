@@ -75,6 +75,7 @@ export const RPC_METHODS = {
     ListClaudeModels: 'listClaudeModels',
     /** Deliver one queued message into the active Pi turn (native steer). */
     SteerQueuedMessage: 'steer-queued-message',
+    SteerFollowUpMessage: 'steer-follow-up-message',
     ForkConversation: 'fork-conversation',
     PreviewForkBoundary: 'preview-fork-boundary',
     ForkArchivedCodex: 'fork-archived-codex',

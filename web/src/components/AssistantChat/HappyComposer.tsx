@@ -417,6 +417,7 @@ export function HappyComposer(props: {
      * queue request after a scratchlist/scheduled/failed early path.
      */
     pendingSendIntentRef?: MutableRefObject<ComposerSendIntent>
+    followUpDefault?: MessageDeliveryMode
     /** Shared order ref consumed by useHappyRuntime when the message is sent. */
     attachmentOrderRef?: MutableRefObject<string[]>
     /** Chip hover / aria-label resolver (SessionChat → useSessions). */
@@ -721,6 +722,10 @@ export function HappyComposer(props: {
             scratchlistMode: props.scratchlistMode ?? false,
         })
     const canSend = (hasText || hasAnyAttachments) && attachmentsReady && !controlsDisabled
+    const followUpDefault = canSend && pendingSchedule == null && !props.scratchlistMode && !sendError
+        && !trimmed.startsWith('/') && effectiveVoiceStatus !== 'connected' && effectiveVoiceStatus !== 'connecting'
+        ? props.followUpDefault
+        : undefined
 
     useEffect(() => {
         if (!sessionId) return
@@ -1392,6 +1397,15 @@ export function HappyComposer(props: {
             return
         }
 
+        if (key === 'Enter' && e.altKey && !e.ctrlKey && !e.metaKey && followUpDefault) {
+            e.preventDefault()
+            if (!e.repeat) {
+                flushAndSend(followUpDefault === 'queue' ? 'steer' : 'queue')
+                setShowContinueHint(false)
+            }
+            return
+        }
+
         // Enter with suggestions visible: select the suggestion
         if (key === 'Enter' && suggestions.length > 0) {
             e.preventDefault()
@@ -1494,6 +1508,7 @@ export function HappyComposer(props: {
         showSettings,
         dismissSettingsWithFocus,
         flushAndSend,
+        followUpDefault,
         isExpanded,
         handleExpandedToggle,
     ])
@@ -2598,6 +2613,7 @@ export function HappyComposer(props: {
                                 dictationCanDirectSend={dictationCanDirectSend}
                                 controlsDisabled={controlsDisabled}
                                 onSend={handleSend}
+                                followUpDefault={followUpDefault}
                                 onVoiceToggle={effectiveVoiceToggle ?? (() => {})}
                                 voiceLabel={dictationActive ? t('composer.dictate') : undefined}
                                 fillHeight={primaryFillHeight}

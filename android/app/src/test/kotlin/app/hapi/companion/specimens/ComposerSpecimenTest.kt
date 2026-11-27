@@ -140,7 +140,7 @@ class ComposerSpecimenTest {
     ) {
         ChatComposer(
             state = state,
-            onTextChange = { _, _, _ -> }, onSend = {}, onSendSteer = {}, onAbort = {},
+            onTextChange = { _, _, _ -> }, onSend = {}, onAbort = {},
             attachments = attachments,
             onAddAttachment = {},
             pendingSchedule = pendingSchedule,

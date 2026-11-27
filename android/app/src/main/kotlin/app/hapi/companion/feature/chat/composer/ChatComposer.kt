@@ -85,6 +85,7 @@ import app.hapi.companion.feature.chat.attachments.rememberChipThumbnail
 import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.companion.ui.theme.HapiTypography
 import app.hapi.companion.ui.theme.hapi
+import app.hapi.protocol.wire.FollowUpIntent
 import app.hapi.protocol.wire.SlashCommand
 import kotlinx.coroutines.delay
 
@@ -97,7 +98,7 @@ import kotlinx.coroutines.delay
  *
  * Tools are bare 20dp symbols whose state is color only; the trailing primary
  * action is the single filled shape: Stop while a turn runs with an empty
- * draft, otherwise Send (long-press offers "Send & steer" during a turn;
+ * draft, otherwise Send (long-press offers a choice for this follow-up;
  * Ctrl/⌘+Enter sends from a hardware keyboard with the same gate). Slash /
  * mention suggestions stay outside the card so the popup is never clipped.
  */
@@ -107,8 +108,7 @@ fun ChatComposer(
     state: ComposerUiState,
     /** User edit (text + live selection start/end) from the field's TextFieldValue, as one atomic report. */
     onTextChange: (String, Int, Int) -> Unit,
-    onSend: () -> Unit,
-    onSendSteer: () -> Unit,
+    onSend: (FollowUpIntent) -> Unit,
     onAbort: () -> Unit,
     modifier: Modifier = Modifier,
     attachments: List<ComposerAttachmentUi> = emptyList(),
@@ -290,7 +290,7 @@ fun ChatComposer(
                                     if (!submit) return@onPreviewKeyEvent false
                                     // Consume both edges so no newline lands; act on key-down only.
                                     if (event.type == KeyEventType.KeyDown && gate.action == ComposerPrimaryAction.Send && gate.canSubmit) {
-                                        onSend()
+                                        onSend(FollowUpIntent.Default)
                                     }
                                     true
                                 }
@@ -321,7 +321,7 @@ fun ChatComposer(
                                 state = state,
                                 gate = gate,
                                 onSend = onSend,
-                                onSendSteer = onSendSteer,
+                                hasSchedule = hasSchedule,
                                 onAbort = onAbort,
                                 modifier = Modifier.padding(end = 3.dp),
                             )
@@ -364,7 +364,7 @@ fun ChatComposer(
                                 state = state,
                                 gate = gate,
                                 onSend = onSend,
-                                onSendSteer = onSendSteer,
+                                hasSchedule = hasSchedule,
                                 onAbort = onAbort,
                             )
                         }
@@ -836,13 +836,15 @@ private fun MicButton(state: DictationState, onToggle: () -> Unit) {
 private fun PrimaryActionButton(
     state: ComposerUiState,
     gate: ComposerSendGate,
-    onSend: () -> Unit,
-    onSendSteer: () -> Unit,
+    onSend: (FollowUpIntent) -> Unit,
+    hasSchedule: Boolean,
     onAbort: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var steerMenuOpen by remember { mutableStateOf(false) }
     val canSubmit = gate.canSubmit
+    val offersFollowUp = gate.action == ComposerPrimaryAction.Send && canSubmit &&
+        state.canChooseFollowUpMode && !hasSchedule
+    var followUpMenuOpen by remember(offersFollowUp) { mutableStateOf(false) }
     Box(modifier) {
         when (gate.action) {
             ComposerPrimaryAction.Sending -> {
@@ -879,9 +881,9 @@ private fun PrimaryActionButton(
             }
             ComposerPrimaryAction.Send -> ComposerFilledButton(
                 contentDescription = stringResource(R.string.chat_composer_send),
-                onClick = onSend,
-                onLongClick = if (state.canSteer && canSubmit) {
-                    { steerMenuOpen = true }
+                onClick = { onSend(FollowUpIntent.Default) },
+                onLongClick = if (offersFollowUp) {
+                    { followUpMenuOpen = true }
                 } else {
                     null
                 },
@@ -896,13 +898,26 @@ private fun PrimaryActionButton(
                 )
             }
         }
-        if (gate.action == ComposerPrimaryAction.Send) {
-            DropdownMenu(expanded = steerMenuOpen, onDismissRequest = { steerMenuOpen = false }) {
+        if (offersFollowUp) {
+            val queueLabel = stringResource(R.string.chat_send_queue)
+            val steerLabel = stringResource(R.string.chat_send_steer)
+            DropdownMenu(expanded = followUpMenuOpen, onDismissRequest = { followUpMenuOpen = false }) {
                 DropdownMenuItem(
-                    text = { Text(stringResource(R.string.chat_send_steer)) },
+                    text = {
+                        Text(if (state.followUpDefaultIsSteer) queueLabel else stringResource(R.string.chat_send_default, queueLabel))
+                    },
                     onClick = {
-                        steerMenuOpen = false
-                        onSendSteer()
+                        followUpMenuOpen = false
+                        onSend(FollowUpIntent.Queue)
+                    },
+                )
+                DropdownMenuItem(
+                    text = {
+                        Text(if (state.followUpDefaultIsSteer) stringResource(R.string.chat_send_default, steerLabel) else steerLabel)
+                    },
+                    onClick = {
+                        followUpMenuOpen = false
+                        onSend(FollowUpIntent.Steer)
                     },
                 )
             }
@@ -920,12 +935,12 @@ private fun ChatComposerPreview() {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 ChatComposer(
                     state = ComposerUiState(text = "", isSending = false, canSteer = false),
-                    onTextChange = { _, _, _ -> }, onSend = {}, onSendSteer = {}, onAbort = {},
+                    onTextChange = { _, _, _ -> }, onSend = {}, onAbort = {},
                     dictation = DictationState.Idle,
                 )
                 ChatComposer(
                     state = ComposerUiState(text = "", isSending = false, canSteer = true),
-                    onTextChange = { _, _, _ -> }, onSend = {}, onSendSteer = {}, onAbort = {},
+                    onTextChange = { _, _, _ -> }, onSend = {}, onAbort = {},
                     onAddAttachment = {},
                     dictation = DictationState.Idle,
                 )
@@ -935,12 +950,12 @@ private fun ChatComposerPreview() {
                         isSending = false,
                         canSteer = true,
                     ),
-                    onTextChange = { _, _, _ -> }, onSend = {}, onSendSteer = {}, onAbort = {},
+                    onTextChange = { _, _, _ -> }, onSend = {}, onAbort = {},
                     dictation = DictationState.Idle,
                 )
                 ChatComposer(
                     state = ComposerUiState(text = "Sending…", isSending = true, canSteer = false),
-                    onTextChange = { _, _, _ -> }, onSend = {}, onSendSteer = {}, onAbort = {},
+                    onTextChange = { _, _, _ -> }, onSend = {}, onAbort = {},
                     onAddAttachment = {},
                     attachments = listOf(
                         ComposerAttachmentUi(
@@ -965,7 +980,7 @@ private fun AttachmentChipsComposerPreview() {
         Surface {
             ChatComposer(
                 state = ComposerUiState(text = "", isSending = false, canSteer = true),
-                onTextChange = { _, _, _ -> }, onSend = {}, onSendSteer = {}, onAbort = {},
+                onTextChange = { _, _, _ -> }, onSend = {}, onAbort = {},
                 onAddAttachment = {},
                 attachments = listOf(
                     ComposerAttachmentUi(
@@ -1005,7 +1020,7 @@ private fun RecordingComposerPreview() {
         Surface {
             ChatComposer(
                 state = ComposerUiState(text = "", isSending = false, canSteer = false),
-                onTextChange = { _, _, _ -> }, onSend = {}, onSendSteer = {}, onAbort = {},
+                onTextChange = { _, _, _ -> }, onSend = {}, onAbort = {},
                 dictation = DictationState.Recording(startedAtMs = System.currentTimeMillis() - 42_000),
             )
         }
@@ -1019,7 +1034,7 @@ private fun SlashDropdownComposerPreview() {
         Surface {
             ChatComposer(
                 state = ComposerUiState(text = "/co", isSending = false, canSteer = false),
-                onTextChange = { _, _, _ -> }, onSend = {}, onSendSteer = {}, onAbort = {},
+                onTextChange = { _, _, _ -> }, onSend = {}, onAbort = {},
                 dictation = DictationState.Idle,
                 slashSuggestions = listOf(
                     SlashCommand(
@@ -1046,7 +1061,7 @@ private fun MentionDropdownComposerPreview() {
         Surface {
             ChatComposer(
                 state = ComposerUiState(text = "@ref", isSending = false, canSteer = false),
-                onTextChange = { _, _, _ -> }, onSend = {}, onSendSteer = {}, onAbort = {},
+                onTextChange = { _, _, _ -> }, onSend = {}, onAbort = {},
                 dictation = DictationState.Idle,
                 mentionSuggestions = listOf(
                     MentionSuggestion.SessionMention(
@@ -1080,7 +1095,7 @@ private fun ScheduledComposerPreview() {
                     isSending = false,
                     canSteer = false,
                 ),
-                onTextChange = { _, _, _ -> }, onSend = {}, onSendSteer = {}, onAbort = {},
+                onTextChange = { _, _, _ -> }, onSend = {}, onAbort = {},
                 pendingSchedule = PendingSchedule.Preset("+30m"),
                 onScheduleSelected = {},
                 onClearSchedule = {},

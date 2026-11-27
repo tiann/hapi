@@ -268,7 +268,7 @@ struct ScratchlistComposerWorkflowTests {
         h.scratchlist.createResult = .created(entry())
         h.interactor.setComposerText("Next task")
         h.interactor.setComposerDestination(.scratchlist)
-        h.interactor.sendMessage(steer: true)
+        h.interactor.sendMessage(followUpIntent: .steer)
         try await expectEventually { !h.interactor.scratchlistBusy }
         #expect(h.interactor.composerText.isEmpty)
         #expect(h.interactor.composerDestination == .scratchlist)

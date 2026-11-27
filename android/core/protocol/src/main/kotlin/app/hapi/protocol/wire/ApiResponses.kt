@@ -384,6 +384,7 @@ data class TranscriptionProviderInfo(
 @Serializable
 data class HubSettingsResponse(
     val translateInputByDefault: Boolean = false,
+    val followUpDefault: String = "queue",
 )
 
 /** `inputTranslation` in `GET /api/features` — true when the hub has a translation provider. */

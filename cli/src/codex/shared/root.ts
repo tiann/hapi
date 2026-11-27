@@ -68,7 +68,7 @@ export class SharedCodexRoot {
     private latestTurn?: { id: string; status: string; planId?: string };
     private publishedPlanId: string | null | undefined;
     private submittingPlan = false;
-    private steeringActive: boolean | undefined;
+    private publishedSteerTurnId: string | null | undefined;
     private turnRevision = 0;
     private settingsRevision = 0;
     private refreshing?: Promise<void>;
@@ -181,7 +181,7 @@ export class SharedCodexRoot {
             // The native turn keeps running across a hub-only reconnect, so the
             // active generation ledger must survive it.
             this.projection?.resetAfterHubReconnect();
-            this.steeringActive = undefined;
+            this.publishedSteerTurnId = undefined;
             this.publishedPlanId = undefined;
             this.publishedCompactionIds = undefined;
             void this.refresh().then(() => this.refreshChildren(false)).then(() => this.queue.replay())
@@ -319,12 +319,16 @@ export class SharedCodexRoot {
         this.registerControls(); this.ready();
         this.heartbeat = setInterval(() => this.alive(), SESSION_KEEP_ALIVE_INTERVAL_MS); this.alive(); this.session.emitSessionReady();
     }
+    private steerableTurnId(): string | null {
+        if (this.stopping || this.closed || this.reconnecting || !this.client.isInitialized()) return null;
+        return this.currentTurn ?? null;
+    }
     private publishSteering(): void {
         this.publishCompaction();
-        const active = Boolean(this.currentTurn) && !this.stopping && !this.closed && !this.reconnecting && this.client.isInitialized();
-        if (this.steeringActive === active) return;
-        this.steeringActive = active;
-        this.session.updateAgentState(state => ({ ...state, steeringActive: active }));
+        const followUpSteerTurnId = this.steerableTurnId();
+        if (this.publishedSteerTurnId === followUpSteerTurnId) return;
+        this.publishedSteerTurnId = followUpSteerTurnId;
+        this.session.updateAgentState(state => ({ ...state, steeringActive: followUpSteerTurnId !== null, followUpSteerTurnId }));
     }
     private publishCompaction(): void {
         const active = this.compactingTurn && this.compactingTurn === this.currentTurn
@@ -704,6 +708,20 @@ export class SharedCodexRoot {
             const expectedTurnId = this.currentTurn;
             if (!expectedTurnId) return { steered: false, error: 'No active turn' };
             return this.queue.steer(localId, expectedTurnId);
+        });
+        rpc.registerHandler(RPC_METHODS.SteerFollowUpMessage, async raw => {
+            const { localId, expectedFollowUpTurnId } = z.object({
+                localId: z.string().min(1),
+                expectedFollowUpTurnId: z.string().min(1)
+            }).parse(raw);
+            if (expectedFollowUpTurnId !== this.steerableTurnId()) return { steered: false, error: 'Active turn changed' };
+            // The preceding socket message enqueues asynchronously; let it reach the native queue.
+            await this.work;
+            return this.queue.steer(localId, expectedFollowUpTurnId, undefined, () => {
+                if (expectedFollowUpTurnId !== this.steerableTurnId()) return 'Active turn changed';
+                if (this.permissions.hasPendingRequests(this.threadId, expectedFollowUpTurnId)) return 'Waiting for a user decision';
+                return null;
+            });
         });
         rpc.registerHandler(RPC_METHODS.ClearConversation, async () => {
             const child = await this.newConversation(); return { sessionId: child.session.sessionId };

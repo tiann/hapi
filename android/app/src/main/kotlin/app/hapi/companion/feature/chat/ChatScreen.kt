@@ -355,8 +355,7 @@ internal fun ChatScreen(
                     ChatComposer(
                         state = composerState,
                         onTextChange = viewModel::onComposerChange,
-                        onSend = { viewModel.sendMessage() },
-                        onSendSteer = { viewModel.sendMessage(steer = true) },
+                        onSend = viewModel::sendMessage,
                         onAbort = viewModel::abortSession,
                         attachments = attachmentItems,
                         onAddAttachment = { attachmentSheetOpen = true },

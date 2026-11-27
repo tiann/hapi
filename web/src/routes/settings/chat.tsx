@@ -93,6 +93,14 @@ export default function SettingsChatPage() {
         },
     })
 
+    const followUpMutation = useMutation({
+        mutationFn: (followUpDefault: 'queue' | 'steer') => {
+            if (!api) throw new Error('API unavailable')
+            return api.updateHubSettings({ followUpDefault })
+        },
+        onSuccess: (settings) => queryClient.setQueryData(queryKeys.hubSettings, settings),
+    })
+
     return (
         <SettingsPageContent description={t('settings.chat.description')}>
             <SettingsSection title={t('settings.chat.input')}>
@@ -102,6 +110,21 @@ export default function SettingsChatPage() {
                     options={getComposerEnterBehaviorOptions().map((option) => ({ value: option.value, label: t(option.labelKey) }))}
                     onChange={setComposerEnterBehavior}
                 />
+                {isOwner && hubSettingsQuery.data?.followUpDefault ? (
+                    <SettingsChoiceGroup
+                        label={t('settings.chat.followUpDefault')}
+                        value={followUpMutation.isPending ? followUpMutation.variables : hubSettingsQuery.data.followUpDefault}
+                        options={[
+                            { value: 'queue', label: t('composer.followUp.queue') },
+                            { value: 'steer', label: t('composer.followUp.steer') },
+                        ]}
+                        onChange={(value) => {
+                            if (!followUpMutation.isPending && value !== hubSettingsQuery.data.followUpDefault) {
+                                followUpMutation.mutate(value)
+                            }
+                        }}
+                    />
+                ) : null}
                 <ComposerToolbarLayoutControl />
             </SettingsSection>
             <SettingsSection title={t('settings.chat.tools')}>

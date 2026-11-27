@@ -60,7 +60,6 @@ class ScheduleComposerTest {
                         state = ComposerUiState(text = "", isSending = false, canSteer = false),
                         onTextChange = { _, _, _ -> },
                         onSend = {},
-                        onSendSteer = {},
                         onAbort = {},
                         attachments = attachments.value,
                         onAddAttachment = {},

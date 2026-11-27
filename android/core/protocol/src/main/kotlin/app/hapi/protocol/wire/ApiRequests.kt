@@ -1,5 +1,6 @@
 package app.hapi.protocol.wire
 
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 
@@ -46,9 +47,18 @@ data class SendMessageRequest(
     val localId: String? = null,
     val attachments: List<AttachmentMetadata>? = null,
     val scheduledAt: Long? = null,
-    /** `'queue' | 'steer'` (`MessageDeliveryModeSchema`); absent = hub default (queue). */
+    /** Legacy delivery mode (`MessageDeliveryModeSchema`). */
     val deliveryMode: String? = null,
+    val followUpIntent: FollowUpIntent? = null,
 )
+
+/** Choice for an ordinary composer send. The hub resolves its default. */
+@Serializable
+enum class FollowUpIntent {
+    @SerialName("default") Default,
+    @SerialName("queue") Queue,
+    @SerialName("steer") Steer,
+}
 
 /** `POST /api/sessions/:id/messages/queued-state` (`QueuedStateRequestSchema`, ≤ 1000 ids). */
 @Serializable

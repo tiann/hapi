@@ -357,7 +357,7 @@ struct ChatInteractorTests {
 
     // MARK: Send
 
-    @Test func optimisticSendHappyPathPostsQueueDeliveryAndSettlesToSent() async throws {
+    @Test func optimisticSendUsesHubDefaultAndSettlesToSent() async throws {
         let harness = try await ChatInteractionHarness()
 
         harness.interactor.setComposerText("hello agent")
@@ -367,7 +367,7 @@ struct ChatInteractorTests {
             await harness.row(localId: "local-1")?.status == .sent
         })
         let sends = await harness.performer.bodies("POST", pathSuffix: "/api/sessions/sess-1/messages")
-        #expect(sends == [#"{"deliveryMode":"queue","localId":"local-1","text":"hello agent"}"#])
+        #expect(sends == [#"{"followUpIntent":"default","localId":"local-1","text":"hello agent"}"#])
         // Optimistic until the SSE echo replaces it.
         #expect(await harness.row(localId: "local-1")?.id == "local-1")
         #expect(harness.interactor.composerText.isEmpty)
@@ -378,13 +378,13 @@ struct ChatInteractorTests {
         let harness = try await ChatInteractionHarness(detail: chatDetail(thinking: true))
 
         harness.interactor.setComposerText("steer this")
-        harness.interactor.sendMessage(steer: true)
+        harness.interactor.sendMessage(followUpIntent: .steer)
 
         #expect(await eventually {
             await harness.row(localId: "local-1")?.status == .queued
         })
         let sends = await harness.performer.bodies("POST", pathSuffix: "/api/sessions/sess-1/messages")
-        #expect(sends == [#"{"deliveryMode":"steer","localId":"local-1","text":"steer this"}"#])
+        #expect(sends == [#"{"followUpIntent":"steer","localId":"local-1","text":"steer this"}"#])
     }
 
     @Test func failedSendMarksTheRowFailedAndRetryRefiresWithTheSameLocalId() async throws {
@@ -484,7 +484,7 @@ struct ChatInteractorTests {
         return "{\"attachments\":[{\"filename\":\"\(filename)\",\"id\":\"att-1\","
             + "\"mimeType\":\"image/jpeg\",\"path\":\"/uploads/\(filename)\","
             + "\"previewUrl\":\"\(preview)\",\"size\":3}],"
-            + "\"deliveryMode\":\"queue\",\"localId\":\"local-1\",\"text\":\"\(text)\"}"
+            + "\"followUpIntent\":\"default\",\"localId\":\"local-1\",\"text\":\"\(text)\"}"
     }
 
     @Test func inactiveAttachmentResumesAndRetriesEvenWithStaleActiveState() async throws {
@@ -1328,7 +1328,7 @@ struct ChatInteractorTests {
         harness.interactor.setPendingSchedule(.delay(minutes: 30))
         harness.interactor.setComposerText("ship it")
 
-        harness.interactor.sendMessage(steer: true)
+        harness.interactor.sendMessage(followUpIntent: .steer)
 
         #expect(await eventually {
             await harness.performer.bodies("POST", pathSuffix: "/api/sessions/sess-1/messages") == [

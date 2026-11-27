@@ -349,7 +349,9 @@
     <string name="chat_composer_send">Send</string>
     <string name="chat_composer_abort">Stop the current turn</string>
     <string name="chat_mention_suggestions">Mention suggestions</string>
-    <string name="chat_send_steer">Send &amp; steer into current turn</string>
+    <string name="chat_send_queue">Queue for next turn</string>
+    <string name="chat_send_steer">Steer current turn</string>
+    <string name="chat_send_default">%1$s (default)</string>
     <string name="chat_schedule_send">Schedule send</string>
     <string name="chat_schedule_capsule">Scheduled · %1$s</string>
     <string name="chat_schedule_clear">Clear schedule</string>

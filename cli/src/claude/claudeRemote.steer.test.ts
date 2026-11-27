@@ -168,7 +168,8 @@ describe('claudeRemote steering', () => {
         restore = remote.restore;
         const { fake } = remote;
         fake.replay(fake.stdin[0]!);
-        const delivery = remote.currentTarget()!.steer('Then summarize')!;
+        const originalTurn = remote.currentTarget()!;
+        const delivery = originalTurn.steer('Then summarize')!;
         await waitFor(() => fake.stdin.length === 2);
 
         // Text-only turn: no tool boundary, so Claude finishes first and runs
@@ -178,6 +179,8 @@ describe('claudeRemote steering', () => {
         expect(remote.onReady).not.toHaveBeenCalled();
         expect(remote.thinking.at(-1)).toBe(true);
         expect(remote.currentTarget()).not.toBeNull();
+        expect(remote.currentTarget()).not.toBe(originalTurn);
+        expect(originalTurn.steer('late')).toBeNull();
 
         fake.replay(fake.stdin[1]!);
         await expect(delivery.delivered).resolves.toBe(true);

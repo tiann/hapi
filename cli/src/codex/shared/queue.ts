@@ -687,11 +687,13 @@ export class SharedCodexQueue {
         }
     }
 
-    steer(id: string, expectedTurnId: string, freshInput?: QueueInput): Promise<{ steered: boolean; indeterminate?: boolean; error?: string }> {
+    steer(id: string, expectedTurnId: string, freshInput?: QueueInput, guard?: () => string | null): Promise<{ steered: boolean; indeterminate?: boolean; error?: string }> {
         return this.serial(async () => {
+            const refusal = guard?.();
+            if (refusal) return { steered: false, error: refusal };
             let entry = this.entries[id];
             if (entry?.state === 'consumed') return { steered: false, error: 'Message already consumed' };
-            if (entry?.batchId) return this.steerBatchMember(entry, id, expectedTurnId, freshInput);
+            if (entry?.batchId) return this.steerBatchMember(entry, id, expectedTurnId, freshInput, guard);
             if (entry) {
                 try { await this.reconcileLocked(); }
                 catch { this.uncertain([id]); return { steered: false, indeterminate: true }; }
@@ -708,7 +710,7 @@ export class SharedCodexQueue {
                 entry = { input: freshInput, state: 'unknown' }; this.entries[id] = entry; await this.save();
             } else return { steered: false, error: 'Message not queued' };
             try {
-                await this.client.request('turn/steer', { threadId: this.threadId, expectedTurnId, input: entry.input, clientUserMessageId: id });
+                await this.dispatchSteer(id, expectedTurnId, entry.input, guard);
                 entry.state = 'consumed'; await this.save(); this.consumed([id], true); return { steered: true };
             } catch (error) {
                 if (this.state(id) === 'consumed') return { steered: true };
@@ -726,7 +728,7 @@ export class SharedCodexQueue {
             }
         });
     }
-    private async steerBatchMember(entry: Entry, id: string, expectedTurnId: string, freshInput?: QueueInput): Promise<{ steered: boolean; indeterminate?: boolean; error?: string }> {
+    private async steerBatchMember(entry: Entry, id: string, expectedTurnId: string, freshInput?: QueueInput, guard?: () => string | null): Promise<{ steered: boolean; indeterminate?: boolean; error?: string }> {
         const batch = this.batches[entry.batchId!];
         if (!batch) return { steered: false, error: 'Message not queued' };
         try { await this.reconcileLocked(); }
@@ -774,7 +776,7 @@ export class SharedCodexQueue {
         // The confirmed shrink/delete separates this request from its siblings.
         entry.detachedSteer = true; await this.save();
         try {
-            await this.client.request('turn/steer', { threadId: this.threadId, expectedTurnId, input, clientUserMessageId: id });
+            await this.dispatchSteer(id, expectedTurnId, input, guard);
             entry.state = 'consumed'; await this.save(); this.consumed([id], true); return { steered: true };
         } catch (error) {
             if (this.state(id) === 'consumed') return { steered: true };
@@ -808,6 +810,12 @@ export class SharedCodexQueue {
             await this.save();
             return { steered: false, error: error instanceof Error ? error.message : String(error) };
         }
+    }
+
+    private async dispatchSteer(id: string, expectedTurnId: string, input: QueueInput, guard?: () => string | null): Promise<void> {
+        const refusal = guard?.();
+        if (refusal) throw new Error(refusal);
+        await this.client.request('turn/steer', { threadId: this.threadId, expectedTurnId, input, clientUserMessageId: id });
     }
 
     private async restoreDetachedSteer(entry: Entry, id: string, input: QueueInput): Promise<void> {
