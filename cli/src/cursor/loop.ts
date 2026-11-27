@@ -4,6 +4,7 @@ import { runLocalRemoteSession } from '@/agent/loopBase';
 import { CursorSession } from './session';
 import { cursorLocalLauncher } from './cursorLocalLauncher';
 import { cursorRemoteLauncher } from './cursorRemoteLauncher';
+import { resolveCursorRemoteProtocol } from './utils/cursorProtocol';
 import type { Metadata } from '@hapi/protocol/schemas';
 import { ApiClient, ApiSessionClient } from '@/lib';
 import type { PermissionModeOf, Flavors } from '@hapi/protocol/types';
@@ -55,6 +56,7 @@ export async function loop(opts: LoopOptions): Promise<void> {
         cursorAddDirs: opts.cursorAddDirs,
         model: opts.model,
         permissionMode: opts.permissionMode ?? 'default',
+        remoteProtocol: resolveCursorRemoteProtocol(opts.sessionMetadata),
         onPermissionModeChanged: opts.onPermissionModeChanged
     });
 

@@ -65,4 +65,49 @@ describe('CursorSession', () => {
         expect(session.getPermissionMode()).toBe('default');
         expect(onPermissionModeChanged).toHaveBeenCalledWith('default');
     });
+
+    it('requires a live ACP mode handler and keeps legacy deferred updates', async () => {
+        const onPermissionModeChanged = vi.fn();
+        const options = {
+            api: {} as never,
+            client: { keepAlive: vi.fn(), emitMessagesConsumed: vi.fn() } as never,
+            path: '/tmp',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: new MessageQueue2<EnhancedMode>(() => 'hash'),
+            onModeChange: vi.fn(),
+            startedBy: 'runner',
+            startingMode: 'remote',
+            mode: 'remote',
+            permissionMode: 'plan',
+            onPermissionModeChanged
+        } as const;
+        const acp = new CursorSession(options);
+        const legacy = new CursorSession({ ...options, remoteProtocol: 'stream-json' });
+        try {
+            await expect(acp.applyPermissionModeConfig('default')).rejects.toThrow('not ready');
+            expect(acp.getPermissionMode()).toBe('plan');
+            expect(onPermissionModeChanged).not.toHaveBeenCalled();
+
+            const removeHandler = acp.registerPermissionModeApplyHandler(async (mode) => {
+                acp.setPermissionMode(mode);
+                return mode;
+            });
+            await expect(acp.applyPermissionModeConfig('default')).resolves.toBe('default');
+            expect(acp.getPermissionMode()).toBe('default');
+            removeHandler();
+            await expect(acp.applyPermissionModeConfig('plan')).rejects.toThrow('not ready');
+            expect(acp.getPermissionMode()).toBe('default');
+            acp.onModeChange('local');
+            await expect(acp.applyPermissionModeConfig('plan')).rejects.toThrow('handing off the Cursor terminal session');
+            expect(acp.getPermissionMode()).toBe('default');
+
+            await expect(legacy.applyPermissionModeConfig('default')).resolves.toBe('default');
+            expect(legacy.getPermissionMode()).toBe('default');
+            expect(onPermissionModeChanged).toHaveBeenCalledTimes(2);
+        } finally {
+            acp.stopKeepAlive();
+            legacy.stopKeepAlive();
+        }
+    });
 });

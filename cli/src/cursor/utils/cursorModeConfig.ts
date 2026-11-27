@@ -32,50 +32,28 @@ export function isCursorAutoReviewMode(mode: PermissionModeOf<typeof Flavors.cur
     return mode === 'autoReview';
 }
 
-function resolveAcpModeConfigValue(
-    mode: PermissionModeOf<typeof Flavors.cursor> | undefined,
-    backend: AcpSdkBackend,
-    sessionId: string
-): string {
-    const acpMode = toCursorAcpMode(mode);
-    const modeOption = backend.getConfigOptionByCategory?.(sessionId, 'mode');
-    const optionValues = modeOption?.options.map((entry) => entry.value) ?? [];
-    if (optionValues.includes(acpMode)) {
-        return acpMode;
-    }
-    if (mode === 'yolo' || mode === 'default' || mode === 'autoReview') {
-        if (optionValues.includes('agent')) {
-            return 'agent';
-        }
-    }
-    if (mode === 'debug' && optionValues.includes('debug')) {
-        return 'debug';
-    }
-    return acpMode;
-}
-
 export async function applyCursorAcpMode(
     backend: AcpSdkBackend,
     sessionId: string,
     mode: PermissionModeOf<typeof Flavors.cursor> | undefined
 ): Promise<void> {
-    const configValue = resolveAcpModeConfigValue(mode, backend, sessionId);
-
+    const configValue = toCursorAcpMode(mode);
     const modeOption = backend.getConfigOptionByCategory?.(sessionId, 'mode');
     if (modeOption && backend.setConfigOption) {
         try {
             await backend.setConfigOption(sessionId, modeOption.id, configValue);
-            return;
         } catch (error) {
             logger.debug('[cursor-acp] session/set_config_option for mode failed, trying set_mode', error);
+            return await backend.setMode(sessionId, configValue);
         }
+        const reported = backend.getConfigOptionByCategory?.(sessionId, 'mode');
+        if (reported !== modeOption && reported?.currentValue && reported.currentValue !== configValue) {
+            throw new Error(`Cursor ACP confirmed mode ${reported.currentValue}, expected ${configValue}`);
+        }
+        return;
     }
 
-    try {
-        await backend.setMode(sessionId, configValue);
-    } catch (error) {
-        logger.warn(`[cursor-acp] Failed to set mode ${configValue}`, error);
-    }
+    await backend.setMode(sessionId, configValue);
 }
 
 export type ApplyCursorAcpModelResult = {
