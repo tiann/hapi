@@ -80,19 +80,6 @@ export function resolveNewSessionCursorBaseSelectValue(
 }
 
 /** Keep Effort <select> controlled when catalog reloads after Browse remount. */
-export function resolveNewSessionCursorEffortSelectValue(
-    model: string,
-    effortOptions: readonly { value: string }[]
-): string {
-    if (effortOptions.length === 0) {
-        return 'auto'
-    }
-    if (model !== 'auto' && effortOptions.some((row) => row.value === model)) {
-        return model
-    }
-    return 'auto'
-}
-
 export function isCursorEffortWireAllowed(
     wireId: string,
     catalog: CursorModelCatalog,

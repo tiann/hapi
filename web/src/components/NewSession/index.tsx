@@ -36,7 +36,6 @@ import {
     isCursorEffortWireAllowed,
     resolveCursorBaseFromWire,
     resolveNewSessionCursorBaseSelectValue,
-    resolveNewSessionCursorEffortSelectValue,
     resolveWireIdForBaseChange,
     shouldShowCursorModelsUnavailable
 } from './newSessionCursorModels'
@@ -64,6 +63,7 @@ import { DirectorySection } from './DirectorySection'
 import { CopilotAgentModeSelector } from './CopilotAgentModeSelector'
 import { FastModeSelector } from './FastModeSelector'
 import { MachineSelector } from './MachineSelector'
+import { CursorModelParameters } from '@/components/CursorModelParameters'
 import { ModelSelector } from './ModelSelector'
 import { OpencodeModelSelector } from './OpencodeModelSelector'
 import { EffortField } from './EffortField'
@@ -653,21 +653,6 @@ export function NewSession(props: {
             : cursorPicker.baseKey
         return buildCursorEffortPickerOptions(resolveCursorVariantOptions(baseKey ?? null, cursorPicker.catalog))
     }, [cursorPicker, cursorBaseSelectValue])
-
-    const cursorVariantSelectOptions = useMemo(() => {
-        if (cursorVariantOptions.length === 0) {
-            return []
-        }
-        return [
-            { value: 'auto', label: t('newSession.model.selectVariant') },
-            ...cursorVariantOptions
-        ]
-    }, [cursorVariantOptions, t])
-
-    const cursorEffortSelectValue = useMemo(
-        () => resolveNewSessionCursorEffortSelectValue(model, cursorVariantOptions),
-        [model, cursorVariantOptions]
-    )
 
     useEffect(() => {
         if (agent !== 'cursor' || cursorModelsState.isLoading) {
@@ -2620,14 +2605,11 @@ export function NewSession(props: {
                             }}
                         />
                         {showCursorVariantPicker ? (
-                            <ModelSelector
-                                agent={agent}
-                                model={cursorEffortSelectValue}
-                                label={t('misc.variant')}
-                                options={cursorVariantSelectOptions}
-                                isDisabled={cursorModelPickersDisabled}
-                                isLoading={cursorModelsState.isLoading}
-                                onModelChange={handleCursorEffortChange}
+                            <CursorModelParameters
+                                selectedValue={model}
+                                options={cursorVariantOptions}
+                                disabled={cursorModelPickersDisabled}
+                                onChange={handleCursorEffortChange}
                             />
                         ) : null}
                         {cursorModelsUnavailable ? (

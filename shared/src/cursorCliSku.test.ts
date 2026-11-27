@@ -231,6 +231,15 @@ describe('parseCursorAvailableModelsFromRejection', () => {
 });
 
 describe('findBestCliSkuForAcpWire', () => {
+    it('keeps the advertised reasoning_effort and speed when matching Grok wires and SKUs', () => {
+        const low = 'grok-4.7[context=256k,reasoning_effort=low,fast=true]';
+        const high = 'grok-4.7[context=256k,reasoning_effort=high,fast=true]';
+        const skus = ['grok-4.7-low-fast', 'grok-4.7-high-fast'];
+        expect(matchCliSkuToAcpWireId(skus[1], [low, high].map(modelId => ({ modelId })))).toBe(high);
+        expect(findBestCliSkuForAcpWire(high, skus)).toBe(skus[1]);
+        expect(remapStaleCursorModelId(high, [high, ...skus].map(modelId => ({ modelId })))).toBe(skus[1]);
+    });
+
     it('picks the sku that best matches wire params, not the first partial match', () => {
         const wire = 'gpt-5.5[context=272k,reasoning=medium,fast=false]';
         const best = findBestCliSkuForAcpWire(wire, [

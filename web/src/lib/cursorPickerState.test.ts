@@ -201,7 +201,7 @@ describe('live bare ACP catalog (#1129)', () => {
 })
 
 describe('resolveWireIdForBaseChange', () => {
-    it('does not guess when switching to a base with multiple variants', () => {
+    it('uses the published default when switching families and keeps an existing selection within a family', () => {
         const catalog = buildCursorCatalogFromSources({
             sessionModels: [
                 { modelId: 'claude-opus-4-8[thinking=true,context=300k,effort=high,fast=false]', name: 'Opus 4.8' },
@@ -214,7 +214,9 @@ describe('resolveWireIdForBaseChange', () => {
             'claude-opus-4-7',
             catalog,
             'claude-opus-4-8[thinking=true,context=300k,effort=high,fast=false]'
-        )).toBeNull()
+        )).toBe('claude-opus-4-7[thinking=true,context=300k,effort=high,fast=false]')
+        const existing = 'claude-opus-4-7[thinking=true,context=300k,effort=low,fast=false]'
+        expect(resolveWireIdForBaseChange('claude-opus-4-7', catalog, existing)).toBe(existing)
     })
 
     it('applies the only exact wire when a base has one variant', () => {

@@ -89,4 +89,22 @@ describe('in-session cursor catalog with CLI skus', () => {
         expect(picker.effortOptions.every((row) => !row.label.includes('context=272k'))).toBe(true)
         expect(picker.effortOptions.some((row) => row.value === 'gpt-5.5-medium')).toBe(true)
     })
+    it('does not highlight a nearby SKU when its speed or effort differs from the confirmed wire', () => {
+        const options = ['gpt-5.5-fast', 'gpt-5.5-high-fast', 'gpt-5.5-medium'].map(value => ({ value }))
+        expect(resolveSessionCursorVariantSelectValue('gpt-5.5[reasoning=high,fast=false]', options)).toBeNull()
+        expect(resolveSessionCursorVariantSelectValue('gpt-5.5[reasoning=low,fast=true]', options)).toBeNull()
+        expect(resolveSessionCursorVariantSelectValue('gpt-5.5[context=1m]', options)).toBeNull()
+        expect(resolveSessionCursorVariantSelectValue('gpt-5.5[reasoning=high,fast=true]', options))
+            .toBe('gpt-5.5-high-fast')
+    })
+
+    it('highlights the confirmed reasoning_effort on Grok and leaves an incomplete SKU catalog unselected', () => {
+        const wire = 'grok-4.7[context=256k,reasoning_effort=high,fast=true]'
+        const partial = [{ value: 'grok-4.7-fast' }, { value: 'grok-4.7-low-fast' }]
+        expect(resolveSessionCursorVariantSelectValue(wire, partial)).toBeNull()
+        expect(resolveSessionCursorVariantSelectValue('grok-4.7[unknown_effort=high,fast=true]', partial)).toBeNull()
+        const high = { value: 'grok-4.7-high-fast' }
+        expect(resolveSessionCursorVariantSelectValue(wire, [...partial, high])).toBe(high.value)
+    })
+
 })

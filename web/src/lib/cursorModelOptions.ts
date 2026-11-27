@@ -179,27 +179,6 @@ export function resolveDefaultCursorVariantWire(
     return bestSku ?? pickerVariants[0].wireId
 }
 
-/** Variant rows with the base default first (for drill-down picker step). */
-export function buildCursorEffortPickerOptionsWithDefaultFirst(
-    baseKey: string,
-    catalog: CursorModelCatalog
-): Array<{ value: string; label: string }> {
-    const variants = resolveCursorVariantOptions(baseKey, catalog)
-    const options = buildCursorEffortPickerOptions(variants)
-    const defaultWire = resolveDefaultCursorVariantWire(baseKey, catalog)
-    if (!defaultWire) {
-        return options
-    }
-    const defaultOption = options.find((option) => option.value === defaultWire)
-    if (!defaultOption) {
-        return options
-    }
-    return [
-        defaultOption,
-        ...options.filter((option) => option.value !== defaultWire)
-    ]
-}
-
 /** Raw suffix for compatibility with older callers/tests. */
 export function cursorVariantDisambiguationSuffix(modelId: string): string {
     return cursorVariantLabel(modelId)

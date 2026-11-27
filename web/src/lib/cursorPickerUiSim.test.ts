@@ -31,48 +31,26 @@ describe('cursor picker UI simulation (no browser)', () => {
         expect(rendered.find((row) => row.value === wire)?.label).toContain('reasoning=medium')
     })
 
-    it('clicking a base key in dual-style handler still resolves the sole wire for that base', () => {
+    it('resolves a family with one wire when another family makes the picker dual', () => {
         const picker = buildCursorPickerState({
-            catalog: buildCursorCatalogFromSources({ sessionModels: liveModels, defaultValue: null }),
-            currentWireId: 'composer-2.5[fast=true]',
-            defaultValue: null
+            catalog: buildCursorCatalogFromSources({
+                sessionModels: [...liveModels, { modelId: 'composer-2.5[fast=false]' }], defaultValue: null
+            }),
+            currentWireId: 'composer-2.5[fast=true]', defaultValue: null
         })
-        const plan = resolveSessionCursorModelChange({
-            picker,
-            sessionModel: 'composer-2.5[fast=true]',
-            cursorSelectedBase: 'composer-2.5',
-            kind: 'base',
-            value: 'gpt-5.5'
-        })
-        expect(plan).toEqual({
-            ok: true,
-            wireId: 'gpt-5.5[context=272k,reasoning=medium,fast=false]',
-            nextSelectedBase: 'gpt-5.5',
-            shouldApply: true
-        })
+        expect(picker.mode).toBe('dual')
+        expect(resolveSessionCursorModelChange(picker, 'model', 'gpt-5.5')).toBe(liveModels[2].modelId)
     })
 
-    it('flat wire selection applies the exact wire id', () => {
+    it('applies the exact wire ID in a flat picker', () => {
         const picker = buildCursorPickerState({
             catalog: buildCursorCatalogFromSources({ sessionModels: liveModels, defaultValue: null }),
-            currentWireId: 'composer-2.5[fast=true]',
-            defaultValue: null
+            currentWireId: 'composer-2.5[fast=true]', defaultValue: null
         })
-        const plan = resolveSessionCursorModelChange({
-            picker,
-            sessionModel: 'composer-2.5[fast=true]',
-            cursorSelectedBase: 'auto',
-            kind: 'flat',
-            value: 'gpt-5.5[context=272k,reasoning=medium,fast=false]'
-        })
-        expect(plan).toMatchObject({
-            ok: true,
-            wireId: 'gpt-5.5[context=272k,reasoning=medium,fast=false]',
-            shouldApply: true
-        })
+        expect(resolveSessionCursorModelChange(picker, 'model', liveModels[2].modelId)).toBe(liveModels[2].modelId)
     })
 
-    it('highlights session base in dual mode while local base state is still auto', () => {
+    it('highlights the confirmed session base in dual mode', () => {
         const catalog = buildCursorCatalogFromSources({
             sessionModels: [
                 ...liveModels,
@@ -86,6 +64,6 @@ describe('cursor picker UI simulation (no browser)', () => {
             defaultValue: null
         })
         expect(picker.mode).toBe('dual')
-        expect(resolveSessionCursorBaseSelectValue(picker, 'auto')).toBe('composer-2.5')
+        expect(resolveSessionCursorBaseSelectValue(picker)).toBe('composer-2.5')
     })
 })

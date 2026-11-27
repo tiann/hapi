@@ -1,99 +1,31 @@
-import { findBestCliSkuForAcpWire, matchCliSkuToAcpWireId } from '@hapi/protocol'
-import type { CursorModelCatalog } from '@/lib/cursorModelOptions'
-import { resolveCursorVariantOptions, resolveDefaultCursorVariantWire } from '@/lib/cursorModelOptions'
+import { cursorCliSkuBaseId, cursorModelBaseId, cursorModelBaseMatches, isCursorAcpWireModelId, parseCursorSkuParamHints, parseCursorWireParams } from '@hapi/protocol'
+import { resolveDefaultCursorVariantWire } from '@/lib/cursorModelOptions'
 import type { CursorModelSummary } from '@/types/api'
 import {
     buildCursorCatalogFromSources,
     buildCursorPickerState,
-    resolveCursorBaseFromWire,
-    resolveWireIdForBaseChange,
     type CursorPickerState
 } from '@/lib/cursorPickerState'
 
-export function isCursorEffortWireInCatalog(
-    wireId: string,
-    catalog: CursorModelCatalog
-): boolean {
-    return catalog.wireToBase.has(wireId)
+export function resolveSessionCursorBaseSelectValue(picker: CursorPickerState): string {
+    return (picker.mode === 'dual' ? picker.baseKey : picker.wireId) ?? 'auto'
 }
 
-export function resolveSessionCursorBaseSelectValue(
+/** Return the advertised model to apply, or null for an unchanged or stale selection. */
+export function resolveSessionCursorModelChange(
     picker: CursorPickerState,
-    cursorSelectedBase: string
-): string {
-    if (picker.mode !== 'dual') {
-        return picker.wireId ?? 'auto'
-    }
-    if (cursorSelectedBase !== 'auto') {
-        return cursorSelectedBase
-    }
-    // Catalog already reflects session.model; local base state may still be initial 'auto'.
-    if (picker.baseKey && picker.baseKey !== 'auto') {
-        return picker.baseKey
-    }
-    return 'auto'
-}
-
-export function resolveSessionCursorModelChange(args: {
-    picker: CursorPickerState
-    sessionModel: string | null | undefined
-    cursorSelectedBase: string
-    kind: 'base' | 'effort' | 'flat'
+    kind: 'model' | 'parameter',
     value: string | null
-}): { ok: true; wireId: string | null; nextSelectedBase: string; shouldApply: boolean } | { ok: false; reason: string } {
-    const { picker, sessionModel, cursorSelectedBase, kind, value } = args
-
-    if (kind === 'base') {
-        if (!value || value === 'auto') {
-            return { ok: true, wireId: 'auto', nextSelectedBase: 'auto', shouldApply: true }
-        }
-        if (value.includes('[')) {
-            const base = resolveCursorBaseFromWire(value, picker.catalog)
-            return { ok: true, wireId: value, nextSelectedBase: base, shouldApply: true }
-        }
-        const variants = resolveCursorVariantOptions(value, picker.catalog)
-        if (variants.length > 1) {
-            const defaultWire = resolveDefaultCursorVariantWire(value, picker.catalog)
-            return {
-                ok: true,
-                wireId: defaultWire,
-                nextSelectedBase: value,
-                shouldApply: defaultWire !== null
-            }
-        }
-        const wireId = resolveWireIdForBaseChange(value, picker.catalog, sessionModel)
-        return {
-            ok: true,
-            wireId: wireId === 'auto' ? 'auto' : wireId,
-            nextSelectedBase: value,
-            shouldApply: wireId !== null
-        }
+): string | null {
+    if (kind === 'model') {
+        const base = value ?? 'auto'
+        if (base === resolveSessionCursorBaseSelectValue(picker)) return null
+        if (base === 'auto') return 'auto'
+        if (picker.mode === 'dual') return resolveDefaultCursorVariantWire(base, picker.catalog)
     }
-
-    if (kind === 'effort') {
-        if (!value || value === 'auto') {
-            return { ok: true, wireId: null, nextSelectedBase: cursorSelectedBase, shouldApply: true }
-        }
-        if (!isCursorEffortWireInCatalog(value, picker.catalog)) {
-            return { ok: false, reason: 'effort wire id not in catalog' }
-        }
-        const base = resolveCursorBaseFromWire(value, picker.catalog)
-        return { ok: true, wireId: value, nextSelectedBase: base, shouldApply: true }
-    }
-
-    // flat picker: value is wire id or auto
-    if (!value || value === 'auto') {
-        return { ok: true, wireId: 'auto', nextSelectedBase: 'auto', shouldApply: true }
-    }
-    if (!picker.catalog.wireToBase.has(value)) {
-        return { ok: false, reason: 'model wire id not in catalog' }
-    }
-    return {
-        ok: true,
-        wireId: value,
-        nextSelectedBase: resolveCursorBaseFromWire(value, picker.catalog),
-        shouldApply: true
-    }
+    if (!value || value === picker.wireId || !picker.catalog.wireToBase.has(value)) return null
+    if (kind === 'parameter' && picker.catalog.wireToBase.get(value) !== picker.baseKey) return null
+    return value
 }
 
 export function resolveSessionCursorVariantSelectValue(
@@ -110,17 +42,23 @@ export function resolveSessionCursorVariantSelectValue(
         return exact.value
     }
 
-    if (trimmed.includes('[')) {
-        const bestSku = findBestCliSkuForAcpWire(
-            trimmed,
-            effortOptions.map((option) => option.value)
-        );
-        if (bestSku) {
-            return bestSku;
-        }
-    }
+    if (!isCursorAcpWireModelId(trimmed)) return null
+    const params = parseCursorWireParams(trimmed)
+    if (Object.keys(params).some(key => !['reasoning', 'reasoning_effort', 'effort', 'fast', 'thinking', 'context'].includes(key))) return null
+    const effort = params.reasoning ?? params.reasoning_effort ?? params.effort
+    if (!effort && !params.fast && !params.thinking) return null
 
-    return null
+    // A nearest SKU is useful when choosing a default, but a selected row
+    // represents the confirmed session and must agree with its settings.
+    const matching = effortOptions.filter(({ value }) => {
+        const base = cursorCliSkuBaseId(value)
+        if (isCursorAcpWireModelId(value) || !cursorModelBaseMatches(base, cursorModelBaseId(trimmed))) return false
+        const hints = parseCursorSkuParamHints(value.slice(base.length))
+        return (effort === 'xhigh' ? 'extra-high' : effort) === hints.reasoning
+            && (params.fast ?? 'false') === hints.fast
+            && (params.thinking ?? 'false') === (hints.thinking ?? 'false')
+    })
+    return matching.length === 1 ? matching[0].value : null
 }
 
 export function isSessionCursorCatalogLoading(args: {
@@ -209,6 +147,7 @@ export function buildSessionCursorPickerState(args: {
     sessionModel: string | null | undefined
     sessionCurrentModelId: string | null
     autoRestartLabel?: string
+    accountDefaultLabel?: string
 }): CursorPickerState {
     const catalog = buildCursorCatalogFromSources({
         sessionModels: args.sessionModels,
@@ -223,6 +162,15 @@ export function buildSessionCursorPickerState(args: {
         currentWireId: args.sessionModel ?? args.sessionCurrentModelId,
         defaultValue: 'auto'
     })
+    // A default catalog hint is common on startup, including when launched with
+    // --model auto. An explicit default reported in the session state is distinct:
+    // show it as the current model and keep the Auto action available to retry.
+    const reported = args.sessionModel?.trim()
+    if (reported === 'default' || reported === 'default[]') {
+        picker.wireId = reported
+        picker.baseKey = reported
+        picker.modelOptions.push({ value: reported, label: args.accountDefaultLabel ?? 'Default' })
+    }
     const autoRestartLabel = args.autoRestartLabel
     if (autoRestartLabel && !args.sessionModels.some(model => model.modelId.trim() === 'auto')) {
         picker.modelOptions = picker.modelOptions.map(option => option.value === 'auto'

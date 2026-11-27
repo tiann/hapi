@@ -7,7 +7,6 @@ import {
     isCursorEffortWireAllowed,
     pickCursorModelsForPicker,
     resolveNewSessionCursorBaseSelectValue,
-    resolveNewSessionCursorEffortSelectValue,
     resolveWireIdForBaseChange,
     shouldShowCursorModelsUnavailable,
     shouldShowNewSessionCursorVariantPicker
@@ -143,18 +142,6 @@ describe('new session cursor select values', () => {
         expect(resolveNewSessionCursorBaseSelectValue(picker, 'auto')).toBe('auto')
     })
 
-    it('keeps variant select value on exact wire id after catalog reload', () => {
-        const picker = buildNewSessionCursorPickerState([...acpModels], 'composer-2.5[fast=false]')
-        expect(
-            resolveNewSessionCursorEffortSelectValue('composer-2.5[fast=false]', picker.effortOptions)
-        ).toBe('composer-2.5[fast=false]')
-    })
-
-    it('returns auto when no exact variant is selected', () => {
-        const picker = buildNewSessionCursorPickerState([...acpModels], 'auto')
-        expect(resolveNewSessionCursorEffortSelectValue('auto', picker.effortOptions)).toBe('auto')
-    })
-
     it('rejects variant wire ids outside the selected base', () => {
         const catalog = buildNewSessionCursorModelCatalog([...acpModels], 'composer-2.5[fast=true]')
         expect(
@@ -216,9 +203,9 @@ describe('new session cursor model options', () => {
         ])
     })
 
-    it('does not guess a wire when base has multiple variants', () => {
+    it('selects the published default when a base has multiple variants', () => {
         const catalog = buildNewSessionCursorModelCatalog([...acpModels], 'auto')
-        expect(resolveWireIdForBaseChange('composer-2.5', catalog)).toBeNull()
+        expect(resolveWireIdForBaseChange('composer-2.5', catalog)).toBe('composer-2.5[fast=true]')
     })
 
     it('returns the sole wire when base has one variant', () => {

@@ -26,6 +26,7 @@ export function useSessionActions(
     setPermissionMode: (mode: PermissionMode) => Promise<void>
     setCollaborationMode: (mode: CodexCollaborationMode) => Promise<void>
     setCopilotAgentMode: (mode: CopilotAgentMode) => Promise<void>
+    isSettingModel: boolean
     setModel: (model: { provider: string; modelId: string } | string | null, options?: { effort: string | null }) => Promise<void>
     setModelReasoningEffort: (modelReasoningEffort: string | null) => Promise<void>
     setEffort: (effort: string | null) => Promise<void>
@@ -190,7 +191,9 @@ export function useSessionActions(
             }
             await api.setModel(sessionId, args.model, args.options)
         },
-        onSuccess: async () => {
+        onSettled: async (_result, error) => {
+            // Cursor may have applied only part of a multi-parameter change.
+            if (error && agentFlavor !== 'cursor') return
             await invalidateSession()
             await invalidateCursorModels()
         },
@@ -337,6 +340,7 @@ export function useSessionActions(
         setPermissionMode: permissionMutation.mutateAsync,
         setCollaborationMode: collaborationMutation.mutateAsync,
         setCopilotAgentMode: copilotAgentModeMutation.mutateAsync,
+        isSettingModel: modelMutation.isPending,
         setModel,
         setModelReasoningEffort: modelReasoningEffortMutation.mutateAsync,
         setEffort: effortMutation.mutateAsync,

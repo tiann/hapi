@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import {
     appendCliSkusToCatalog,
     buildCursorEffortPickerOptions,
-    buildCursorEffortPickerOptionsWithDefaultFirst,
     buildCursorModelCatalog,
     resolveCursorVariantOptions,
     resolveDefaultCursorVariantWire
@@ -26,7 +25,7 @@ describe('resolveCursorVariantOptions with CLI skus', () => {
         expect(options.some((row) => row.label.includes('context=272k'))).toBe(false)
     })
 
-    it('puts the default variant first for drill-down picker rows', () => {
+    it('resolves the catalog default to an advertised SKU', () => {
         const catalog = appendCliSkusToCatalog(
             buildCursorModelCatalog([
                 { modelId: 'gpt-5.5[context=272k,reasoning=medium,fast=false]', name: 'gpt-5.5' }
@@ -37,10 +36,6 @@ describe('resolveCursorVariantOptions with CLI skus', () => {
             ]
         )
         expect(resolveDefaultCursorVariantWire('gpt-5.5', catalog)).toBe('gpt-5.5-medium')
-        expect(buildCursorEffortPickerOptionsWithDefaultFirst('gpt-5.5', catalog).map((row) => row.value)).toEqual([
-            'gpt-5.5-medium',
-            'gpt-5.5-high-fast'
-        ])
     })
 
     it('keeps ACP wire rows when no CLI skus are attached', () => {
