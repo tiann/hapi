@@ -916,7 +916,8 @@ export default {
   'composer.taskUnitOptionMinutes': '分',
   'composer.taskUnitOptionHours': '時間',
   'composer.taskUnitOptionDays': '日',
-  'composer.taskCountOne': '1 {unit}',
+  // The one-form unit strings above carry their numeral (「1 分」), so the counted form adds none.
+  'composer.taskCountOne': '{unit}',
   'composer.taskFirstRun': '初回実行',
   'composer.taskFirstRunNow': '今すぐ',
   'composer.taskFirstRunAt': '日時を指定',

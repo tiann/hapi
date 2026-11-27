@@ -47,6 +47,22 @@ describe('session task strings', () => {
             const count = (ms: number) => formatTaskIntervalCount(ms, t)
             expect(count(intervalToMs(10, 'minutes')), locale).toMatch(/10/)
             expect(count(intervalToMs(1, 'minutes')), locale).toMatch(/(^|\D)1(\D|$)/)
+            // Japanese and Russian spell the one-form unit with its numeral, so the counted form must not repeat it.
+            for (const unit of ['minutes', 'hours', 'days'] as const) {
+                const one = count(intervalToMs(1, unit))
+                expect(one, `${locale} ${unit}`).not.toMatch(/1\s+1/)
+                expect(one, `${locale} ${unit}`).not.toContain('{unit}')
+            }
+            if (locale === 'ja') {
+                expect(count(intervalToMs(1, 'minutes'))).toBe('1 分')
+                expect(count(intervalToMs(1, 'hours'))).toBe('1 時間')
+                expect(count(intervalToMs(1, 'days'))).toBe('1 日')
+            }
+            if (locale === 'ru') {
+                expect(count(intervalToMs(1, 'minutes'))).toBe('1 мин')
+                expect(count(intervalToMs(1, 'hours'))).toBe('1 ч')
+                expect(count(intervalToMs(1, 'days'))).toBe('1 дн')
+            }
             // Plural messages and tasks.
             expect(t('composer.taskQueueCount', { count: 2 }), locale).toMatch(/2/)
             expect(t('tasks.count', { count: 3 }), locale).toMatch(/3/)

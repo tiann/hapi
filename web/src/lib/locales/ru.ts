@@ -830,7 +830,8 @@ export default {
   'composer.taskUnitOptionMinutes': 'мин',
   'composer.taskUnitOptionHours': 'ч',
   'composer.taskUnitOptionDays': 'дн',
-  'composer.taskCountOne': '1 {unit}',
+  // The one-form unit strings above carry their numeral («1 мин»), so the counted form adds none.
+  'composer.taskCountOne': '{unit}',
   'composer.taskFirstRun': 'Первый запуск',
   'composer.taskFirstRunNow': 'Сразу',
   'composer.taskFirstRunAt': 'В указанное время',
