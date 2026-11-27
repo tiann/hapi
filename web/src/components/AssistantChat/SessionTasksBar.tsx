@@ -339,6 +339,15 @@ export function SessionTasksBar({ api, sessionId }: { api: ApiClient | null; ses
         return () => clearInterval(timer)
     }, [countsDown])
 
+    // The task being edited can leave the list without its row's buttons: an edit that ends it (its run
+    // limit brought down to what already ran), a delete on another device, a finish. The editor goes
+    // with its row, so the editing state goes too, as on Cancel; kept, it left the list uncapped and
+    // without its hint lines, with no editor left to close.
+    const editingGone = editingTaskId !== null && !tasks.some((task) => task.id === editingTaskId)
+    useEffect(() => {
+        if (editingGone) setEditingTaskId(null)
+    }, [editingGone])
+
     // A loading history is no reason to show a header that then vanishes.
     if (unsupported) return null
     if (tasks.length === 0 && !historyOpen && !error && history.runs.length === 0) return null

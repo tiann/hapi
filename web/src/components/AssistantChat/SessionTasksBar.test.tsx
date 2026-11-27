@@ -582,6 +582,29 @@ describe('SessionTasksBar', () => {
         expect(list.className.split(/\s+/)).toEqual(expect.arrayContaining(['max-h-48', 'overflow-y-auto']))
     })
 
+    it('closes the editor when the task being edited leaves the list, so the list is capped and its hints are back', async () => {
+        const view = setup({ tasks: [task(), task({ id: 'task-2', kind: 'queue', items: [{ text: 'a' }, { text: 'b' }], totalRuns: 2, createdAt: 2 })] })
+        const rows = await screen.findAllByRole('listitem')
+        const list = screen.getByRole('list', { name: 'Tasks' })
+        const wake = 'If the session is not running, the hub resumes it first.'
+        fireEvent.click(within(rows[0]).getByRole('button', { name: 'Edit task' }))
+        const editor = await screen.findByRole('group', { name: 'Edit task' })
+        expect(list.className.split(/\s+/)).not.toContain('max-h-48')
+        // The bar's own line stepped aside for the editor's copy of the rule.
+        expect(within(editor).getByText(wake)).toBeTruthy()
+        expect(screen.getAllByText(wake)).toHaveLength(1)
+
+        // The task ends without its row's buttons: an edit that brings its run limit down to what already
+        // ran, a delete on another device, a finish. The hub's event has the list refetched.
+        view.drop('task-1')
+        await refetchTasks(view.queryClient)
+        await waitFor(() => expect(screen.queryByRole('group', { name: 'Edit task' })).toBeNull())
+        expect(screen.getAllByRole('listitem')).toHaveLength(1)
+        expect(list.className.split(/\s+/)).toEqual(expect.arrayContaining(['max-h-48', 'overflow-y-auto']))
+        // No editor is left, so the one line there is the bar's own again.
+        expect(screen.getAllByText(wake)).toHaveLength(1)
+    })
+
     it('does not say its rule hints twice under an open editor, which carries them for the task being edited', async () => {
         setup({ tasks: [task(), task({ id: 'task-2', kind: 'queue', items: [{ text: 'a' }, { text: 'b' }], totalRuns: 2, createdAt: 2 })] })
         const rows = await screen.findAllByRole('listitem')
