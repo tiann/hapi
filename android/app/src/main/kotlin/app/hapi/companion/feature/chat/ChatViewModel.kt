@@ -279,6 +279,7 @@ sealed interface ChatNotice {
     data class ModelsLoadFailed(val detail: String?) : ChatNotice
     data class ReadStateFailed(val detail: String?) : ChatNotice
     data class ConfigUpdateFailed(val detail: String?) : ChatNotice
+    data object ConfigReadbackUnavailable : ChatNotice
     data class TranslateInputFailed(val detail: String?) : ChatNotice
 }
 
@@ -2094,7 +2095,13 @@ class ChatViewModel(
                 if (isCursor) {
                     // Cursor can canonicalize a model wire or apply only part of a change.
                     // A failed readback leaves the last confirmed selection visible.
-                    sessionStore.loadSessionDetail(sessionId)
+                    try {
+                        sessionStore.loadSessionDetail(sessionId)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        _events.tryEmit(ChatEvent.Notice(ChatNotice.ConfigReadbackUnavailable))
+                    }
                 } else {
                     sessionStore.updateDetailLocal(sessionId, confirmed)
                 }

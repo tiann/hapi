@@ -344,6 +344,7 @@
     <string name="chat_notice_request_already_handled">リクエストはすでに処理されています</string>
     <string name="chat_notice_request_failed">リクエストに失敗しました</string>
     <string name="chat_notice_models_failed">モデルの読み込みに失敗しました</string>
+    <string name="chat_notice_config_readback_unavailable">設定は受理されました。現在の値を取得できませんでした。</string>
     <string name="chat_notice_config_failed">セッションの更新に失敗しました</string>
 
     <!-- Composer (B-M3a/ce/f) -->

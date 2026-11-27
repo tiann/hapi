@@ -337,6 +337,7 @@
     <string name="chat_notice_request_already_handled">Запрос уже обработан</string>
     <string name="chat_notice_request_failed">Запрос не выполнен</string>
     <string name="chat_notice_models_failed">Не удалось загрузить модели</string>
+    <string name="chat_notice_config_readback_unavailable">Настройка принята. Не удалось обновить текущее значение.</string>
     <string name="chat_notice_config_failed">Не удалось обновить сессию</string>
 
     <!-- Composer (B-M3a/ce/f) -->

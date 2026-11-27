@@ -702,6 +702,7 @@ internal fun chatNoticeText(context: Context, notice: ChatNotice): String = when
     is ChatNotice.PermissionRequestFailed -> notice.detail ?: context.getString(R.string.chat_notice_request_failed)
     is ChatNotice.ModelsLoadFailed -> notice.detail ?: context.getString(R.string.chat_notice_models_failed)
     is ChatNotice.ReadStateFailed -> notice.detail ?: context.getString(R.string.chat_notice_read_state_failed)
+    ChatNotice.ConfigReadbackUnavailable -> context.getString(R.string.chat_notice_config_readback_unavailable)
     is ChatNotice.ConfigUpdateFailed -> notice.detail ?: context.getString(R.string.chat_notice_config_failed)
     is ChatNotice.TranslateInputFailed -> notice.detail ?: context.getString(R.string.chat_notice_config_failed)
 }

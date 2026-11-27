@@ -1663,6 +1663,25 @@ class ChatViewModelInteractionTest {
     }
 
     @Test
+    fun acceptedCursorChangeWithFailedReadbackKeepsConfirmedValueAndReportsOnlyRefreshFailure() = runTest {
+        val current = "grok[fast=false]"
+        val harness = InteractionHarness(this, detail(flavor = "cursor", model = current))
+        harness.viewModel.start()
+        harness.sessionStore.calls.first { "loadDetail:$IX_SESSION" in it }
+        val reads = harness.sessionStore.calls.value.count { it == "loadDetail:$IX_SESSION" }
+        harness.sessionStore.detailToLoad = null
+        val notice = async(start = CoroutineStart.UNDISPATCHED) {
+            harness.viewModel.events.filterIsInstance<ChatEvent.Notice>().first()
+        }
+
+        harness.viewModel.setModel("auto")
+        assertEquals(ChatNotice.ConfigReadbackUnavailable, notice.await().notice)
+        assertEquals(listOf("model:auto"), harness.api.configCalls.value)
+        assertEquals(reads + 1, harness.sessionStore.calls.value.count { it == "loadDetail:$IX_SESSION" })
+        assertEquals(current, harness.sessionStore.currentDetail(IX_SESSION)?.model)
+    }
+
+    @Test
     fun cursorModelChangeUsesServerReadbackAndSurvivesRejectionWithoutReload() = runTest {
         val model = "grok[fast=false]"
         val harness = InteractionHarness(this, detail(flavor = "cursor", model = model))
