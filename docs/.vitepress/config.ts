@@ -40,6 +40,7 @@ export default defineConfig({
           { text: 'Conversation History', link: '/guide/conversation-history' },
           { text: 'Import Local Sessions', link: '/guide/import-local-sessions' },
           { text: 'Peer Sessions', link: '/guide/peer-sessions' },
+          { text: 'Agent quota queries', link: '/guide/usage-query' },
           { text: 'Session-attached jobs', link: '/guide/session-jobs' },
           { text: 'Usage & Quotas', link: '/guide/usage-and-quotas' },
           { text: 'Voice Assistant', link: '/guide/voice-assistant' },
