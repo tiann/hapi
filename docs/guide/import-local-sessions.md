@@ -1,5 +1,5 @@
 ---
-description: "Import Claude Code, Codex, Cursor, OpenCode and Pi conversations started outside HAPI and continue them from the web app."
+description: "Import Antigravity, Claude Code, Codex, Cursor, OpenCode and Pi conversations started outside HAPI and continue them from the web app."
 ---
 
 # Import local sessions
@@ -12,17 +12,18 @@ Importing copies the native transcript into the hub as a HAPI session on the mac
 
 | Agent | Reads history from | Imported session lands as |
 |-------|--------------------|---------------------------|
+| Antigravity | `~/.gemini/antigravity-cli/` (`conversation_summaries.db` and `brain/<id>/.system_generated/logs/`, or `$AGY_APP_DATA_DIR`) | Archived |
 | Claude Code | `~/.claude/projects/` (or `$CLAUDE_CONFIG_DIR/projects/`), including subagent transcripts | Archived |
 | Codex | `~/.codex/sessions/` (or `$CODEX_HOME/sessions/`) | Imported |
 | Cursor | `~/.cursor/acp-sessions/` and legacy `~/.cursor/chats/` (ACP verify required) | Imported |
 | OpenCode | `opencode.db` under `~/.local/share/opencode` (or `$OPENCODE_HOME`, `$XDG_DATA_HOME/opencode`) | Archived |
 | Pi | `~/.pi/agent/sessions/` (or `$PI_CODING_AGENT_DIR/sessions`, `$PI_CODING_AGENT_SESSION_DIR`) | Archived |
 
-Claude, Codex, OpenCode and Pi go through one message-backfill import pipeline on the hub. Cursor uses the same discovery REST pair and machine selection, but prepare/verify is Cursor-specific. Other agents do not support history import.
+Antigravity, Claude, Codex, OpenCode and Pi go through one message-backfill import pipeline on the hub. Cursor uses the same discovery REST pair and machine selection, but prepare/verify is Cursor-specific. Other agents do not support history import.
 
 ## Importing from the web app
 
-1. Open **New session** and pick the machine and agent (Claude, Codex, Cursor, OpenCode or Pi).
+1. Open **New session** and pick the machine and agent (Antigravity, Claude, Codex, Cursor, OpenCode or Pi).
 2. Below the agent picker, find **Import \<agent\> history** and choose **Choose history**.
 3. The dialog lists the most recent local sessions on that machine, newest first. Filter by working directory or search by title, prompt, path or ID. Sessions already in HAPI are marked **Imported** (for Codex, this badge is remembered by the browser that imported them).
 4. Select one or more sessions:
@@ -30,7 +31,7 @@ Claude, Codex, OpenCode and Pi go through one message-backfill import pipeline o
    - **Several selections** are imported right away when you press **Import**, without opening any of them. A toast reports how many succeeded, and the sessions appear in the session list.
 
 ::: warning Close other copies first
-Several processes can open the same native session. Before continuing an imported session in HAPI, close or reload any other Claude / Codex / Cursor / OpenCode / Pi process that has it open, so the two do not write diverging histories.
+Several processes can open the same native session. Before continuing an imported session in HAPI, close or reload any other Antigravity / Claude / Codex / Cursor / OpenCode / Pi process that has it open, so the two do not write diverging histories.
 :::
 
 The iOS and Android apps do not have an import picker. Sessions imported from the web appear in their session lists like any other.
@@ -43,7 +44,7 @@ Native history lives on one machine, so the import runs on that machine's runner
 2. Otherwise, the one online machine whose workspace roots contain the requested directory
 3. Otherwise, the first online machine
 
-If no machine is online the import fails with *No online machine available*. Codex, OpenCode and Pi import also work with older runners through their previous per-agent path; Claude and Cursor import need a current runner that advertises `local-session-import`, and an older one reports that the runner does not support local history import — upgrade HAPI on that machine and restart the runner.
+If no machine is online the import fails with *No online machine available*. Codex, OpenCode and Pi import also work with older runners through their previous per-agent path; Antigravity, Claude and Cursor imports need a current runner that advertises `local-session-import`, and an older one reports that the runner does not support local history import — upgrade HAPI on that machine and restart the runner.
 
 ## Importing again (deduplication)
 
@@ -57,6 +58,8 @@ Importing the same native session again does not create a duplicate. HAPI finds 
 
 Messages you sent from HAPI after the import stay in place — re-importing merges, it never replaces. A HAPI rename of the session is also preserved.
 
+For Antigravity, after continuing in HAPI, a re-import appends new native messages only when the stored conversation matches the native history in order. If the histories conflict, HAPI reports divergence and keeps the existing conversation.
+
 An import is refused when:
 
 - **The HAPI session is active** and the native history has new messages. Stop the HAPI session first; HAPI never interleaves imported messages into a live session.
@@ -65,13 +68,13 @@ An import is refused when:
 
 Concurrent imports of the same native session run one after another, so the second sees nothing new.
 
-In the session list, sessions from these four agents are de-duplicated per machine: the same native ID on two different machines shows as two sessions.
+In the session list, sessions from these five agents are de-duplicated per machine: the same native ID on two different machines shows as two sessions.
 
 ## Limits
 
 - The picker lists at most the **200** most recent sessions per agent on a machine.
 - One import request accepts at most **200** sessions; more is rejected.
-- For Codex, a batch stops at the first failed session. For Claude, OpenCode and Pi, failures are reported per session and the rest continue.
+- For Codex, a batch stops at the first failed session. For Antigravity, Claude, OpenCode and Pi, failures are reported per session and the rest continue.
 - Token usage recorded in imported transcripts is not counted in the [token usage dashboard](./usage-and-quotas.md#token-usage-dashboard).
 
 ## Codex: import vs. shared sessions

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import type {
+    AgyLocalSessionWithMessages,
     ClaudeLocalSessionWithMessages,
     CodexLocalSessionWithMessages,
     OpencodeLocalSessionWithMessages,
@@ -8,6 +9,7 @@ import type {
 import {
     ListLocalSessionsRpcResponseSchema,
     LocalTranscriptSchema,
+    agyToTranscript,
     claudeToTranscript,
     codexToTranscript,
     opencodeToTranscript,
@@ -205,6 +207,42 @@ describe('local transcript mappers', () => {
         expect(transcript.anchorOrder).toBeUndefined()
         expect(transcript.cursor).toBeUndefined()
         expect(transcript.launch).toBeUndefined()
+        expect(LocalTranscriptSchema.parse(transcript)).toBeDefined()
+    })
+
+    it('normalizes Antigravity sessions with deterministic step ids and anchors', () => {
+        const agySession: AgyLocalSessionWithMessages = {
+            id: 'agy-1',
+            title: 'Antigravity session',
+            lastUserMessage: 'fix bug',
+            cwd: '/tmp/project',
+            file: '/tmp/.gemini/antigravity-cli/brain/agy-1/.system_generated/logs/transcript.jsonl',
+            modifiedAt: 5_000,
+            messageCount: 2,
+            messages: [
+                {
+                    localId: 'agy:agy-1:step:0:0',
+                    anchor: 'step:0:0',
+                    createdAt: 4_000,
+                    content: { role: 'user', content: { type: 'text', text: 'fix bug' }, meta: { sentFrom: 'cli' } }
+                },
+                {
+                    localId: 'agy:agy-1:step:1:0',
+                    anchor: 'step:1:0',
+                    createdAt: 4_500,
+                    content: {
+                        role: 'agent',
+                        content: { type: 'codex', data: { type: 'message', message: 'Fixed.' } },
+                        meta: { sentFrom: 'cli' }
+                    }
+                }
+            ]
+        }
+        const transcript = agyToTranscript(agySession)
+        expect(transcript.flavor).toBe('agy')
+        expect(transcript.messages.map((message) => message.id)).toEqual(['agy:agy-1:step:0:0', 'agy:agy-1:step:1:0'])
+        expect(transcript.messages.map((message) => message.anchor)).toEqual(['step:0:0', 'step:1:0'])
+        expect(transcript.messageCount).toBe(2)
         expect(LocalTranscriptSchema.parse(transcript)).toBeDefined()
     })
 

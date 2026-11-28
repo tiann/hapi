@@ -60,7 +60,7 @@ import {
     agyQuestionContent,
     parseAgyQuestionForm,
     questionCardInput,
-    questionCardInputFromToolCall
+    asQuestionCard
 } from './agyQuestion';
 
 export { addAgyUsage };
@@ -229,18 +229,6 @@ export function resolveAgyHapiMcpAutoApproval(
     }
     return null;
 }
-
-/** agy's ask_question tool call (titled "Run ask_question"), as the question card. */
-function asQuestionCard(message: AgentMessage): { message: AgentMessage; shownLabels: string[][] | null } {
-    if (message.type !== 'tool_call' || !/\bask_question\b/.test(message.name)) return { message, shownLabels: null };
-    const input = questionCardInputFromToolCall(message.input);
-    if (!input) return { message, shownLabels: null };
-    return {
-        message: { ...message, name: QUESTION_TOOL_NAME, input },
-        shownLabels: input.questions.map((question) => question.options.map((option) => option.label))
-    };
-}
-
 /** agy acp did not come up; the caller may fall back to another transport. */
 export class AgyAcpStartError extends Error {}
 
@@ -1043,7 +1031,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         mcpServers: this.acpMcpServers,
                         ...(sessionMeta ? { meta: sessionMeta } : {})
                     });
+                    if (session.client.getMetadata?.()?.agyImportedAt != null && acpSessionId !== resumeSessionId) {
+                        throw new Error('Antigravity did not resume the imported conversation');
+                    }
                 } catch (error) {
+                    if (session.client.getMetadata?.()?.agyImportedAt != null) throw error;
                     logger.warn('[agy-acp] resume failed, starting a new conversation', error);
                     session.sendSessionEvent({
                         type: 'message',

@@ -1179,6 +1179,13 @@ export class MessageService {
                 && !id.startsWith(JOB_WAKE_MESSAGE_LOCAL_ID_PREFIX)
             )
         if (localIds.length === 0) return null
+        const metadata = this.store.sessions.getSession(sessionId)?.metadata as { agyImportedAt?: number } | null
+        if (metadata?.agyImportedAt != null) {
+            // Session end cannot confirm that the native conversation received these prompts.
+            this.store.messages.setMessagesDeliveryState(sessionId, localIds, 'indeterminate')
+            this.publisher.emit({ type: 'messages-indeterminate', sessionId, localIds })
+            return null
+        }
         this.store.messages.markMessagesInvoked(sessionId, localIds, invokedAt)
         this.forgetScheduledMatureNotified(localIds)
         this.publisher.emit({ type: 'messages-consumed', sessionId, localIds, invokedAt })

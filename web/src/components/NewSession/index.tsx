@@ -57,6 +57,7 @@ import { CodexImportActions } from './CodexImportActions'
 import { PiImportActions } from './PiImportActions'
 import { OpencodeImportActions } from './OpencodeImportActions'
 import { ClaudeImportActions } from './ClaudeImportActions'
+import { AgyImportActions } from './AgyImportActions'
 import { CursorImportActions } from './CursorImportActions'
 import { clearBatchImportedCodexSelection, resolveCodexImportRedirectSessionId } from './codexImportMerge'
 import { AgyModelSelector } from './AgyModelSelector'
@@ -91,6 +92,7 @@ import { CodexSessionSyncDialog } from '@/components/CodexSessionSyncDialog'
 import { PiSessionImportDialog } from '@/components/PiSessionImportDialog'
 import { OpencodeSessionImportDialog } from '@/components/OpencodeSessionImportDialog'
 import { ClaudeSessionImportDialog } from '@/components/ClaudeSessionImportDialog'
+import { AgySessionImportDialog } from '@/components/AgySessionImportDialog'
 import { CursorSessionImportDialog } from '@/components/CursorSessionImportDialog'
 import { useLocalSessionImport } from '@/hooks/useLocalSessionImport'
 import type { LocalSessionImportApi, LocalSessionListItem } from '@/lib/localSessionImport'
@@ -237,6 +239,23 @@ export function NewSession(props: {
     const [isImportingClaudeSession, setIsImportingClaudeSession] = useState(false)
     const [isBulkImportingClaudeSessions, setIsBulkImportingClaudeSessions] = useState(false)
     const [isClaudeImportDialogOpen, setIsClaudeImportDialogOpen] = useState(false)
+    const agyImportApiAdapter = useMemo<LocalSessionImportApi>(() => ({
+        getLocalSessions: (_flavor, cwd, adapterMachineId) => props.api.getAgySessions(cwd ?? null, adapterMachineId ?? null),
+        importLocalSessions: (_flavor, payload) => props.api.importAgySessions(payload)
+    }), [props.api])
+    const agyImport = useLocalSessionImport({
+        api: agyImportApiAdapter,
+        flavor: 'agy',
+        directory,
+        machineId,
+        auto: false
+    })
+    const [agySelection, setAgySelection] = useState<{ id: string; machineId: string } | null>(null)
+    const selectedAgyImportSessionId = agySelection && agySelection.machineId === machineId ? agySelection.id : null
+    const hasAgyListing = Boolean(machineId && agyImport.machineId === machineId)
+    const [isImportingAgySession, setIsImportingAgySession] = useState(false)
+    const [isBulkImportingAgySessions, setIsBulkImportingAgySessions] = useState(false)
+    const [isAgyImportDialogOpen, setIsAgyImportDialogOpen] = useState(false)
     const cursorImportApiAdapter = useMemo<LocalSessionImportApi>(() => ({
         getLocalSessions: (_flavor, cwd, adapterMachineId) => props.api.getCursorSessions(cwd ?? null, adapterMachineId ?? null),
         importLocalSessions: (_flavor, payload) => props.api.importCursorSessions(payload)
@@ -273,6 +292,8 @@ export function NewSession(props: {
         || isBulkImportingOpencodeSessions
         || isImportingClaudeSession
         || isBulkImportingClaudeSessions
+        || isImportingAgySession
+        || isBulkImportingAgySessions
         || isImportingCursorSession
         || isBulkImportingCursorSessions
     )
@@ -1292,16 +1313,32 @@ export function NewSession(props: {
         model
     ])
 
+    const selectedAgyImportSession = useMemo(
+        () => agyImport.sessions.find((session) => session.id === selectedAgyImportSessionId) ?? null,
+        [agyImport.sessions, selectedAgyImportSessionId]
+    )
+    const lockedAgyImportCwd = selectedAgyImportSession?.cwd?.trim()
+        || selectedAgyImportSession?.savedCwd?.trim()
+        || null
+    const isContinuingAgyImport = agent === 'agy' && Boolean(selectedAgyImportSession)
+    const effectiveSessionType = isContinuingAgyImport ? 'simple' : sessionType
+
+    useEffect(() => {
+        if (isContinuingAgyImport && lockedAgyImportCwd && directory !== lockedAgyImportCwd) {
+            setDirectory(lockedAgyImportCwd)
+        }
+    }, [directory, isContinuingAgyImport, lockedAgyImportCwd])
+
     const currentDirectoryExists = trimmedDirectory ? pathExistence[trimmedDirectory] : undefined
     const directoryOutsideWorkspaceRoots = trimmedDirectory
         ? outsideWorkspaceRoots.has(trimmedDirectory)
         : false
     const needsDirectoryCreationWarning = !directoryOutsideWorkspaceRoots
-        && sessionType === 'simple'
+        && effectiveSessionType === 'simple'
         && trimmedDirectory !== ''
         && currentDirectoryExists === false
     const missingWorktreeDirectory = !directoryOutsideWorkspaceRoots
-        && sessionType === 'worktree'
+        && effectiveSessionType === 'worktree'
         && trimmedDirectory !== ''
         && currentDirectoryExists === false
     const directoryStatusMessage = directoryOutsideWorkspaceRoots
@@ -1407,6 +1444,10 @@ export function NewSession(props: {
     }, [claudeImport.sessions])
 
     useEffect(() => {
+        setAgySelection((current) => current?.machineId === machineId && agyImport.sessions.some((session) => session.id === current.id) ? current : null)
+    }, [agyImport.sessions, machineId])
+
+    useEffect(() => {
         setSelectedCursorImportSessionId((current) => current && cursorImport.sessions.some((session) => session.id === current) ? current : null)
     }, [cursorImport.sessions])
 
@@ -1415,6 +1456,13 @@ export function NewSession(props: {
         if (code === 'already_in_hapi') return t('claudeImport.error.alreadyImported')
         if (code === 'session_active') return t('claudeImport.error.active')
         return message?.trim() || t('claudeImport.failed.body')
+    }, [t])
+
+    const formatAgyImportError = useCallback((code?: string, message?: string): string => {
+        if (code === 'transcript_diverged') return t('agyImport.error.diverged')
+        if (code === 'already_in_hapi') return t('agyImport.error.alreadyImported')
+        if (code === 'session_active') return t('agyImport.error.active')
+        return message?.trim() || t('agyImport.failed.body')
     }, [t])
 
     const formatCursorImportError = useCallback((code?: string, message?: string): string => {
@@ -1806,6 +1854,66 @@ export function NewSession(props: {
         trimmedDirectory
     ])
 
+    const handleBulkImportAgySessions = useCallback(async (sessionIds: string[]) => {
+        if (isBulkImportingAgySessions || agyImport.isLoading || !hasAgyListing) return
+        setIsBulkImportingAgySessions(true)
+        try {
+            const result = await props.api.importAgySessions({
+                sessionIds,
+                cwd: trimmedDirectory || null,
+                machineId: machineId
+            })
+            const importedCount = result.results.filter((item) => item.hapiSessionId && !item.error && (item.action === 'created' || (item.appended ?? 0) > 0)).length
+            const failed = result.results.filter((item) => item.error)
+            if (importedCount > 0) {
+                addToast({
+                    title: t('agyImport.success.title'),
+                    body: t('agyImport.success.body', { n: importedCount }),
+                    sessionId: '',
+                    url: ''
+                })
+                await refetchSessions()
+                await agyImport.refresh()
+            }
+            if (failed.length > 0) {
+                const first = failed[0]!.error!
+                addToast({
+                    title: t('agyImport.failed.title'),
+                    body: t('agyImport.failed.partial', {
+                        failed: failed.length,
+                        reason: formatAgyImportError(first.code, first.message)
+                    }),
+                    sessionId: '',
+                    url: ''
+                })
+                return
+            }
+            setIsAgyImportDialogOpen(false)
+            setAgySelection(null)
+        } catch (importError) {
+            addToast({
+                title: t('agyImport.failed.title'),
+                body: apiErrorMessage(importError, t('agyImport.failed.body')),
+                sessionId: '',
+                url: ''
+            })
+        } finally {
+            setIsBulkImportingAgySessions(false)
+        }
+    }, [
+        addToast,
+        agyImport.isLoading,
+        hasAgyListing,
+        agyImport.refresh,
+        formatAgyImportError,
+        isBulkImportingAgySessions,
+        machineId,
+        props.api,
+        refetchSessions,
+        t,
+        trimmedDirectory
+    ])
+
     const handleBulkImportCursorSessions = useCallback(async (sessionIds: string[]) => {
         if (isBulkImportingCursorSessions || cursorImport.isLoading) return
         setIsBulkImportingCursorSessions(true)
@@ -1907,6 +2015,7 @@ export function NewSession(props: {
         setSelectedPiImportSessionId(null)
         setSelectedOpencodeImportSessionId(null)
         setSelectedClaudeImportSessionId(null)
+        setAgySelection(null)
         const paths = getRecentPaths(newMachineId)
         if (paths[0]) {
             setDirectory(paths[0])
@@ -2017,6 +2126,13 @@ export function NewSession(props: {
         if (session.cwd?.trim()) setDirectory(session.cwd.trim())
     }, [])
 
+    const handleSelectAgyImportSession = useCallback((session: LocalSessionListItem) => {
+        if (!machineId || !hasAgyListing) return
+        setAgySelection({ id: session.id, machineId })
+        const lockedCwd = session.cwd?.trim() || session.savedCwd?.trim()
+        if (lockedCwd) setDirectory(lockedCwd)
+    }, [machineId, hasAgyListing])
+
     const handleSelectCursorImportSession = useCallback((session: LocalSessionListItem) => {
         setSelectedCursorImportSessionId(session.id)
         if (session.cwd?.trim()) setDirectory(session.cwd.trim())
@@ -2095,13 +2211,13 @@ export function NewSession(props: {
             }
             const directoryExists = existsResult.exists[trimmedDirectory]
 
-            if (sessionType === 'worktree' && directoryExists === false) {
+            if (effectiveSessionType === 'worktree' && directoryExists === false) {
                 haptic.notification('error')
                 setError(t('session.directoryMissingWorktree'))
                 return
             }
 
-            if (sessionType === 'simple' && directoryExists === false && !directoryCreationConfirmed) {
+            if (effectiveSessionType === 'simple' && directoryExists === false && !directoryCreationConfirmed) {
                 setDirectoryCreationConfirmed(true)
                 return
             }
@@ -2279,6 +2395,34 @@ export function NewSession(props: {
                 return
             }
 
+            if (agent === 'agy' && selectedAgyImportSession) {
+                setIsImportingAgySession(true)
+                const result = await props.api.importAgySessions({
+                    sessionIds: [selectedAgyImportSession.id],
+                    cwd: lockedAgyImportCwd ?? trimmedDirectory,
+                    machineId: machineId,
+                    model: resolvedModel ?? null,
+                    effort: resolvedEffort ?? null,
+                    permissionMode: nativePermissionMode
+                })
+                const imported = result.results.find((item) => item.agySessionId === selectedAgyImportSession.id)
+                if (imported?.error) {
+                    setIsImportingAgySession(false)
+                    haptic.notification('error')
+                    setError(formatAgyImportError(imported.error.code, imported.error.message))
+                    return
+                }
+                if (!imported?.hapiSessionId) throw new Error(result.error || t('agyImport.failed.body'))
+                const reopened = await props.api.reopenSession(imported.hapiSessionId)
+                haptic.notification('success')
+                savePreferredLaunchSettings(machineId, agent, preferredLaunchSettings)
+                clearNewSessionFormDraft()
+                setLastUsedMachineId(machineId)
+                addRecentPath(machineId, trimmedDirectory)
+                props.onSuccess(reopened.sessionId)
+                return
+            }
+
             if (agent === 'cursor' && selectedCursorImportSession) {
                 setIsImportingCursorSession(true)
                 const result = await props.api.importCursorSessions({
@@ -2342,6 +2486,7 @@ export function NewSession(props: {
             setIsImportingPiSession(false)
             setIsImportingOpencodeSession(false)
             setIsImportingClaudeSession(false)
+            setIsImportingAgySession(false)
             setIsImportingCursorSession(false)
             haptic.notification('error')
             setError(apiErrorMessage(e, 'Failed to create session'))
@@ -2430,7 +2575,7 @@ export function NewSession(props: {
                 directory={directory}
                 suggestions={suggestions}
                 selectedIndex={selectedIndex}
-                isDisabled={isFormDisabled}
+                isDisabled={isFormDisabled || Boolean(isContinuingAgyImport && lockedAgyImportCwd)}
                 recentPaths={recentPaths}
                 statusMessage={directoryStatusMessage}
                 statusTone={directoryStatusTone}
@@ -2442,14 +2587,16 @@ export function NewSession(props: {
                 onPathClick={handlePathClick}
                 onChooseFolder={props.onChooseFolder ? handleChooseFolderClick : undefined}
             />
-            <SessionTypeSelector
-                sessionType={sessionType}
-                worktreeName={worktreeName}
-                worktreeInputRef={worktreeInputRef}
-                isDisabled={isFormDisabled}
-                onSessionTypeChange={setSessionType}
-                onWorktreeNameChange={setWorktreeName}
-            />
+            {!isContinuingAgyImport ? (
+                <SessionTypeSelector
+                    sessionType={sessionType}
+                    worktreeName={worktreeName}
+                    worktreeInputRef={worktreeInputRef}
+                    isDisabled={isFormDisabled}
+                    onSessionTypeChange={setSessionType}
+                    onWorktreeNameChange={setWorktreeName}
+                />
+            ) : null}
             <AgentSelector
                 agent={agent}
                 agents={agentOptions}
@@ -2526,6 +2673,19 @@ export function NewSession(props: {
                         void claudeImport.refresh()
                     }}
                     onClear={() => setSelectedClaudeImportSessionId(null)}
+                />
+            ) : null}
+            {agent === 'agy' ? (
+                <AgyImportActions
+                    selectedSession={selectedAgyImportSession}
+                    isLoading={agyImport.isLoading}
+                    isDisabled={isFormDisabled}
+                    error={agyImport.error}
+                    onChooseHistory={() => {
+                        setIsAgyImportDialogOpen(true)
+                        void agyImport.refresh()
+                    }}
+                    onClear={() => setAgySelection(null)}
                 />
             ) : null}
             {agent === 'cursor' ? (
@@ -2746,7 +2906,7 @@ export function NewSession(props: {
             ) : null}
 
             <ActionButtons
-                isPending={isCreating || isPending || isImportingCodexSession || isImportingPiSession || isImportingOpencodeSession || isImportingClaudeSession || isImportingCursorSession}
+                isPending={isCreating || isPending || isImportingCodexSession || isImportingPiSession || isImportingOpencodeSession || isImportingClaudeSession || isImportingAgySession || isImportingCursorSession}
                 canCreate={canCreate}
                 isDisabled={isFormDisabled}
                 createLabel={createLabel}
@@ -2836,6 +2996,26 @@ export function NewSession(props: {
                 }}
                 isPending={isBulkImportingClaudeSessions}
                 isLoading={claudeImport.isLoading}
+            />
+            <AgySessionImportDialog
+                isOpen={isAgyImportDialogOpen}
+                onClose={() => setIsAgyImportDialogOpen(false)}
+                sessions={hasAgyListing ? agyImport.sessions : []}
+                currentSessionId={selectedAgyImportSessionId}
+                currentWorkDirectory={trimmedDirectory}
+                onConfirm={async (sessionIds) => {
+                    if (sessionIds.length === 1) {
+                        const session = agyImport.sessions.find((candidate) => candidate.id === sessionIds[0])
+                        if (session) {
+                            handleSelectAgyImportSession(session)
+                            setIsAgyImportDialogOpen(false)
+                        }
+                        return
+                    }
+                    await handleBulkImportAgySessions(sessionIds)
+                }}
+                isPending={isBulkImportingAgySessions}
+                isLoading={agyImport.isLoading}
             />
             <CursorSessionImportDialog
                 isOpen={isCursorImportDialogOpen}

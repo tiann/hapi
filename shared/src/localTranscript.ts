@@ -3,6 +3,8 @@ import {
     CodexImportedMessageSchema,
     CodexLocalSessionSummarySchema,
     CodexLocalSessionWithMessagesSchema,
+    type AgyLocalSessionSummary,
+    type AgyLocalSessionWithMessages,
     type ClaudeLocalSessionSummary,
     type ClaudeLocalSessionWithMessages,
     type OpencodeLocalSessionSummary,
@@ -14,15 +16,15 @@ import {
 /**
  * Normalized local-session transcript contract (import registry).
  *
- * Sources (Codex, Pi, OpenCode, Claude, Cursor) only convert their native
- * history into this shape; the generic hub importer owns target lookup, delta
- * computation, persistence and lifecycle. CLI readers and the hub's legacy
- * runner fallbacks both produce these transcripts so both paths converge on
+ * Sources (Codex, Pi, OpenCode, Claude, Cursor, Antigravity) only convert their
+ * native history into this shape; the generic hub importer owns target lookup,
+ * delta computation, persistence and lifecycle. CLI readers and the hub's
+ * legacy runner fallbacks both produce these transcripts so both paths converge on
  * the same result. Cursor attaches an ACP store (often with an empty message
  * array here); scrollback comes from ACP resume after prepare/verify.
  */
 
-export const LOCAL_SESSION_FLAVORS = ['codex', 'pi', 'opencode', 'claude', 'cursor'] as const
+export const LOCAL_SESSION_FLAVORS = ['codex', 'pi', 'opencode', 'claude', 'cursor', 'agy'] as const
 
 export type LocalSessionFlavor = typeof LOCAL_SESSION_FLAVORS[number]
 
@@ -261,6 +263,34 @@ export function opencodeToTranscript(session: OpencodeLocalSessionWithMessages):
             id: message.localId,
             createdAt: message.createdAt,
             content: message.content
+        }))
+    }
+}
+
+// -- Antigravity ------------------------------------------------------------
+
+export function agyToTranscriptSummary(session: AgyLocalSessionSummary): LocalTranscriptSummary {
+    return transcriptSummaryBase({
+        flavor: 'agy',
+        id: session.id,
+        title: session.title,
+        lastUserMessage: session.lastUserMessage ?? null,
+        cwd: session.cwd ?? null,
+        file: session.file,
+        modifiedAt: session.modifiedAt,
+        ...(session.messageCount !== undefined ? { messageCount: session.messageCount } : {})
+    })
+}
+
+export function agyToTranscript(session: AgyLocalSessionWithMessages): LocalTranscript {
+    return {
+        ...agyToTranscriptSummary(session),
+        ...(session.importError ? { extra: { importError: session.importError } } : {}),
+        messages: session.messages.map((message) => ({
+            id: message.localId,
+            createdAt: message.createdAt,
+            content: message.content,
+            anchor: message.anchor
         }))
     }
 }

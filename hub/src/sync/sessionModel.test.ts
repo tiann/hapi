@@ -4024,7 +4024,7 @@ describe('session model', () => {
         }
     })
 
-    it('does not resume a native Pi session on a same-host machine when its recorded machine is offline', async () => {
+    it.each(['pi', 'agy'] as const)('does not resume a native %s session on a same-host machine when its recorded machine is offline', async (flavor) => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(
             store,
@@ -4040,8 +4040,8 @@ describe('session model', () => {
                     path: '/remote/project',
                     host: 'shared-host-label',
                     machineId: 'recorded-machine-offline',
-                    flavor: 'pi',
-                    piSessionId: 'pi-native-offline',
+                    flavor,
+                    ...(flavor === 'agy' ? { agySessionId: 'agy-native-offline' } : { piSessionId: 'pi-native-offline' }),
                     lifecycleState: 'archived'
                 },
                 null,

@@ -84,14 +84,17 @@ describe('ApiMachineClient ListLocalSessions wiring', () => {
         const codexHome = mkdtempSync(join(tmpdir(), 'hapi-lls-codex-'))
         const piSessions = mkdtempSync(join(tmpdir(), 'hapi-lls-pi-'))
         const claudeHome = mkdtempSync(join(tmpdir(), 'hapi-lls-claude-'))
+        const agyHome = mkdtempSync(join(tmpdir(), 'hapi-lls-agy-'))
         const original = {
             CODEX_HOME: process.env.CODEX_HOME,
             PI_CODING_AGENT_SESSION_DIR: process.env.PI_CODING_AGENT_SESSION_DIR,
-            CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR
+            CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
+            AGY_APP_DATA_DIR: process.env.AGY_APP_DATA_DIR
         }
         process.env.CODEX_HOME = codexHome
         process.env.PI_CODING_AGENT_SESSION_DIR = piSessions
         process.env.CLAUDE_CONFIG_DIR = claudeHome
+        process.env.AGY_APP_DATA_DIR = agyHome
         writeCodexTranscript(codexHome, 'wired.jsonl', { id: 'codex-wired', cwd: '/tmp/wired' }, 'wired prompt')
         writePiTranscript(piSessions, 'wired.jsonl', 'pi-wired', '/tmp/wired', 'wired pi')
         const projectDir = join(claudeHome, 'projects', '-tmp-wired')
@@ -99,6 +102,11 @@ describe('ApiMachineClient ListLocalSessions wiring', () => {
         writeFileSync(join(projectDir, 'claude-wired.jsonl'), [
             JSON.stringify({ type: 'user', uuid: 'u1', timestamp: '2026-11-13T00:00:00.000Z', cwd: '/tmp/wired', message: { role: 'user', content: 'wired claude' } })
         ].join('\n'))
+        const agyLogsDir = join(agyHome, 'brain', 'agy-wired', '.system_generated', 'logs')
+        mkdirSync(agyLogsDir, { recursive: true })
+        writeFileSync(join(agyLogsDir, 'transcript.jsonl'), [
+            JSON.stringify({ step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', status: 'DONE', created_at: '2026-11-13T00:00:00.000Z', content: '<USER_REQUEST>\nwired agy\n</USER_REQUEST>' })
+        ].join('\n') + '\n')
 
         const machine = makeMachine('wiring-machine')
         const client = new ApiMachineClient('cli-token', machine)
@@ -118,6 +126,25 @@ describe('ApiMachineClient ListLocalSessions wiring', () => {
             const opencode = await callListLocalSessions(client, machine.id, { flavor: 'opencode' }) as { success: boolean; sessions: Array<Record<string, unknown>> }
             expect(opencode.success).toBe(true)
             expect(opencode.sessions[0]).toMatchObject({ id: 'opencode-wired', flavor: 'opencode' })
+
+            const agy = await callListLocalSessions(client, machine.id, { flavor: 'agy' }) as { success: boolean; sessions: Array<Record<string, unknown>> }
+            expect(agy.success).toBe(true)
+            expect(agy.sessions[0]).toMatchObject({ id: 'agy-wired', flavor: 'agy' })
+
+            const allowedWorkspace = mkdtempSync(join(tmpdir(), 'hapi-agy-allowed-root-'))
+            const scopedMachine = makeMachine('scoped-machine')
+            const scopedClient = new ApiMachineClient('cli-token', scopedMachine, [allowedWorkspace])
+            try {
+                const scopedAgy = await callListLocalSessions(scopedClient, scopedMachine.id, {
+                    flavor: 'agy',
+                    sessionIds: ['agy-wired'],
+                    cwd: allowedWorkspace
+                }) as { success: boolean; sessions: Array<Record<string, unknown>> }
+                expect(scopedAgy).toEqual({ success: true, sessions: [] })
+            } finally {
+                scopedClient.shutdown()
+                rmSync(allowedWorkspace, { recursive: true, force: true })
+            }
         } finally {
             client.shutdown()
             if (original.CODEX_HOME === undefined) delete process.env.CODEX_HOME
@@ -126,9 +153,12 @@ describe('ApiMachineClient ListLocalSessions wiring', () => {
             else process.env.PI_CODING_AGENT_SESSION_DIR = original.PI_CODING_AGENT_SESSION_DIR
             if (original.CLAUDE_CONFIG_DIR === undefined) delete process.env.CLAUDE_CONFIG_DIR
             else process.env.CLAUDE_CONFIG_DIR = original.CLAUDE_CONFIG_DIR
+            if (original.AGY_APP_DATA_DIR === undefined) delete process.env.AGY_APP_DATA_DIR
+            else process.env.AGY_APP_DATA_DIR = original.AGY_APP_DATA_DIR
             rmSync(codexHome, { recursive: true, force: true })
             rmSync(piSessions, { recursive: true, force: true })
             rmSync(claudeHome, { recursive: true, force: true })
+            rmSync(agyHome, { recursive: true, force: true })
         }
     })
 

@@ -274,6 +274,8 @@ describe('bootstrapExistingSession', () => {
             geminiSessionId: 'gemini-thread-1',
             opencodeSessionId: 'opencode-thread-1',
             grokSessionId: 'grok-thread-1',
+            agySessionId: 'agy-native',
+            agyImportedAt: 123,
             cursorSessionId: 'cursor-thread-1',
             cursorSessionProtocol: 'acp',
             piSessionId: 'pi-thread-1',
@@ -326,6 +328,8 @@ describe('bootstrapExistingSession', () => {
             geminiSessionId: 'gemini-thread-1',
             opencodeSessionId: 'opencode-thread-1',
             grokSessionId: 'grok-thread-1',
+            agySessionId: 'agy-native',
+            agyImportedAt: 123,
             cursorSessionId: 'cursor-thread-1',
             cursorSessionProtocol: 'acp',
             piSessionId: 'pi-thread-1',
@@ -361,6 +365,8 @@ describe('bootstrapExistingSession', () => {
             acpManualTitle: true,
             codexSessionId: 'codex-thread-1',
             grokSessionId: 'grok-thread-1',
+            agySessionId: 'agy-native',
+            agyImportedAt: 123,
             conversationHistoryEntryIds: { 'local-user-1': 'pi-entry-1' },
             opencodeHistoryCheckpoint: checkpoint,
             opencodeForkPending: true
@@ -371,6 +377,8 @@ describe('bootstrapExistingSession', () => {
                 acpManualTitle: true,
                 codexSessionId: 'codex-thread-1',
                 grokSessionId: 'grok-thread-1',
+            agySessionId: 'agy-native',
+            agyImportedAt: 123,
                 conversationHistoryEntryIds: { 'local-user-1': 'pi-entry-1' }
             })
         )

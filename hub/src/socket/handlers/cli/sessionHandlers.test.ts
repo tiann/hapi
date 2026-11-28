@@ -587,6 +587,7 @@ describe('cli session handlers', () => {
     })
 
 it.each([
+        ['agyImportedAt', 1234],
         ['codexImportedAt', 1234],
         ['supersededBySessionId', 'foreign-session'],
         ['opencodeClearOperation', { replacementSessionId: 'foreign-session', state: 'reserved', updatedAt: Date.now() }],

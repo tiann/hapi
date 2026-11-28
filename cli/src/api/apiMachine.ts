@@ -81,6 +81,7 @@ import { codexLocalSessionSource } from '../modules/common/localSessions/sources
 import { piLocalSessionSource } from '../modules/common/localSessions/sources/pi'
 import { opencodeLocalSessionSource } from '../modules/common/localSessions/sources/opencode'
 import { claudeLocalSessionSource } from '../modules/common/localSessions/sources/claude'
+import { agyLocalSessionSource } from '../modules/common/localSessions/sources/agy'
 import { cursorLocalSessionSource } from '../modules/common/localSessions/sources/cursor'
 import { buildSocketIoExtraHeaderOptions } from './hubExtraHeaders'
 import { collectMachineHealth } from '@/utils/machineHealth'
@@ -559,7 +560,8 @@ export class ApiMachineClient {
             piLocalSessionSource,
             opencodeLocalSessionSource,
             claudeLocalSessionSource,
-            cursorLocalSessionSource
+            cursorLocalSessionSource,
+            agyLocalSessionSource
         ]) {
             registerLocalSessionSource(source)
         }
