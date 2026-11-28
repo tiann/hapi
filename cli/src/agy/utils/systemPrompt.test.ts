@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ApiSessionClient } from '@/api/apiSession';
 import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge';
 import { AGY_SAFE_HAPI_MCP_TOOLS, getAgySystemPromptAppend } from './systemPrompt';
+import { SESSION_JOB_INSTRUCTION } from '@/modules/common/sessionJobInstruction';
 
 function makeRealSessionClient(sessionId = 'agy-session-1'): ApiSessionClient {
     return {
@@ -29,14 +30,14 @@ describe('getAgySystemPromptAppend & server-side AGY HAPI MCP bridge boundary', 
         const prompt = getAgySystemPromptAppend(AGY_SAFE_HAPI_MCP_TOOLS, {});
         expect(prompt).toContain('"change_title"');
         expect(prompt).toContain('skill_lookup');
-        expect(prompt).toContain('Session-attached jobs:');
+        expect(prompt).toContain(SESSION_JOB_INSTRUCTION);
         expect(prompt).toContain('/sessions/<id> is a HAPI hub path');
         expect(prompt).toContain('Peer session MCP tools are not exposed in this Antigravity session');
         expect(prompt).not.toContain('Call "inspect_peer"');
         expect(prompt).not.toContain('call "ping_peer"');
         expect(prompt).not.toContain('call "list_peers"');
         expect(prompt).not.toContain('call "spawn_peer"');
-        expect(getAgySystemPromptAppend(['change_title'], {})).not.toContain('Session-attached jobs:');
+        expect(getAgySystemPromptAppend(['change_title'], {})).not.toContain(SESSION_JOB_INSTRUCTION);
     });
 
     it('includes peer citation tool instructions when peer tools are explicitly enabled', () => {
@@ -44,10 +45,8 @@ describe('getAgySystemPromptAppend & server-side AGY HAPI MCP bridge boundary', 
             ['change_title', 'session_job', 'skill_lookup', 'list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer'],
             {}
         );
-        expect(prompt).toContain('Call "inspect_peer"');
-        expect(prompt).toContain('call "ping_peer"');
-        expect(prompt).toContain('call "list_peers"');
-        expect(prompt).toContain('call "spawn_peer"');
+        expect(prompt).toContain('read it with the "inspect_peer" tool');
+        expect(prompt).not.toContain('Peer session MCP tools are not exposed in this Antigravity session');
     });
 
     it('exposes only AGY_SAFE_HAPI_MCP_TOOLS on the real HTTP/stdio HAPI MCP bridge', async () => {

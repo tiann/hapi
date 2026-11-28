@@ -23,6 +23,7 @@ import {
 } from './agyAcpRemoteLauncher';
 import { generationTimeMs } from '@/agent/generationClock';
 import { cleanupUploadDir, registerUploadHandlers } from '@/modules/common/handlers/uploads';
+import { SESSION_JOB_INSTRUCTION } from '@/modules/common/sessionJobInstruction';
 
 const mcpBridgeHarness = vi.hoisted(() => ({
     calls: [] as Array<{ client: unknown; options: unknown }>,
@@ -2545,7 +2546,7 @@ describe('AgyAcpRemoteLauncher HAPI MCP bridge, systemPrompt.append, safe auto-a
         const firstMeta = backend1.newSessionConfigs[0]?.meta as { antigravity?: { systemPrompt?: { append?: string } } };
         expect(firstMeta?.antigravity?.systemPrompt?.append).toContain('change_title');
         expect(firstMeta?.antigravity?.systemPrompt?.append).toContain('skill_lookup');
-        expect(firstMeta?.antigravity?.systemPrompt?.append).toContain('Session-attached jobs:');
+        expect(firstMeta?.antigravity?.systemPrompt?.append).toContain(SESSION_JOB_INSTRUCTION);
         expect(firstMeta?.antigravity?.systemPrompt?.append).not.toContain('"spawn_peer"');
         expect(firstMeta?.antigravity?.systemPrompt?.append).not.toContain('"ping_peer"');
         expect(firstMeta?.antigravity?.systemPrompt?.append).not.toContain('"inspect_peer"');

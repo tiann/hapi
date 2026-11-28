@@ -47,12 +47,7 @@ export function getAgySystemPromptAppend(
     if (isPeerToolsDisabled(env)) {
         lines.push(SESSION_CITATION_DISABLED_STEER);
     } else if (toolSet.has('inspect_peer') && toolSet.has('ping_peer')) {
-        lines.push(buildSessionCitationSteerInstruction({
-            inspectTool: 'inspect_peer',
-            pingTool: 'ping_peer',
-            ...(toolSet.has('list_peers') ? { listPeersTool: 'list_peers' } : {}),
-            ...(toolSet.has('spawn_peer') ? { spawnTool: 'spawn_peer' } : {})
-        }));
+        lines.push(buildSessionCitationSteerInstruction({ inspectTool: 'the "inspect_peer" tool (on the "hapi" MCP server)' }));
     } else {
         lines.push(SESSION_CITATION_UNEXPOSED_STEER);
     }
