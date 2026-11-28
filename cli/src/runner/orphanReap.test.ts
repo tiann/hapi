@@ -156,6 +156,8 @@ describe('silent-success scar (dropped-await / non-string marker)', () => {
         expect(normalizeStartMarker(Promise.resolve('gen'))).toBe(START_MARKER_INVALID)
         expect(normalizeStartMarker('gen')).toBe('gen')
         expect(normalizeStartMarker(null)).toBe(null)
+        // Omitted return is malformed, not "unknown marker" (#2592 Codex Minor).
+        expect(normalizeStartMarker(undefined)).toBe(START_MARKER_INVALID)
     })
 
     it('positive control: async getStartMarker still reaches killTree (assert kill, not status alone)', async () => {
@@ -178,6 +180,19 @@ describe('silent-success scar (dropped-await / non-string marker)', () => {
             findTargets: async () => [{ pid: 4242, startMarker: 'gen-a' }],
             getStartMarker: () => ({ not: 'a-marker' }) as unknown as string,
             isAlive: () => true,
+            killTree: async (pid) => { killed.push(pid); return true },
+        })
+        expect(killed).toEqual([])
+        expect(status).toBe('still_alive')
+    })
+
+    it('fail-closed: undefined probe + dead PID must not report stopped (#2592 Minor)', async () => {
+        const killed: number[] = []
+        const status = await reapRunnerSpawnedOrphans('sess-undefined-marker', {
+            findTargets: async () => [{ pid: 4242, startMarker: 'gen-a' }],
+            // Accidental omit / void return — not an explicit null probe failure.
+            getStartMarker: (() => undefined) as unknown as () => string | null,
+            isAlive: () => false,
             killTree: async (pid) => { killed.push(pid); return true },
         })
         expect(killed).toEqual([])

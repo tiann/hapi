@@ -289,6 +289,11 @@ export async function findRunnerSpawnedOrphanPids(
  * (`still_alive`) even if an await is dropped again —
  * `normalizeStartMarker(promise)` is invalid, not a reuse success.
  *
+ * `undefined` is also invalid (omitted return), not null. Null alone means
+ * "probe could not read a marker" and keeps the liveness fallback; treating
+ * undefined as null let a dead PID report `'stopped'` without killTree
+ * (#2591 / Codex Minor on #2592).
+ *
  * Symbol (not the string `'invalid'`) so a second normalize of an already-invalid
  * result cannot be mistaken for a real marker string.
  */
@@ -296,7 +301,8 @@ export const START_MARKER_INVALID: unique symbol = Symbol('start-marker-invalid'
 export type StartMarkerResult = string | null | typeof START_MARKER_INVALID
 
 export function normalizeStartMarker(value: unknown): StartMarkerResult {
-    if (value === null || value === undefined) return null
+    if (value === null) return null
+    if (value === undefined) return START_MARKER_INVALID
     if (value === START_MARKER_INVALID) return START_MARKER_INVALID
     if (typeof value === 'string') return value
     return START_MARKER_INVALID
