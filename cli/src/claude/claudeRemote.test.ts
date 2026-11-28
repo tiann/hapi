@@ -775,13 +775,104 @@ describe('claudeRemote in-process /clear', () => {
                 expectedResults.push(outcome === 'native-slash-stale-result'
                     ? { ...nativeSlashResult, hapi_skip_usage: true } : nativeSlashResult);
             }
-            if (nativeCommandResult) expectedResults.push(nativeCommandResult);
+            // A held command result counts for usage on arrival and is forwarded on its echo marked as held.
+            if (nativeCommandResult) {
+                expect(dropped).toContainEqual(nativeCommandResult);
+                expectedResults.push({ ...nativeCommandResult, hapi_held_result: true });
+            }
             if (followUpResult) expectedResults.push(...(legacyFollowUp ? [] : foreignResults), followUpResult);
             if (laterFollowUpResult) expectedResults.push(laterFollowUpResult);
             expect(forwardedResults).toEqual(expectedResults);
         } finally {
             finishFollowUp.resolve(undefined);
             if (timesOut) vi.useRealTimers();
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+    });
+
+    it('counts a held command result once, in arrival order, and shows it in the terminal only', async () => {
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        const { SDKToLogConverter } = await import('./utils/sdkToLogConverter');
+        const { formatClaudeMessageForInk } = await import('@/ui/messageFormatterInk');
+        const { MessageBuffer } = await import('@/ui/ink/messageBuffer');
+        const terminal = new MessageBuffer();
+        const converter = new SDKToLogConverter({ sessionId: 'unknown', cwd: process.cwd(), version: '0.0.0', gitBranch: 'main' });
+        const priorId = 'previous-native-session';
+        const freshId = 'fresh-native-session';
+        const result = (patch: Record<string, unknown>): SDKMessage => ({
+            type: 'result', subtype: 'success', is_error: false, num_turns: 1, duration_ms: 1,
+            usage: { input_tokens: 1, output_tokens: 10 }, ...patch
+        });
+        const logs = new Map<string, { resultSummary?: Record<string, unknown> } | null>();
+        const summaries = { get: (key: string) => logs.get(key)?.resultSummary };
+        const inputs = ['first', '/clear', '/help', 'follow-up'];
+        queryMock.mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<{ uuid: string; message: { content: string } }> }) => ({
+            async *[Symbol.asyncIterator]() {
+                const input = prompt[Symbol.asyncIterator]();
+                const first = await input.next();
+                yield { type: 'system', subtype: 'init', session_id: priorId };
+                yield result({ session_id: priorId, user_message_uuid: first.value?.uuid, total_cost_usd: 5, duration_api_ms: 5000 });
+                const clear = await input.next();
+                yield { type: 'system', subtype: 'init', session_id: freshId };
+                yield result({
+                    session_id: freshId, local_command: 'clear', user_message_uuid: clear.value?.uuid,
+                    total_cost_usd: 5, duration_api_ms: 5000
+                });
+                const command = await input.next();
+                expect(command.value?.message.content).toBe('/help');
+                // The command result arrives before its input echo and is held until the echo.
+                yield result({
+                    session_id: freshId, local_command: 'help', result: 'Available commands',
+                    total_cost_usd: 5.25, duration_api_ms: 5250
+                });
+                // A background round of the same session completes meanwhile.
+                yield result({ session_id: freshId, total_cost_usd: 6, duration_api_ms: 6000 });
+                yield { type: 'user', isReplay: true, uuid: command.value?.uuid };
+                const followUp = await input.next();
+                expect(followUp.value?.message.content).toBe('follow-up');
+                yield { type: 'user', isReplay: true, uuid: followUp.value?.uuid };
+                yield result({ session_id: freshId, user_message_uuid: followUp.value?.uuid, total_cost_usd: 6.5, duration_api_ms: 6500 });
+            }
+        }));
+        try {
+            await claudeRemote({
+                sessionId: priorId,
+                path: process.cwd(),
+                allowedTools: [],
+                hookSettingsPath: '/tmp/hook.json',
+                canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+                nextMessage: async () => {
+                    const message = inputs.shift();
+                    return message ? { message, mode: { permissionMode: 'default' } } : null;
+                },
+                onReady: () => {},
+                isAborted: () => false,
+                onSessionFound: (id) => converter.updateSessionId(id),
+                onMessage: (message) => {
+                    // The launcher renders every forwarded message in the terminal before converting it.
+                    formatClaudeMessageForInk(message, terminal);
+                    if (message.type !== 'result') return;
+                    const log = converter.convert(message) as { resultSummary?: Record<string, unknown> } | null;
+                    const key = typeof message.local_command === 'string' ? message.local_command
+                        : message.user_message_uuid ? 'reply' : 'background';
+                    logs.set(key, log);
+                },
+                onDroppedResult: (message) => converter.consumeResultForAccounting(message),
+                onSpawn: (fresh) => { if (fresh) converter.startFreshProcessBaseline(); }
+            });
+            // The held result counts before the background round, which reports only its own share.
+            expect(summaries.get('background')?.total_cost_usd).toBeCloseTo(0.75, 9);
+            // The held result reaches the terminal but writes no transcript entry, whose
+            // summary would land on the background reply shown before it.
+            expect(terminal.getMessages().map((m) => m.content)).toContain('Available commands');
+            expect(logs.has('help')).toBe(true);
+            expect(logs.get('help')).toBeNull();
+            // The follow-up reports only its own cost and API time.
+            expect(summaries.get('reply')?.total_cost_usd).toBeCloseTo(0.5, 9);
+            expect(summaries.get('reply')).toMatchObject({ generation_ms: 500, generation_output_tokens: 10 });
+        } finally {
             queryMock.mockReset();
             querySpy.mockRestore();
         }

@@ -2899,6 +2899,17 @@ describe('AcpSdkBackend OpenCode child session updates', () => {
         expect(answerIdx).toBeGreaterThan(turnCompleteIdx);
     });
 
+    it('keeps the existing child output handler through a compact prompt', async () => {
+        useFastDrains();
+        const { backend, internal } = makeBackend();
+        const messages: AgentMessage[] = [];
+        await backend.prompt('session-1', [{ type: 'text', text: 'start a background task' }], (message) => messages.push(message));
+        await backend.prompt('session-1', [{ type: 'text', text: '/compact' }], () => {}, { preserveChildUpdates: true });
+        notify(internal, childText('ses_child', 'background result'));
+        notify(internal, childStatus('ses_child', 'completed'));
+        await vi.waitFor(() => expect(texts(messages)).toEqual(['background result']));
+    });
+
     it('flushes pending child text on disconnect (f)', async () => {
         useFastDrains();
         const { backend, internal } = makeBackend();
@@ -3020,6 +3031,63 @@ describe('AcpSdkBackend num_turns extraction (google-antigravity/antigravity-cli
 
     it('rounds fractional numbers instead of dropping them', () => {
         expect(backend.extractNumTurns({ usage: { num_turns: 2.9 } })).toBe(3);
+    });
+});
+
+describe('AcpSdkBackend _meta and Antigravity systemPrompt.append capability', () => {
+    it('detects _meta.antigravity.systemPrompt.append on initializeResult', () => {
+        const backend = new AcpSdkBackend({ command: 'agy', args: ['acp'] });
+        const internal = backend as unknown as {
+            initializeResult: {
+                protocolVersion: number;
+                agentCapabilities?: { _meta?: Record<string, unknown> };
+            } | null;
+        };
+
+        expect(backend.supportsAntigravitySystemPromptAppend()).toBe(false);
+
+        internal.initializeResult = {
+            protocolVersion: 1,
+            agentCapabilities: { _meta: { antigravity: { systemPrompt: { append: true } } } }
+        };
+        expect(backend.supportsAntigravitySystemPromptAppend()).toBe(true);
+
+        internal.initializeResult = {
+            protocolVersion: 1,
+            agentCapabilities: { _meta: { antigravity: { systemPrompt: { append: false } } } }
+        };
+        expect(backend.supportsAntigravitySystemPromptAppend()).toBe(false);
+    });
+
+    it('forwards meta as _meta on newSession, loadSession, and resumeSession only when provided', async () => {
+        const backend = new AcpSdkBackend({ command: 'agy', args: ['acp'] });
+        const calls: Array<{ method: string; params: unknown }> = [];
+        const internal = backend as unknown as {
+            transport: {
+                sendRequest: (method: string, params: unknown) => Promise<unknown>;
+                close: () => Promise<void>;
+            } | null;
+        };
+        internal.transport = {
+            sendRequest: async (method, params) => {
+                calls.push({ method, params });
+                return { sessionId: 'ses-1' };
+            },
+            close: async () => {}
+        };
+
+        const meta = { antigravity: { systemPrompt: { append: 'Use HAPI tools.' } } };
+        await backend.newSession({ cwd: '/tmp/p', mcpServers: [], meta });
+        await backend.loadSession({ sessionId: 'ses-1', cwd: '/tmp/p', mcpServers: [], meta });
+        await backend.resumeSession({ sessionId: 'ses-1', cwd: '/tmp/p', mcpServers: [], meta });
+        await backend.newSession({ cwd: '/tmp/p', mcpServers: [] });
+
+        expect(calls).toEqual([
+            { method: 'session/new', params: { cwd: '/tmp/p', mcpServers: [], _meta: meta } },
+            { method: 'session/load', params: { sessionId: 'ses-1', cwd: '/tmp/p', mcpServers: [], _meta: meta } },
+            { method: 'session/resume', params: { sessionId: 'ses-1', cwd: '/tmp/p', mcpServers: [], _meta: meta } },
+            { method: 'session/new', params: { cwd: '/tmp/p', mcpServers: [] } }
+        ]);
     });
 });
 

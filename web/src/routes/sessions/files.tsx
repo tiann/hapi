@@ -11,6 +11,7 @@ import type { AnchoredMenuPoint } from '@/hooks/useAnchoredMenu'
 import { appendFileReferenceToComposerDraft } from '@/lib/file-composer'
 import { resolveAbsoluteFilePath } from '@/lib/file-path'
 import { SessionHeader } from '@/components/SessionHeader'
+import { useSessionFilesPanel } from '@/components/SessionFilesPanel'
 import { LoadingState } from '@/components/LoadingState'
 import { useAppContext } from '@/lib/app-context'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
@@ -352,6 +353,7 @@ export default function FilesPage() {
     const navigate = useNavigate()
     const queryClient = useQueryClient()
     const goBack = useAppGoBack()
+    const filesPanel = useSessionFilesPanel()
     const { sessionId } = useParams({ from: '/sessions/$sessionId/files' })
     const search = useSearch({ from: '/sessions/$sessionId/files' })
     const { session } = useSession(api, sessionId)
@@ -533,6 +535,22 @@ export default function FilesPage() {
 
     return (
         <div className="flex h-full min-h-0 flex-col">
+            {filesPanel?.inPanel ? (
+                <div className="bg-[var(--app-bg)] pt-[var(--route-safe-area-top,env(safe-area-inset-top))]">
+                    <div className="flex items-center gap-2 border-b border-[var(--app-border)] px-3 py-2">
+                        <div className="min-w-0 flex-1 truncate font-semibold">{t('files.page.title')}</div>
+                        <button
+                            type="button"
+                            onClick={filesPanel.close}
+                            className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)]"
+                            title={t('button.close')}
+                            aria-label={t('button.close')}
+                        >
+                            <CloseIcon className="h-4 w-4" />
+                        </button>
+                    </div>
+                </div>
+            ) : (
             <SessionHeader
                 session={session}
                 onBack={goBack}
@@ -556,6 +574,7 @@ export default function FilesPage() {
                     )
                 }}
             />
+            )}
 
             <div className="bg-[var(--app-bg)]">
                 <div className="mx-auto flex w-full max-w-content items-center gap-2 border-b border-[var(--app-border)] p-3">

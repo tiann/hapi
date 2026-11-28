@@ -19,7 +19,9 @@ describe('external Codex binding safety', () => {
             const rpc = (engine as unknown as { rpcGateway: RpcGateway }).rpcGateway
             let spawned = false
             rpc.spawnSession = async () => { spawned = true; throw new Error('must not spawn') }
-            expect(engine.resolveLocalResumeTarget(session.id, 'default')).toMatchObject({ type: 'error', code: 'resume_unavailable' })
+            expect(engine.resolveLocalResumeTarget(session.id, 'default')).toMatchObject({
+                type: 'error', code: 'resume_unavailable', message: expect.stringContaining('owning desktop to sync it')
+            })
             expect(await engine.resumeSession(session.id, 'default')).toMatchObject({ type: 'error', code: 'resume_unavailable' })
             expect(await engine.forkConversation(session.id, 'default')).toMatchObject({ type: 'error', message: expect.stringContaining('owning desktop') })
             expect(spawned).toBe(false)

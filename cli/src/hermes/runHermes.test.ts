@@ -1,6 +1,10 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { MessageQueue2 } from '@/utils/MessageQueue2'
-import { enqueueHermesUserMessage, isHermesSlashCommand } from './runHermes'
+import {
+    createHermesModelPreferenceController,
+    enqueueHermesUserMessage,
+    isHermesSlashCommand
+} from './runHermes'
 import type { HermesMode } from './types'
 
 const defaultMode: HermesMode = { permissionMode: 'default' }
@@ -47,5 +51,40 @@ describe('enqueueHermesUserMessage', () => {
         const third = await queue.waitForMessagesAndGetAsString()
         expect(third?.message).toBe('after reset')
         expect(third?.isolate).toBe(false)
+    })
+})
+
+describe('createHermesModelPreferenceController', () => {
+    it('ignores stale rollback and startup discovery updates after a newer model preference is applied', () => {
+        const synced: Array<string | null> = []
+        const controller = createHermesModelPreferenceController('model-a', (model) => {
+            synced.push(model)
+        })
+
+        expect(controller.getRevision()).toBe(0)
+        // Simulate user selecting model-b while model-a or startup discovery is in flight.
+        const revB = controller.applyConfigModel('model-b')
+        expect(revB).toBe(1)
+        expect(controller.getModel()).toBe('model-b')
+
+        // Stale discovery from rev 0 must not overwrite model-b.
+        expect(controller.applyDiscoveredModel('discovered-default', 0)).toBe(false)
+        expect(controller.getModel()).toBe('model-b')
+
+        // Stale rollback from rev 0 must not clobber model-b.
+        expect(controller.rollbackModel('model-a', 0)).toBe(false)
+        expect(controller.getModel()).toBe('model-b')
+        expect(synced).toEqual([])
+
+        // Matching revision rollback still restores cleanly and syncs.
+        expect(controller.rollbackModel('model-a', revB)).toBe(true)
+        expect(controller.getModel()).toBe('model-a')
+        expect(synced).toEqual(['model-a'])
+
+        // Backend-driven /model change advances revision and syncs new model.
+        const revSlash = controller.applyBackendModelChange('model-c')
+        expect(revSlash).toBe(2)
+        expect(controller.getModel()).toBe('model-c')
+        expect(synced).toEqual(['model-a', 'model-c'])
     })
 })

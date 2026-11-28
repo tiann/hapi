@@ -3,7 +3,7 @@
 // components only depend on react and es-toolkit.
 import AntigravityColor from '@lobehub/icons/es/Antigravity/components/Color'
 import ClaudeColor from '@lobehub/icons/es/Claude/components/Color'
-import CodexColor from '@lobehub/icons/es/Codex/components/Color'
+import CodexMono from '@lobehub/icons/es/Codex/components/Mono'
 import CursorMono from '@lobehub/icons/es/Cursor/components/Mono'
 import DeepSeekColor from '@lobehub/icons/es/DeepSeek/components/Color'
 import GeminiColor from '@lobehub/icons/es/Gemini/components/Color'
@@ -14,14 +14,12 @@ import type { IconType } from '@lobehub/icons/es/types'
 import { CopilotIcon } from '@/components/icons/CopilotIcon'
 import hermesIcon from '@/assets/hermes-icon.png'
 
-// Brand logos per agent flavor. Color variant where it stays visible on both
-// light and dark surfaces (claude/codex/gemini); Mono (currentColor) where the
-// package ships no Color variant — or where, like KimiColor, the main glyph is
-// hard-coded #fff and would vanish on the default light theme.
+// Use the tile-free glyph for Codex with a blue visible on light and dark surfaces.
+// Kimi uses Mono because its Color glyph is white.
 const FLAVOR_LOGOS: Record<string, IconType> = {
     agy: AntigravityColor,
     claude: ClaudeColor,
-    codex: CodexColor,
+    codex: CodexMono,
     dsh: DeepSeekColor,
     cursor: CursorMono,
     gemini: GeminiColor,
@@ -66,7 +64,7 @@ export function AgentFlavorIcon({ flavor, className }: { flavor?: string | null;
                 aria-hidden="true"
                 className={`inline-flex items-center justify-center leading-none ${sizeClass}`}
             >
-                <Logo size="100%" />
+                <Logo size="100%" color={normalized === 'codex' ? '#6179F5' : undefined} />
             </span>
         )
     }

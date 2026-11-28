@@ -4244,6 +4244,119 @@ describe('session model', () => {
         }
     })
 
+    it('restores archive metadata when resumed Hermes session ends before session-ready', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'hermes-ended-before-ready',
+                {
+                    path: '/remote/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'hermes',
+                    hermesSessionId: 'hermes-native-1',
+                    lifecycleState: 'archived',
+                    archivedBy: 'cli',
+                    archiveReason: 'Exited',
+                    lifecycleStateSince: 100
+                },
+                null,
+                'default'
+            )
+            engine.getOrCreateMachine(
+                'machine-1',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                { status: 'running' },
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+            engine.handleSessionEnd({ sid: session.id, time: Date.now() })
+            // Simulate a stale ready flag left behind prior to archive/reopen.
+            engine.handleSessionReady({ sid: session.id, time: Date.now() })
+
+            ;(engine as any).rpcGateway.spawnSession = async () => {
+                engine.handleSessionAlive({ sid: session.id, time: Date.now() })
+                setTimeout(() => {
+                    engine.handleSessionEnd({ sid: session.id, time: Date.now(), reason: 'error' })
+                }, 20)
+                return { type: 'success', sessionId: session.id }
+            }
+
+            expect(await engine.reopenSession(session.id, 'default')).toEqual({
+                type: 'error',
+                message: 'Hermes session ended before native resume completed',
+                code: 'resume_failed'
+            })
+            const restored = engine.getSessionByNamespace(session.id, 'default')
+            expect(restored?.metadata?.lifecycleState).toBe('archived')
+            expect(restored?.metadata?.archivedBy).toBe('cli')
+            expect(restored?.metadata?.archiveReason).toBe('Exited')
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('succeeds reopening Hermes session only after fresh session-ready arrives', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'hermes-ready-success',
+                {
+                    path: '/remote/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'hermes',
+                    hermesSessionId: 'hermes-native-2',
+                    lifecycleState: 'archived',
+                    archivedBy: 'cli',
+                    archiveReason: 'Exited',
+                    lifecycleStateSince: 100
+                },
+                null,
+                'default'
+            )
+            engine.getOrCreateMachine(
+                'machine-1',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                { status: 'running' },
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+            engine.handleSessionEnd({ sid: session.id, time: Date.now() })
+
+            ;(engine as any).rpcGateway.spawnSession = async () => {
+                engine.handleSessionAlive({ sid: session.id, time: Date.now() })
+                setTimeout(() => {
+                    engine.handleSessionReady({ sid: session.id, time: Date.now() })
+                }, 20)
+                return { type: 'success', sessionId: session.id }
+            }
+
+            expect(await engine.reopenSession(session.id, 'default')).toEqual({
+                type: 'success',
+                sessionId: session.id,
+                resumed: true
+            })
+            expect(engine.getSessionByNamespace(session.id, 'default')?.active).toBe(true)
+        } finally {
+            engine.stop()
+        }
+    })
+
     it('resumeSession fresh-spawns when inactive cursor session has no agent id and no user messages', async () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(

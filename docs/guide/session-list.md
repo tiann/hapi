@@ -50,10 +50,11 @@ section shown above the project folders (global pins stay above it):
 
 Connected-but-idle sessions stay in their project folders in every mode. Rows
 move into and out of the section as their status changes, but are ordered by
-user input rather than ongoing output. **Active sessions only** in the same
-settings group hides inactive sessions, except the open session and sessions
-with a running job that have not been archived. A disconnected, archived
-conversation stays in **Archived** even if its job is still reporting. Its row
+user input rather than ongoing output. Choose **Active** under **Sort and
+filter → Show** in the sidebar to hide inactive sessions, except the open
+session and sessions with a running job that have not been archived. A
+disconnected, archived conversation stays in **Archived** even if its job is
+still reporting. Its row
 retains the job meter. After 15 minutes without a heartbeat the job no longer floats
 into **In progress** by itself. A job meter never spins the agent indicator. An independent process can keep reporting after archive;
 work in the stopped session process tree can be terminated.

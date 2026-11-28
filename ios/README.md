@@ -31,7 +31,8 @@ the authenticated hub API, then private temporary files with a bounded per-chat
 cache; the generated-media endpoint must still be available when first loading.
 
 Model, permission and Codex collaboration controls follow the session's agent/capabilities;
-usage/storage require the owner namespace. See the [native app guide](../docs/guide/native-apps.md)
+usage/storage require the owner namespace. Settings → Usage shows session totals
+and CLI account quotas reported by online runners. See the [native app guide](../docs/guide/native-apps.md)
 for platform differences, web-only features and everyday use.
 
 ## Requirements

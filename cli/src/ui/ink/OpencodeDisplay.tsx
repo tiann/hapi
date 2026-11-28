@@ -4,6 +4,7 @@ import { MessageBuffer, type BufferedMessage } from './messageBuffer';
 import { useSwitchControls } from './useSwitchControls';
 
 interface OpencodeDisplayProps {
+    agentName?: 'OpenCode' | 'Cursor';
     messageBuffer: MessageBuffer;
     logPath?: string;
     onExit?: () => void;
@@ -20,15 +21,15 @@ function extractTag(messages: BufferedMessage[], tag: 'MODEL' | 'MODE'): string 
         if (!message.content.startsWith(prefix)) {
             continue;
         }
-        const match = message.content.match(/\[\w+:(.+?)\]/);
-        if (match && match[1]) {
-            return match[1];
+        if (message.content.endsWith(']') && message.content.length > prefix.length + 1) {
+            return message.content.slice(prefix.length, -1);
         }
     }
     return null;
 }
 
 export const OpencodeDisplay: React.FC<OpencodeDisplayProps> = ({
+    agentName = 'OpenCode',
     messageBuffer,
     logPath,
     onExit,
@@ -46,9 +47,7 @@ export const OpencodeDisplay: React.FC<OpencodeDisplayProps> = ({
     const terminalHeight = stdout.rows || 24;
 
     useEffect(() => {
-        setMessages(messageBuffer.getMessages());
-
-        const unsubscribe = messageBuffer.onUpdate((newMessages) => {
+        const updateMessages = (newMessages: BufferedMessage[]) => {
             setMessages(newMessages);
             const nextModel = extractTag(newMessages, 'MODEL');
             if (nextModel) {
@@ -58,11 +57,9 @@ export const OpencodeDisplay: React.FC<OpencodeDisplayProps> = ({
             if (nextMode) {
                 setPermissionMode(nextMode);
             }
-        });
-
-        return () => {
-            unsubscribe();
         };
+        updateMessages(messageBuffer.getMessages());
+        return messageBuffer.onUpdate(updateMessages);
     }, [messageBuffer]);
 
     const getMessageColor = (type: BufferedMessage['type']): string => {
@@ -112,7 +109,7 @@ export const OpencodeDisplay: React.FC<OpencodeDisplayProps> = ({
                 overflow="hidden"
             >
                 <Box flexDirection="column" marginBottom={1}>
-                    <Text color="gray" bold>OpenCode Agent Messages</Text>
+                    <Text color="gray" bold>{agentName} Agent Messages</Text>
                     <Text color="gray" dimColor>{'-'.repeat(Math.min(terminalWidth - 4, 60))}</Text>
                 </Box>
 
@@ -166,7 +163,7 @@ export const OpencodeDisplay: React.FC<OpencodeDisplayProps> = ({
                         </Text>
                     ) : (
                         <Text color="green" bold>
-                            OpenCode running {onSwitchToLocal ? '(Space to switch to local, Ctrl-C to exit)' : '(Ctrl-C to exit)'}
+                            {agentName} running {onSwitchToLocal ? '(Space to switch to local, Ctrl-C to exit)' : '(Ctrl-C to exit)'}
                         </Text>
                     )}
                     {(model || permissionMode) && (

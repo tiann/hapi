@@ -5,7 +5,9 @@ import {
     findBestCliSkuForAcpWire,
     isCursorAcpCatalogModelId,
     isCursorAcpWireModelId as isSharedCursorAcpWireModelId,
-    isCursorAutoModelId
+    isCursorAutoModelId,
+    parseCursorSkuParamHints,
+    PI_THINKING_LEVELS
 } from '@hapi/protocol'
 import type { CursorModelSummary } from '@/types/api'
 
@@ -91,6 +93,37 @@ export function parseCursorWireParams(modelId: string): Record<string, string> {
         params[segment.slice(0, eq).trim()] = segment.slice(eq + 1).trim()
     }
     return params
+}
+
+const cursorReasoningLevels: readonly string[] = [...PI_THINKING_LEVELS, 'ultra']
+
+export function getCursorReasoningOptions(
+    options: readonly { value: string }[], current: string | null | undefined,
+): { value: string }[] {
+    if (!current) return []
+    const isWire = isCursorAcpWireModelId(current)
+    const parse = isWire ? parseCursorWireParams : parseCursorSkuParamHints
+    const readVariant = (value: string) => {
+        const { effort, reasoning, ...settings } = parse(value)
+        const level = effort ?? reasoning
+        const rank = cursorReasoningLevels.indexOf(level === 'extra-high' ? 'xhigh' : level === 'none' ? 'off' : level)
+        return { rank, settings }
+    }
+    const selected = readVariant(current)
+    if (selected.rank < 0) return []
+
+    const variants = new Map([[selected.rank, { value: current }]])
+    const settings = Object.entries(selected.settings)
+    for (const option of options) {
+        if (isCursorAcpWireModelId(option.value) !== isWire) continue
+        const candidate = readVariant(option.value)
+        if (candidate.rank < 0 || variants.has(candidate.rank)) continue
+        if (Object.keys(candidate.settings).length !== settings.length) continue
+        if (settings.every(([key, value]) => candidate.settings[key] === value)) {
+            variants.set(candidate.rank, option)
+        }
+    }
+    return [...variants].sort(([left], [right]) => left - right).map(([, option]) => option)
 }
 
 /** Raw label for a variant row. No fast/effort/reasoning formatting. */

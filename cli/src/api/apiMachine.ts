@@ -14,6 +14,7 @@ import {
     ListCodexSessionsRpcRequestSchema,
     ListOpencodeSessionsRpcRequestSchema,
     ListPiSessionsRpcRequestSchema,
+    PrepareCursorImportRpcRequestSchema,
     type ArchiveCodexSessionRpcResponse,
     type AgentAvailabilityResponse,
     type AgentQuotasRequest,
@@ -23,7 +24,8 @@ import {
     type ListPiSessionsRpcResponse,
     type MachineDirectoryEntry,
     type MachineListDirectoryResponse,
-    type PathExistsResponse
+    type PathExistsResponse,
+    type PrepareCursorImportRpcResponse
 } from '@hapi/protocol/apiTypes'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import { RUNNER_CAPABILITIES } from '@hapi/protocol'
@@ -83,6 +85,7 @@ import { codexLocalSessionSource } from '../modules/common/localSessions/sources
 import { piLocalSessionSource } from '../modules/common/localSessions/sources/pi'
 import { opencodeLocalSessionSource } from '../modules/common/localSessions/sources/opencode'
 import { claudeLocalSessionSource } from '../modules/common/localSessions/sources/claude'
+import { cursorLocalSessionSource } from '../modules/common/localSessions/sources/cursor'
 import { buildSocketIoExtraHeaderOptions } from './hubExtraHeaders'
 import { collectMachineHealth } from '@/utils/machineHealth'
 import { inspectCursorChatStore } from '@/cursor/cursorChatStoreStatus'
@@ -562,7 +565,13 @@ export class ApiMachineClient {
             }
         )
 
-        for (const source of [codexLocalSessionSource, piLocalSessionSource, opencodeLocalSessionSource, claudeLocalSessionSource]) {
+        for (const source of [
+            codexLocalSessionSource,
+            piLocalSessionSource,
+            opencodeLocalSessionSource,
+            claudeLocalSessionSource,
+            cursorLocalSessionSource
+        ]) {
             registerLocalSessionSource(source)
         }
         registerLocalSessionHandlers({
@@ -571,6 +580,60 @@ export class ApiMachineClient {
             isWithinSpawnRoots: (path) => this.pathPolicy.isWithinSpawnRoots(path),
             isSessionWithinWorkspaceRoots: (session) => this.isLocalSessionWithinWorkspaceRoots(session)
         })
+
+        this.rpcHandlerManager.registerHandler<unknown, PrepareCursorImportRpcResponse>(
+            RPC_METHODS.PrepareCursorImport,
+            async (params) => {
+                const parsed = PrepareCursorImportRpcRequestSchema.safeParse(params)
+                if (!parsed.success) {
+                    const rawUuid = typeof (params as Record<string, unknown> | null)?.uuid === 'string'
+                        ? String((params as Record<string, unknown>).uuid).trim() || 'invalid'
+                        : 'invalid'
+                    return {
+                        success: false,
+                        uuid: rawUuid,
+                        reason: 'internal_error',
+                        message: 'Invalid Cursor import prepare request',
+                        durationMs: 0
+                    }
+                }
+                const workspacePath = typeof parsed.data.workspacePath === 'string' ? parsed.data.workspacePath.trim() : ''
+                if (workspacePath) {
+                    const resolvedCwd = await this.pathPolicy.resolveForCheck(workspacePath)
+                    if (!this.pathPolicy.isWithinSpawnRoots(resolvedCwd)) {
+                        return {
+                            success: false,
+                            uuid: parsed.data.uuid,
+                            reason: 'internal_error',
+                            message: 'Path is outside workspace roots',
+                            durationMs: 0
+                        }
+                    }
+                }
+                // Dynamic import: cursorImportSessions pulls bun:sqlite off the apiMachine hot path.
+                const { prepareCursorImportOnDisk } = await import('../modules/common/cursorImportSessions')
+                const prepared = await prepareCursorImportOnDisk({
+                    uuid: parsed.data.uuid.trim(),
+                    workspacePath: parsed.data.workspacePath ?? null,
+                    home: homedir()
+                })
+                // Prepare may resolve cwd from ACP meta when the request omitted
+                // workspacePath — re-gate the final path against spawn roots.
+                if (prepared.success === true) {
+                    const resolvedCwd = await this.pathPolicy.resolveForCheck(prepared.workspacePath)
+                    if (!this.pathPolicy.isWithinSpawnRoots(resolvedCwd)) {
+                        return {
+                            success: false,
+                            uuid: prepared.uuid,
+                            reason: 'internal_error',
+                            message: 'Path is outside workspace roots',
+                            durationMs: prepared.durationMs
+                        }
+                    }
+                }
+                return prepared
+            }
+        )
     }
 
     private async isLocalSessionWithinWorkspaceRoots(session: { cwd?: string | null }): Promise<boolean> {

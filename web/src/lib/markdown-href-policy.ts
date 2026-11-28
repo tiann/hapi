@@ -22,6 +22,7 @@ const STATIC_SPA_PATHS = new Set([
     '/settings/general',
     '/settings/display',
     '/settings/chat',
+    '/settings/shortcuts',
     '/settings/voice',
     '/settings/voice/voices',
     '/settings/voice/advanced',

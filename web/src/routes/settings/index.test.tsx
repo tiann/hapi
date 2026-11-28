@@ -2,10 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { I18nProvider } from '@/lib/i18n-context'
+import { CHAT_SHORTCUTS_STORAGE_KEY } from '@/lib/chatShortcuts'
 import SettingsHubPage from './index'
 import SettingsGeneralPage from './general'
 import SettingsDisplayPage from './display'
 import SettingsChatPage from './chat'
+import SettingsShortcutsPage from './shortcuts'
 import SettingsAboutPage from './about'
 import SettingsVoicePage from './voice'
 import SettingsVoiceVoicesPage from './voice-voices'
@@ -153,10 +155,6 @@ vi.mock('@/hooks/useSessionListStatusMode', () => ({
         { value: 'standard', labelKey: 'settings.display.sessionListStatus.standard' },
         { value: 'detailed', labelKey: 'settings.display.sessionListStatus.detailed' },
     ],
-}))
-
-vi.mock('@/hooks/useShowActiveSessionsOnly', () => ({
-    useShowActiveSessionsOnly: () => ({ showActiveSessionsOnly: false, setShowActiveSessionsOnly: vi.fn() }),
 }))
 
 vi.mock('@/hooks/usePinInProgressSessions', () => ({
@@ -342,7 +340,78 @@ describe('responsive settings pages', () => {
         expect(screen.getByText('General')).toBeInTheDocument()
         expect(screen.getAllByText('Display').length).toBeGreaterThan(0)
         expect(screen.getByText('Voice, language, and behavior')).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Keyboard shortcuts' })).toBeInTheDocument()
         expect(screen.getByText(`v${__APP_VERSION__}`)).toBeInTheDocument()
+    })
+
+    it('checks conflicts, saves shortcuts across mounts, and restores defaults', () => {
+        const view = renderPage(<SettingsShortcutsPage />)
+        const effort = screen.getByRole('button', { name: 'Cycle reasoning effort · Unassigned' })
+        const plan = screen.getByRole('button', { name: 'Toggle plan mode · Unassigned' })
+        const shiftTab = { key: 'Tab', shiftKey: true }
+
+        fireEvent.click(effort)
+        fireEvent.keyDown(effort, shiftTab)
+        expect(screen.getByRole('alert')).toHaveTextContent('Already assigned to Cycle permission mode.')
+        fireEvent.keyDown(effort, { key: 'Escape' })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Clear · Cycle permission mode' }))
+        fireEvent.click(effort)
+        fireEvent.keyDown(effort, shiftTab)
+        fireEvent.click(plan)
+        fireEvent.keyDown(plan, { key: 'p', altKey: true })
+        view.unmount()
+
+        renderPage(<SettingsShortcutsPage />)
+        expect(screen.getByRole('button', { name: 'Cycle reasoning effort · Shift + Tab' })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Cycle permission mode · Unassigned' })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Toggle plan mode · Alt + P' })).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('button', { name: 'Restore defaults' }))
+        expect(screen.getByRole('button', { name: 'Cycle permission mode · Shift + Tab' })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Cycle reasoning effort · Unassigned' })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Toggle plan mode · Unassigned' })).toBeInTheDocument()
+    })
+
+    it('records Shift with arrow keys and restores the bindings on remount', () => {
+        const view = renderPage(<SettingsShortcutsPage />)
+        const increase = screen.getByRole('button', { name: 'Increase reasoning effort · Unassigned' })
+        const decrease = screen.getByRole('button', { name: 'Decrease reasoning effort · Unassigned' })
+
+        fireEvent.click(increase)
+        fireEvent.keyDown(increase, { key: 'ArrowUp' })
+        expect(screen.getByRole('alert')).toBeInTheDocument()
+        fireEvent.keyDown(increase, { key: 'ArrowUp', shiftKey: true })
+        fireEvent.click(decrease)
+        fireEvent.keyDown(decrease, { key: 'ArrowUp', shiftKey: true })
+        expect(screen.getByRole('alert')).toHaveTextContent('Already assigned to Increase reasoning effort.')
+        fireEvent.keyDown(decrease, { key: 'ArrowDown', shiftKey: true })
+        view.unmount()
+
+        renderPage(<SettingsShortcutsPage />)
+        expect(screen.getByRole('button', { name: 'Increase reasoning effort · Shift + ↑' })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Decrease reasoning effort · Shift + ↓' })).toBeInTheDocument()
+        expect(screen.getAllByText(/Works only while the chat input is focused\./)).toHaveLength(3)
+    })
+
+    it.each([
+        ['Ctrl', { ctrlKey: true }],
+        ['Cmd', { metaKey: true }],
+    ] as const)('reserves %s+Shift+Y for composer redo when recording', (_modifier, modifiers) => {
+        renderPage(<SettingsShortcutsPage />)
+        const send = screen.getByRole('button', { name: 'Send message · Alt + S' })
+        fireEvent.click(send)
+        fireEvent.keyDown(send, { key: 'Y', shiftKey: true, ...modifiers })
+
+        expect(screen.getByRole('alert')).toBeInTheDocument()
+        expect(localStorage.getItem(CHAT_SHORTCUTS_STORAGE_KEY)).toBeNull()
+    })
+
+    it('ignores a previously saved composer redo shortcut when loading the settings', () => {
+        localStorage.setItem(CHAT_SHORTCUTS_STORAGE_KEY, JSON.stringify({ send: 'mod+shift+y', model: 'alt+m' }))
+        renderPage(<SettingsShortcutsPage />)
+
+        expect(screen.getByRole('button', { name: 'Send message · Alt + S' })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Cycle model · Alt + M' })).toBeInTheDocument()
     })
 
     it('navigates from the hub to a category route', () => {

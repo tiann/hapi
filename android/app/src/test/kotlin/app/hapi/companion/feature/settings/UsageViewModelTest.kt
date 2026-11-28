@@ -4,6 +4,7 @@ package app.hapi.companion.feature.settings
 
 import app.hapi.data.api.ApiError
 import app.hapi.protocol.wire.SqliteStorageUsageResponse
+import app.hapi.protocol.wire.UsageQuotasResponse
 import app.hapi.protocol.wire.UsageSummaryBucket
 import app.hapi.protocol.wire.UsageSummaryRange
 import app.hapi.protocol.wire.UsageSummaryResponse
@@ -58,6 +59,7 @@ class UsageViewModelTest {
     fun `loads on start with the device zone and fills the 7d calendar`() = runTest {
         val requested = mutableListOf<Pair<String, String>>()
         val viewModel = UsageViewModel(
+            loadQuotas = { UsageQuotasResponse(emptyList()) },
             gateway = { range, timeZone ->
                 requested += range to timeZone
                 summary(listOf(bucket("2026-08-18", 7)))
@@ -81,6 +83,7 @@ class UsageViewModelTest {
     fun `switching range refetches and range=all keeps sparse bars`() = runTest {
         val requested = mutableListOf<String>()
         val viewModel = UsageViewModel(
+            loadQuotas = { UsageQuotasResponse(emptyList()) },
             gateway = { range, _ ->
                 requested += range
                 summary(listOf(bucket("2024-01-01", 3)))
@@ -105,6 +108,7 @@ class UsageViewModelTest {
     @Test
     fun `403 maps to the forbidden error state`() = runTest {
         val viewModel = UsageViewModel(
+            loadQuotas = { UsageQuotasResponse(emptyList()) },
             gateway = { _, _ -> throw ApiError(status = 403, body = """{"error":"owner only"}""") },
             scope = newVmScope(),
             zone = zone,
@@ -121,6 +125,7 @@ class UsageViewModelTest {
     fun `plain failures keep retry available and retry recovers`() = runTest {
         var fail = true
         val viewModel = UsageViewModel(
+            loadQuotas = { UsageQuotasResponse(emptyList()) },
             gateway = { _, _ ->
                 if (fail) throw RuntimeException("boom") else summary(emptyList())
             },
@@ -138,6 +143,41 @@ class UsageViewModelTest {
         viewModel.retry()
         advanceUntilIdle()
         assertTrue(viewModel.state.value is UsageUiState.Data)
+    }
+
+    @Test
+    fun `quotas load once across ranges and retain data only for transient refresh failures`() = runTest {
+        val calls = mutableListOf<Boolean>()
+        var failure: ApiError? = null
+        val snapshot = UsageQuotasResponse(emptyList())
+        val vm = UsageViewModel(
+            gateway = { _, _ -> summary(emptyList()) },
+            loadQuotas = { refresh ->
+                calls += refresh
+                failure?.let { throw it }
+                snapshot
+            },
+            scope = newVmScope(),
+        )
+        vm.start()
+        advanceUntilIdle()
+        vm.setRange(UsageRange.ALL)
+        vm.start()
+        advanceUntilIdle()
+        assertEquals(listOf(false), calls)
+        failure = ApiError(503)
+        vm.refreshQuotas()
+        vm.refreshQuotas()
+        advanceUntilIdle()
+        assertEquals(listOf(false, true), calls)
+        assertEquals(snapshot, vm.quotas.value.snapshot)
+        assertEquals(failure, vm.quotas.value.failure)
+        failure = ApiError(403)
+        vm.refreshQuotas()
+        advanceUntilIdle()
+        assertEquals(null, vm.quotas.value.snapshot)
+        assertEquals(failure, vm.quotas.value.failure)
+        assertTrue(vm.state.value is UsageUiState.Data)
     }
 
     // ------------------------------------------------------------ storage --

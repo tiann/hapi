@@ -2585,6 +2585,71 @@ export function HappyThread(props: {
     ])
 
     useEffect(() => {
+        // Width changes (opening/resizing/closing the files panel, dragging the
+        // sidebar, resizing the window) rewrap every message, so the same
+        // scrollTop shows a different message. Row-level scroll anchoring is
+        // disabled (see index.css), and the tail-follow observer below only
+        // handles a viewport pinned to the bottom. Remember the first visible
+        // message while the user reads, and put it back after a width reflow.
+        const content = contentRef.current
+        const viewport = viewportRef.current
+        if (!content || !viewport || typeof ResizeObserver === 'undefined') {
+            return
+        }
+
+        const followingTail = () => tailScrollInProgressRef.current
+            || (autoScrollEnabledRef.current && atBottomRef.current)
+        // While the tail is followed the other observer pins the bottom, so
+        // skip the per-message scan.
+        // Besides the pixel offset, keep how far into the anchored message the
+        // viewport top sits: the message itself rewraps too, so a reader deep
+        // inside a long reply must land at the same relative spot in it.
+        const captureReadingAnchor = (): (ScrollAnchor & { height: number }) | null => {
+            if (followingTail()) return null
+            const captured = captureScrollAnchor(viewport)
+            const element = captured ? document.getElementById(captured.id) : null
+            return captured && element ? { ...captured, height: element.getBoundingClientRect().height } : null
+        }
+        let anchor = captureReadingAnchor()
+        let lastWidth = content.getBoundingClientRect().width
+        let frame: number | null = null
+        const handleScroll = () => {
+            if (frame !== null) return
+            frame = requestAnimationFrame(() => {
+                frame = null
+                // Mid-drag, the width may already have changed again: leave the
+                // pre-reflow anchor for the observer to restore first.
+                if (content.getBoundingClientRect().width !== lastWidth) return
+                anchor = captureReadingAnchor()
+            })
+        }
+        viewport.addEventListener('scroll', handleScroll, { passive: true })
+
+        const observer = new ResizeObserver(() => {
+            const width = content.getBoundingClientRect().width
+            const widthChanged = width !== lastWidth
+            lastWidth = width
+            // A settled search result keeps its history lock, and its row is
+            // the visible anchor, so it stays in view through the reflow too.
+            if (widthChanged && anchor && !followingTail() && !hasBlockingScrollRestore()) {
+                const element = document.getElementById(anchor.id)
+                const height = element?.getBoundingClientRect().height ?? 0
+                const topOffset = anchor.topOffset < 0 && anchor.height > 0 && height > 0
+                    ? anchor.topOffset * (height / anchor.height)
+                    : anchor.topOffset
+                restoreScrollAnchor(viewport, { id: anchor.id, topOffset })
+            }
+            anchor = captureReadingAnchor()
+        })
+        observer.observe(content)
+        return () => {
+            observer.disconnect()
+            viewport.removeEventListener('scroll', handleScroll)
+            if (frame !== null) cancelAnimationFrame(frame)
+        }
+    }, [hasBlockingScrollRestore])
+
+    useEffect(() => {
         const content = contentRef.current
         if (!content || typeof ResizeObserver === 'undefined') {
             return

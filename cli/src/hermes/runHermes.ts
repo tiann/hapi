@@ -41,6 +41,50 @@ export function enqueueHermesUserMessage(
     queue.push(formattedText, mode, localId)
 }
 
+export function createHermesModelPreferenceController(
+    initialModel: string | null | undefined,
+    onSync: (model: string | null) => void
+) {
+    let currentModel: string | null | undefined = initialModel
+    let revision = 0
+
+    return {
+        getModel(): string | null | undefined {
+            return currentModel
+        },
+        getRevision(): number {
+            return revision
+        },
+        applyConfigModel(model: string | null): number {
+            currentModel = model
+            revision += 1
+            return revision
+        },
+        applyDiscoveredModel(model: string | null, expectedRevision?: number): boolean {
+            if (expectedRevision !== undefined && expectedRevision !== revision) {
+                return false
+            }
+            currentModel = model ?? null
+            onSync(currentModel)
+            return true
+        },
+        rollbackModel(model: string | null, expectedRevision?: number): boolean {
+            if (expectedRevision !== undefined && expectedRevision !== revision) {
+                return false
+            }
+            currentModel = model ?? null
+            onSync(currentModel)
+            return true
+        },
+        applyBackendModelChange(model: string | null): number {
+            currentModel = model ?? null
+            revision += 1
+            onSync(currentModel)
+            return revision
+        }
+    }
+}
+
 export async function runHermes(opts: {
     startedBy?: 'runner' | 'terminal'
     startingMode?: 'remote'
@@ -81,22 +125,25 @@ export async function runHermes(opts: {
     const sessionRef: { current: HermesSession | null } = { current: null }
     const launcherRef: { current: HermesRemoteLauncher | null } = { current: null }
     let currentPermissionMode: HermesPermissionMode = opts.permissionMode ?? 'default'
-    let currentModel: string | null | undefined = opts.model
 
-    const syncSessionMode = () => {
+    const syncSessionMode = (modelOverride?: string | null) => {
         const active = sessionRef.current
         if (!active) return
         active.setPermissionMode(currentPermissionMode)
-        active.setModel(currentModel ?? null)
+        active.setModel(modelOverride !== undefined ? modelOverride : (modelController.getModel() ?? null))
         active.pushKeepAlive()
     }
+    const modelController = createHermesModelPreferenceController(
+        opts.model,
+        (model) => syncSessionMode(model)
+    )
 
     session.onUserMessage((message, localId) => {
         enqueueHermesUserMessage(
             queue,
             message.content.text,
             formatMessageWithAttachments(message.content.text, message.content.attachments),
-            hermesModeForPreference(currentPermissionMode, currentModel),
+            hermesModeForPreference(currentPermissionMode, modelController.getModel(), modelController.getRevision()),
             localId
         )
     })
@@ -113,10 +160,10 @@ export async function runHermes(opts: {
                 currentPermissionMode = config.permissionMode
             }
             if (config.model !== undefined) {
-                currentModel = config.model
+                modelController.applyConfigModel(config.model)
             }
         },
-        onAfterApply: syncSessionMode
+        onAfterApply: () => syncSessionMode()
     })
 
     const lifecycle = createRunnerLifecycle({
@@ -143,14 +190,14 @@ export async function runHermes(opts: {
     })
     const launcher = new HermesRemoteLauncher(hermesSession, {
         model: opts.model,
-        onModelRollback: (model) => {
-            currentModel = model ?? null
-            syncSessionMode()
+        initialModelRevision: modelController.getRevision(),
+        onModelRollback: (model, revision) => {
+            modelController.rollbackModel(model, revision)
         },
-        onConfigDiscovered: (model) => {
-            currentModel = model ?? null
-            syncSessionMode()
-        }
+        onConfigDiscovered: (model, revision) => {
+            modelController.applyDiscoveredModel(model, revision)
+        },
+        onModelChanged: (model) => modelController.applyBackendModelChange(model)
     })
     sessionRef.current = hermesSession
     launcherRef.current = launcher

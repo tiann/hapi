@@ -121,7 +121,11 @@ export async function claudeRemote(opts: {
     onSessionFound: (id: string, extras?: { forkedFrom?: string }) => void,
     onThinkingChange?: (thinking: boolean) => void,
     onMessage: (message: SDKMessage) => void,
-    /** Called with a late result of a timed-out command that is dropped from the transcript. */
+    /**
+     * Called with a result that counts for usage on arrival without being
+     * forwarded then: a late result of a timed-out command, or a command
+     * result held until its echo and forwarded then for the terminal only.
+     */
     onDroppedResult?: (message: SDKResultMessage) => void,
     /** Called once per spawn with whether the process starts fresh, before SDK messages arrive. */
     onSpawn?: (fresh: boolean) => void,
@@ -856,7 +860,10 @@ export async function claudeRemote(opts: {
                         resolveSteer(true);
                     }
                     if (clearFollowUp?.uuid !== uuid || !clearFollowUp.earlyResult) continue;
-                    message = clearFollowUp.earlyResult;
+                    // With an accounting callback, usage already counted it on arrival.
+                    message = opts.onDroppedResult
+                        ? { ...clearFollowUp.earlyResult, hapi_held_result: true }
+                        : clearFollowUp.earlyResult;
                 }
             }
 
@@ -866,7 +873,11 @@ export async function claudeRemote(opts: {
             if (clearFollowUp && matchesFollowUpCommand && message.user_message_uuid == null
                 && clearFollowUp.sessionId !== null && message.session_id === clearFollowUp.sessionId
                 && pushedUuids.has(clearFollowUp.uuid)) {
-                clearFollowUp.earlyResult ??= message;
+                if (!clearFollowUp.earlyResult) {
+                    // Usage counts the result in arrival order; its echo ends the turn.
+                    clearFollowUp.earlyResult = message;
+                    opts.onDroppedResult?.(message as SDKResultMessage);
+                }
                 continue;
             }
 

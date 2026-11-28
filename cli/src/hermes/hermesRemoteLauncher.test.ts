@@ -135,6 +135,7 @@ function createSessionWithBatches(
         sendAgentMessage: vi.fn(),
         sendSessionEvent: vi.fn(),
         client: {
+            emitSessionReady: vi.fn(),
             rpcHandlerManager: {
                 registerHandler: vi.fn((name: string, fn: (params?: unknown) => Promise<unknown>) => {
                     handlers.set(name, fn)
@@ -143,7 +144,13 @@ function createSessionWithBatches(
         }
     }
 
-    return { session, handlers }
+    return {
+        session,
+        handlers,
+        setPermissionMode: (mode: 'default' | 'read-only' | 'safe-yolo' | 'yolo') => {
+            currentPermissionMode = mode
+        }
+    }
 }
 
 describe('HermesRemoteLauncher', () => {
@@ -436,5 +443,117 @@ describe('HermesRemoteLauncher', () => {
         expect(commit).toHaveBeenCalledTimes(1)
         expect(release).toHaveBeenCalledTimes(1)
         expect(harness.prompts).toHaveLength(1)
+    })
+
+    it('emits session-ready only after loadSession succeeds on resume', async () => {
+        const { session: okSession } = createSessionWithBatches([], { sessionId: 'resume-ok-id' })
+        await new HermesRemoteLauncher(okSession as never).launch()
+        expect(okSession.client.emitSessionReady).toHaveBeenCalledTimes(1)
+
+        harness.loadSessionError = new Error('load failed')
+        const { session: failSession } = createSessionWithBatches([], { sessionId: 'resume-fail-id' })
+        await expect(new HermesRemoteLauncher(failSession as never).launch()).rejects.toThrow('load failed')
+        expect(failSession.client.emitSessionReady).not.toHaveBeenCalled()
+    })
+
+    it('pins AcpPermissionHandler mode to the active turn even if session preference flips mid-turn or after reconnect', async () => {
+        let releasePrompt!: () => void
+        harness.promptBlocker = new Promise<void>((resolve) => {
+            releasePrompt = resolve
+        })
+        const { session, setPermissionMode } = createSessionWithBatches(
+            [['first turn', { permissionMode: 'default' }]],
+            { permissionMode: 'default', keepQueueOpen: true }
+        )
+        const running = new HermesRemoteLauncher(session as never).launch()
+        try {
+            await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+            expect(harness.permissionModeGetter?.()).toBe('default')
+
+            // User upgrades session preference to yolo while turn 1 is in flight.
+            setPermissionMode('yolo')
+            expect(harness.permissionModeGetter?.()).toBe('default')
+
+            releasePrompt()
+            harness.promptBlocker = null
+            await vi.waitFor(() => expect(harness.permissionModeGetter?.()).toBe('yolo'))
+
+            // Also verify reconnect preserves turn-scoped isolation.
+            harness.promptBlocker = new Promise<void>((resolve) => {
+                releasePrompt = resolve
+            })
+            harness.backend!.setMode.mockRejectedValueOnce(new Error('ACP transport is closed'))
+            setPermissionMode('read-only')
+            session.queue.push('second turn', { permissionMode: 'read-only' })
+            await vi.waitFor(() => expect(harness.prompts).toHaveLength(2))
+            expect(harness.permissionModeGetter?.()).toBe('read-only')
+            setPermissionMode('yolo')
+            expect(harness.permissionModeGetter?.()).toBe('read-only')
+
+            releasePrompt()
+            await vi.waitFor(() => expect(harness.permissionModeGetter?.()).toBe('yolo'))
+        } finally {
+            releasePrompt?.()
+            session.queue.close()
+            await running
+        }
+    })
+
+    it('handles /model <arg> via backend.setModel, notifies state, avoids stale revert, and passes bare /model through', async () => {
+        harness.modelsMetadata = {
+            availableModels: [
+                { modelId: 'model-a', name: 'Model A' },
+                { modelId: 'model-b', name: 'Model B' }
+            ],
+            currentModelId: 'model-a'
+        }
+        const onModelChanged = vi.fn(() => 1)
+        const onModelRollback = vi.fn()
+        const { session, handlers } = createSessionWithBatches([], { keepQueueOpen: true })
+        const launcher = new HermesRemoteLauncher(session as never, {
+            initialModelRevision: 0,
+            onModelChanged,
+            onModelRollback
+        })
+        const running = launcher.launch()
+        try {
+            await vi.waitFor(() => expect(handlers.has(RPC_METHODS.ListHermesModels)).toBe(true))
+
+            // 1. /model model-b calls backend.setModel without backend.prompt and updates catalog + revision.
+            session.queue.push('/model model-b', { permissionMode: 'default', model: 'model-a', modelRevision: 0 })
+            await vi.waitFor(() => expect(onModelChanged).toHaveBeenCalledWith('model-b'))
+            expect(harness.setModelCalls).toEqual([{ sessionId: 'hermes-session-1', model: 'model-b' }])
+            expect(harness.prompts).toHaveLength(0)
+            expect(session.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+                type: 'message',
+                message: 'Switched model to model-b'
+            }))
+            expect(await handlers.get(RPC_METHODS.ListHermesModels)!()).toMatchObject({
+                success: true,
+                currentModelId: 'model-b'
+            })
+
+            // 2. A stale queued prompt carrying rev 0 & model-a does not revert backend back to model-a.
+            session.queue.push('stale batch turn', { permissionMode: 'default', model: 'model-a', modelRevision: 0 })
+            await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+            expect(harness.setModelCalls).toHaveLength(1)
+
+            // 3. Explicit UI switch back to model-a with newer revision (rev 2) DOES switch backend to model-a.
+            session.queue.push('explicit switch back', { permissionMode: 'default', model: 'model-a', modelRevision: 2 })
+            await vi.waitFor(() => expect(harness.prompts).toHaveLength(2))
+            expect(harness.setModelCalls).toEqual([
+                { sessionId: 'hermes-session-1', model: 'model-b' },
+                { sessionId: 'hermes-session-1', model: 'model-a' }
+            ])
+            expect(onModelRollback).not.toHaveBeenCalled()
+
+            // 4. Bare /model continues through backend.prompt for Hermes native status/help output.
+            session.queue.push('/model', { permissionMode: 'default', model: 'model-a', modelRevision: 2 })
+            await vi.waitFor(() => expect(harness.prompts).toHaveLength(3))
+            expect(harness.prompts[2]).toEqual([{ type: 'text', text: '/model' }])
+        } finally {
+            session.queue.close()
+            await running
+        }
     })
 })

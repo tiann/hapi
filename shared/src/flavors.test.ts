@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'bun:test'
 import {
-    Capabilities,
     Flavors,
     getFlavorLabel,
     getPermissionModesForFlavor,
@@ -47,8 +46,8 @@ describe('flavor registry', () => {
 
 describe('capability queries', () => {
     test.each(AGENT_FLAVORS)('%s: the convenience queries agree with hasCapability', (flavor) => {
-        expect(supportsModelChange(flavor)).toBe(hasCapability(flavor, Capabilities.ModelChange))
-        expect(supportsEffort(flavor)).toBe(hasCapability(flavor, Capabilities.Effort))
+        expect(supportsModelChange(flavor)).toBe(hasCapability(flavor, 'model-change'))
+        expect(supportsEffort(flavor)).toBe(hasCapability(flavor, 'effort-change'))
     })
 })
 
@@ -107,7 +106,7 @@ describe('YOLO toggle migration', () => {
 
 describe('unregistered flavors', () => {
     test.each(UNREGISTERED)('%p falls back to the neutral record', (flavor) => {
-        expect(hasCapability(flavor, Capabilities.ModelChange)).toBe(false)
+        expect(hasCapability(flavor, 'model-change')).toBe(false)
         expect(supportsModelChange(flavor)).toBe(false)
         expect(supportsEffort(flavor)).toBe(false)
         expect(getFlavorLabel(flavor)).toBe('Unknown')

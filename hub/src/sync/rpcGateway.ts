@@ -16,8 +16,10 @@ import {
     CursorChatStoreStatusSchema,
     ListCodexSessionsRpcResponseSchema,
     ListOpencodeSessionsRpcResponseSchema,
-    ListPiSessionsRpcResponseSchema
+    ListPiSessionsRpcResponseSchema,
+    PrepareCursorImportRpcResponseSchema
 } from '@hapi/protocol/apiTypes'
+import type { PrepareCursorImportRpcResponse } from '@hapi/protocol/apiTypes'
 import { ListLocalSessionsRpcResponseSchema } from '@hapi/protocol/localTranscript'
 import type { ListLocalSessionsRpcResponse, LocalSessionFlavor } from '@hapi/protocol/localTranscript'
 import type {
@@ -118,14 +120,13 @@ export class PermissionRequestNotFoundError extends Error {
     }
 }
 
-// Matches on the specific shared message rather than treating any error on
-// the Permission RPC method as "not found" — a future, unrelated throw in
-// handlePermissionResponse's success path should surface as a genuine error,
-// not get relabeled as a stale request.
-function isPermissionRequestNotFoundResponse(response: unknown): boolean {
-    if (!response || typeof response !== 'object') return false
+export class PermissionResponseRejectedError extends Error {}
+
+function assertPermissionResponseAccepted(response: unknown, requestId: string): void {
+    if (!response || typeof response !== 'object') return
     const error = (response as Record<string, unknown>).error
-    return error === PERMISSION_REQUEST_NOT_FOUND_MESSAGE
+    if (error === PERMISSION_REQUEST_NOT_FOUND_MESSAGE) throw new PermissionRequestNotFoundError(requestId)
+    if (typeof error === 'string') throw new PermissionResponseRejectedError(error)
 }
 
 export type RpcCommandResponse = CommandResponse
@@ -189,9 +190,7 @@ export class RpcGateway {
             decision,
             answers
         })
-        if (isPermissionRequestNotFoundResponse(response)) {
-            throw new PermissionRequestNotFoundError(requestId)
-        }
+        assertPermissionResponseAccepted(response, requestId)
     }
 
     async denyPermission(
@@ -204,9 +203,7 @@ export class RpcGateway {
             approved: false,
             decision
         })
-        if (isPermissionRequestNotFoundResponse(response)) {
-            throw new PermissionRequestNotFoundError(requestId)
-        }
+        assertPermissionResponseAccepted(response, requestId)
     }
 
     async abortSession(sessionId: string): Promise<void> {
@@ -681,6 +678,21 @@ export class RpcGateway {
             MODEL_LIST_RPC_TIMEOUT_MS
         )
         return ListLocalSessionsRpcResponseSchema.parse(result)
+    }
+
+    async prepareCursorImportForMachine(
+        machineId: string,
+        uuid: string,
+        workspacePath?: string | null
+    ): Promise<PrepareCursorImportRpcResponse> {
+        // ACP verify can take tens of seconds; reuse the long list timeout.
+        const result = await this.machineRpc(
+            machineId,
+            RPC_METHODS.PrepareCursorImport,
+            { uuid, workspacePath: workspacePath ?? null },
+            MODEL_LIST_RPC_TIMEOUT_MS
+        )
+        return PrepareCursorImportRpcResponseSchema.parse(result)
     }
 
     async listCursorModelsForSession(sessionId: string): Promise<RpcListCursorModelsResponse> {

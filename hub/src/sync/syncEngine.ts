@@ -4969,7 +4969,7 @@ export class SyncEngine {
         const session = access.session
         const metadata = session.metadata
         if (metadata?.codexRuntime?.kind === 'attached') {
-            return { type: 'error', message: 'Externally attached Codex session: run hapi attach on its machine; owned cold resume is disabled', code: 'resume_unavailable' }
+            return { type: 'error', message: 'Open this Codex session on the owning desktop to sync it, or use hapi attach for a manual bridge. HAPI cannot cold-resume it.', code: 'resume_unavailable' }
         }
         if (!metadata || typeof metadata.path !== 'string' || metadata.path.length === 0) {
             return { type: 'error', message: 'Session metadata missing path', code: 'resume_unavailable' }
@@ -5525,6 +5525,7 @@ export class SyncEngine {
         }
 
         const requiresPiNativeReady = flavor === 'pi' && resumeToken !== undefined
+        const requiresHermesNativeReady = flavor === 'hermes' && resumeToken !== undefined
         if (requiresPiNativeReady) {
             if (this.isPiResumeBlocked(access.sessionId)) {
                 return { type: 'error', message: 'Pi resume is already in progress', code: 'resume_failed' }
@@ -5637,6 +5638,9 @@ export class SyncEngine {
                 }
             }
 
+            if (requiresHermesNativeReady) {
+                this.sessionReadyIds.delete(access.sessionId)
+            }
             if (flavor === 'codex' && resumeToken) {
                 this.sessionReadyIds.delete(access.sessionId)
                 this.writeCodexResumePending(access.sessionId, namespace, { machineId: targetMachine.id, nativeSessionId: resumeToken })
@@ -5733,6 +5737,7 @@ export class SyncEngine {
 
             const needsReadyBeforeSuccess = resumedStartingMode === 'pty'
                 || requiresPiNativeReady
+                || requiresHermesNativeReady
                 || (
                     spawnResult.sessionId !== access.sessionId
                     && flavor === 'cursor'
@@ -5795,6 +5800,35 @@ export class SyncEngine {
                             return { type: 'error', message: 'Pi native resume timed out and the child is still active', code: 'resume_failed', rollbackSafe: false }
                         }
                     }
+                    if (requiresHermesNativeReady && readyResult === 'timeout') {
+                        let status: 'stopped' | 'already_gone' | 'still_alive' | 'unknown'
+                        try {
+                            status = await this.rpcGateway.stopRunnerSession(
+                                targetMachine.id,
+                                spawnResult.sessionId
+                            )
+                        } catch {
+                            status = 'still_alive'
+                        }
+                        let inactive = false
+                        if (status === 'already_gone') {
+                            const current = this.sessionCache.getSession(spawnResult.sessionId)
+                            if (current?.active) {
+                                this.handleSessionEnd({ sid: spawnResult.sessionId, time: Date.now(), reason: 'error' })
+                            }
+                            inactive = true
+                        } else if (status === 'stopped') {
+                            inactive = await this.waitForSessionInactive(spawnResult.sessionId)
+                        }
+                        if (!inactive) {
+                            return {
+                                type: 'error',
+                                message: 'Hermes native resume timed out and the child is still active',
+                                code: 'resume_failed',
+                                rollbackSafe: false,
+                            }
+                        }
+                    }
                     if (resumedStartingMode === 'pty') {
                         try {
                             // Child stopped after timeout — restore archive from
@@ -5814,6 +5848,10 @@ export class SyncEngine {
                         ? readyResult === 'ended'
                             ? 'Pi session ended before native resume completed'
                             : 'Pi session failed to become native-ready'
+                        : flavor === 'hermes'
+                            ? readyResult === 'ended'
+                                ? 'Hermes session ended before native resume completed'
+                                : 'Hermes session failed to become native-ready'
                         : resumedStartingMode === 'pty'
                             ? readyResult === 'ended'
                                 ? 'Session ended before the agent PTY became ready'
@@ -6856,6 +6894,14 @@ export class SyncEngine {
         sessionIds?: string[] | null
     }): Promise<ListLocalSessionsRpcResponse> {
         return await this.rpcGateway.listLocalSessionsForMachine(machineId, params)
+    }
+
+    async prepareCursorImportForMachine(
+        machineId: string,
+        uuid: string,
+        workspacePath?: string | null
+    ) {
+        return await this.rpcGateway.prepareCursorImportForMachine(machineId, uuid, workspacePath)
     }
 
     async listCursorModelsForSession(sessionId: string): Promise<RpcListCursorModelsResponse> {

@@ -99,7 +99,7 @@ const UNPRODUCTIVE_ATTEMPTS_BEFORE_WARNING = 5;
  * come through unfiltered and the rest grow logarithmically: 1, 2, 3, 4, 8,
  * 16, 32 … Progress stays legible without the row count tracking wall time.
  */
-function isReportableRetryAttempt(attempt: number): boolean {
+export function isReportableRetryAttempt(attempt: number): boolean {
     if (attempt <= RETRY_REPORT_DENSE_THRESHOLD) {
         return true;
     }
@@ -184,6 +184,16 @@ function parseRetryStatus(attemptValue: unknown, messageValue: unknown): Opencod
     if (attempt === null || !Number.isInteger(attempt) || attempt < 1 || !message) return null;
 
     return { attempt, message: truncateOpencodeProviderText(message) };
+}
+
+export function parseOpencodeV2RetryStatus(value: unknown): OpencodeRetryStatus | null {
+    if (!isObject(value)) return null;
+    // OpenCode counts the initial request as attempt 1. HAPI counts retries from 1.
+    const attempt = asNumber(value.attempt);
+    return parseRetryStatus(
+        attempt === null ? null : attempt - 1,
+        isObject(value.error) ? value.error.message : null
+    );
 }
 
 /**
@@ -320,13 +330,7 @@ export function subscribeToOpencodeEvents(options: OpencodeEventStreamOptions): 
 
         let retry: OpencodeRetryStatus | null;
         if (event.type === 'session.retry.scheduled') {
-            // OpenCode 2.2.5 counts the initial request as attempt 1, then
-            // increments before scheduling a retry. HAPI counts retries from 1.
-            const attempt = asNumber(properties.attempt);
-            retry = parseRetryStatus(
-                attempt === null ? null : attempt - 1,
-                isObject(properties.error) ? properties.error.message : null
-            );
+            retry = parseOpencodeV2RetryStatus(properties);
         } else {
             const status = properties.status;
             if (!isObject(status) || status.type !== 'retry') {

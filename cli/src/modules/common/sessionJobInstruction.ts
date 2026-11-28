@@ -7,18 +7,9 @@
  * this prompt block. Estate skill remains a Cursor backup.
  */
 
-/** Canonical one-block contract. Keep short — every session's prompt budget. */
-export const SESSION_JOB_INSTRUCTION = [
-    'Session-attached jobs: default is NOT to use them.',
-    'Only for a process that must keep running after this agent goes idle and that the operator',
-    'would reopen the chat to ask about (hours-long batch, nohup script, daemon you own).',
-    'Never for anything that finishes within this turn: tests, builds, installs, typechecks, git, short scripts.',
-    'If unsure, do not attach.',
-    'To attach: Shell `hapi job run <session-id> <job-key> --label <text> --progress unknown -- <cmd>`',
-    '(use the /sessions/<id> uuid of this chat). Run `hapi job --help` for other modes and rules.',
-    'Do not pass --wake-on-terminal unless the operator asked to be woken.',
-    'If you attached a job, clear or fail it yourself when its process is gone.'
-].join(' ')
+/** Always-on pointer. The full gate lives in `SESSION_JOB_GATE` (tool description and `hapi job --help`). */
+export const SESSION_JOB_INSTRUCTION =
+    'Session jobs (`hapi job run`): default is NOT to use them; only for a process that must outlive your turn, never tests or builds. See `hapi job --help`.'
 
 /** Append instruction to an existing prompt block (blank line separator). */
 export function withSessionJobInstruction(base: string): string {

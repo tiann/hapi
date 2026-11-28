@@ -360,12 +360,24 @@ export class Store {
 
     private initSchema(): void {
         const currentVersion = this.getUserVersion()
-        // V1/V2/V3 entries cover legacy DBs that pre-date our migration ladder.
-        // Each step is idempotent (column-existence guards inside) so we can
-        // safely run the full V1→V8 chain in the legacy branch where the DB
-        // shape is unknown.
-        const buildStepMigrations = (legacy: boolean): Record<number, () => void> => ({
-            1: () => this.migrateFromV1ToV2(legacy),
+
+        if (currentVersion === SCHEMA_VERSION) {
+            this.assertRequiredTablesPresent()
+            this.ensureUsageScanParserVersion()
+            return
+        }
+
+        if (currentVersion === 0 && !this.hasAnyUserTables()) {
+            this.createSchema()
+            this.ensureUsageScanParserVersion()
+            this.setUserVersion(SCHEMA_VERSION)
+            return
+        }
+
+        // Run the same migration steps on unversioned databases after
+        // checking for the legacy machine schema.
+        const stepMigrations: Record<number, () => void> = {
+            1: () => this.migrateFromV1ToV2(currentVersion === 0),
             2: () => this.migrateFromV2ToV3(),
             3: () => this.migrateFromV3ToV4(),
             4: () => this.migrateFromV4ToV5(),
@@ -410,42 +422,28 @@ export class Store {
             33: () => this.migrateFromV33ToV34(),
             34: () => this.migrateFromV34ToV35(),
             35: () => this.migrateFromV35ToV36(),
-        })
-
-        if (currentVersion === 0) {
-            if (this.hasAnyUserTables()) {
-                this.migrateLegacySchemaIfNeeded()
-                // Run the full step ladder BEFORE createSchema so legacy tables
-                // pick up every later-version column (e.g. invoked_at) via ALTER
-                // TABLE.  Without this, createSchema below would try to build
-                // idx_messages_session_position over a column that does not
-                // exist yet, and CREATE TABLE IF NOT EXISTS would not add the
-                // missing column to the existing table.
-                const legacySteps = buildStepMigrations(true)
-                for (let v = 1; v < SCHEMA_VERSION; v++) {
-                    legacySteps[v]?.()
-                }
-                // Backfill any *missing* tables (sessions, machines, ...) that
-                // a partially-built legacy DB may not have yet.
-                this.createSchema()
-                this.ensureUsageScanParserVersion()
-                this.setUserVersion(SCHEMA_VERSION)
-                return
-            }
-
-            this.createSchema()
-            this.ensureUsageScanParserVersion()
-            this.setUserVersion(SCHEMA_VERSION)
-            return
         }
 
-        const stepMigrations = buildStepMigrations(false)
-        // A v26 database predates all three derived-index refinements. Create
-        // the final schema and rebuild once instead of running the v26→v27
-        // rebuild, v28→v29 short-index backfill, and v29→v30 rebuild in turn.
-        // Keep the individual steps below for databases that resume from an
-        // intermediate schema version after an interrupted upgrade.
-        if (currentVersion === 26) {
+        if (currentVersion !== 0 && (currentVersion > SCHEMA_VERSION || !stepMigrations[currentVersion])) {
+            throw this.buildSchemaMismatchError(currentVersion)
+        }
+
+        const versions = `v${currentVersion} to v${SCHEMA_VERSION}`
+        console.log(`[Store] Migrating database schema from ${versions}...`)
+        if (currentVersion === 0) {
+            this.migrateLegacySchemaIfNeeded()
+            // Patch existing legacy tables before createSchema builds indexes
+            // that depend on newer columns and creates any missing tables.
+            for (let v = 1; v < SCHEMA_VERSION; v++) {
+                stepMigrations[v]?.()
+            }
+            this.createSchema()
+        } else if (currentVersion === 26) {
+            // A v26 database predates all three derived-index refinements. Create
+            // the final schema and rebuild once instead of running the v26→v27
+            // rebuild, v28→v29 short-index backfill, and v29→v30 rebuild in turn.
+            // Keep the individual steps below for databases that resume from an
+            // intermediate schema version after an interrupted upgrade.
             this.migrateFromV26ToV30()
             this.migrateFromV29ToV30()
             this.migrateFromV30ToV31()
@@ -454,27 +452,17 @@ export class Store {
             this.migrateFromV33ToV34()
             this.migrateFromV34ToV35()
             this.migrateFromV35ToV36()
-            this.ensureUsageScanParserVersion()
-            this.setUserVersion(SCHEMA_VERSION)
-            return
-        }
-        if (currentVersion < SCHEMA_VERSION && stepMigrations[currentVersion]) {
+        } else {
             for (let v = currentVersion; v < SCHEMA_VERSION; v++) {
                 const step = stepMigrations[v]
                 if (!step) throw this.buildSchemaMismatchError(currentVersion)
                 step()
             }
-            this.ensureUsageScanParserVersion()
-            this.setUserVersion(SCHEMA_VERSION)
-            return
         }
 
-        if (currentVersion !== SCHEMA_VERSION) {
-            throw this.buildSchemaMismatchError(currentVersion)
-        }
-
-        this.assertRequiredTablesPresent()
         this.ensureUsageScanParserVersion()
+        this.setUserVersion(SCHEMA_VERSION)
+        console.log(`[Store] Database schema migration complete (${versions}).`)
     }
 
     private createSchema(): void {
@@ -1223,7 +1211,7 @@ export class Store {
         `)
         createMessageContentSearchTable(this.db)
         if (this.getMessageColumnNames().size === 0) return
-        rebuildMessageContentSearch(this.db)
+        this.rebuildMessageContentSearchIndex()
     }
 
     private migrateFromV26ToV30(): void {
@@ -1291,7 +1279,12 @@ export class Store {
     /** v30→v31: create and backfill the message-content search index. */
     private migrateFromV30ToV31(): void {
         createMessageContentSearchTable(this.db)
-        if (this.getMessageColumnNames().size > 0) rebuildMessageContentSearch(this.db)
+        if (this.getMessageColumnNames().size > 0) this.rebuildMessageContentSearchIndex()
+    }
+
+    private rebuildMessageContentSearchIndex(): void {
+        console.log('[Store] Rebuilding message search index...')
+        rebuildMessageContentSearch(this.db)
     }
 
     private getSessionColumnNames(): Set<string> {

@@ -6,6 +6,7 @@ import type { ChecklistItem } from '@/components/ToolCard/checklist'
 import { extractTodoChecklist, extractUpdatePlanChecklist } from '@/components/ToolCard/checklist'
 import { basename, resolveDisplayPath } from '@/utils/path'
 import { getInputStringAny, truncate } from '@/lib/toolInputUtils'
+import { codexPatchFiles } from '@/components/ToolCard/codexPatch'
 import { getGoalToolName } from '@/components/ToolCard/goalTools'
 import { parseCursorAskQuestionInput } from '@/components/ToolCard/cursorAskQuestion'
 import { resolveToolNameAlias } from '@/components/ToolCard/toolNameAliases'
@@ -614,17 +615,16 @@ export const knownTools: Record<string, {
         icon: () => <FileDiffIcon className={DEFAULT_ICON_CLASS} />,
         title: () => 'Apply changes',
         subtitle: (opts) => {
-            if (isObject(opts.input) && isObject(opts.input.changes)) {
-                const files = Object.keys(opts.input.changes)
-                if (files.length === 0) return null
-                const first = files[0]
-                const display = resolveDisplayPath(first, opts.metadata)
-                const name = basename(display)
-                return files.length > 1 ? `${name} (+${files.length - 1})` : name
-            }
-            return null
+            const files = codexPatchFiles(opts.input)
+            if (files.length === 0) return null
+            const name = basename(resolveDisplayPath(files[0].path, opts.metadata))
+            return files.length > 1 ? `${name} (+${files.length - 1})` : name
         },
-        minimal: true
+        minimal: (opts) => {
+            const files = codexPatchFiles(opts.input)
+            const diff = files.map(file => file.diff ?? '').join('\n')
+            return !diff.trim() || diff.length >= 2000 || countLines(diff) >= 50
+        }
     },
     CodexDiff: {
         icon: () => <FileDiffIcon className={DEFAULT_ICON_CLASS} />,

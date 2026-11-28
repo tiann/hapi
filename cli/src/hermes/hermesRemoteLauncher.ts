@@ -57,21 +57,34 @@ function isClosedTransportError(
         || message.includes('acp process exited')
 }
 
+export function parseHermesModelSlashCommand(text: string): string | null {
+    const trimmed = text.trim()
+    if (trimmed.includes('\n') || trimmed.includes('\r')) {
+        return null
+    }
+    const match = /^\/model[ \t]+(\S.*)$/i.exec(trimmed)
+    return match ? match[1].trim() : null
+}
+
 export class HermesRemoteLauncher extends RemoteLauncherBase {
     private backend: ReturnType<typeof createHermesBackend> | null = null
     private permissionHandler: AcpPermissionHandler | null = null
     private happyServer: { stop: () => void } | null = null
     private abortController = new AbortController()
     private currentBackendModel: string | null = null
+    private currentBackendModelRevision: number | undefined = undefined
     private initialBackendModel: string | null = null
     private currentBackendAcpMode: string | null = null
+    private activeTurnPermissionMode: HermesPermissionMode | undefined = undefined
 
     constructor(
         private readonly session: HermesSession,
         private readonly opts: {
             model?: string
-            onModelRollback?: (model: string | null) => void
-            onConfigDiscovered?: (model: string | null) => void
+            initialModelRevision?: number
+            onModelRollback?: (model: string | null, revision?: number) => void
+            onConfigDiscovered?: (model: string | null, revision?: number) => void
+            onModelChanged?: (model: string | null) => number | void
         } = {}
     ) {
         super(process.env.DEBUG ? session.logPath : undefined)
@@ -174,8 +187,10 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
         }
 
         const discoveredModel = backend.getSessionModelsMetadata(acpSessionId)?.currentModelId ?? null
+        const initialRevision = this.opts.initialModelRevision
         this.initialBackendModel = discoveredModel
         this.currentBackendModel = discoveredModel
+        this.currentBackendModelRevision = initialRevision
 
         if (this.opts.model && this.opts.model !== discoveredModel) {
             try {
@@ -183,19 +198,22 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                 this.currentBackendModel = this.opts.model
             } catch (err) {
                 logger.debug('[hermes-acp] initial setModel failed', err)
-                this.opts.onModelRollback?.(this.currentBackendModel)
+                this.opts.onModelRollback?.(this.currentBackendModel, initialRevision)
             }
         }
-        this.opts.onConfigDiscovered?.(this.currentBackendModel)
+        this.opts.onConfigDiscovered?.(this.currentBackendModel, initialRevision)
         if (this.currentBackendModel) {
             this.messageBuffer.addMessage(`[MODEL:${this.currentBackendModel}]`, 'system')
         }
         markReady(acpSessionId)
+        if (typeof this.session.client.emitSessionReady === 'function') {
+            this.session.client.emitSessionReady()
+        }
 
         this.permissionHandler = new AcpPermissionHandler(
             this.session.client,
             backend,
-            () => this.session.getPermissionMode() as HermesPermissionMode | undefined
+            () => this.activeTurnPermissionMode ?? (this.session.getPermissionMode() as HermesPermissionMode | undefined)
         )
         this.setupAbortHandlers(this.session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbort(),
@@ -301,32 +319,24 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                 continue
             }
 
-            const requestedModel = batch.mode.model
-            if (requestedModel === null) {
-                if (this.initialBackendModel && this.initialBackendModel !== this.currentBackendModel) {
-                    try {
-                        await backend.setModel(acpSessionId, this.initialBackendModel, { flavor: 'hermes' })
-                        this.currentBackendModel = this.initialBackendModel
-                        this.messageBuffer.addMessage(`[MODEL:${this.initialBackendModel}]`, 'system')
-                    } catch (err) {
-                        if (isClosedTransportError(backend, err)) {
-                            if (this.shouldExit || this.session.queue.isClosed()) {
-                                this.session.queue.releaseBatch(batch)
-                                break
-                            }
-                            backend = await recoverFromClosedTransport(err, batch)
-                            this.session.queue.unshiftBatch(batch)
-                            continue
-                        }
-                        logger.debug('[hermes-acp] reset setModel failed', err)
-                        this.opts.onModelRollback?.(this.currentBackendModel)
-                    }
+            const slashModelTarget = parseHermesModelSlashCommand(batch.message)
+            if (slashModelTarget !== null) {
+                if (this.shouldExit) {
+                    this.session.queue.releaseBatch(batch)
+                    break
                 }
-            } else if (requestedModel && requestedModel !== this.currentBackendModel) {
+                if (signal.aborted) {
+                    await this.waitForAbortBarrier()
+                    if (this.shouldExit || this.session.queue.isClosed()) {
+                        this.session.queue.releaseBatch(batch)
+                        break
+                    }
+                    this.session.queue.unshiftBatch(batch)
+                    continue
+                }
+
                 try {
-                    await backend.setModel(acpSessionId, requestedModel, { flavor: 'hermes' })
-                    this.currentBackendModel = requestedModel
-                    this.messageBuffer.addMessage(`[MODEL:${requestedModel}]`, 'system')
+                    await backend.setModel(acpSessionId, slashModelTarget, { flavor: 'hermes' })
                 } catch (err) {
                     if (isClosedTransportError(backend, err)) {
                         if (this.shouldExit || this.session.queue.isClosed()) {
@@ -337,8 +347,100 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                         this.session.queue.unshiftBatch(batch)
                         continue
                     }
-                    logger.debug('[hermes-acp] setModel failed', err)
-                    this.opts.onModelRollback?.(this.currentBackendModel)
+                    const message = err instanceof Error ? err.message : String(err)
+                    logger.warn('[hermes-acp] /model switch failed', { message })
+                    this.session.queue.commitBatch(batch)
+                    this.messageBuffer.addMessage(batch.message, 'user')
+                    this.session.sendSessionEvent({
+                        type: 'message',
+                        message: `Hermes model switch failed: ${message}`
+                    })
+                    this.messageBuffer.addMessage(`Hermes model switch failed: ${message}`, 'status')
+                    if (this.session.queue.size() === 0 && !this.shouldExit) {
+                        this.session.sendSessionEvent({ type: 'ready' })
+                    }
+                    continue
+                }
+
+                if (signal.aborted) {
+                    await this.waitForAbortBarrier()
+                    if (this.shouldExit || this.session.queue.isClosed()) {
+                        this.session.queue.releaseBatch(batch)
+                        break
+                    }
+                    this.session.queue.unshiftBatch(batch)
+                    continue
+                }
+
+                consecutiveReconnects = 0
+                this.session.queue.commitBatch(batch)
+                this.currentBackendModel = slashModelTarget
+                const nextRev = this.opts.onModelChanged?.(slashModelTarget)
+                if (typeof nextRev === 'number') {
+                    this.currentBackendModelRevision = nextRev
+                }
+                this.messageBuffer.addMessage(batch.message, 'user')
+                this.messageBuffer.addMessage(`[MODEL:${slashModelTarget}]`, 'system')
+                this.handleAgentMessage({ type: 'text', text: `Switched model to ${slashModelTarget}` })
+                if (this.session.queue.size() === 0 && !this.shouldExit) {
+                    this.session.sendSessionEvent({ type: 'ready' })
+                }
+                continue
+            }
+
+            const requestedModel = batch.mode.model
+            const isStaleBatchModel = batch.mode.modelRevision !== undefined
+                && this.currentBackendModelRevision !== undefined
+                && batch.mode.modelRevision < this.currentBackendModelRevision
+            if (!isStaleBatchModel) {
+                if (requestedModel === null) {
+                    if (this.initialBackendModel && this.initialBackendModel !== this.currentBackendModel) {
+                        try {
+                            await backend.setModel(acpSessionId, this.initialBackendModel, { flavor: 'hermes' })
+                            this.currentBackendModel = this.initialBackendModel
+                            if (batch.mode.modelRevision !== undefined) {
+                                this.currentBackendModelRevision = batch.mode.modelRevision
+                            }
+                            this.messageBuffer.addMessage(`[MODEL:${this.initialBackendModel}]`, 'system')
+                        } catch (err) {
+                            if (isClosedTransportError(backend, err)) {
+                                if (this.shouldExit || this.session.queue.isClosed()) {
+                                    this.session.queue.releaseBatch(batch)
+                                    break
+                                }
+                                backend = await recoverFromClosedTransport(err, batch)
+                                this.session.queue.unshiftBatch(batch)
+                                continue
+                            }
+                            logger.debug('[hermes-acp] reset setModel failed', err)
+                            this.opts.onModelRollback?.(this.currentBackendModel, batch.mode.modelRevision)
+                        }
+                    } else if (batch.mode.modelRevision !== undefined) {
+                        this.currentBackendModelRevision = batch.mode.modelRevision
+                    }
+                } else if (requestedModel && requestedModel !== this.currentBackendModel) {
+                    try {
+                        await backend.setModel(acpSessionId, requestedModel, { flavor: 'hermes' })
+                        this.currentBackendModel = requestedModel
+                        if (batch.mode.modelRevision !== undefined) {
+                            this.currentBackendModelRevision = batch.mode.modelRevision
+                        }
+                        this.messageBuffer.addMessage(`[MODEL:${requestedModel}]`, 'system')
+                    } catch (err) {
+                        if (isClosedTransportError(backend, err)) {
+                            if (this.shouldExit || this.session.queue.isClosed()) {
+                                this.session.queue.releaseBatch(batch)
+                                break
+                            }
+                            backend = await recoverFromClosedTransport(err, batch)
+                            this.session.queue.unshiftBatch(batch)
+                            continue
+                        }
+                        logger.debug('[hermes-acp] setModel failed', err)
+                        this.opts.onModelRollback?.(this.currentBackendModel, batch.mode.modelRevision)
+                    }
+                } else if (batch.mode.modelRevision !== undefined) {
+                    this.currentBackendModelRevision = batch.mode.modelRevision
                 }
             }
 
@@ -367,6 +469,8 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                 this.messageBuffer.addMessage(batch.message, 'user')
             }
             let promptClosedTransportError: unknown = null
+            this.activeTurnPermissionMode = batch.mode.permissionMode
+                ?? (this.session.getPermissionMode() as HermesPermissionMode | undefined)
             try {
                 const isAlive = () =>
                     typeof (backend as { isTransportAlive?: () => boolean }).isTransportAlive !== 'function'
@@ -411,6 +515,7 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                     this.messageBuffer.addMessage(`Hermes prompt failed: ${message}`, 'status')
                 }
             } finally {
+                this.activeTurnPermissionMode = undefined
                 if (batchDispatched) {
                     this.session.onThinkingChange(false)
                     await this.permissionHandler?.cancelAll('Prompt finished')
@@ -461,6 +566,7 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
         acpMcpServers: McpServerStdio[],
         titleSync: ReturnType<typeof createAcpSessionTitleSync>
     ): Promise<ReturnType<typeof createHermesBackend>> {
+        this.activeTurnPermissionMode = undefined
         await this.permissionHandler?.cancelAll('Transport closed')
         this.permissionHandler = null
         await this.backend?.disconnect().catch(() => {})
@@ -485,18 +591,19 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                 this.currentBackendModel = desiredModel
             } catch (err) {
                 logger.debug('[hermes-acp] reconnect setModel failed', err)
-                this.opts.onModelRollback?.(this.currentBackendModel)
+                this.opts.onModelRollback?.(this.currentBackendModel, this.currentBackendModelRevision)
             }
         }
         this.permissionHandler = new AcpPermissionHandler(
             this.session.client,
             nextBackend,
-            () => this.session.getPermissionMode() as HermesPermissionMode | undefined
+            () => this.activeTurnPermissionMode ?? (this.session.getPermissionMode() as HermesPermissionMode | undefined)
         )
         return nextBackend
     }
 
     protected async cleanup(): Promise<void> {
+        this.activeTurnPermissionMode = undefined
         this.clearAbortHandlers(this.session.client.rpcHandlerManager)
         await this.permissionHandler?.cancelAll('Session ended')
         this.permissionHandler = null

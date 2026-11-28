@@ -50,8 +50,16 @@ export function dictationDirectSendEligible(args: {
  * Used to avoid navigating away from where the operator currently is when
  * a background voice send completes after they left the source session.
  */
-export function isOnSessionPage(pathname: string, sessionId: string): boolean {
-    return pathname.replace(/\/$/, '') === `/sessions/${sessionId}`
+/**
+ * Whether the source session's chat is what the operator is looking at.
+ * `chatBesideFiles` covers the wide layout, where the files/file routes render
+ * next to the still-mounted chat; narrow full-pane file views don't count.
+ */
+export function isOnSessionPage(pathname: string, sessionId: string, options?: { chatBesideFiles?: boolean }): boolean {
+    const path = pathname.replace(/\/$/, '')
+    const base = `/sessions/${sessionId}`
+    if (path === base) return true
+    return options?.chatBesideFiles === true && (path === `${base}/files` || path === `${base}/file`)
 }
 
 export async function resolveVoiceSession(

@@ -3,6 +3,7 @@ import { initializeToken } from '@/ui/tokenInit'
 import type { AttachedJobPatch, AttachedJobUpsert } from '@hapi/protocol'
 import {
     SessionJobError,
+    SESSION_JOB_GATE,
     SESSION_JOB_REMAINING_ZERO_HINT,
     clearSessionJob,
     exitCodeForSessionJobError,
@@ -55,8 +56,8 @@ function showHelp(): void {
 ${chalk.bold('hapi job')} - Attach long-running work to a HAPI session (tiann/hapi#1404)
 
 ${chalk.bold('When to use:')}
-  Work that outlives the agent (batch / long scripts / external daemons)
-  while the session may be idle. Not thinking progress or in-agent background tools.
+  ${SESSION_JOB_GATE.replaceAll('. ', '.\n  ')}
+  Not thinking progress or in-agent background tools.
 
 ${chalk.bold('Agent contract:')}
   Prefer ${chalk.bold('hapi job run')} — it heartbeats for you and marks completed/failed on exit.

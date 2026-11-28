@@ -139,10 +139,13 @@ export function useActiveSuggestions(
     const [state, setState] = useState<{
         suggestions: Suggestion[]
         selected: number
+        /** True once the user has moved the highlight themselves. */
+        navigated: boolean
         input: SuggestionInput | null
     }>({
         suggestions: [],
         selected: -1,
+        navigated: false,
         input: null
     })
 
@@ -153,13 +156,13 @@ export function useActiveSuggestions(
             if (prev.selected <= 0) {
                 // At top or nothing selected
                 if (wrapAround) {
-                    return { ...prev, selected: prev.suggestions.length - 1 }
+                    return { ...prev, navigated: true, selected: prev.suggestions.length - 1 }
                 } else {
-                    return { ...prev, selected: 0 }
+                    return { ...prev, navigated: true, selected: 0 }
                 }
             }
             // Move up
-            return { ...prev, selected: prev.selected - 1 }
+            return { ...prev, navigated: true, selected: prev.selected - 1 }
         })
     }, [wrapAround])
 
@@ -170,17 +173,17 @@ export function useActiveSuggestions(
             if (prev.selected >= prev.suggestions.length - 1) {
                 // At bottom
                 if (wrapAround) {
-                    return { ...prev, selected: 0 }
+                    return { ...prev, navigated: true, selected: 0 }
                 } else {
-                    return { ...prev, selected: prev.suggestions.length - 1 }
+                    return { ...prev, navigated: true, selected: prev.suggestions.length - 1 }
                 }
             }
             // If nothing selected, select first
             if (prev.selected < 0) {
-                return { ...prev, selected: 0 }
+                return { ...prev, navigated: true, selected: 0 }
             }
             // Move down
-            return { ...prev, selected: prev.selected + 1 }
+            return { ...prev, navigated: true, selected: prev.selected + 1 }
         })
     }, [wrapAround])
 
@@ -190,7 +193,7 @@ export function useActiveSuggestions(
     const clear = useCallback(() => {
         generationRef.current += 1
         abortRef.current?.abort()
-        setState({ suggestions: [], selected: -1, input: null })
+        setState({ suggestions: [], selected: -1, navigated: false, input: null })
     }, [])
 
     const syncRef = useRef<ValueSync<SuggestionRequest> | null>(null)
@@ -218,21 +221,27 @@ export function useActiveSuggestions(
                     // React may defer this updater until another query is current.
                     if (!isCurrentRequest()) return prev
 
-                    if (prev.selected >= 0 && prev.selected < prev.suggestions.length) {
-                        const previousKey = prev.suggestions[prev.selected].key
-                        const newIndex = suggestions.findIndex(s => s.key === previousKey)
-                        if (newIndex !== -1) {
-                            // Preserve the user's logical selection across a refreshed or reordered list.
-                            return { suggestions, selected: newIndex, input }
-                        }
+                    // Only a highlight the user moved is worth keeping, and only for
+                    // the query they moved it in. Otherwise Enter must take the best
+                    // match, not whatever happened to be highlighted a keystroke ago.
+                    if (!prev.navigated || prev.input?.query !== input.query) {
+                        const selected = autoSelectFirst && suggestions.length > 0 ? 0 : -1
+                        return { suggestions, selected, navigated: false, input }
                     }
 
-                    // The selected key disappeared (or there was no selection): retain the
-                    // existing fallback semantics and clamp the index to the new list.
+                    const previousKey = prev.suggestions[prev.selected]?.key
+                    const newIndex = suggestions.findIndex(s => s.key === previousKey)
+                    if (newIndex !== -1) {
+                        // Preserve the user's logical selection across a refreshed or reordered list.
+                        return { suggestions, selected: newIndex, navigated: true, input }
+                    }
+
+                    // The selected key disappeared: clamp the index to the new list.
                     const clampedSelection = Math.min(prev.selected, suggestions.length - 1)
                     return {
                         suggestions,
                         selected: clampedSelection < 0 && suggestions.length > 0 && autoSelectFirst ? 0 : clampedSelection,
+                        navigated: true,
                         input
                     }
                 })

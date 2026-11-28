@@ -120,6 +120,7 @@
     <string name="settings_category_general_summary">外観、言語、アプリ情報</string>
     <string name="settings_back">戻る</string>
     <string name="settings_cancel">キャンセル</string>
+    <string name="settings_cursor_retry">一時的なモデルエラーを自動で1回再試行</string>
     <string name="settings_retry">再試行</string>
     <string name="settings_load_error">このダッシュボードを読み込めませんでした。</string>
     <string name="settings_owner_only">このダッシュボードは Hub のオーナー（default namespace）のみ利用できます。</string>
@@ -171,6 +172,16 @@
 
     <!-- Usage dashboard -->
     <string name="settings_usage">使用量</string>
+    <string name="quota_title">CLI アカウントのクォータ</string>
+    <string name="quota_empty">CLI アカウントがインストールされたオンラインのマシンはありません。</string>
+    <string name="quota_runner">CLI アカウントのクォータを表示するには、このマシンの runner を更新してください。</string>
+    <string name="quota_remaining">残り %1$d%%（使用済み %2$d%%）</string>
+    <string name="quota_resets">%1$s にリセット</string>
+    <string name="quota_unauthenticated">未サインイン</string>
+    <string name="quota_custom_provider">カスタムエンドポイント / API キー</string>
+    <string name="quota_error">クォータを取得できません</string>
+    <string name="quota_older_hub">CLI アカウントのクォータを表示するには、ハブを更新してください。</string>
+    <string name="quota_stale">更新できませんでした。前回のクォータを表示しています。</string>
     <string name="settings_usage_range_7d">7 日間</string>
     <string name="settings_usage_range_30d">30 日間</string>
     <string name="settings_usage_range_all">全期間</string>
@@ -467,6 +478,7 @@
     <string name="chat_question_awaiting">回答待ち</string>
     <string name="chat_question_answered">回答済み</string>
     <string name="chat_question_handled">質問は対応済みです</string>
+    <string name="chat_question_skipped">質問をスキップしました</string>
     <string name="chat_question_canceled">質問はキャンセルされました</string>
     <string name="chat_question_failed">質問に失敗しました</string>
     <string name="chat_question_submitting">回答を送信中…</string>
@@ -478,6 +490,7 @@
     <string name="chat_question_optional">任意</string>
     <string name="chat_question_other_answer">その他の回答</string>
     <string name="chat_question_hide_note">メモを隠す</string>
+    <string name="chat_question_skip">スキップ</string>
     <string name="chat_question_previous">前の質問</string>
     <string name="chat_question_submit">回答を送信</string>
     <string name="chat_question_next">次の質問</string>

@@ -24,6 +24,7 @@ function isToolAllowedForSession(toolName: string, toolInput: unknown, allowedTo
 }
 
 function formatPermissionSummary(permission: ToolPermission, toolName: string, toolInput: unknown, decision: boolean, t: (key: string) => string): string {
+    if (toolName === 'CursorAskQuestion' && permission.status === 'denied' && permission.reason === 'Skipped') return t('tool.questionSkipped')
     if (permission.status === 'resolved') return t('tool.resolved')
     if (permission.status === 'pending') return t('tool.waitingForApproval')
     if (permission.status === 'canceled') return permission.reason ? `${t('tool.canceled')}: ${permission.reason}` : t('tool.canceled')

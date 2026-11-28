@@ -29,11 +29,11 @@ function normalizeAnswers(answers: AnswersFormat | undefined): Record<string, st
 
 function isAnswerSelected(
     answers: Record<string, string[]> | undefined,
-    questionIdx: number,
+    questionKey: string,
     optionLabel: string
 ): boolean {
     if (!answers) return false
-    const questionAnswers = answers[String(questionIdx)]
+    const questionAnswers = answers[questionKey]
     if (!questionAnswers || !Array.isArray(questionAnswers)) return false
     return questionAnswers.some(a => a.trim() === optionLabel.trim())
 }
@@ -64,14 +64,14 @@ function AnswerOptionCard(props: {
 
 function renderOtherAnswers(
     answers: Record<string, string[]>,
-    questionIdx: number,
-    options: { label: string }[],
+    questionKey: string,
+    optionValues: string[],
     isMulti: boolean
 ): ReactNode {
-    const questionAnswers = answers[String(questionIdx)]
+    const questionAnswers = answers[questionKey]
     if (!questionAnswers || !Array.isArray(questionAnswers)) return null
 
-    const optionLabels = new Set(options.map(o => o.label.trim()))
+    const optionLabels = new Set(optionValues.map(value => value.trim()))
     const otherAnswers = questionAnswers.filter(a => !optionLabels.has(a.trim()))
 
     if (otherAnswers.length === 0) return null
@@ -93,9 +93,9 @@ function renderOtherAnswers(
 
 function renderFreeformAnswers(
     answers: Record<string, string[]>,
-    questionIdx: number
+    questionKey: string
 ): ReactNode {
-    const questionAnswers = answers[String(questionIdx)]
+    const questionAnswers = answers[questionKey]
     if (!questionAnswers || !Array.isArray(questionAnswers)) return null
 
     const cleaned = questionAnswers.map(a => a.trim()).filter(a => a.length > 0)
@@ -116,7 +116,8 @@ function renderFreeformAnswers(
 }
 
 export function AskUserQuestionView(props: ToolViewProps) {
-    const parsed = isCursorAskQuestionToolName(props.block.tool.name)
+    const cursor = isCursorAskQuestionToolName(props.block.tool.name)
+    const parsed = cursor
         ? parseCursorAskQuestionInput(props.block.tool.input)
         : parseAskUserQuestionInput(props.block.tool.input)
     const questions = parsed.questions
@@ -128,7 +129,7 @@ export function AskUserQuestionView(props: ToolViewProps) {
     // render the answers directly
     if (questions.length === 0) {
         if (hasAnswers && answers) {
-            return renderFreeformAnswers(answers, 0)
+            return renderFreeformAnswers(answers, '0')
         }
         return null
     }
@@ -137,6 +138,7 @@ export function AskUserQuestionView(props: ToolViewProps) {
         <div className="flex flex-col gap-4">
             {questions.map((q, idx) => {
                 const isMulti = q.multiSelect
+                const key = cursor ? q.id ?? String(idx) : String(idx)
 
                 return (
                     <div key={idx} className="flex flex-col gap-3">
@@ -149,7 +151,7 @@ export function AskUserQuestionView(props: ToolViewProps) {
                         {q.options.length > 0 ? (
                             <div className="flex flex-col gap-1.5">
                                 {q.options.map((opt, optIdx) => {
-                                    const isSelected = isAnswerSelected(answers, idx, opt.label)
+                                    const isSelected = isAnswerSelected(answers, key, cursor ? opt.id ?? opt.label : opt.label)
                                     return (
                                         <AnswerOptionCard
                                             key={optIdx}
@@ -162,11 +164,11 @@ export function AskUserQuestionView(props: ToolViewProps) {
                                     )
                                 })}
 
-                                {hasAnswers && renderOtherAnswers(answers, idx, q.options, isMulti)}
+                                {hasAnswers && renderOtherAnswers(answers, key, q.options.map(opt => cursor ? opt.id ?? opt.label : opt.label), isMulti)}
                             </div>
                         ) : hasAnswers && answers ? (
                             // Freeform question (no options) - show the answer directly
-                            renderFreeformAnswers(answers, idx)
+                            renderFreeformAnswers(answers, key)
                         ) : null}
                     </div>
                 )

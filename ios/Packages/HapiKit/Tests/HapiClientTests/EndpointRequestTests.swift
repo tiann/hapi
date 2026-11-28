@@ -88,6 +88,18 @@ struct EndpointRequestTests {
         #expect(bodyString(requests.last) == "{\"translateInput\":true}")
     }
 
+    @Test func cursorRetryUsesOnlyTheConfirmedOwnerSettingsField() async throws {
+        let harness = try makeHarness(jwt: freshJWT())
+        await harness.performer.enqueue(json: #"{"translateInputByDefault":false}"#)
+        await harness.performer.enqueue(json: #"{"autoBridgeTransientModelErrors":false}"#)
+        #expect(try await harness.client.hubSettings().autoBridgeTransientModelErrors == nil)
+        #expect(try await harness.client.setCursorAutoRetry(true).autoBridgeTransientModelErrors == false)
+        let request = await harness.performer.requests.last
+        #expect(request?.httpMethod == "PUT")
+        #expect(request?.url?.path == "/api/hub-settings")
+        #expect(String(decoding: request?.httpBody ?? Data(), as: UTF8.self) == #"{"autoBridgeTransientModelErrors":true}"#)
+    }
+
     @Test func hubSettingsDecodesTheTranslationDefault() async throws {
         let harness = try makeHarness(jwt: freshJWT())
         await harness.performer.enqueue(json: #"{"sessionSummaryContract":false,"translateInputByDefault":true}"#)
