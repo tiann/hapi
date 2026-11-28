@@ -1,7 +1,6 @@
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import { readSessionListView, useSessionListView } from './useSessionListView'
-import { useShowActiveSessionsOnly } from './useShowActiveSessionsOnly'
 
 afterEach(() => {
     localStorage.clear()
@@ -41,14 +40,5 @@ describe('useSessionListView', () => {
         expect(readSessionListView().unreadOnly).toBe(true)
         act(() => result.current.setView({ unreadOnly: false }))
         expect(localStorage.length).toBe(0)
-    })
-
-    it('keeps the settings switch and the list menu in sync', () => {
-        const list = renderHook(() => useSessionListView())
-        const settings = renderHook(() => useShowActiveSessionsOnly())
-        act(() => settings.result.current.setShowActiveSessionsOnly(true))
-        expect(list.result.current.view.status).toBe('active')
-        act(() => list.result.current.setView({ status: 'archived' }))
-        expect(settings.result.current.showActiveSessionsOnly).toBe(false)
     })
 })

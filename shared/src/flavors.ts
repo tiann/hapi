@@ -1,18 +1,34 @@
+import type { AgentConfigFieldShape, AgentConfigSettingField } from './agentConfig'
 import type { PermissionMode, SteeringCapability, SteeringSessionMetadata, SteeringSessionState } from './modes'
 
-export const Capabilities = {
-    ModelChange: 'model-change',
-    Effort: 'effort',
-} as const
-
-export type Capability = typeof Capabilities[keyof typeof Capabilities]
+export type Capability = 'model-change' | 'effort-change'
 
 /** `decision`: approve / approve-for-session / abort. `allowTools`: allow / allow-tools-for-session / allow-all-edits. `generic`: allow / allow-for-session / deny. */
 export type PermissionReplyStyle = 'decision' | 'allowTools' | 'generic'
 
+export type FlavorEffortTrait = {
+    /** Wire field that carries effort; `effort` grants the Effort capability. */
+    readonly wireField: 'effort' | 'modelReasoningEffort'
+    /** Composer option source: runtime options, runtime options first, or the flavor's fixed presets. */
+    readonly valueSource: 'runtime' | 'runtime-first' | 'fixed-presets'
+    /** Create-form effort field; null when the form has no effort control. */
+    readonly field: AgentConfigFieldShape | null
+    /** Session state wire field the UI reads; null when the flavor surfaces no reasoning effort. */
+    readonly displayWireField: 'effort' | 'modelReasoningEffort' | null
+    /** Status label shows the default level when effort is unset. */
+    readonly defaultWhenUnset: boolean
+    /** Effort may be sent in the same request as a model change. */
+    readonly withModelChange: boolean
+}
+
 type FlavorTraits = {
     readonly label: string
     readonly capabilities: ReadonlySet<Capability>
+    /** Create-form model field; null when the form has no model control. */
+    readonly modelField: AgentConfigFieldShape | null
+    /** Extra create-form settings fields; empty when the flavor has none. */
+    readonly settingsFields: readonly AgentConfigSettingField[]
+    readonly effort: FlavorEffortTrait | null
     readonly permissionReplyStyle: PermissionReplyStyle
     /** Permission modes offered for the flavor; empty when the flavor has none. */
     readonly permissionModes: readonly PermissionMode[]
@@ -34,7 +50,9 @@ type FlavorTraits = {
 
 type FlavorSpec<TModes extends readonly PermissionMode[]> = {
     label: string
-    capabilities: ReadonlySet<Capability>
+    modelField: AgentConfigFieldShape | null
+    settingsFields: readonly AgentConfigSettingField[]
+    effort: FlavorEffortTrait | null
     permissionReplyStyle: PermissionReplyStyle
     permissionModes: TModes
     decisionToolNamePrefix: string | null
@@ -59,9 +77,14 @@ function defineFlavor<const TModes extends readonly PermissionMode[]>(
         throw new Error(`Flavor ${spec.label} lists more than one auto-approve mode: ${autoApproveModes.join(', ')}`)
     }
     const yoloPermissionMode = autoApproveModes[0] ?? null
+    const capabilities = new Set<Capability>(['model-change'])
+    if (spec.effort?.wireField === 'effort') capabilities.add('effort-change')
     return {
         label: spec.label,
-        capabilities: spec.capabilities,
+        capabilities,
+        modelField: spec.modelField,
+        settingsFields: spec.settingsFields,
+        effort: spec.effort,
         permissionReplyStyle: spec.permissionReplyStyle,
         permissionModes: spec.permissionModes,
         allowsPermissionMode: (mode): mode is TModes[number] => (spec.permissionModes as readonly string[]).includes(mode),
@@ -89,7 +112,9 @@ function isCursorAcpSession(metadata: SteeringSessionMetadata): boolean {
 
 const agy = defineFlavor({
     label: 'Antigravity',
-    capabilities: new Set([Capabilities.ModelChange, Capabilities.Effort]),
+    modelField: { kind: 'select', optionSource: 'machine' },
+    settingsFields: [],
+    effort: { wireField: 'effort', valueSource: 'runtime-first', field: { kind: 'select', optionSource: 'model' }, displayWireField: 'effort', defaultWhenUnset: false, withModelChange: true },
     permissionReplyStyle: 'generic',
     permissionModes: ['request-review', 'acceptEdits', 'plan', 'always-proceed'],
     decisionToolNamePrefix: null,
@@ -102,7 +127,9 @@ const agy = defineFlavor({
 
 const claude = defineFlavor({
     label: 'Claude',
-    capabilities: new Set([Capabilities.ModelChange, Capabilities.Effort]),
+    modelField: { kind: 'select', optionSource: 'static' },
+    settingsFields: [],
+    effort: { wireField: 'effort', valueSource: 'runtime-first', field: { kind: 'select', optionSource: 'static' }, displayWireField: 'effort', defaultWhenUnset: true, withModelChange: true },
     permissionReplyStyle: 'allowTools',
     permissionModes: ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan'],
     decisionToolNamePrefix: null,
@@ -115,7 +142,12 @@ const claude = defineFlavor({
 
 const codex = defineFlavor({
     label: 'Codex',
-    capabilities: new Set([Capabilities.ModelChange]),
+    modelField: { kind: 'select', optionSource: 'machine' },
+    settingsFields: [
+        { id: 'serviceTier', kind: 'select', optionSource: 'model' },
+        { id: 'collaborationMode', kind: 'select', optionSource: 'static' },
+    ],
+    effort: { wireField: 'modelReasoningEffort', valueSource: 'runtime-first', field: { kind: 'select', optionSource: 'model' }, displayWireField: 'modelReasoningEffort', defaultWhenUnset: true, withModelChange: false },
     permissionReplyStyle: 'decision',
     permissionModes: ['default', 'read-only', 'autoReview', 'yolo'],
     decisionToolNamePrefix: 'Codex',
@@ -128,7 +160,9 @@ const codex = defineFlavor({
 
 const dsh = defineFlavor({
     label: 'DeepSeek Harness',
-    capabilities: new Set([Capabilities.ModelChange]),
+    modelField: null,
+    settingsFields: [],
+    effort: { wireField: 'modelReasoningEffort', valueSource: 'fixed-presets', field: null, displayWireField: null, defaultWhenUnset: false, withModelChange: false },
     permissionReplyStyle: 'generic',
     // DSH applies its own server-side permission policy, so no modes are offered.
     permissionModes: [],
@@ -141,7 +175,9 @@ const dsh = defineFlavor({
 
 const copilot = defineFlavor({
     label: 'Copilot',
-    capabilities: new Set([Capabilities.ModelChange, Capabilities.Effort]),
+    modelField: { kind: 'select', optionSource: 'directory' },
+    settingsFields: [],
+    effort: { wireField: 'effort', valueSource: 'runtime', field: null, displayWireField: 'effort', defaultWhenUnset: false, withModelChange: false },
     permissionReplyStyle: 'decision',
     permissionModes: ['default', 'read-only', 'safe-yolo', 'yolo'],
     decisionToolNamePrefix: 'Copilot',
@@ -153,7 +189,9 @@ const copilot = defineFlavor({
 
 const cursor = defineFlavor({
     label: 'Cursor',
-    capabilities: new Set([Capabilities.ModelChange]),
+    modelField: { kind: 'dependent-select', optionSource: 'machine' },
+    settingsFields: [],
+    effort: null,
     permissionReplyStyle: 'decision',
     permissionModes: ['default', 'plan', 'ask', 'debug', 'autoReview', 'yolo'],
     decisionToolNamePrefix: 'Cursor',
@@ -166,7 +204,9 @@ const cursor = defineFlavor({
 
 const gemini = defineFlavor({
     label: 'Gemini',
-    capabilities: new Set([Capabilities.ModelChange]),
+    modelField: { kind: 'select', optionSource: 'static' },
+    settingsFields: [],
+    effort: null,
     permissionReplyStyle: 'decision',
     permissionModes: ['default', 'read-only', 'safe-yolo', 'yolo'],
     decisionToolNamePrefix: 'Gemini',
@@ -179,7 +219,9 @@ const gemini = defineFlavor({
 
 const grok = defineFlavor({
     label: 'Grok Build',
-    capabilities: new Set([Capabilities.ModelChange, Capabilities.Effort]),
+    modelField: { kind: 'select', optionSource: 'directory' },
+    settingsFields: [],
+    effort: { wireField: 'effort', valueSource: 'runtime-first', field: { kind: 'select', optionSource: 'model' }, displayWireField: 'effort', defaultWhenUnset: true, withModelChange: false },
     permissionReplyStyle: 'decision',
     permissionModes: ['default', 'auto', 'plan', 'bypassPermissions'],
     decisionToolNamePrefix: null,
@@ -192,7 +234,9 @@ const grok = defineFlavor({
 
 const kimi = defineFlavor({
     label: 'Kimi',
-    capabilities: new Set([Capabilities.ModelChange, Capabilities.Effort]),
+    modelField: { kind: 'select', optionSource: 'directory' },
+    settingsFields: [],
+    effort: { wireField: 'effort', valueSource: 'runtime', field: null, displayWireField: 'effort', defaultWhenUnset: false, withModelChange: false },
     permissionReplyStyle: 'decision',
     permissionModes: ['default', 'read-only', 'safe-yolo', 'yolo'],
     decisionToolNamePrefix: null,
@@ -204,7 +248,9 @@ const kimi = defineFlavor({
 
 const opencode = defineFlavor({
     label: 'OpenCode',
-    capabilities: new Set([Capabilities.ModelChange]),
+    modelField: { kind: 'select', optionSource: 'directory' },
+    settingsFields: [],
+    effort: { wireField: 'modelReasoningEffort', valueSource: 'runtime', field: { kind: 'select', optionSource: 'model' }, displayWireField: 'modelReasoningEffort', defaultWhenUnset: true, withModelChange: false },
     permissionReplyStyle: 'decision',
     permissionModes: ['default', 'plan', 'yolo'],
     decisionToolNamePrefix: 'OpenCode',
@@ -217,7 +263,9 @@ const opencode = defineFlavor({
 
 const pi = defineFlavor({
     label: 'Pi',
-    capabilities: new Set([Capabilities.ModelChange, Capabilities.Effort]),
+    modelField: { kind: 'grouped-select', optionSource: 'machine' },
+    settingsFields: [],
+    effort: { wireField: 'effort', valueSource: 'runtime-first', field: { kind: 'select', optionSource: 'static' }, displayWireField: 'effort', defaultWhenUnset: false, withModelChange: false },
     permissionReplyStyle: 'generic',
     // Pi RPC always auto-approves, so no modes are offered.
     permissionModes: [],
@@ -249,6 +297,9 @@ export type PermissionModeOf<T extends { readonly permissionModes: readonly Perm
 const UNKNOWN_FLAVOR_TRAITS: FlavorTraits = {
     label: 'Unknown',
     capabilities: new Set<Capability>(),
+    modelField: null,
+    settingsFields: [],
+    effort: null,
     permissionReplyStyle: 'generic',
     // Unknown flavors fall back to the Claude list.
     permissionModes: claude.permissionModes,
@@ -278,13 +329,49 @@ export function getFlavorLabel(flavor: string | null | undefined): string {
     return traitsOf(flavor).label
 }
 
+export function getModelConfigField(flavor: string | null | undefined): AgentConfigFieldShape | null {
+    return traitsOf(flavor).modelField
+}
+
+export function getEffortConfigField(flavor: string | null | undefined): AgentConfigFieldShape | null {
+    return traitsOf(flavor).effort?.field ?? null
+}
+
+export function usesModelReasoningEffort(flavor: string | null | undefined): boolean {
+    return traitsOf(flavor).effort?.wireField === 'modelReasoningEffort'
+}
+
+export function usesEffortWithModelChange(flavor: string | null | undefined): boolean {
+    return traitsOf(flavor).effort?.withModelChange === true
+}
+
+export function showsDefaultEffortLabel(flavor: string | null | undefined): boolean {
+    return traitsOf(flavor).effort?.defaultWhenUnset === true
+}
+
+export function usesSessionModelReasoningEffort(flavor: string | null | undefined): boolean {
+    return traitsOf(flavor).effort?.displayWireField === 'modelReasoningEffort'
+}
+
+export function requiresRuntimeEffortOptions(flavor: string | null | undefined): boolean {
+    return traitsOf(flavor).effort?.valueSource === 'runtime'
+}
+
+export function usesFixedEffortOptions(flavor: string | null | undefined): boolean {
+    return traitsOf(flavor).effort?.valueSource === 'fixed-presets'
+}
+
+export function getSettingsConfigFields(flavor: string | null | undefined): readonly AgentConfigSettingField[] {
+    return traitsOf(flavor).settingsFields
+}
+
 // --- Convenience functions ---
 export function supportsModelChange(flavor: string | null | undefined): boolean {
-    return hasCapability(flavor, Capabilities.ModelChange)
+    return hasCapability(flavor, 'model-change')
 }
 
 export function supportsEffort(flavor: string | null | undefined): boolean {
-    return hasCapability(flavor, Capabilities.Effort)
+    return hasCapability(flavor, 'effort-change')
 }
 
 const DECISION_TOOL_NAME_PREFIXES: readonly string[] = Object.values(Flavors)

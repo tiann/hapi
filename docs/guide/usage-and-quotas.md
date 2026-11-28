@@ -10,7 +10,7 @@ HAPI answers three different questions about how much your agents are doing:
 |----------|-------|-------|
 | When were agents working, and for how long? | `hapi usage` (CLI) | Your namespace |
 | How many tokens did they process? | **Settings → Token usage** (web), **Settings → Usage** (iOS / Android) | Hub owner only |
-| How much of my plan's rate limit is left? | **Settings → Token usage → CLI account quotas** and the quota chip next to the composer (web) | Hub owner for Settings; any session for the chip |
+| How much of my plan's rate limit is left? | The [CLI account quotas](#cli-account-quotas) section in Settings, or the quota chip next to the web composer | Hub owner for Settings; any session for the chip |
 
 ## Agent activity: `hapi usage`
 
@@ -64,6 +64,8 @@ The token dashboard and the account quotas below are only available to the hub o
 
 ## CLI account quotas
 
+On iOS, open **Settings → Usage → CLI account quotas** to see account windows and their local reset times.
+
 The **CLI account quotas** section at the top of **Settings → Token usage** asks every online machine which agent accounts are signed in there and how much of each plan's rate limit is used. Each card shows:
 
 - The agent, and the machine name when more than one machine is online
@@ -71,6 +73,8 @@ The **CLI account quotas** section at the top of **Settings → Token usage** as
 - Each limit window as a bar with the percent remaining and used, and when it resets
 
 **Refresh quotas** forces a fresh read on every machine. Otherwise the runner caches results for about a minute, and the page does not refetch on its own.
+
+On Android, open **Settings → Usage → CLI account quotas** and tap **Refresh** for a fresh reading.
 
 ### Which agents report quotas
 
@@ -92,8 +96,6 @@ In a web chat, a compact chip next to the context meter shows the current agent'
 - It refreshes every 2 minutes and hides itself if a read fails rather than show stale numbers.
 - It appears only when the account reports an account-wide 5-hour or weekly window — in practice **Claude Code** and **Codex**. Antigravity's per-model-group windows stay in Settings.
 - It needs a runner with quota support on the session's machine.
-
-The iOS and Android apps do not show account quotas yet.
 
 ## Related
 

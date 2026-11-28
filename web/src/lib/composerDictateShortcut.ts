@@ -1,4 +1,5 @@
 import type { ConversationStatus } from '@/realtime/types'
+import { DEFAULT_CHAT_SHORTCUTS, matchesChatShortcut } from './chatShortcuts'
 
 /**
  * True if the keystroke matches the composer dictation / voice toggle shortcut
@@ -13,11 +14,8 @@ export function isDictateToggleHotkey(e: {
     shiftKey: boolean
     altKey: boolean
     key: string
-}): boolean {
-    if (!(e.metaKey || e.ctrlKey)) return false
-    if (!e.shiftKey) return false
-    if (e.altKey) return false
-    return e.key === 'D' || e.key === 'd'
+}, shortcut: string | null = DEFAULT_CHAT_SHORTCUTS.dictation): boolean {
+    return matchesChatShortcut(e, shortcut)
 }
 
 /**

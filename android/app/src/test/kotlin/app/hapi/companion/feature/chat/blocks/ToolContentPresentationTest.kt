@@ -2,6 +2,7 @@ package app.hapi.companion.feature.chat.blocks
 
 import app.hapi.companion.feature.chat.terminalCommand
 import app.hapi.protocol.chat.ChatToolCall
+import app.hapi.protocol.git.DiffLineKind
 import app.hapi.protocol.wire.HapiJson
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -30,6 +31,22 @@ class ToolContentPresentationTest {
         assertEquals(source, toolSourceInput(JsonPrimitive(source), listOf("code")))
         assertEquals("*** Begin Patch\n", toolSourceInput(json("""{"patch":"*** Begin Patch\n"}"""), listOf("patch")))
         assertNull(toolSourceInput(json("""{"unknown":true}"""), listOf("patch")))
+    }
+
+    @Test fun codexPatchKeepsHunksWithTheirFileAndPreservesPathFallback() {
+        val diff = "@@ -1 +1 @@\n-2\n+3\n"
+        for (input in listOf(
+            """{"changes":{"left/example.txt":{"type":"update","unified_diff":"@@ -1 +1 @@\n-2\n+3\n"},"right/example.txt":{"type":"update"}}}""",
+            """{"changes":[{"path":"left/example.txt","kind":{"type":"update"},"diff":"@@ -1 +1 @@\n-2\n+3\n"},{"path":"right/example.txt","kind":{"type":"add"},"diff":"@@ -1 +1 @@\n-2\n+3\n"}]}""",
+        )) {
+            val files = codexPatchFiles(json(input))
+            assertEquals(listOf("left/example.txt", "right/example.txt"), files.map { it.path })
+            assertEquals(listOf(diff, null), files.map { it.diff })
+            val file = requireNotNull(codexPatchDiff(diff, files.first().path))
+            assertEquals("left/example.txt", file.displayPath)
+            assertEquals(listOf("2", "3"), file.hunks.single().lines.map { it.text })
+            assertEquals(listOf(DiffLineKind.REMOVE, DiffLineKind.ADD), file.hunks.single().lines.map { it.kind })
+        }
     }
 
     @Test fun planProposalsReadInputAndPreserveTheCompleteDocument() {

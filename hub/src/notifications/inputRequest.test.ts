@@ -42,6 +42,11 @@ describe('input request notifications', () => {
         }
     )
 
+    it('previews Cursor prompts and counts the remaining questions', () => {
+        const cursor = session({ questions: [{ id: 'one', prompt: 'Which branch?' }, { id: 'two', prompt: 'Which test?' }] }, 'CursorAskQuestion')
+        expect(composeInputRequestNotification(cursor)?.body).toContain('Which branch?\n+1 more question')
+    })
+
     it('shows only the first readable question, then the remaining question count', () => {
         expect(formatInputRequestPreview({ questions: [null, {}, 3, { question: '  第一题\n\t内容  ' },
             { question: '', header: ' 第二题标题 ' }, { question: '第三题' }] })).toBe('第一题 内容\n+2 more questions')

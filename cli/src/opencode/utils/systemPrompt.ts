@@ -20,9 +20,6 @@ export const TITLE_INSTRUCTION = trimIdent(`
     ${HAPI_MCP_BRIDGE_PROMPT}
     ${isPeerToolsDisabled() ? SESSION_CITATION_DISABLED_STEER : buildSessionCitationSteerInstruction({
         inspectTool: 'hapi_inspect_peer',
-        pingTool: 'hapi_ping_peer',
-        listPeersTool: 'hapi_list_peers',
-        spawnTool: 'hapi_spawn_peer',
     })}
     ${SKILL_LOOKUP_INSTRUCTION}
 `);
@@ -39,9 +36,6 @@ export const OPENCODE_NATIVE_TOOL_INSTRUCTION = trimIdent(`
     ${HAPI_MCP_BRIDGE_PROMPT}
     ${isPeerToolsDisabled() ? SESSION_CITATION_DISABLED_STEER : buildSessionCitationSteerInstruction({
         inspectTool: 'hapi_inspect_peer',
-        pingTool: 'hapi_ping_peer',
-        listPeersTool: 'hapi_list_peers',
-        spawnTool: 'hapi_spawn_peer',
     })}
     ${SKILL_LOOKUP_INSTRUCTION}
 `);

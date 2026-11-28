@@ -23,6 +23,7 @@ import type {
 } from '@hapi/protocol/localTranscript'
 import type { MachineCapability } from '@hapi/protocol/runnerCapabilities'
 import type { SyncEngine } from '../../../sync/syncEngine'
+import type { StoredMessage } from '../../../store'
 import { truncateOversizedMessageContent } from '../../../store/contentCodec'
 import { normalizeComparableText, stableSerializeContent } from './compare'
 
@@ -55,6 +56,7 @@ export type HubLocalSessionSource = {
         /** Maps stored and transcript content to the fields that must stay equal. */
         canonicalContent?: (content: unknown) => unknown
         liveCompareKey?: (content: unknown, callIds?: Map<string, number>) => string | null
+        liveUserBatchMatches?: (batch: StoredMessage[], nativeContent: unknown) => boolean
     }
         | { strategy: 'contentPrefix'; compareKey?: (content: unknown) => string | null }
     /** Lifecycle stamped on create. */
@@ -324,13 +326,116 @@ function agyLiveCompareKey(content: unknown, callIds?: Map<string, number>): str
     return stableSerializeContent({ role: 'agent', data: rest })
 }
 
+const AGY_INLINE_IMAGE_MIME_TYPES = new Set([
+    'image/png',
+    'image/jpeg',
+    'image/jpg',
+    'image/webp',
+    'image/gif'
+])
+
+function isInlineImageAttachment(attachment: { mimeType?: unknown }): boolean {
+    if (typeof attachment.mimeType !== 'string') return false
+    return AGY_INLINE_IMAGE_MIME_TYPES.has(attachment.mimeType.toLowerCase().trim())
+}
+
+function formatAgyUserPromptText(text: string, paths: string[]): string {
+    if (paths.length === 0) return text
+    const header = paths.map((path) => `@${path}`).join(' ')
+    return text ? `${header}\n\n${text}` : header
+}
+
+function agyUserRowCandidateTexts(stored: StoredMessage): string[] | null {
+    const content = stored.content
+    if (!content || typeof content !== 'object' || !('role' in content) || !('content' in content)) {
+        return null
+    }
+    const record = content as { role?: unknown; content?: unknown }
+    if (record.role !== 'user') return null
+    const body = record.content && typeof record.content === 'object' && !Array.isArray(record.content)
+        ? record.content as Record<string, unknown>
+        : null
+    if (body?.type !== 'text' || typeof body.text !== 'string') {
+        return null
+    }
+    const rawAttachments = Array.isArray(body.attachments) ? body.attachments : []
+    const validAttachments = rawAttachments.filter(
+        (item): item is { path: string; mimeType?: unknown } =>
+            item !== null
+            && typeof item === 'object'
+            && typeof (item as { path?: unknown }).path === 'string'
+            && (item as { path: string }).path.trim().length > 0
+    )
+    if (validAttachments.length === 0) {
+        return [body.text]
+    }
+    const allPaths = validAttachments.map((item) => item.path)
+    const nonImagePaths = validAttachments
+        .filter((item) => !isInlineImageAttachment(item))
+        .map((item) => item.path)
+    const hasInlineImage = nonImagePaths.length < allPaths.length
+    const withAllAttachments = formatAgyUserPromptText(body.text, allPaths)
+    if (!hasInlineImage) {
+        return [withAllAttachments]
+    }
+    const withInlineStripped = formatAgyUserPromptText(body.text, nonImagePaths)
+    return withInlineStripped === withAllAttachments
+        ? [withAllAttachments]
+        : [withInlineStripped, withAllAttachments]
+}
+
+/**
+ * Matches a delivered batch of HAPI user messages sharing one `invokedAt`
+ * against a native Antigravity `USER_INPUT` message joined by `\n`, formatting
+ * non-image attachments as `@path` while accepting either inline-stripped or
+ * `@path`-retained forms for inline-capable image attachments.
+ */
+export function agyLiveUserBatchMatches(batch: StoredMessage[], nativeContent: unknown): boolean {
+    if (batch.length === 0) return false
+    if (!nativeContent || typeof nativeContent !== 'object' || !('role' in nativeContent) || !('content' in nativeContent)) {
+        return batch.length === 1 && agyLiveCompareKey(batch[0]!.content) === agyLiveCompareKey(nativeContent)
+    }
+    const nativeRecord = nativeContent as { role?: unknown; content?: unknown }
+    const nativeBody = nativeRecord.content && typeof nativeRecord.content === 'object' && !Array.isArray(nativeRecord.content)
+        ? nativeRecord.content as Record<string, unknown>
+        : null
+    if (nativeRecord.role !== 'user' || nativeBody?.type !== 'text' || typeof nativeBody.text !== 'string') {
+        return batch.length === 1 && agyLiveCompareKey(batch[0]!.content) === agyLiveCompareKey(nativeContent)
+    }
+
+    let candidates: string[] = ['']
+    for (const [index, row] of batch.entries()) {
+        const rowCandidates = agyUserRowCandidateTexts(row)
+        if (!rowCandidates) {
+            return batch.length === 1 && agyLiveCompareKey(row.content) === agyLiveCompareKey(nativeContent)
+        }
+        const next: string[] = []
+        const seen = new Set<string>()
+        for (const prefix of candidates) {
+            for (const part of rowCandidates) {
+                const joined = index === 0 ? part : `${prefix}\n${part}`
+                if (seen.has(joined)) continue
+                seen.add(joined)
+                next.push(joined)
+            }
+        }
+        candidates = next
+    }
+    const targetText = normalizeComparableText(nativeBody.text)
+    return candidates.some((candidate) => normalizeComparableText(candidate) === targetText)
+}
+
 export const AGY_LOCAL_SESSION_SOURCE: HubLocalSessionSource = {
     flavor: 'agy',
     displayName: 'Antigravity',
     importTimestampKey: 'agyImportedAt',
     routeBase: 'agy',
     nativeIdKeys: ['agySessionId'],
-    match: { strategy: 'anchored', liveCompareKey: agyLiveCompareKey },
+    match: {
+        strategy: 'anchored',
+        liveCompareKey: agyLiveCompareKey,
+        liveUserBatchMatches: agyLiveUserBatchMatches
+    },
     lifecycleOnCreate: 'archived',
     requireWorkingDirectory: true,
     batch: 'continue',

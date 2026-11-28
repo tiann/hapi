@@ -28,6 +28,14 @@ describe('AgentFlavorIcon', () => {
         }
     })
 
+    it('renders the Codex mark in blue without a background tile', () => {
+        const { container } = render(<AgentFlavorIcon flavor="codex" />)
+        const svg = container.querySelector('svg')
+        expect(svg?.getAttribute('fill')).toBe('currentColor')
+        expect(svg?.getAttribute('color')).toBe('#6179F5')
+        expect(svg?.querySelectorAll('path')).toHaveLength(1)
+    })
+
     it('renders the Pi logo with transparent, theme-aware coloring', () => {
         const { container } = render(<AgentFlavorIcon flavor="pi" />)
         const badge = getWrapper(container)

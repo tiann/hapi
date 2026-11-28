@@ -74,11 +74,24 @@ describe('CursorExtensionAdapter', () => {
         void pending;
     });
 
+    it('rejects unadvertised answers and keeps the request available', async () => {
+        const { handlers, adapter, getAgentState } = createHarness();
+        const pending = handlers.get('cursor/ask_question')!({
+            toolCallId: 'q', questions: [{ id: 'branch', options: [{ id: 'main' }] }]
+        }, null);
+        await expect(adapter.handlePermissionResponse({ id: 'q', approved: true, answers: { branch: ['free text'] } }))
+            .rejects.toThrow(/option offered/);
+        expect(getAgentState().requests?.q).toBeDefined();
+        await adapter.handlePermissionResponse({ id: 'q', approved: true, answers: { branch: ['main'] } });
+        await pending;
+        expect(getAgentState().completedRequests?.q.answers).toEqual({ branch: ['main'] });
+    });
+
     it('resolves ask_question with answered outcome and formatted answers', async () => {
         const { handlers, adapter } = createHarness();
         const pending = handlers.get('cursor/ask_question')!({
             toolCallId: 'q-1',
-            questions: []
+            questions: [{id: 'q1', options: [{id: 'opt-a'}]}]
         }, null);
 
         const handled = await adapter.handlePermissionResponse({
@@ -96,17 +109,17 @@ describe('CursorExtensionAdapter', () => {
         });
     });
 
-    it('resolves ask_question denial as cancelled', async () => {
+    it.each([['denied', 'skipped'], ['abort', 'cancelled']] as const)('maps ask_question %s to %s', async (decision, outcome) => {
         const { handlers, adapter } = createHarness();
         const pending = handlers.get('cursor/ask_question')!({ toolCallId: 'q-2' }, null);
 
         await adapter.handlePermissionResponse({
             id: 'q-2',
             approved: false,
-            decision: 'denied'
+            decision
         });
 
-        await expect(pending).resolves.toEqual({ outcome: { outcome: 'cancelled' } });
+        await expect(pending).resolves.toEqual({ outcome: { outcome } });
     });
 
     it('resolves create_plan approval as accepted with nested outcome envelope', async () => {
@@ -174,7 +187,7 @@ describe('CursorExtensionAdapter', () => {
     it('does not invoke create-plan continue handoff for ask_question answers', async () => {
         const onCreatePlanAccepted = vi.fn();
         const { handlers, adapter } = createHarness({ onCreatePlanAccepted });
-        const pending = handlers.get('cursor/ask_question')!({ toolCallId: 'q-ok' }, null);
+        const pending = handlers.get('cursor/ask_question')!({ toolCallId: 'q-ok', questions: [{ id: 'q1', options: [{id:'a'}] }] }, null);
 
         await adapter.handlePermissionResponse({
             id: 'q-ok',

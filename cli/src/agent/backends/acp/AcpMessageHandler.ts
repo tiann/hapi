@@ -116,11 +116,9 @@ function extractTitleArgument(title: string, kind: string | null): string {
  * "README.md" / "ls -la /tmp".
  *
  * Conservative on purpose:
- * - `read` / `execute` / `search` derive from `title`, which in those kinds
- *   is the verbatim path / command / pattern.
- * - `edit` (file-write / file-replace) derives from `locations[0].path`;
- *   its title is prose ("Writing to foo.txt"), so the path must come from
- *   the structured locations field, not the title.
+ * - `read` / `edit` prefer `locations[0].path` because file-tool titles can be prose.
+ * - `read` falls back to the title when no location was supplied.
+ * - `execute` / `search` derive the command or pattern from the title.
  * - `think` stays null — its title carries topic-update prose with no clean
  *   argument mapping; fabricating one would mislead.
  * - Unknown kinds fall through to null rather than guessing a shape.
@@ -131,11 +129,11 @@ function deriveInputFromKindAndTitle(
     locations: unknown
 ): Record<string, unknown> | null {
     const normalizedKind = normalizeToolKind(kind);
-    if (normalizedKind === 'edit') {
-        const arr = Array.isArray(locations) ? locations : [];
-        const first = arr[0];
+    if (normalizedKind === 'read' || normalizedKind === 'edit') {
+        const first = Array.isArray(locations) ? locations[0] : null;
         const path = isObject(first) ? asString(first.path) : null;
-        return path ? { file_path: path } : null;
+        if (path) return { file_path: path };
+        if (normalizedKind === 'edit') return null;
     }
     if (!title) return null;
     const arg = extractTitleArgument(title, kind);
@@ -250,6 +248,39 @@ function hoistDiffContentIntoInput(content: unknown): HoistedDiff | null {
         return { name: 'Edit', input: { file_path: path, old_string: oldText, new_string: newText } };
     }
 
+    return null;
+}
+
+type ToolCallInput = { name: string; input: unknown };
+
+function getFilePath(input: unknown): string | null {
+    return isObject(input) ? asString(input.file_path ?? input.filePath ?? input.path) : null;
+}
+
+function isPathOnlyInput(input: unknown): boolean {
+    return isObject(input) && Object.keys(input).length === 1 && Boolean(getFilePath(input));
+}
+
+function hoistCursorDiffInput(content: unknown, rawInput: unknown, previous?: ToolCallInput): ToolCallInput | null {
+    if (!Array.isArray(content) || content.length !== 1) return null;
+    const [diff] = content;
+    if (!isObject(diff) || diff.type !== 'diff' || typeof diff.newText !== 'string') return null;
+    const path = asString(diff.path);
+    const hasCurrentInput = isUsableRawInput(rawInput);
+    if (hasCurrentInput && !isPathOnlyInput(rawInput)) return null;
+    if (!path || getFilePath(hasCurrentInput ? rawInput : previous?.input) !== path) return null;
+
+    // Cursor sends the full-file diff separately from its tool args. Preserve
+    // richer args for the same file, such as old_string plus replace_all.
+    if (previous && getFilePath(previous.input) === path && !isPathOnlyInput(previous.input)) return previous;
+
+    const metaKind = isObject(diff._meta) ? asString(diff._meta.kind) : null;
+    if (metaKind === 'add' || (!metaKind && diff.oldText == null)) {
+        return { name: 'Write', input: { file_path: path, content: diff.newText } };
+    }
+    if ((!metaKind || metaKind === 'modify') && typeof diff.oldText === 'string') {
+        return { name: 'Edit', input: { file_path: path, old_string: diff.oldText, new_string: diff.newText } };
+    }
     return null;
 }
 
@@ -495,7 +526,7 @@ function mayBeUnfinishedControlEnvelope(text: string): boolean {
 }
 
 export class AcpMessageHandler {
-    private readonly toolCalls = new Map<string, { name: string; input: unknown }>();
+    private readonly toolCalls = new Map<string, ToolCallInput>();
     // The agent's own tool name and args by call id (agy sends `name`/`args`
     // on every tool_call and tool_call_update).
     private readonly nativeTools = new Map<string, { nativeName: string; nativeArgs: unknown }>();
@@ -1024,7 +1055,13 @@ export class AcpMessageHandler {
             ...this.nativeToolFields(toolCallId, update)
         };
 
-        if (isUsableRawInput(update.rawInput)) {
+        const cursorDiff = status === 'completed' && this.options.flavor === 'cursor'
+            ? hoistCursorDiffInput(update.content, update.rawInput, existing)
+            : null;
+        if (cursorDiff) {
+            this.toolCalls.set(toolCallId, cursorDiff);
+            this.onMessage({ type: 'tool_call', id: toolCallId, ...cursorDiff, status, ...presentation });
+        } else if (isUsableRawInput(update.rawInput)) {
             const derivedName = deriveToolNameFromUpdate(update);
             let name = this.selectToolNameForUpdate(existing?.name ?? null, derivedName);
             let input: unknown = update.rawInput;
@@ -1101,7 +1138,7 @@ export class AcpMessageHandler {
             // Only runs on status=completed (not failed): a failed write_file must never
             // promote the tool name to Write/Edit, as no diff was actually applied.
             // Skip when a usable rawInput already supplied the input above.
-            if (status === 'completed' && !isUsableRawInput(update.rawInput) && existing) {
+            if (status === 'completed' && !cursorDiff && !isUsableRawInput(update.rawInput) && existing) {
                 const hoisted = hoistDiffContentIntoInput(update.content);
                 if (hoisted) {
                     this.toolCalls.set(toolCallId, { name: hoisted.name, input: hoisted.input });

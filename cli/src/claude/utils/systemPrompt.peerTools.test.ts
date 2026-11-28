@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { PEER_CONTACT_SUMMARY } from '@hapi/protocol/sessionCitation'
 
 /**
  * Peer-tools citation steer across all three flavors.
@@ -32,18 +33,18 @@ describe('peer-tools citation steer across flavors', () => {
         try {
             const claudePrompt = claude.getSystemPrompt()
             expect(claudePrompt).toContain('are disabled on this machine')
-            expect(claudePrompt).not.toContain('Call "mcp__hapi__inspect_peer"')
+            expect(claudePrompt).not.toContain('read it with mcp__hapi__inspect_peer')
 
             expect(codex.TITLE_INSTRUCTION).toContain('are disabled on this machine')
-            expect(codex.TITLE_INSTRUCTION).not.toContain('Call "functions.hapi__inspect_peer"')
+            expect(codex.TITLE_INSTRUCTION).not.toContain('read it with functions.hapi__inspect_peer')
 
             expect(opencode.TITLE_INSTRUCTION).toContain('are disabled on this machine')
-            expect(opencode.TITLE_INSTRUCTION).not.toContain('Call "hapi_inspect_peer"')
+            expect(opencode.TITLE_INSTRUCTION).not.toContain('read it with hapi_inspect_peer')
 
             expect(opencode.OPENCODE_NATIVE_TOOL_INSTRUCTION).toContain('are disabled on this machine')
-            expect(opencode.OPENCODE_NATIVE_TOOL_INSTRUCTION).not.toContain('Call "hapi_inspect_peer"')
+            expect(opencode.OPENCODE_NATIVE_TOOL_INSTRUCTION).not.toContain('read it with hapi_inspect_peer')
             for (const prompt of [claudePrompt, codex.TITLE_INSTRUCTION, opencode.TITLE_INSTRUCTION, opencode.OPENCODE_NATIVE_TOOL_INSTRUCTION]) {
-                expect(prompt).not.toContain('auto (default)')
+                expect(prompt).not.toContain(PEER_CONTACT_SUMMARY)
             }
         } finally {
             restore()
@@ -69,16 +70,13 @@ describe('peer-tools citation steer across flavors', () => {
     it('keeps the citation tool steer by default', async () => {
         const { claude, codex, opencode, restore } = await importFlavorPrompts(false)
         try {
-            expect(claude.getSystemPrompt()).toContain('Call "mcp__hapi__inspect_peer"')
-            expect(codex.TITLE_INSTRUCTION).toContain('Call "functions.hapi__inspect_peer"')
-            expect(opencode.TITLE_INSTRUCTION).toContain('Call "hapi_inspect_peer"')
-            expect(opencode.OPENCODE_NATIVE_TOOL_INSTRUCTION).toContain('Call "hapi_inspect_peer"')
+            expect(claude.getSystemPrompt()).toContain('read it with mcp__hapi__inspect_peer')
+            expect(codex.TITLE_INSTRUCTION).toContain('read it with functions.hapi__inspect_peer')
+            expect(opencode.TITLE_INSTRUCTION).toContain('read it with hapi_inspect_peer')
+            expect(opencode.OPENCODE_NATIVE_TOOL_INSTRUCTION).toContain('read it with hapi_inspect_peer')
             for (const prompt of [claude.getSystemPrompt(), codex.TITLE_INSTRUCTION, opencode.TITLE_INSTRUCTION, opencode.OPENCODE_NATIVE_TOOL_INSTRUCTION]) {
-                expect(prompt).toContain('auto (default)')
-                expect(prompt).toContain('Prefer auto for routine collaboration')
-                expect(prompt).toContain('steer: use for important, time-sensitive findings the peer needs to know now')
-                expect(prompt).toContain('does not abort the current turn or guarantee an immediate response')
-                expect(prompt).toContain('do not resend automatically')
+                expect(prompt).toContain(PEER_CONTACT_SUMMARY)
+                expect(prompt).not.toContain('auto (default)')
             }
         } finally {
             restore()

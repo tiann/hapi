@@ -201,6 +201,8 @@ hapi cursor --cursor-worktree feature-x    # Cursor-native worktree (named)
 hapi cursor --cursor-add-dir ../shared     # Extra workspace root (repeatable)
 ```
 
+Single-file ACP edits can display the before/after diff even when Cursor delivers it separately from the file path.
+
 ### Permission modes
 
 | Mode | Description |
@@ -213,6 +215,8 @@ hapi cursor --cursor-add-dir ../shared     # Extra workspace root (repeatable)
 | `yolo` | Bypass approval prompts |
 
 Set mode via `--plan` / `--mode` / `--permission-mode` / `--auto-review`, or change from the web UI during a session.
+
+Cursor ACP questions accept the options offered by the agent. Skip leaves the question unanswered; abort cancels it. To provide text outside the listed options, send it as an ordinary chat message (it queues while the question is pending), then choose **Skip** to unblock the turn. The agent receives the text as a follow-up message when the queue drains. Completed question cards retain the selected options.
 
 ### Cursor-native worktree & multi-root
 
@@ -417,7 +421,7 @@ the prompt is loaded by DSH through its own `skill` tool and catalog.
   The composer remembers and toggles **fast mode** (Codex's fast service tier) for remote sessions. Remote sessions also load the MCP servers configured in your Codex config alongside HAPI's own tools. To use a custom model catalog, set `HAPI_CODEX_MODEL_CATALOG_JSON` to an absolute path (or `~/…`); HAPI passes it to Codex as `model_catalog_json` unless you already pass that setting with `-c`.
 - **GitHub Copilot** (`hapi copilot`) — Copilot CLI over ACP (`copilot --acp --stdio`). Remote sessions can pick a reasoning effort in the composer when the active model offers one; HAPI applies it before the next turn through ACP `session/set_config_option`. [GitHub Copilot](https://github.com/features/copilot)
 - **Kimi** (`hapi kimi`) — Moonshot AI's Kimi CLI over ACP (`kimi acp`). Remote sessions can pick a thinking level in the composer when the active model offers one; HAPI applies it before the next turn through ACP `session/set_config_option`. [MoonshotAI/kimi-cli](https://github.com/MoonshotAI/kimi-cli)
-- **OpenCode** (`hapi opencode`) — the open-source OpenCode agent over ACP (`opencode acp`). Remote sessions support **Steer**; on OpenCode v2, steered messages are delivered at the next step boundary, and HAPI can fork and rewind the conversation through OpenCode's native history. Local OpenCode sessions can be imported into HAPI ([Import local sessions](./import-local-sessions.md)). [opencode.ai](https://opencode.ai)
+- **OpenCode** (`hapi opencode`) — the open-source OpenCode agent over ACP (`opencode acp`). Remote sessions support **Steer**; on OpenCode v2, steered messages are delivered at the next step boundary, and HAPI can fork and rewind the conversation through OpenCode's native history. Remote sessions on Windows with OpenCode v2 support `/compact` and show upstream retry status in the chat. Local OpenCode sessions can be imported into HAPI ([Import local sessions](./import-local-sessions.md)). [opencode.ai](https://opencode.ai)
 - **Antigravity** (`hapi agy`) — Google's Antigravity CLI (`agy`) over ACP
   (`agy acp`, added in agy 1.5.0). HAPI checks `agy --version` when the
   session starts; older agy releases, an agy whose version cannot be read,
@@ -461,7 +465,11 @@ the prompt is loaded by DSH through its own `skill` tool and catalog.
 
   Remote-only — there is no local terminal input path or PTY/TUI wrapper. MCP
   servers are loaded natively from `~/.gemini/config/mcp_config.json` or
-  workspace `.agents/mcp_config.json`; HAPI does not inject its own MCP server.
+  workspace `.agents/mcp_config.json`, and over ACP HAPI attaches its own
+  narrowed MCP bridge exposing self-session tools (`change_title`, `session_job`,
+  `skill_lookup`). System prompt instructions (`_meta.antigravity.systemPrompt.append`),
+  inline image prompts (`promptCapabilities.image` with `@path` fallback), and
+  Antigravity manifest/plugin skill discovery are applied automatically when supported.
   [Google Antigravity](https://antigravity.google)
 
   On ACP, HAPI offers agy's own slash commands in the `/` menu, including

@@ -444,6 +444,33 @@ export type AgyImportedMessage = z.infer<typeof AgyImportedMessageSchema>
 export type AgyLocalSessionSummary = z.infer<typeof AgyLocalSessionSummarySchema>
 export type AgyLocalSessionWithMessages = z.infer<typeof AgyLocalSessionWithMessagesSchema>
 
+export const PrepareCursorImportRpcRequestSchema = z.object({
+    uuid: z.string().min(1),
+    workspacePath: z.string().nullable().optional()
+})
+
+export const PrepareCursorImportRpcResponseSchema = z.union([
+    z.object({
+        success: z.literal(true),
+        uuid: z.string().min(1),
+        sourceFormat: z.enum(['acp', 'legacy']),
+        workspacePath: z.string().min(1),
+        title: z.string(),
+        hostName: z.string(),
+        durationMs: z.number()
+    }),
+    z.object({
+        success: z.literal(false),
+        uuid: z.string().min(1),
+        reason: z.string().min(1),
+        message: z.string().min(1),
+        durationMs: z.number()
+    })
+])
+
+export type PrepareCursorImportRpcRequest = z.infer<typeof PrepareCursorImportRpcRequestSchema>
+export type PrepareCursorImportRpcResponse = z.infer<typeof PrepareCursorImportRpcResponseSchema>
+
 export const MAX_OPENCODE_SESSION_IMPORTS = 200
 
 export const ListOpencodeSessionsRpcRequestSchema = z.object({

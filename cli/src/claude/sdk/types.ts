@@ -113,6 +113,12 @@ export interface SDKResultMessage extends SDKMessage {
      * converter must not diff or rebase usage with it.
      */
     hapi_skip_usage?: boolean
+    /**
+     * Set in-process on a command result forwarded on its input echo after
+     * usage counted it on arrival, so the log converter neither counts it
+     * again nor writes a summary that would land on a reply shown meanwhile.
+     */
+    hapi_held_result?: boolean
 }
 
 export interface SDKControlResponse extends SDKMessage {

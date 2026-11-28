@@ -2176,6 +2176,76 @@ describe('AcpMessageHandler', () => {
         });
     });
 
+    describe('Cursor ACP file tools', () => {
+        it.each([
+            [undefined, { file_path: '/workspace/palette.txt' }],
+            [{ path: '/workspace/palette.txt', startLine: 1 }, { path: '/workspace/palette.txt', startLine: 1 }]
+        ])('prefers structured read paths over the prose title with rawInput %j', async (rawInput, expected) => {
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((message) => messages.push(message), { flavor: 'cursor' });
+            await handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'read',
+                title: 'Read palette.txt',
+                kind: 'read',
+                rawInput,
+                locations: [{ path: '/workspace/palette.txt' }],
+                status: 'pending'
+            });
+
+            expect(messages).toEqual([expect.objectContaining({
+                type: 'tool_call', id: 'read', title: 'Read palette.txt', input: expected
+            })]);
+        });
+
+        it.each([false, true])('hoists a standard completed diff after a path-only update (final rawInput: %s)', async (withRawInput) => {
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((message) => messages.push(message), { flavor: 'cursor' });
+            const path = '/workspace/palette.txt';
+            const rawInput = { path };
+            const update = { sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate, toolCallId: 'edit' };
+            const diff = { type: 'diff', path, oldText: 'blue', newText: 'green' };
+            await handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall, toolCallId: 'edit',
+                title: 'Edit File', kind: 'edit', rawInput: {}, status: 'pending'
+            });
+            await handler.handleUpdate({ ...update, title: 'Edit `palette.txt`', rawInput, locations: [{ path }] });
+            await handler.handleUpdate({ ...update, status: 'in_progress' });
+            await handler.handleUpdate({
+                ...update, status: 'completed', content: [diff],
+                ...(withRawInput ? { rawInput } : {})
+            });
+
+            expect(messages.slice(-2)).toEqual([
+                expect.objectContaining({
+                    type: 'tool_call', id: 'edit', name: 'Edit', status: 'completed',
+                    input: { file_path: path, old_string: 'blue', new_string: 'green' }
+                }),
+                expect.objectContaining({ type: 'tool_result', id: 'edit', status: 'completed' })
+            ]);
+        });
+
+        it('retains an explicit edit with replace_all when the completed update has only a path and diff', async () => {
+            const messages: AgentMessage[] = [];
+            const handler = new AcpMessageHandler((message) => messages.push(message), { flavor: 'cursor' });
+            const path = '/workspace/palette.txt';
+            const explicit = { file_path: path, old_string: 'blue', new_string: 'green', replace_all: true };
+            await handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall, toolCallId: 'edit',
+                title: 'Edit File', kind: 'edit', rawInput: explicit, status: 'pending'
+            });
+            await handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate, toolCallId: 'edit',
+                status: 'completed', rawInput: { path },
+                content: [{ type: 'diff', path, oldText: 'blue\nblue', newText: 'green\ngreen' }]
+            });
+
+            expect(messages.slice(-2, -1)).toEqual([expect.objectContaining({
+                type: 'tool_call', id: 'edit', name: 'Edit', status: 'completed', input: explicit
+            })]);
+        });
+    });
+
     describe('tool_call input fallback from kind+title (Gemini sends neither rawInput nor JSON thought)', () => {
         it('derives { file_path } from read kind + title', () => {
             const messages: AgentMessage[] = [];

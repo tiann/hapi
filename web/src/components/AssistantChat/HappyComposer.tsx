@@ -22,7 +22,9 @@ import {
     useState
 } from 'react'
 import { useNarrowViewport } from '@/hooks/useNarrowViewport'
-import { shouldInvokeComposerDictateShortcut } from '@/lib/composerDictateShortcut'
+import { isDictateHotkeyBlockedTarget, shouldInvokeComposerDictateShortcut } from '@/lib/composerDictateShortcut'
+import { useChatShortcuts } from '@/hooks/useChatShortcuts'
+import { formatChatShortcut, isChatShortcutEvent, isGlobalChatShortcutInScope, matchesChatShortcut } from '@/lib/chatShortcuts'
 import { isRichComposerMentionsEnabled, resolveComposerPlaceholderKey } from '@/lib/composerSegments'
 import { dictationDirectSendEligible, sendVoiceMessage } from '@/lib/dictationSend'
 import type { SessionMentionResolveResult } from '@/components/AssistantChat/RichComposerInput'
@@ -40,7 +42,7 @@ import { useActiveSuggestions } from '@/hooks/useActiveSuggestions'
 import { applySuggestion } from '@/utils/applySuggestion'
 import { usePlatform } from '@/hooks/usePlatform'
 import { usePWAInstall } from '@/hooks/usePWAInstall'
-import { supportsEffort, supportsModelChange, PI_THINKING_LEVEL_LABELS } from '@hapi/protocol'
+import { supportsEffort, supportsModelChange, usesModelReasoningEffort, PI_THINKING_LEVEL_LABELS } from '@hapi/protocol'
 import type { PiThinkingLevel } from '@hapi/protocol'
 import { markSkillUsed } from '@/lib/recent-skills'
 import { useComposerDraft } from '@/hooks/useComposerDraft'
@@ -59,6 +61,7 @@ import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePic
 import { SortableComposerAttachments } from '@/components/AssistantChat/SortableComposerAttachments'
 import { ComposerParkingContext } from '@/components/AssistantChat/composerParkingContext'
 import type { ScratchlistParkResult } from '@/lib/scratchlistAttachmentFlow'
+import { getCursorReasoningOptions } from '@/lib/cursorModelOptions'
 import { useTranslation } from '@/lib/use-translation'
 import { getModelOptionsForFlavor, getNextModelForFlavor } from './modelOptions'
 import { getClaudeComposerEffortOptions } from './claudeEffortOptions'
@@ -206,6 +209,20 @@ export function resolveVisibleModelEffortSelectedValue(args: {
     return selectedVisibleVariant ?? cursorDrillDownDefaultVariant ?? model
 }
 
+function getNextEffortOption<T extends { value: string | null }>(
+    options: readonly T[], current: string | null | undefined, action: 'cycle' | 'decrease' | 'increase',
+): T | undefined {
+    const levels = action === 'cycle' ? options : options.filter((option) => option.value !== null)
+    if (levels.length < 2) return undefined
+    const currentIndex = levels.findIndex((option) => option.value === (current ?? null))
+    if (action === 'cycle') return levels[(currentIndex + 1) % levels.length]
+    // When a provider does not report its default level, choose the explicit limit in the requested direction.
+    if (currentIndex < 0) return action === 'decrease' ? levels[0] : levels.at(-1)
+
+    const nextIndex = action === 'decrease' ? currentIndex - 1 : currentIndex + 1
+    return levels[nextIndex] ?? levels[currentIndex]
+}
+
 export function ModelEffortSettingsSection(props: {
     agentFlavor?: string | null
     options: Array<{ value: string; label: string }>
@@ -304,6 +321,7 @@ export function HappyComposer(props: {
     copilotAgentMode?: CopilotAgentMode
     model?: string | null
     modelReasoningEffort?: string | null
+    defaultModelReasoningEffort?: string | null
     effort?: string | null
     active?: boolean
     allowSendWhenInactive?: boolean
@@ -431,6 +449,7 @@ export function HappyComposer(props: {
         copilotAgentMode: rawCopilotAgentMode,
         model: rawModel,
         modelReasoningEffort: rawModelReasoningEffort,
+        defaultModelReasoningEffort,
         effort: rawEffort,
         active = true,
         allowSendWhenInactive = false,
@@ -496,6 +515,7 @@ export function HappyComposer(props: {
 
     const api = useAui()
     const { composerEnterBehavior } = useComposerEnterBehavior()
+    const shortcuts = useChatShortcuts()
     const composerText = useAuiState((s) => s.composer.text)
     const attachments = useAuiState((s) => s.composer.attachments)
     const localAttachmentOrderRef = useRef<string[]>([])
@@ -553,6 +573,13 @@ export function HappyComposer(props: {
     ])
     const dictation = useDictation(dictationConfig)
     const dictationActive = voiceInput.voiceMode === 'dictation'
+    let voiceLabel: string | undefined
+    if (dictationActive) {
+        const label = t('composer.dictate')
+        voiceLabel = shortcuts.dictation
+            ? t('composer.labelWithShortcut', { label, shortcut: formatChatShortcut(shortcuts.dictation) })
+            : label
+    }
     const effectiveVoiceStatus = dictationActive ? dictation.status : voiceStatus
     const handleDictationToggle = useCallback(async () => {
         await dictation.toggle()
@@ -1091,7 +1118,7 @@ export function HappyComposer(props: {
 
     const visibleModelEffortOptions = cursorDrillDownVariantOptions ?? modelEffortOptions
     const codexReasoningEffortOptions = useMemo(
-        () => agentFlavor === 'codex' || agentFlavor === 'opencode' || agentFlavor === 'dsh'
+        () => usesModelReasoningEffort(agentFlavor)
             ? getCodexComposerReasoningEffortOptions(
                 modelReasoningEffort,
                 agentFlavor,
@@ -1370,15 +1397,7 @@ export function HappyComposer(props: {
             return
         }
 
-        // Alt+S is an explicit send shortcut, independent of the Enter setting.
-        // Match the logical key so keyboard layouts can map Alt+S to another physical key.
-        const isAltSShortcut =
-            (e.key === 's' || e.key === 'S')
-            && e.altKey
-            && !e.ctrlKey
-            && !e.metaKey
-            && !e.shiftKey
-        if (isAltSShortcut) {
+        if (matchesChatShortcut(e, shortcuts.send) && isChatShortcutEvent(e.nativeEvent)) {
             e.preventDefault()
             if (canSend) {
                 flushAndSend()
@@ -1419,12 +1438,13 @@ export function HappyComposer(props: {
         }
 
         if (suggestions.length > 0) {
-            if (key === 'ArrowUp') {
+            const plainArrow = !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey
+            if (plainArrow && key === 'ArrowUp') {
                 e.preventDefault()
                 moveUp()
                 return
             }
-            if (key === 'ArrowDown') {
+            if (plainArrow && key === 'ArrowDown') {
                 e.preventDefault()
                 moveDown()
                 return
@@ -1464,7 +1484,8 @@ export function HappyComposer(props: {
             }
         }
 
-        if (key === 'Tab' && e.shiftKey && onPermissionModeChange && permissionModes.length > 0) {
+        if (matchesChatShortcut(e, shortcuts.permission) && isChatShortcutEvent(e.nativeEvent)
+            && onPermissionModeChange && permissionModes.length > 0) {
             e.preventDefault()
             const currentIndex = permissionModes.indexOf(permissionMode)
             const nextIndex = (currentIndex + 1) % permissionModes.length
@@ -1488,6 +1509,7 @@ export function HappyComposer(props: {
         handleSend,
         haptic,
         composerEnterBehavior,
+        shortcuts,
         richMentionsEnabled,
         richComposerFueStatus,
         dismissRichComposerFue,
@@ -1497,25 +1519,6 @@ export function HappyComposer(props: {
         isExpanded,
         handleExpandedToggle,
     ])
-
-    useEffect(() => {
-        const handleGlobalKeyDown = (e: globalThis.KeyboardEvent) => {
-            // Pi needs { provider, modelId } to disambiguate duplicate model IDs,
-            // but this generic cycler only emits a bare modelId (or null), which
-            // would lose the provider and can pick the wrong cached match or clear
-            // the model. Pi model changes go through the settings sheet's
-            // provider-qualified picker (piModelGroups) only.
-            if (agentFlavor === 'pi') return
-            if (e.key === 'm' && (e.metaKey || e.ctrlKey) && onModelChange && supportsModelChange(agentFlavor)) {
-                e.preventDefault()
-                onModelChange(getNextModelForFlavor(agentFlavor, model, availableModelOptions))
-                haptic('light')
-            }
-        }
-
-        window.addEventListener('keydown', handleGlobalKeyDown)
-        return () => window.removeEventListener('keydown', handleGlobalKeyDown)
-    }, [model, onModelChange, haptic, agentFlavor, availableModelOptions])
 
     const handleChange = useCallback((e: ReactChangeEvent<HTMLTextAreaElement>) => {
         const selection = {
@@ -1804,6 +1807,84 @@ export function HappyComposer(props: {
     // Pi keeps its model/effort controls live mid-turn (#1442) — the generic
     // disable rule (controlsDisabled) would lock them for the entire turn.
     const modelEffortControlsDisabled = agentFlavor === 'pi' ? configurationControlsDisabled : controlsDisabled
+
+    useEffect(() => {
+        const handleGlobalKeyDown = (event: KeyboardEvent) => {
+            if (!isChatShortcutEvent(event) || !isGlobalChatShortcutInScope(event)
+                || isDictateHotkeyBlockedTarget(event.target)) return
+
+            if (matchesChatShortcut(event, shortcuts.planMode)) {
+                if (controlsDisabled) return
+                if (showCollaborationSettings) {
+                    event.preventDefault()
+                    handleCollaborationChange(collaborationMode === 'plan' ? 'default' : 'plan')
+                } else if (showCopilotAgentModeSettings) {
+                    event.preventDefault()
+                    handleCopilotAgentModeChange(copilotAgentMode === 'plan' ? 'interactive' : 'plan')
+                } else if (showPermissionSettings && permissionModes.includes('plan')) {
+                    const nextMode = permissionMode === 'plan' ? permissionModes.find((mode) => mode !== 'plan') : 'plan'
+                    if (!nextMode) return
+                    event.preventDefault()
+                    handlePermissionChange(nextMode)
+                }
+                return
+            }
+
+            // Pi requires provider-qualified IDs. Its model picker handles that selection.
+            if (matchesChatShortcut(event, shortcuts.model) && agentFlavor !== 'pi'
+                && onModelChange && supportsModelChange(agentFlavor)) {
+                event.preventDefault()
+                onModelChange(getNextModelForFlavor(agentFlavor, model, availableModelOptions))
+                haptic('light')
+                return
+            }
+            if (modelEffortControlsDisabled) return
+            const effortAction = matchesChatShortcut(event, shortcuts.effort) ? 'cycle'
+                : matchesChatShortcut(event, shortcuts.effortDecrease) ? 'decrease'
+                    : matchesChatShortcut(event, shortcuts.effortIncrease) ? 'increase' : null
+            if (!effortAction) return
+
+            const changeEffort = <T extends { value: string | null }>(
+                options: readonly T[], current: string | null | undefined, apply: (value: T['value']) => void,
+            ) => {
+                const next = getNextEffortOption(options, current, effortAction)
+                if (!next) return
+                event.preventDefault()
+                if (next.value !== current) apply(next.value)
+            }
+
+            if (showModelReasoningEffortSettings) {
+                // Codex cycles through concrete levels, starting at the reported default when unset.
+                const options = agentFlavor === 'codex'
+                    ? codexReasoningEffortOptions.filter((option) => option.value !== null)
+                    : codexReasoningEffortOptions
+                const current = effortAction === 'cycle' && agentFlavor !== 'codex'
+                    ? modelReasoningEffort
+                    : modelReasoningEffort ?? defaultModelReasoningEffort
+                changeEffort(options, current, handleModelReasoningEffortChange)
+            } else if (showEffortSettings) {
+                const current = agentFlavor === 'pi' && !effort
+                    ? getHighestThinkingLevel(selectedPiModel?.thinkingLevelMap)
+                    : effort
+                changeEffort(claudeEffortOptions, current, handleEffortChange)
+            } else if (showModelEffortSettings && modelEffortOptions) {
+                const current = resolveVisibleModelEffortSelectedValue({ options: modelEffortOptions, selectedModelVariant, model })
+                const options = agentFlavor === 'cursor'
+                    ? getCursorReasoningOptions(modelEffortOptions, current)
+                    : modelEffortOptions
+                changeEffort(options, current, handleModelEffortChange)
+            }
+        }
+
+        window.addEventListener('keydown', handleGlobalKeyDown)
+        return () => window.removeEventListener('keydown', handleGlobalKeyDown)
+    }, [shortcuts, agentFlavor, onModelChange, model, availableModelOptions, haptic, modelEffortControlsDisabled,
+        controlsDisabled, showCollaborationSettings, collaborationMode, handleCollaborationChange,
+        showCopilotAgentModeSettings, copilotAgentMode, handleCopilotAgentModeChange,
+        showPermissionSettings, permissionModes, permissionMode, handlePermissionChange,
+        showModelReasoningEffortSettings, codexReasoningEffortOptions, modelReasoningEffort, defaultModelReasoningEffort, handleModelReasoningEffortChange,
+        showEffortSettings, effort, selectedPiModel, claudeEffortOptions, handleEffortChange,
+        showModelEffortSettings, modelEffortOptions, selectedModelVariant, handleModelEffortChange])
     const modelValueLabel = useMemo(() => {
         if (isNarrowViewport) return undefined
         if (!onModelChange || !supportsModelChange(agentFlavor)) return undefined
@@ -1825,7 +1906,6 @@ export function HappyComposer(props: {
     }, [isNarrowViewport, onModelChange, agentFlavor, selectedPiModel, model, modelOptions, selectedModelBase])
     const effortValueLabel = useMemo(() => {
         if (isNarrowViewport) return undefined
-        // Codex/OpenCode keep effort in modelReasoningEffort; same button, same wording.
         if (showModelReasoningEffortSettings) {
             if (!modelReasoningEffort) return t('composer.effortDefault')
             const option = codexReasoningEffortOptions.find((candidate) => candidate.value === modelReasoningEffort)
@@ -2441,7 +2521,7 @@ export function HappyComposer(props: {
                                 </div>
                             ) : null}
 
-                            <div className={`flex px-4 py-3 ${
+                            <div data-composer-shortcut-input className={`flex px-4 py-3 ${
                                 isExpanded ? 'min-h-0 flex-1 items-stretch' : 'items-center'
                             }`}>
                                 {richMentionsEnabled ? (
@@ -2555,6 +2635,7 @@ export function HappyComposer(props: {
                                 dictationEnabled={dictationActive}
                                 dictationCanDirectSend={dictationCanDirectSend}
                                 voiceStatus={effectiveVoiceStatus}
+                                voiceLabel={voiceLabel}
                                 voiceMicMuted={dictationActive ? false : voiceMicMuted}
                                 onVoiceToggle={effectiveVoiceToggle ?? (() => {})}
                                 onVoiceMicToggle={dictationActive ? undefined : onVoiceMicToggle}
@@ -2578,6 +2659,7 @@ export function HappyComposer(props: {
                                 onEffortValueToggle={handleEffortValueToggle}
                                 scratchlistMode={props.scratchlistMode}
                                 scratchlistCount={props.scratchlistCount}
+                                scratchlistShortcut={shortcuts.scratchlist}
                                 onScratchlistToggle={props.onScratchlistToggle}
                                 omitPrimaryButton
                             />
@@ -2599,7 +2681,7 @@ export function HappyComposer(props: {
                                 controlsDisabled={controlsDisabled}
                                 onSend={handleSend}
                                 onVoiceToggle={effectiveVoiceToggle ?? (() => {})}
-                                voiceLabel={dictationActive ? t('composer.dictate') : undefined}
+                                voiceLabel={voiceLabel}
                                 fillHeight={primaryFillHeight}
                                 routesToScratchlist={routesToScratchlist}
                             />

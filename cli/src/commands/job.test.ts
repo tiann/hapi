@@ -1,11 +1,25 @@
-import { describe, expect, it } from 'vitest'
-import { formatJobLine, parseJobArgs } from '@/commands/job'
+import { describe, expect, it, vi } from 'vitest'
+import { formatJobLine, jobCommand, parseJobArgs } from '@/commands/job'
 import {
     SessionJobError,
+    SESSION_JOB_GATE,
     exitCodeForSessionJobError,
     resolveSessionByPrefix,
     resolveSessionIdForJobCli
 } from '@/modules/sessionJob/sessionJob'
+
+describe('hapi job --help', () => {
+    it('states when a job may be attached', async () => {
+        const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+        try {
+            await jobCommand.run({ args: ['job', '--help'], subcommand: 'job', commandArgs: ['--help'] })
+            const help = log.mock.calls.flat().join(' ').replace(/\s+/g, ' ')
+            expect(help).toContain(SESSION_JOB_GATE)
+        } finally {
+            log.mockRestore()
+        }
+    })
+})
 
 describe('parseJobArgs', () => {
     it('parses set with long flags', () => {

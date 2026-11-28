@@ -754,6 +754,154 @@ describe('generic local session routes', () => {
         })
     })
 
+    it('re-imports queued, out-of-seq-order, and batched ACP prompts with attachments and appends native tail once', async () => {
+        const store = new Store(':memory:')
+        stores.push(store)
+        const baseMsg = (id: string, text: string, createdAt = 10) => ({
+            id: `agy:agy-batch:${id}`,
+            createdAt,
+            content: { role: 'user', content: { type: 'text', text }, meta: { sentFrom: 'cli' } } as const,
+            anchor: id
+        })
+        const nativeAgent = (id: string, data: Record<string, unknown>, createdAt = 10) => ({
+            id: `agy:agy-batch:${id}`,
+            createdAt,
+            content: { role: 'agent', content: { type: 'codex', data }, meta: { sentFrom: 'cli' } } as const,
+            anchor: id
+        })
+
+        let agySession = {
+            flavor: 'agy' as const,
+            id: 'agy-batch',
+            title: 'Batch re-import',
+            lastUserMessage: 'initial prompt',
+            cwd: '/work',
+            file: '/tmp/.gemini/antigravity-cli/brain/agy-batch/.system_generated/logs/transcript.jsonl',
+            modifiedAt: 10,
+            messages: [
+                baseMsg('step:0:user', 'initial prompt', 10),
+                nativeAgent('step:0:agent', { type: 'message', message: 'initial reply' }, 11)
+            ]
+        }
+
+        const engine = {
+            getOnlineMachinesByNamespace: () => [machine()],
+            listLocalSessionsForMachine: async () => ({ success: true, sessions: [agySession] }),
+            recordSessionActivity: () => {},
+            handleRealtimeEvent: () => {},
+            applySessionConfig: async () => {}
+        } as unknown as SyncEngine
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createLocalSessionRoutes({
+            store,
+            getSyncEngine: () => engine,
+            sources: [AGY_LOCAL_SESSION_SOURCE]
+        }))
+
+        const initRes = await (await app.request('/api/agy/import-sessions', {
+            method: 'POST',
+            body: JSON.stringify({ sessionIds: ['agy-batch'], cwd: '/work' })
+        })).json() as { results: Array<{ hapiSessionId?: string; action?: string }> }
+        expect(initRes.results[0]?.action).toBe('created')
+        const hapiId = initRes.results[0]!.hapiSessionId!
+
+        // Turn 1 dispatched at t=20; reply streams at t=21..25; queued prompt u2 arrives during turn 1 (seq before a1_part2)
+        // and is only dispatched at t=30 after turn 1 completes.
+        store.messages.addMessage(hapiId, { role: 'user', content: { type: 'text', text: 'first live turn' }, meta: { sentFrom: 'web' } }, 'u1', null, 20)
+        store.messages.markMessagesInvoked(hapiId, ['u1'], 20)
+        store.messages.addMessage(hapiId, {
+            role: 'agent',
+            content: { type: 'codex', data: { type: 'reasoning', message: 'Thinking', id: 'acp-r1' } }
+        }, undefined, null, 21)
+        store.messages.addMessage(hapiId, { role: 'user', content: { type: 'text', text: 'queued during reply' }, meta: { sentFrom: 'web' } }, 'u2', null, 22)
+        store.messages.addMessage(hapiId, {
+            role: 'agent',
+            content: { type: 'codex', data: { type: 'message', message: 'first reply' } }
+        }, undefined, null, 25)
+        store.messages.markMessagesInvoked(hapiId, ['u2'], 30)
+        store.messages.addMessage(hapiId, {
+            role: 'agent',
+            content: { type: 'codex', data: { type: 'message', message: 'second reply' } }
+        }, undefined, null, 35)
+
+        // Two queued prompts dispatched together as one ACP batch at t=40, with non-image + inline image attachments.
+        store.messages.addMessage(hapiId, {
+            role: 'user',
+            content: {
+                type: 'text',
+                text: 'Inspect attachment',
+                attachments: [
+                    { path: '.hapi/uploads/spec.md', mimeType: 'text/markdown' },
+                    { path: '.hapi/uploads/shot.png', mimeType: 'image/png' }
+                ]
+            },
+            meta: { sentFrom: 'web' }
+        }, 'u3-a', null, 36)
+        store.messages.addMessage(hapiId, {
+            role: 'user',
+            content: { type: 'text', text: 'And check tests' },
+            meta: { sentFrom: 'web' }
+        }, 'u3-b', null, 37)
+        store.messages.markMessagesInvoked(hapiId, ['u3-a', 'u3-b'], 40)
+        store.messages.addMessage(hapiId, {
+            role: 'agent',
+            content: { type: 'codex', data: { type: 'message', message: 'batch reply' } }
+        }, undefined, null, 45)
+        // Undelivered queued prompt remains ignored until dispatched.
+        store.messages.addMessage(hapiId, { role: 'user', content: { type: 'text', text: 'still queued' }, meta: { sentFrom: 'web' } }, 'u4-pending', null, 50)
+
+        const livePrefixInNative = [
+            baseMsg('step:1:0', 'first live turn', 20),
+            nativeAgent('step:2:reasoning', { type: 'reasoning', message: 'Thinking', id: 'agy:agy-batch:step:2:reasoning' }, 21),
+            nativeAgent('step:2:text', { type: 'message', message: 'first reply' }, 25),
+            baseMsg('step:3:0', 'queued during reply', 30),
+            nativeAgent('step:4:text', { type: 'message', message: 'second reply' }, 35),
+            baseMsg('step:5:0', '@.hapi/uploads/spec.md\n\nInspect attachment\nAnd check tests', 40),
+            nativeAgent('step:6:text', { type: 'message', message: 'batch reply' }, 45)
+        ]
+        const nativeTail = [
+            baseMsg('step:7:0', 'native follow-up', 60),
+            nativeAgent('step:8:text', { type: 'message', message: 'native answer' }, 61)
+        ]
+
+        const initial = agySession.messages
+        agySession = { ...agySession, messages: [...initial, ...livePrefixInNative, ...nativeTail] }
+
+        const sync = async () => (await app.request('/api/agy/import-sessions', {
+            method: 'POST',
+            body: JSON.stringify({ sessionIds: ['agy-batch'], cwd: '/work' })
+        })).json() as Promise<{ results: Array<{ hapiSessionId?: string; action?: string; appended?: number; error?: { code: string } }> }>
+
+        const firstSync = await sync()
+        expect(firstSync.results[0]).toMatchObject({ hapiSessionId: hapiId, action: 'updated', appended: 2 })
+        const countAfterFirstSync = store.messages.getAllMessages(hapiId).length
+        expect(store.messages.getAllMessages(hapiId).filter((m) => m.localId === 'agy:agy-batch:step:7:0')).toHaveLength(1)
+        expect(store.messages.getAllMessages(hapiId).filter((m) => m.localId === 'agy:agy-batch:step:8:text')).toHaveLength(1)
+
+        // Second re-import is idempotent even when live turns now sit between pins!
+        const secondSync = await sync()
+        expect(secondSync.results[0]).toMatchObject({ hapiSessionId: hapiId, action: 'unchanged', appended: 0 })
+        expect(store.messages.getAllMessages(hapiId)).toHaveLength(countAfterFirstSync)
+
+        // Dropping the non-image attachment or altering a reply still reports transcript_diverged.
+        agySession = {
+            ...agySession,
+            messages: [
+                ...initial,
+                ...livePrefixInNative.slice(0, 5),
+                baseMsg('step:5:0', 'Inspect attachment\nAnd check tests', 40),
+                nativeAgent('step:6:text', { type: 'message', message: 'batch reply' }, 45),
+                ...nativeTail
+            ]
+        }
+        expect((await sync()).results[0]?.error?.code).toBe('transcript_diverged')
+        expect(store.messages.getAllMessages(hapiId)).toHaveLength(countAfterFirstSync)
+    })
+
 })
 
 describe('fetchLocalTranscripts', () => {

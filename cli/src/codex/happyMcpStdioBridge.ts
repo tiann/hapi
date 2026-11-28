@@ -18,6 +18,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { z } from 'zod';
 import { PeerDeliveryModeSchema } from '@/modules/pingPeer/deliveryMode';
 import { DISPLAY_IMAGE_TOOL_DESCRIPTION, DISPLAY_MEDIA_TOOL_DESCRIPTION, DISPLAY_VIDEO_TOOL_DESCRIPTION } from '@/modules/common/displayToolDescriptions';
+import { CHANGE_TITLE_TOOL_DESCRIPTION } from '@/modules/common/titleInstruction';
 import {
   INSPECT_PEER_TOOL_DESCRIPTION,
   LIST_PEERS_INCLUDE_INACTIVE_PARAM_DESCRIPTION,
@@ -38,6 +39,11 @@ import {
   SESSION_JOB_TOOL_NAME,
   sessionJobInputSchema,
 } from '@/modules/sessionJob/sessionJobMcp';
+import {
+  SESSION_WAITING_TOOL_DESCRIPTION,
+  SESSION_WAITING_TOOL_NAME,
+  sessionWaitingInputSchema,
+} from '@/modules/sessionWaiting/sessionWaitingMcp';
 
 const DEFAULT_TOOL_NAMES = [
   'change_title',
@@ -50,6 +56,7 @@ const DEFAULT_TOOL_NAMES = [
   'inspect_peer',
   'spawn_peer',
   SESSION_JOB_TOOL_NAME,
+  SESSION_WAITING_TOOL_NAME,
 ];
 
 function parseArgs(argv: string[]): { url: string | null; toolNames: Set<string> } {
@@ -124,7 +131,7 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
       server.registerTool<any, any>(
         'change_title',
         {
-          description: 'Change the title of the current chat session',
+          description: CHANGE_TITLE_TOOL_DESCRIPTION,
           title: 'Change Chat Title',
           inputSchema: changeTitleInputSchema,
         },
@@ -323,6 +330,34 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
                 {
                   type: 'text' as const,
                   text: `Failed to run session_job: ${error instanceof Error ? error.message : String(error)}`,
+                },
+              ],
+              isError: true,
+            };
+          }
+        }
+      );
+    }
+
+    if (toolNames.has(SESSION_WAITING_TOOL_NAME)) {
+      server.registerTool<any, any>(
+        SESSION_WAITING_TOOL_NAME,
+        {
+          description: SESSION_WAITING_TOOL_DESCRIPTION,
+          title: 'Session Waiting (External Block)',
+          inputSchema: sessionWaitingInputSchema,
+        },
+        async (args: Record<string, unknown>) => {
+          try {
+            const client = await ensureHttpClient();
+            const response = await client.callTool({ name: SESSION_WAITING_TOOL_NAME, arguments: args });
+            return response as any;
+          } catch (error) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Failed to run session_waiting: ${error instanceof Error ? error.message : String(error)}`,
                 },
               ],
               isError: true,

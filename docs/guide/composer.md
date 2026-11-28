@@ -89,6 +89,8 @@ When the current Codex model advertises a Fast service tier for your account, th
 
 Model and effort live in the session settings sheet (the gear in the chat). Codex Fast mode is available when creating a new session.
 
+The hub owner can enable one automatic retry after a transient Cursor model error in iOS Settings or Android Settings → General. This is the same hub-wide preference as Web Settings → Chat; older hubs without the preference hide the switch.
+
 ## Keyboard shortcuts (web)
 
 | Shortcut | Action |

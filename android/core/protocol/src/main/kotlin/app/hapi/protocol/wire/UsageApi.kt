@@ -65,6 +65,39 @@ data class UsageSummaryResponse(
     val updatedAt: Long,
 )
 
+/** The quota route reports percentage points and optional epoch-millisecond reset dates. */
+@Serializable
+data class AgentQuotaBucket(
+    val label: String,
+    val remainingPercent: Double,
+    val usedPercent: Double,
+    val resetsAt: Long? = null,
+)
+
+@Serializable
+data class AgentQuotaAccount(
+    val agent: String,
+    val available: Boolean,
+    val status: String,
+    val buckets: List<AgentQuotaBucket>,
+    val planLabel: String? = null,
+    val accountLabel: String? = null,
+    val creditsLabel: String? = null,
+    val note: String? = null,
+)
+
+@Serializable
+data class UsageMachineQuotas(
+    val machineId: String,
+    val machineName: String,
+    val supported: Boolean,
+    val accounts: List<AgentQuotaAccount>,
+    val error: String? = null,
+)
+
+@Serializable
+data class UsageQuotasResponse(val machines: List<UsageMachineQuotas>)
+
 /** `GET /api/storage/sqlite` — hub database file sizes in bytes. */
 @Serializable
 data class SqliteStorageUsageResponse(

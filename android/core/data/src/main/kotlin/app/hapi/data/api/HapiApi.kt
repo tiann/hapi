@@ -66,6 +66,7 @@ import app.hapi.protocol.wire.UnregisterDeviceRequest
 import app.hapi.protocol.wire.UpdateSessionSummaryRequest
 import app.hapi.protocol.wire.UploadFileRequest
 import app.hapi.protocol.wire.UploadFileResponse
+import app.hapi.protocol.wire.UsageQuotasResponse
 import app.hapi.protocol.wire.UsageSummaryResponse
 import app.hapi.protocol.wire.VisibilityRequest
 import java.io.IOException
@@ -433,6 +434,9 @@ class HapiApi internal constructor(
         )
     }
 
+    suspend fun setCursorAutoRetry(enabled: Boolean): HubSettingsResponse =
+        request("PUT", url("api", "hub-settings").build(), mapOf("autoBridgeTransientModelErrors" to enabled).toJsonBody())
+
     /** `GET /api/features`. */
     override suspend fun getFeatures(): FeaturesResponse =
         request("GET", url("api", "features").build())
@@ -789,6 +793,12 @@ class HapiApi internal constructor(
         val target = url("api", "usage", "summary")
             .addQueryParameter("range", range)
             .addQueryParameter("timeZone", timeZone)
+        return request("GET", target.build())
+    }
+
+    suspend fun getUsageQuotas(refresh: Boolean = false): UsageQuotasResponse {
+        val target = url("api", "usage", "quotas")
+        if (refresh) target.addQueryParameter("refresh", "1")
         return request("GET", target.build())
     }
 

@@ -3,7 +3,6 @@ import { toSessionSummary, type Session } from '@hapi/protocol'
 import type { SessionSummary } from '@/types/api'
 import { sessionIsUnread } from '@/lib/sessionAttention'
 import {
-    computeOpenSessionTickRatio,
     deduplicateSessionsByAgentId,
     expandSelectedSessionCollapseOverrides,
     groupSessionsByDirectory,
@@ -26,7 +25,6 @@ import {
     prepareSidebarSessions,
     sessionMatchesQuery,
     sessionMatchesSearchMode,
-    shouldShowOpenSessionTick,
     shouldShowPinnedDivider,
     shouldShowSessionInSidebar
 } from './SessionList'
@@ -299,6 +297,33 @@ describe('deduplicateSessionsByAgentId', () => {
         expect(getSessionDedupKey(sessions[1])).toBe('cursor:stale-shared-id')
         expect(deduplicateSessionsByAgentId(sessions).map(session => session.id).sort()).toEqual(['codex', 'cursor'])
         expect(prepareSidebarSessions(sessions).map(session => session.id).sort()).toEqual(['codex', 'cursor'])
+    })
+
+    it('keeps Antigravity sessions with the same agySessionId on different machines distinct in getSessionDedupKey and deduplicateSessionsByAgentId', () => {
+        const machineA = makeSession({
+            id: 'hapi-agy-m1',
+            metadata: {
+                path: '/work/proj',
+                machineId: 'machine-1',
+                flavor: 'agy',
+                agentSessionId: 'agy-conv-shared'
+            }
+        })
+        const machineB = makeSession({
+            id: 'hapi-agy-m2',
+            metadata: {
+                path: '/work/proj',
+                machineId: 'machine-2',
+                flavor: 'agy',
+                agentSessionId: 'agy-conv-shared'
+            }
+        })
+        expect(getSessionDedupKey(machineA)).toBe('agy:machine-1:agy-conv-shared')
+        expect(getSessionDedupKey(machineB)).toBe('agy:machine-2:agy-conv-shared')
+        expect(deduplicateSessionsByAgentId([machineA, machineB]).map((s) => s.id)).toEqual([
+            'hapi-agy-m1',
+            'hapi-agy-m2'
+        ])
     })
 })
 
@@ -1073,114 +1098,5 @@ describe('filterSessionsForListStatus', () => {
         const archived = base('archived')
         const ids = filterSessionsForListStatus([job, archived], 'archived', null).map(s => s.id)
         expect(ids).toEqual(['archived'])
-    })
-})
-
-describe('computeOpenSessionTickRatio', () => {
-    it('maps the row midpoint into the scroll extent as a 0..1 rail ratio', () => {
-        expect(computeOpenSessionTickRatio({
-            scrollHeight: 1000,
-            clientHeight: 400,
-            contentOffsetTop: 200,
-            targetHeight: 40,
-        })).toBeCloseTo(0.22)
-    })
-
-    it('clamps to the rail ends', () => {
-        expect(computeOpenSessionTickRatio({
-            scrollHeight: 1000,
-            clientHeight: 400,
-            contentOffsetTop: -10,
-            targetHeight: 20,
-        })).toBe(0)
-        expect(computeOpenSessionTickRatio({
-            scrollHeight: 1000,
-            clientHeight: 400,
-            contentOffsetTop: 990,
-            targetHeight: 40,
-        })).toBe(1)
-    })
-
-    it('hides when the list does not overflow (no scrollbar)', () => {
-        expect(computeOpenSessionTickRatio({
-            scrollHeight: 300,
-            clientHeight: 400,
-            contentOffsetTop: 40,
-            targetHeight: 40,
-        })).toBeNull()
-    })
-
-    it('hides when the row has no laid-out height', () => {
-        expect(computeOpenSessionTickRatio({
-            scrollHeight: 1000,
-            clientHeight: 400,
-            contentOffsetTop: 200,
-            targetHeight: 0,
-        })).toBeNull()
-    })
-})
-
-describe('shouldShowOpenSessionTick', () => {
-    it('shows only when the open session row is present and not collapsed away', () => {
-        expect(shouldShowOpenSessionTick({
-            selectedSessionId: 's-1',
-            rowFound: true,
-            insideCollapsedPanel: false,
-            tickRatio: 0.4,
-        })).toBe(true)
-    })
-
-    it('hides when nothing is open, the row is missing, collapsed, or the ratio is null', () => {
-        expect(shouldShowOpenSessionTick({
-            selectedSessionId: null,
-            rowFound: true,
-            insideCollapsedPanel: false,
-            tickRatio: 0.4,
-        })).toBe(false)
-        expect(shouldShowOpenSessionTick({
-            selectedSessionId: 's-1',
-            rowFound: false,
-            insideCollapsedPanel: false,
-            tickRatio: 0.4,
-        })).toBe(false)
-        expect(shouldShowOpenSessionTick({
-            selectedSessionId: 's-1',
-            rowFound: true,
-            insideCollapsedPanel: true,
-            tickRatio: 0.4,
-        })).toBe(false)
-        expect(shouldShowOpenSessionTick({
-            selectedSessionId: 's-1',
-            rowFound: true,
-            insideCollapsedPanel: false,
-            tickRatio: null,
-        })).toBe(false)
-    })
-
-    it('keeps Antigravity sessions with the same agySessionId on different machines distinct in getSessionDedupKey and deduplicateSessionsByAgentId', () => {
-        const machineA = makeSession({
-            id: 'hapi-agy-m1',
-            metadata: {
-                path: '/work/proj',
-                machineId: 'machine-1',
-                flavor: 'agy',
-                agentSessionId: 'agy-conv-shared'
-            }
-        })
-        const machineB = makeSession({
-            id: 'hapi-agy-m2',
-            metadata: {
-                path: '/work/proj',
-                machineId: 'machine-2',
-                flavor: 'agy',
-                agentSessionId: 'agy-conv-shared'
-            }
-        })
-        expect(getSessionDedupKey(machineA)).toBe('agy:machine-1:agy-conv-shared')
-        expect(getSessionDedupKey(machineB)).toBe('agy:machine-2:agy-conv-shared')
-        expect(deduplicateSessionsByAgentId([machineA, machineB]).map((s) => s.id)).toEqual([
-            'hapi-agy-m1',
-            'hapi-agy-m2'
-        ])
     })
 })
