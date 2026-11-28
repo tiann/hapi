@@ -44,27 +44,32 @@ export function decodeFilePathHref(href: string): string | null {
 }
 
 export function decodeFilePathCandidateHref(href: string): string | null {
-    // Decode scheme bypass spellings (`HAPI-FILE-CANDIDATE:`, percent-encoded)
-    // before extracting the payload. Empty payload → null (caller fails closed).
-    let value = href.trimStart()
+    const trimmed = href.trimStart()
+    const colonIdx = trimmed.indexOf(':')
+    if (colonIdx <= 0) return null
+
+    // Normalize only the scheme prefix (case, control/whitespace, percent-encoded
+    // bypass spellings) so the payload is decoded exactly once.
+    let scheme = trimmed.slice(0, colonIdx)
     for (let i = 0; i < 2; i++) {
         try {
-            const next = decodeURIComponent(value)
-            if (next === value) break
-            value = next
+            const next = decodeURIComponent(scheme)
+            if (next === scheme) break
+            scheme = next
         } catch {
             break
         }
     }
-    const match = /^hapi-file-candidate:(.*)$/i.exec(value)
-    if (!match) return null
-    const payload = match[1]
+    if (scheme.replace(/[\x00-\x1F\x7F\s]/g, '').toLowerCase() !== 'hapi-file-candidate') {
+        return null
+    }
+
+    const payload = trimmed.slice(colonIdx + 1)
     if (!payload) return null
     try {
-        // Payload may already be decoded by the loop above; retry is a no-op.
         return decodeURIComponent(payload)
     } catch {
-        return payload
+        return null
     }
 }
 
@@ -111,6 +116,22 @@ function hasKnownFileExtension(value: string): boolean {
 
 function isWindowsAbsolutePath(value: string): boolean {
     return /^[A-Za-z]:[\\/]/.test(value)
+}
+
+function extractLocalFileUriPath(rawUrl: string): string | null {
+    const match = /^file:\/\/(?:localhost)?(\/.*)$/i.exec(rawUrl)
+    if (!match) return null
+    let decoded: string
+    try {
+        decoded = decodeURIComponent(match[1])
+    } catch {
+        return null
+    }
+    const stripped = stripLineSuffix(decoded)
+    if (/^\/[A-Za-z]:[\\/]/.test(stripped)) {
+        return stripped.slice(1)
+    }
+    return stripped
 }
 
 function shouldLinkPath(value: string): boolean {
@@ -211,6 +232,10 @@ function linkInlineCodeNode(node: MarkdownNode): MarkdownNode | null {
 //
 // Still rejects: POSIX/Windows abs / `~/` (need session cwd — handled fail-closed in <A>),
 // `../`, scheme-bearing URLs, and non-file targets (`/settings`, `#section`).
+function encodePosixHrefPath(path: string): string {
+    return path.replace(/[%#?\s]/g, (ch) => encodeURIComponent(ch))
+}
+
 function rewriteFileLinkNode(node: MarkdownNode): void {
     if (node.type !== 'link') return
     const url = node.url
@@ -228,12 +253,32 @@ function rewriteFileLinkNode(node: MarkdownNode): void {
 
     const target = stripLineSuffix(withoutMeta)
 
+    const fileUriPath = extractLocalFileUriPath(withoutMeta)
+    if (fileUriPath) {
+        if (isWindowsAbsolutePath(fileUriPath)) {
+            if (hasKnownFileExtension(fileUriPath)) {
+                node.url = createFileCandidateHref(fileUriPath)
+            }
+            return
+        }
+        if (fileUriPath.startsWith('/') && !fileUriPath.startsWith('//') && hasKnownFileExtension(fileUriPath)) {
+            node.url = encodePosixHrefPath(fileUriPath)
+        }
+        return
+    }
+
     // Absolute paths (POSIX or Windows) need chat workspace metadata for
     // containment — leave POSIX for <A>; encode Windows as candidate so
     // backslashes survive mdast→hast URI normalization.
     if (isWindowsAbsolutePath(target)) {
-        if (!hasKnownFileExtension(target)) return
-        node.url = createFileCandidateHref(target)
+        let decodedTarget: string
+        try {
+            decodedTarget = stripLineSuffix(decodeURIComponent(target))
+        } catch {
+            return
+        }
+        if (!hasKnownFileExtension(decodedTarget)) return
+        node.url = createFileCandidateHref(decodedTarget)
         return
     }
     if (target.startsWith('/') && !target.startsWith('//')) return

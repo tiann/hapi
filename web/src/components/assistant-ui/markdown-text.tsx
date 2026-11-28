@@ -783,6 +783,7 @@ function A(props: ComponentPropsWithoutRef<'a'>) {
     if (windowsPathFromHref || (href && !hasScheme(href))) {
         const decision = classifyNoSchemeHref(windowsPathFromHref ?? href!, {
             workspacePath: chat?.metadata?.path ?? null,
+            literalPath: Boolean(candidatePath),
         })
         if (decision.action === 'file') {
             if (!chat) {
