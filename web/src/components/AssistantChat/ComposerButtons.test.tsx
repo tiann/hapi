@@ -67,9 +67,9 @@ function stubViewport(matches: boolean) {
     vi.spyOn(window, 'matchMedia').mockReturnValue(mediaQueryList)
 }
 
-function renderAttachmentToolbar(overrides: Partial<ComponentProps<typeof ComposerButtons>> = {}) {
+function composerToolbar(overrides: Partial<ComponentProps<typeof ComposerButtons>> = {}) {
     const noop = () => {}
-    render(
+    return (
         <RuntimeProviders>
             <ComposerButtons
                 canSend={false}
@@ -96,7 +96,7 @@ function renderAttachmentToolbar(overrides: Partial<ComponentProps<typeof Compos
                 onSend={noop}
                 {...overrides}
             />
-        </RuntimeProviders>,
+        </RuntimeProviders>
     )
 }
 
@@ -570,6 +570,43 @@ describe('ComposerButtons responsive toolbar', () => {
     })
 })
 
+describe('ComposerButtons shortcut hints', () => {
+    afterEach(cleanup)
+
+    it('updates the scratchlist tooltip and first-use callout as its shortcut changes', () => {
+        const onScratchlistToggle = vi.fn()
+        const renderToolbar = (scratchlistShortcut: string | null) => composerToolbar({
+            scratchlistShortcut,
+            onScratchlistToggle,
+        })
+        const view = render(renderToolbar('mod+shift+s'))
+        const button = getButton('Scratchlist drawer')
+        expect(button.title).toContain('Ctrl/Cmd + Shift + S')
+        fireEvent.click(button)
+        const callout = screen.getByRole('dialog')
+        expect(callout).toHaveTextContent('Ctrl/Cmd + Shift + S')
+
+        view.rerender(renderToolbar('shift+ArrowUp'))
+        expect(button.title).toContain('Shift + ↑')
+        expect(callout).toHaveTextContent('press Shift + ↑ in the chat input')
+
+        view.rerender(renderToolbar(null))
+        expect(button.title).toBe('Scratchlist — park notes & drafts')
+        expect(callout).toHaveTextContent('Click the icon again to leave.')
+        expect(callout).not.toHaveTextContent(/Shift|Ctrl\/Cmd/)
+
+        view.rerender(renderToolbar('mod+shift+s'))
+        expect(button.title).toContain('Ctrl/Cmd + Shift + S')
+        expect(callout).toHaveTextContent('Ctrl/Cmd + Shift + S')
+    })
+
+    it('uses the current dictation label for the draft toolbar button', () => {
+        render(composerToolbar({ canSend: true, voiceEnabled: true, dictationEnabled: true, voiceLabel: 'Dictate (Alt + D)' }))
+
+        expect(getButton('Dictate (Alt + D)')).toHaveAttribute('title', 'Dictate (Alt + D)')
+    })
+})
+
 describe('ComposerButtons attachment entrypoint', () => {
     afterEach(() => {
         cleanup()
@@ -578,7 +615,7 @@ describe('ComposerButtons attachment entrypoint', () => {
 
     it('keeps the original assistant-ui attachment trigger on wide viewports', () => {
         stubViewport(false)
-        renderAttachmentToolbar()
+        render(composerToolbar())
 
         expect(getButton('Attach file')).toBeInTheDocument()
         expect(screen.queryByTestId('composer-attachment-picker-trigger')).not.toBeInTheDocument()
@@ -587,7 +624,7 @@ describe('ComposerButtons attachment entrypoint', () => {
 
     it('uses the HAPI source panel on narrow viewports', () => {
         stubViewport(true)
-        renderAttachmentToolbar()
+        render(composerToolbar())
 
         expect(screen.getByTestId('composer-attachment-picker-trigger')).toBeInTheDocument()
         expect(screen.queryByRole('dialog', { name: 'Add attachment' })).not.toBeInTheDocument()
@@ -600,7 +637,7 @@ describe('ComposerButtons attachment entrypoint', () => {
 
     it('disables the mobile entry when the session has no attachment adapter', () => {
         stubViewport(true)
-        renderAttachmentToolbar({ attachmentsEnabled: false })
+        render(composerToolbar({ attachmentsEnabled: false }))
 
         expect(screen.getByTestId('composer-attachment-picker-trigger')).toBeDisabled()
     })

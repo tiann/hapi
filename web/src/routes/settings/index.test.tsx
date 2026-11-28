@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { I18nProvider } from '@/lib/i18n-context'
+import { CHAT_SHORTCUTS_STORAGE_KEY } from '@/lib/chatShortcuts'
 import SettingsHubPage from './index'
 import SettingsGeneralPage from './general'
 import SettingsDisplayPage from './display'
@@ -394,6 +395,27 @@ describe('responsive settings pages', () => {
         expect(screen.getByRole('button', { name: 'Increase reasoning effort · Shift + ↑' })).toBeInTheDocument()
         expect(screen.getByRole('button', { name: 'Decrease reasoning effort · Shift + ↓' })).toBeInTheDocument()
         expect(screen.getAllByText(/Works only while the chat input is focused\./)).toHaveLength(3)
+    })
+
+    it.each([
+        ['Ctrl', { ctrlKey: true }],
+        ['Cmd', { metaKey: true }],
+    ] as const)('reserves %s+Shift+Y for composer redo when recording', (_modifier, modifiers) => {
+        renderPage(<SettingsShortcutsPage />)
+        const send = screen.getByRole('button', { name: 'Send message · Alt + S' })
+        fireEvent.click(send)
+        fireEvent.keyDown(send, { key: 'Y', shiftKey: true, ...modifiers })
+
+        expect(screen.getByRole('alert')).toBeInTheDocument()
+        expect(localStorage.getItem(CHAT_SHORTCUTS_STORAGE_KEY)).toBeNull()
+    })
+
+    it('ignores a previously saved composer redo shortcut when loading the settings', () => {
+        localStorage.setItem(CHAT_SHORTCUTS_STORAGE_KEY, JSON.stringify({ send: 'mod+shift+y', model: 'alt+m' }))
+        renderPage(<SettingsShortcutsPage />)
+
+        expect(screen.getByRole('button', { name: 'Send message · Alt + S' })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Cycle model · Alt + M' })).toBeInTheDocument()
     })
 
     it('navigates from the hub to a category route', () => {

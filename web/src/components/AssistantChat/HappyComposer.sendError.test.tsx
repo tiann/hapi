@@ -161,8 +161,8 @@ vi.mock('@/components/AssistantChat/ComposerButtons', () => ({
         </div>
     ),
     // HappyComposer places UnifiedButton beside the card (omitPrimaryButton).
-    UnifiedButton: (props: { onSend: () => void; dictationCanDirectSend?: boolean }) => (
-        <button type="button" data-direct-send={props.dictationCanDirectSend} onClick={() => props.onSend()}>send</button>
+    UnifiedButton: (props: { onSend: () => void; dictationCanDirectSend?: boolean; voiceLabel?: string }) => (
+        <button type="button" title={props.voiceLabel} data-direct-send={props.dictationCanDirectSend} onClick={() => props.onSend()}>send</button>
     ),
     DictationButton: () => null,
     isComposerPrimaryFillHeight: () => true,
@@ -364,13 +364,13 @@ describe('HappyComposer send-error atomic restore', () => {
         expect(onPermissionModeChange).not.toHaveBeenCalled()
     })
 
-    it.each(['Tab', 'ArrowUp', 'ArrowDown'])('cycles through all concrete Codex reasoning efforts with Shift+%s only from the composer', (key) => {
+    it.each(['Tab', 'ArrowUp', 'ArrowDown'])('cycles Codex reasoning effort from the model default with Shift+%s only from the composer', (key) => {
         setChatShortcuts({ ...DEFAULT_CHAT_SHORTCUTS, permission: null, effort: `shift+${key}` })
         const onModelReasoningEffortChange = vi.fn()
         const onPermissionModeChange = vi.fn()
 
         function CodexComposer() {
-            const [effort, setEffort] = useState('low')
+            const [effort, setEffort] = useState<string | null>(null)
             return <ComposerHarness
                 initialText=""
                 controls={{ current: null }}
@@ -379,12 +379,13 @@ describe('HappyComposer send-error atomic restore', () => {
                     agentFlavor: 'codex',
                     model: 'gpt-5.6',
                     modelReasoningEffort: effort,
+                    defaultModelReasoningEffort: 'medium',
                     availableModelReasoningEffortOptions: [
                         { value: 'low' }, { value: 'medium' }, { value: 'high' },
                     ],
                     onModelReasoningEffortChange: (next) => {
                         onModelReasoningEffortChange(next)
-                        setEffort(next ?? 'medium')
+                        setEffort(next)
                     },
                     onPermissionModeChange,
                 }}
@@ -396,11 +397,79 @@ describe('HappyComposer send-error atomic restore', () => {
         const shortcut = { key, shiftKey: true }
         expect(fireEvent.keyDown(document.body, shortcut)).toBe(true)
         expect(onModelReasoningEffortChange).not.toHaveBeenCalled()
-        for (const effort of ['medium', 'high', 'low']) {
+        for (const effort of ['high', 'low', 'medium']) {
             expect(fireEvent.keyDown(input(), shortcut)).toBe(false)
             expect(onModelReasoningEffortChange).toHaveBeenLastCalledWith(effort)
         }
         expect(onPermissionModeChange).not.toHaveBeenCalled()
+    })
+
+    it('ignores the reasoning cycle shortcut for Cursor variants that only differ in Fast mode', () => {
+        setChatShortcuts({ ...DEFAULT_CHAT_SHORTCUTS, effort: 'alt+r' })
+        const model = 'composer-2.5[fast=false]'
+        const onModelEffortChange = vi.fn()
+        render(<ComposerHarness initialText="" controls={{ current: null }} composerOverrides={{
+            active: true,
+            agentFlavor: 'cursor',
+            model,
+            modelEffortOptions: [
+                { value: model, label: 'Standard' },
+                { value: 'composer-2.5[fast=true]', label: 'Fast' },
+            ],
+            onModelEffortChange,
+        }} />)
+
+        expect(fireEvent.keyDown(input(), { key: 'r', altKey: true })).toBe(true)
+        expect(onModelEffortChange).not.toHaveBeenCalled()
+    })
+
+    it('cycles Cursor reasoning effort and wraps within variants of the same speed and context', () => {
+        setChatShortcuts({ ...DEFAULT_CHAT_SHORTCUTS, effort: 'alt+r' })
+        const low = 'model[reasoning=low,fast=false,context=272k]'
+        const high = 'model[reasoning=high,fast=false,context=272k]'
+        const options = [
+            low,
+            'model[reasoning=medium,fast=true,context=272k]',
+            'model[reasoning=medium,fast=false,context=1m]',
+            high,
+        ].map((value) => ({ value, label: value }))
+        const onModelEffortChange = vi.fn()
+        const renderCursor = (model: string) => (
+            <ComposerHarness initialText="" controls={{ current: null }} composerOverrides={{
+                active: true,
+                agentFlavor: 'cursor',
+                model,
+                modelEffortOptions: options,
+                onModelEffortChange,
+            }} />
+        )
+        const view = render(renderCursor(low))
+        const shortcut = { key: 'r', altKey: true }
+        expect(fireEvent.keyDown(input(), shortcut)).toBe(false)
+
+        view.rerender(renderCursor(high))
+        expect(fireEvent.keyDown(input(), shortcut)).toBe(false)
+        expect(onModelEffortChange.mock.calls).toEqual([[high], [low]])
+    })
+
+    it('updates the primary dictation label when the shortcut is changed, cleared, or reset', () => {
+        runtime.dictationEnabled = true
+        try {
+            renderComposer('')
+            const button = screen.getByRole('button', { name: 'send' })
+            expect(button).toHaveAttribute('title', 'Dictate (Ctrl/Cmd + Shift + D)')
+
+            act(() => setChatShortcuts({ ...DEFAULT_CHAT_SHORTCUTS, dictation: 'alt+d' }))
+            expect(button).toHaveAttribute('title', 'Dictate (Alt + D)')
+
+            act(() => setChatShortcuts({ ...DEFAULT_CHAT_SHORTCUTS, dictation: null, model: 'mod+shift+d' }))
+            expect(button).toHaveAttribute('title', 'Dictate')
+
+            act(() => setChatShortcuts(DEFAULT_CHAT_SHORTCUTS))
+            expect(button).toHaveAttribute('title', 'Dictate (Ctrl/Cmd + Shift + D)')
+        } finally {
+            runtime.dictationEnabled = false
+        }
     })
 
     it('raises and lowers Codex effort by one level from the model default and stops at either end', () => {

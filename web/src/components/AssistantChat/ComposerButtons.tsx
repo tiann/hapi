@@ -11,6 +11,7 @@ import { Children, isValidElement, useCallback, useRef, useState, type ReactElem
 import { useComposerToolbarLayout, type ComposerToolbarItemId, type ComposerToolbarLayout } from '@/hooks/useComposerToolbarLayout'
 import { useNarrowViewport } from '@/hooks/useNarrowViewport'
 import type { ComposerSendIntent } from '@/lib/messageDelivery'
+import { formatChatShortcut } from '@/lib/chatShortcuts'
 
 function ToolbarItemSlot(props: { item: ComposerToolbarItemId; children: ReactNode }) {
     return <>{props.children}</>
@@ -430,12 +431,16 @@ export function ComposerSendButtonPreview() {
 function ScratchlistToggleButton(props: {
     scratchlistMode: boolean
     scratchlistCount: number
+    shortcut?: string | null
     onScratchlistToggle: () => void
     controlsDisabled?: boolean
 }) {
     const { t } = useTranslation()
     const fue = useFue('scratchlist-toggle')
     const buttonRef = useRef<HTMLButtonElement>(null)
+    const shortcut = props.shortcut ? formatChatShortcut(props.shortcut) : null
+    const tooltip = t('scratchlist.toggleTooltip')
+    const fueBody = t('scratchlist.fueBody')
 
     const showFueDot = fue.status !== 'acknowledged'
     // Counter and FUE dot are mutually exclusive (see FueDot doc comment).
@@ -449,7 +454,7 @@ function ScratchlistToggleButton(props: {
                 ref={buttonRef}
                 type="button"
                 aria-label={t('scratchlist.toggleAriaLabel')}
-                title={t('scratchlist.toggleTooltip')}
+                title={shortcut ? t('composer.labelWithShortcut', { label: tooltip, shortcut }) : tooltip}
                 aria-pressed={props.scratchlistMode ? true : false}
                 disabled={props.controlsDisabled}
                 onClick={() => {
@@ -481,7 +486,7 @@ function ScratchlistToggleButton(props: {
             {fue.status === 'engaging' ? (
                 <FueCallout
                     title={t('scratchlist.fueTitle')}
-                    body={t('scratchlist.fueBody')}
+                    body={shortcut ? `${fueBody} ${t('scratchlist.fueShortcutHint', { shortcut })}` : fueBody}
                     onDismiss={fue.dismiss}
                     dismissLabel={t('fue.gotIt')}
                     closeAriaLabel={t('fue.closeAriaLabel')}
@@ -805,6 +810,7 @@ export function ComposerButtons(props: {
     /** When false, the dictation Send button is hidden (direct send not eligible). */
     dictationCanDirectSend?: boolean
     voiceStatus: ConversationStatus
+    voiceLabel?: string
     voiceMicMuted?: boolean
     onVoiceToggle: () => void
     onVoiceMicToggle?: () => void
@@ -840,6 +846,7 @@ export function ComposerButtons(props: {
     // the actual routing decision via its wrapped onSend.
     scratchlistMode?: boolean
     scratchlistCount?: number
+    scratchlistShortcut?: string | null
     onScratchlistToggle?: () => void
     /**
      * When true, omit UnifiedButton — HappyComposer places it in a
@@ -848,6 +855,7 @@ export function ComposerButtons(props: {
     omitPrimaryButton?: boolean
 }) {
     const { t } = useTranslation()
+    const voiceLabel = props.voiceLabel ?? t(props.dictationEnabled ? 'composer.dictate' : 'composer.voice')
     const { layout } = useComposerToolbarLayout()
     const isNarrowViewport = useNarrowViewport()
     // Narrow viewports collapse the model/effort value buttons into the settings
@@ -1061,6 +1069,7 @@ export function ComposerButtons(props: {
                         <ScratchlistToggleButton
                             scratchlistMode={props.scratchlistMode ?? false}
                             scratchlistCount={props.scratchlistCount ?? 0}
+                            shortcut={props.scratchlistShortcut}
                             onScratchlistToggle={props.onScratchlistToggle}
                             controlsDisabled={props.controlsDisabled}
                         />
@@ -1122,7 +1131,7 @@ export function ComposerButtons(props: {
                 voiceStatus={props.voiceStatus}
                 controlsDisabled={props.controlsDisabled}
                 onVoiceToggle={props.onVoiceToggle}
-                voiceLabel={props.dictationEnabled ? t('composer.dictate') : t('composer.voice')}
+                voiceLabel={voiceLabel}
                 routesToScratchlist={
                     (props.scratchlistMode ?? false)
                     && props.pendingSchedule == null
@@ -1139,7 +1148,7 @@ export function ComposerButtons(props: {
                     controlsDisabled={props.controlsDisabled}
                     onSend={props.onSend}
                     onVoiceToggle={props.onVoiceToggle}
-                    voiceLabel={props.dictationEnabled ? t('composer.dictate') : undefined}
+                    voiceLabel={voiceLabel}
                     fillHeight={false}
                     /*
                      * Derived, NOT raw scratchlistMode. Mirror SessionChat's

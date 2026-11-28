@@ -34,7 +34,7 @@ export function isComposerOnlyChatShortcut(shortcut: string): boolean {
 
 export function isAssignableChatShortcut(shortcut: string): boolean {
     if (isComposerOnlyChatShortcut(shortcut)) return true
-    if (/^mod\+(?:[acvxyz0-9=\-]|shift\+z)$/.test(shortcut)) return false
+    if (/^mod\+(?:[acvxyz0-9=\-]|shift\+[yz])$/.test(shortcut)) return false
     return /^(?:mod\+(?:alt\+)?|alt\+)(?:shift\+)?(?:[a-z0-9,.;'\/\[\]\\\x60\-=]|Arrow(?:Up|Down|Left|Right))$/.test(shortcut)
 }
 

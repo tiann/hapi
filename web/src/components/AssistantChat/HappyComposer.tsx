@@ -24,7 +24,7 @@ import {
 import { useNarrowViewport } from '@/hooks/useNarrowViewport'
 import { isDictateHotkeyBlockedTarget, shouldInvokeComposerDictateShortcut } from '@/lib/composerDictateShortcut'
 import { useChatShortcuts } from '@/hooks/useChatShortcuts'
-import { isChatShortcutEvent, isGlobalChatShortcutInScope, matchesChatShortcut } from '@/lib/chatShortcuts'
+import { formatChatShortcut, isChatShortcutEvent, isGlobalChatShortcutInScope, matchesChatShortcut } from '@/lib/chatShortcuts'
 import { isRichComposerMentionsEnabled, resolveComposerPlaceholderKey } from '@/lib/composerSegments'
 import { dictationDirectSendEligible, sendVoiceMessage } from '@/lib/dictationSend'
 import type { SessionMentionResolveResult } from '@/components/AssistantChat/RichComposerInput'
@@ -573,6 +573,13 @@ export function HappyComposer(props: {
     ])
     const dictation = useDictation(dictationConfig)
     const dictationActive = voiceInput.voiceMode === 'dictation'
+    let voiceLabel: string | undefined
+    if (dictationActive) {
+        const label = t('composer.dictate')
+        voiceLabel = shortcuts.dictation
+            ? t('composer.labelWithShortcut', { label, shortcut: formatChatShortcut(shortcuts.dictation) })
+            : label
+    }
     const effectiveVoiceStatus = dictationActive ? dictation.status : voiceStatus
     const handleDictationToggle = useCallback(async () => {
         await dictation.toggle()
@@ -1847,11 +1854,13 @@ export function HappyComposer(props: {
             }
 
             if (showModelReasoningEffortSettings) {
-                // Codex reports Default as a concrete effort, which already has its own step in the cycle.
+                // Codex cycles through concrete levels, starting at the reported default when unset.
                 const options = agentFlavor === 'codex'
                     ? codexReasoningEffortOptions.filter((option) => option.value !== null)
                     : codexReasoningEffortOptions
-                const current = effortAction === 'cycle' ? modelReasoningEffort : modelReasoningEffort ?? defaultModelReasoningEffort
+                const current = effortAction === 'cycle' && agentFlavor !== 'codex'
+                    ? modelReasoningEffort
+                    : modelReasoningEffort ?? defaultModelReasoningEffort
                 changeEffort(options, current, handleModelReasoningEffortChange)
             } else if (showEffortSettings) {
                 const current = agentFlavor === 'pi' && !effort
@@ -1860,7 +1869,7 @@ export function HappyComposer(props: {
                 changeEffort(claudeEffortOptions, current, handleEffortChange)
             } else if (showModelEffortSettings && modelEffortOptions) {
                 const current = resolveVisibleModelEffortSelectedValue({ options: modelEffortOptions, selectedModelVariant, model })
-                const options = effortAction !== 'cycle' && agentFlavor === 'cursor'
+                const options = agentFlavor === 'cursor'
                     ? getCursorReasoningOptions(modelEffortOptions, current)
                     : modelEffortOptions
                 changeEffort(options, current, handleModelEffortChange)
@@ -2627,6 +2636,7 @@ export function HappyComposer(props: {
                                 dictationEnabled={dictationActive}
                                 dictationCanDirectSend={dictationCanDirectSend}
                                 voiceStatus={effectiveVoiceStatus}
+                                voiceLabel={voiceLabel}
                                 voiceMicMuted={dictationActive ? false : voiceMicMuted}
                                 onVoiceToggle={effectiveVoiceToggle ?? (() => {})}
                                 onVoiceMicToggle={dictationActive ? undefined : onVoiceMicToggle}
@@ -2650,6 +2660,7 @@ export function HappyComposer(props: {
                                 onEffortValueToggle={handleEffortValueToggle}
                                 scratchlistMode={props.scratchlistMode}
                                 scratchlistCount={props.scratchlistCount}
+                                scratchlistShortcut={shortcuts.scratchlist}
                                 onScratchlistToggle={props.onScratchlistToggle}
                                 omitPrimaryButton
                             />
@@ -2671,7 +2682,7 @@ export function HappyComposer(props: {
                                 controlsDisabled={controlsDisabled}
                                 onSend={handleSend}
                                 onVoiceToggle={effectiveVoiceToggle ?? (() => {})}
-                                voiceLabel={dictationActive ? t('composer.dictate') : undefined}
+                                voiceLabel={voiceLabel}
                                 fillHeight={primaryFillHeight}
                                 routesToScratchlist={routesToScratchlist}
                             />
