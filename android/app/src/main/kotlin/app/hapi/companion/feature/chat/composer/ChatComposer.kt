@@ -117,7 +117,9 @@ fun ChatComposer(
     onAttachmentRemove: (String) -> Unit = {},
     slashSuggestions: List<SlashCommand> = emptyList(),
     onSlashCommandSelected: (SlashCommand) -> Unit = {},
-    /** `@word` mention rows (B-M16a); rendered when the slash dropdown is empty. */
+    skillSuggestions: List<SkillSuggestion> = emptyList(),
+    onSkillSelected: (SkillSuggestion) -> Unit = {},
+    /** `@word` mention rows (B-M16a); rendered when no command or skill popup is open. */
     mentionSuggestions: List<MentionSuggestion> = emptyList(),
     onMentionSelected: (MentionSuggestion) -> Unit = {},
     /**
@@ -158,21 +160,16 @@ fun ChatComposer(
             keyboard?.show()
         }
     }
-    // The field owns the caret; the text stays VM-driven (draft prefill,
-    // send-clear, slash/mention inserts). External text edits adopt the VM's
-    // resting caret ([ComposerUiState.caretPosition] — a mention insert lands
-    // mid-draft, other programmatic sets rest at the tail); user edits and
-    // caret moves never adopt, so typing mid-draft keeps its position.
-    var field by remember { mutableStateOf(TextFieldValue(state.text)) }
-    LaunchedEffect(state.text) {
-        if (field.text != state.text) {
-            val caret = if (state.caretPosition >= 0) {
-                state.caretPosition.coerceIn(0, state.text.length)
-            } else {
-                state.text.length
-            }
-            field = TextFieldValue(state.text, TextRange(caret))
-        }
+    // Restore the VM caret on creation and sync explicit VM edits. Otherwise
+    // the field owns the live selection so typing mid-draft keeps its position.
+    fun fieldFromState(): TextFieldValue {
+        val caret = if (state.caretPosition >= 0) state.caretPosition.coerceIn(0, state.text.length) else state.text.length
+        return TextFieldValue(state.text, TextRange(caret))
+    }
+    var field by remember { mutableStateOf(fieldFromState()) }
+    val requestedCaret = state.caretPosition.takeIf { state.adoptCaret }
+    LaunchedEffect(state.text, requestedCaret) {
+        if (field.text != state.text || requestedCaret != null) field = fieldFromState()
     }
     val gate = composerSendGate(state, attachments)
     val recording = dictation as? DictationState.Recording
@@ -186,10 +183,25 @@ fun ChatComposer(
     Box(modifier = modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background)) {
         Column(modifier = Modifier.padding(top = 6.dp, bottom = 8.dp)) {
             if (slashSuggestions.isNotEmpty()) {
-                SlashCommandDropdown(
+                TextSuggestionDropdown(
                     suggestions = slashSuggestions,
+                    prefix = '/',
+                    nameOf = SlashCommand::name,
+                    descriptionOf = SlashCommand::description,
+                    keyOf = { "${it.source}:${it.name}" },
                     onSelect = onSlashCommandSelected,
                     modifier = Modifier.padding(bottom = 8.dp),
+                )
+            } else if (skillSuggestions.isNotEmpty()) {
+                val label = stringResource(R.string.chat_skill_suggestions)
+                TextSuggestionDropdown(
+                    suggestions = skillSuggestions,
+                    prefix = '$',
+                    nameOf = { it.skill.name },
+                    descriptionOf = { it.skill.description },
+                    keyOf = { it.skill.name },
+                    onSelect = onSkillSelected,
+                    modifier = Modifier.padding(bottom = 8.dp).semantics { contentDescription = label },
                 )
             } else if (mentionSuggestions.isNotEmpty()) {
                 MentionDropdown(
@@ -653,36 +665,37 @@ private fun SuggestionPopup(modifier: Modifier = Modifier, content: @Composable 
     )
 }
 
-/**
- * Filtered command list above the input (web `Autocomplete.tsx` twin):
- * monospaced name + description rows, tap inserts `/name `.
- */
+/** Scrollable name/description rows for slash commands and skills above the input. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun SlashCommandDropdown(
-    suggestions: List<SlashCommand>,
-    onSelect: (SlashCommand) -> Unit,
+private fun <T> TextSuggestionDropdown(
+    suggestions: List<T>,
+    prefix: Char,
+    nameOf: (T) -> String,
+    descriptionOf: (T) -> String?,
+    keyOf: (T) -> String,
+    onSelect: (T) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     SuggestionPopup(modifier) {
         LazyColumn(modifier = Modifier.heightIn(max = 232.dp), contentPadding = PaddingValues(vertical = 4.dp)) {
-            itemsIndexed(suggestions, key = { _, command -> "${command.source}:${command.name}" }) { index, command ->
+            itemsIndexed(suggestions, key = { _, suggestion -> keyOf(suggestion) }) { index, suggestion ->
                 if (index > 0) HorizontalDivider(color = MaterialTheme.hapi.divider, modifier = Modifier.padding(start = 16.dp))
                 Column(
                     verticalArrangement = Arrangement.Center,
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(min = 48.dp)
-                        .combinedClickable(onClick = { onSelect(command) })
+                        .combinedClickable(onClick = { onSelect(suggestion) })
                         .padding(horizontal = 16.dp, vertical = 8.dp),
                 ) {
                     Text(
-                        text = "/${command.name}",
+                        text = "$prefix${nameOf(suggestion)}",
                         style = HapiTypography.code.copy(fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    command.description?.takeIf { it.isNotBlank() }?.let { description ->
+                    descriptionOf(suggestion)?.takeIf { it.isNotBlank() }?.let { description ->
                         Text(
                             text = description,
                             style = HapiTypography.rowSubtitle,

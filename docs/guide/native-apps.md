@@ -164,8 +164,9 @@ send it automatically. See [Voice input and assistant](./voice-assistant.md).
 ### Features available through the web
 
 Use the web app for the remote terminal, Work Graph, realtime dictation and
-voice assistant, Markdown export, and the skills picker. These have no native
-UI. On iOS, the chat's … menu forks the current conversation, rewinds or forks
+voice assistant, and Markdown export. These have no native UI. The `$` skills
+picker is available in the web and Android chat composers, but not on iOS.
+On iOS, the chat's … menu forks the current conversation, rewinds or forks
 at a user message with a native history point, and exports the session as
 JSON; Android has no fork, rewind or export UI. Session history actions also
 depend on the agent's capabilities.

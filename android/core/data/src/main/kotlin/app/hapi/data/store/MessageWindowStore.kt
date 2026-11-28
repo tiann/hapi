@@ -21,6 +21,9 @@ import app.hapi.protocol.window.buildOptimisticMessage
 import app.hapi.protocol.wire.AttachmentMetadata
 import app.hapi.protocol.wire.MessagesResponse
 import app.hapi.protocol.wire.SyncEvent
+import app.hapi.protocol.wire.isUserMessage
+import java.io.IOException
+
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
@@ -73,11 +76,14 @@ class MessageWindowStore(
     val sessionId: String,
     private val api: MessagesApi,
     private val scope: CoroutineScope,
-    private val snapshots: WindowSnapshots? = null,
+    snapshots: WindowSnapshots? = null,
     initialState: MessageWindowState? = null,
     private val historyRetentionLimit: Int = HISTORY_WINDOW_SIZE,
 ) {
     private val stateMutex = Mutex()
+    private val persistenceMutex = Mutex()
+    private var snapshots = snapshots
+    private var snapshotPending = false
     private val _state = MutableStateFlow((initialState ?: MessageWindowLogic.createState(sessionId))
         .copy(historyRetentionLimit = historyRetentionLimit))
 
@@ -774,13 +780,13 @@ class MessageWindowStore(
             running = null
             trailingRequested = false
         }
-        snapshots?.delete(sessionId)
         update { previous ->
             MessageWindowLogic.createState(sessionId).copy(
                 syncGeneration = previous.syncGeneration + 1,
                 olderGeneration = previous.olderGeneration + 1,
             )
         }
+        persist()
     }
 
     /**
@@ -817,8 +823,44 @@ class MessageWindowStore(
     private fun MessagesResponse.windowMessages(): List<WindowMessage> =
         messages.map { it.asWindowMessage() }
 
-    private suspend fun persist() {
-        val snapshotStore = snapshots ?: return
+    internal suspend fun enableSnapshots(snapshots: WindowSnapshots) = persistenceMutex.withLock {
+        this.snapshots = snapshots
+        // An untouched window must not delete a previously cached snapshot.
+        if (snapshotPending) {
+            try {
+                persistSnapshot(snapshots)
+            } catch (_: IOException) {
+                // The next window update can retry the best-effort snapshot.
+            }
+            snapshotPending = false
+        }
+    }
+
+    internal suspend fun recoverLegacyFailedSends(legacy: WindowSnapshots) = persistenceMutex.withLock {
+        val destination = snapshots ?: return@withLock
+        if (destination.hasRecoveredFailedSends(sessionId)) return@withLock
+        val failed = legacy.readLegacy(sessionId)?.messages.orEmpty().filter {
+            it.status == MessageStatus.Failed && it.isOptimistic && !it.localId.isNullOrEmpty() &&
+                it.seq == null && it.wire.isUserMessage
+        }
+        if (failed.isEmpty()) return@withLock
+        update { previous ->
+            val seen = previous.messages.mapNotNullTo(HashSet()) { it.localId }
+            failed.filter { seen.add(it.id) }.fold(previous, MessageWindowLogic::mergeRefreshedRow)
+        }
+        persistSnapshot(destination)
+        // Keep the receipt outside the snapshot LRU. Do not resurrect an
+        // already retried or discarded row on a subsequent cold open.
+        destination.markFailedSendsRecovered(sessionId)
+    }
+
+    private suspend fun persist() = persistenceMutex.withLock {
+        val snapshotStore = snapshots
+        if (snapshotStore == null) snapshotPending = true
+        else persistSnapshot(snapshotStore)
+    }
+
+    private suspend fun persistSnapshot(snapshotStore: WindowSnapshots) {
         val state = _state.value
         if (MessageWindowLogic.shouldPersist(state)) {
             snapshotStore.save(sessionId, MessageWindowLogic.toPersisted(state))

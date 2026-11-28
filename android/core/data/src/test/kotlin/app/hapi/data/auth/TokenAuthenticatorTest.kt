@@ -4,6 +4,7 @@ import app.hapi.data.HubSession
 import app.hapi.data.RecordingAuthEvents
 import app.hapi.data.api.ApiError
 import app.hapi.data.fakeJwt
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -18,7 +19,10 @@ import kotlin.test.assertTrue
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -111,6 +115,121 @@ class TokenAuthenticatorTest {
         assertEquals(jwt2, stored.jwt)
         assertNotNull(stored.jwtObtainedAtMs)
         assertTrue(events.events.isEmpty(), "successful refresh must not emit terminal events")
+    }
+
+    @Test
+    fun `separate authenticators retry with the saved winner of concurrent exchanges`() = runBlocking {
+        val foreground = startSession()
+        val exchanges = CountDownLatch(2)
+        val authCalls = AtomicInteger()
+        val retryTokens = ConcurrentLinkedQueue<String>()
+        val anotherJwt = fakeJwt(expSeconds = 4_200_000_000)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.path == "/api/auth") {
+                    val token = if (authCalls.incrementAndGet() == 1) jwt2 else anotherJwt
+                    exchanges.countDown()
+                    check(exchanges.await(5, TimeUnit.SECONDS))
+                    return authOk(token)
+                }
+                val token = request.getHeader("Authorization")?.removePrefix("Bearer ")
+                if (token != jwt2 && token != anotherJwt) return unauthorized()
+                retryTokens += token
+                return sessionsOk()
+            }
+        }
+
+        HubSession(server.url("/"), store, events).use { background ->
+            awaitAll(
+                async { foreground.api.getSessions() },
+                async { background.api.getSessions() },
+            )
+        }
+        val saved = assertNotNull(store.get(hubUrl)?.jwt)
+        assertEquals(2, authCalls.get())
+        assertEquals(listOf(saved, saved), retryTokens.toList())
+        assertTrue(events.events.isEmpty())
+    }
+
+    @Test
+    fun `worker exchange can succeed while SSE force refresh has cleared the jwt`() = runBlocking {
+        val worker = startSession()
+        val foreground = TokenAuthenticator(hubUrl, store, OkHttpClient(), events)
+        val workerStarted = CountDownLatch(1)
+        val sseStarted = CountDownLatch(1)
+        val releaseWorker = CountDownLatch(1)
+        val releaseSse = CountDownLatch(1)
+        val authCalls = AtomicInteger()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when {
+                request.path == "/api/auth" && authCalls.incrementAndGet() == 1 -> {
+                    workerStarted.countDown()
+                    check(releaseWorker.await(5, TimeUnit.SECONDS))
+                    authOk(jwt2)
+                }
+                request.path == "/api/auth" -> {
+                    sseStarted.countDown()
+                    check(releaseSse.await(5, TimeUnit.SECONDS))
+                    authOk(fakeJwt(expSeconds = 4_200_000_000))
+                }
+                request.getHeader("Authorization") == "Bearer $jwt2" -> sessionsOk()
+                else -> unauthorized()
+            }
+        }
+        try {
+            val request = async(Dispatchers.IO) { worker.api.getSessions() }
+            assertTrue(workerStarted.await(5, TimeUnit.SECONDS))
+            val refresh = async(Dispatchers.IO) { foreground.ensureFreshToken(forceRefresh = true) }
+            assertTrue(sseStarted.await(5, TimeUnit.SECONDS))
+            assertNull(store.get(hubUrl)?.jwt)
+            releaseWorker.countDown()
+            request.await() // must finish before the foreground exchange does
+            assertEquals(jwt2, store.get(hubUrl)?.jwt)
+            releaseSse.countDown()
+            assertEquals(jwt2, refresh.await())
+        } finally {
+            releaseWorker.countDown()
+            releaseSse.countDown()
+        }
+        assertTrue(events.events.isEmpty())
+    }
+
+    @Test
+    fun `losing an exchange after signing out does not retry`() = assertExchangeDoesNotRetry { null }
+
+    @Test
+    fun `losing an exchange after reentering the same pairing secret does not retry`() =
+        assertExchangeDoesNotRetry { it.withJwt(jwt2, 123).copy(pairingId = "new-pairing") }
+
+    @Test
+    fun `losing an exchange cannot fill the empty jwt slot of a later pairing`() =
+        assertExchangeDoesNotRetry { it.withJwt(null, null).copy(pairingId = "new-pairing") }
+
+    @Test
+    fun `losing an exchange does not reuse a stale jwt`() =
+        assertExchangeDoesNotRetry { it.withJwt(fakeJwt(expSeconds = 1), 123) }
+
+    @Test
+    fun `losing an exchange does not reuse the rejected jwt even if its timestamp changed`() =
+        assertExchangeDoesNotRetry { it.withJwt(jwt1, 123) }
+
+    @Test
+    fun `losing an exchange does not reuse a jwt from another namespace`() =
+        assertExchangeDoesNotRetry { it.withJwt(fakeJwt(ns = "guest"), 123) }
+
+    private fun assertExchangeDoesNotRetry(concurrentUpdate: (HubCredentials) -> HubCredentials?) {
+        val hub = startSession()
+        val changed = concurrentUpdate(assertNotNull(store.get(hubUrl)))
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = if (request.path == "/api/auth") {
+                if (changed == null) store.delete(hubUrl) else store.set(changed)
+                authOk(jwt2)
+            } else unauthorized()
+        }
+        assertEquals(401, assertFailsWith<ApiError> { runBlocking { hub.api.getSessions() } }.status)
+        assertEquals(2, server.requestCount, "do not retry with a non-winning token")
+        assertEquals(changed, store.get(hubUrl))
+        assertTrue(events.events.isEmpty())
     }
 
     @Test
@@ -368,6 +487,64 @@ class TokenAuthenticatorTest {
 
         assertEquals(jwt2, runBlocking { authenticator.ensureFreshToken() })
         assertEquals(1, server.requestCount)
+    }
+
+    @Test
+    fun `a separate session can restore the namespace of a legacy pairing`() = runBlocking {
+        val active = startSession(jwt = null)
+        val refreshed = fakeJwt(expSeconds = 4_100_000_000, ns = "research")
+        server.enqueue(authOk(refreshed))
+
+        HubSession(server.url("/"), store, events).use { background ->
+            assertEquals(refreshed, background.ensureFreshToken())
+        }
+        withTimeout(2_000) {
+            assertEquals("research", store.observeNamespace(hubUrl).filterNotNull().first())
+        }
+        assertEquals(refreshed, active.ensureFreshToken())
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test
+    fun `failed forced refresh clears the JWT but retains the namespace across restart`() {
+        store.set(HubCredentials(hubUrl, accessToken, jwt = jwt1))
+        server.enqueue(MockResponse().setResponseCode(503))
+        val authenticator = TokenAuthenticator(hubUrl, store, OkHttpClient(), events)
+
+        assertNull(runBlocking { authenticator.ensureFreshToken(forceRefresh = true) })
+        assertNull(store.get(hubUrl)?.jwt)
+        assertEquals("default", store.get(hubUrl)?.namespace)
+
+        server.enqueue(authOk(jwt2))
+        val restarted = TokenAuthenticator(hubUrl, store, OkHttpClient(), events)
+        assertEquals(jwt2, runBlocking { restarted.ensureFreshToken() })
+        assertEquals("default", store.get(hubUrl)?.namespace)
+    }
+
+    @Test
+    fun `late refresh cannot overwrite credentials from a later pairing`() = runBlocking {
+        store.set(HubCredentials(hubUrl, accessToken))
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                started.countDown()
+                check(release.await(5, TimeUnit.SECONDS))
+                return authOk(jwt2)
+            }
+        }
+        val authenticator = TokenAuthenticator(hubUrl, store, OkHttpClient(), events)
+        val refresh = async(Dispatchers.IO) { authenticator.ensureFreshToken() }
+        try {
+            assertTrue(started.await(5, TimeUnit.SECONDS))
+            val guest = HubCredentials(hubUrl, accessToken = "guest-secret", jwt = fakeJwt(ns = "guest"))
+            store.set(guest)
+            release.countDown()
+            assertNull(refresh.await())
+            assertEquals(guest, store.get(hubUrl))
+        } finally {
+            release.countDown()
+        }
     }
 
     @Test

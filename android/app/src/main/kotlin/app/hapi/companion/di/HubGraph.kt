@@ -2,6 +2,8 @@ package app.hapi.companion.di
 
 import android.content.Context
 import app.hapi.companion.feature.chat.composer.ChatDrafts
+import app.hapi.companion.feature.chat.composer.DataStoreRecentSkills
+import app.hapi.companion.feature.chat.composer.RecentSkills
 import app.hapi.companion.feature.home.ConnectionChrome
 import app.hapi.companion.feature.home.RunnerSkewChrome
 import app.hapi.data.HubSession
@@ -28,15 +30,23 @@ import app.hapi.protocol.wire.SyncEvent
 import coil.ImageLoader
 import java.io.Closeable
 import java.io.File
+import java.security.MessageDigest
+import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 
 /**
  * Everything scoped to the **active** hub. [AppGraph] creates one per
@@ -58,6 +68,9 @@ class HubGraph(
     context: Context,
 ) : Closeable {
 
+    /** ViewModels must not retain a closed graph after a same-origin replacement. */
+    internal val instanceId = UUID.randomUUID().toString()
+
     /** Child of nothing on purpose: cancelled explicitly in [close]. */
     val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -74,14 +87,24 @@ class HubGraph(
     val sseEngine: SseEngine = SseEngine(
         baseUrl = session.hubUrl,
         transport = OkHttpSseTransport(),
-        tokenProvider = SessionTokenProvider(session, credentialStore),
+        tokenProvider = SessionTokenProvider(session),
         scope = scope,
     )
 
     private val networkMonitor = AndroidNetworkMonitor(context, sseEngine::networkChanged)
 
-    /** Per-hub snapshot root (filesDir — survives cache pressure). */
-    private val snapshotDir: File = File(File(context.filesDir, "hubs"), dirNameFor(session.hubUrl))
+    private val initialNamespace = credentialStore.get(session.hubUrl)?.pairedNamespace
+    @Volatile internal var pairedNamespace = initialNamespace
+        private set
+
+    // Never hydrate URL-only legacy history. Legacy failed sends are
+    // recovered separately, only after a session-specific authenticated lookup.
+    private fun snapshotDir(context: Context, namespace: String): File {
+        val digest = MessageDigest.getInstance("SHA-256").digest("${session.hubUrl}\u0000$namespace".encodeToByteArray())
+        return File(File(context.filesDir, "hub-snapshots"), digest.joinToString("") { "%02x".format(it) })
+    }
+
+    private val snapshotDir = initialNamespace?.let { snapshotDir(context, it) }
 
     val sessionStore: SessionStore = SessionStore(session.api, scope, snapshotDir)
 
@@ -97,12 +120,14 @@ class HubGraph(
 
     val machineStore: MachineStore = MachineStore(session.api, scope, snapshotDir)
 
-    private val readNamespace = credentialStore.get(session.hubUrl)?.jwt?.let { JwtPeek.peek(it)?.ns }
-    val lastSeenStore: LastSeenStore = LastSeenStore(scope, snapshotDir, namespace = readNamespace)
+    // Read state already namespaces its own files, so keep its existing location.
+    val lastSeenStore: LastSeenStore = LastSeenStore(
+        scope, File(File(context.filesDir, "hubs"), dirNameFor(session.hubUrl)), namespace = pairedNamespace,
+    )
 
     private fun configureReadState() {
         scope.launch {
-            val namespace = readNamespace ?: runCatching { session.ensureFreshToken()?.let { JwtPeek.peek(it)?.ns } }.getOrNull()
+            val namespace = pairedNamespace ?: runCatching { session.ensureFreshToken()?.let { JwtPeek.peek(it)?.ns } }.getOrNull()
                 ?: return@launch
             lastSeenStore.configure(namespace) { id, state ->
                 check(session.ensureFreshToken()?.let { JwtPeek.peek(it)?.ns } == namespace) { "Read state identity changed" }
@@ -116,8 +141,10 @@ class HubGraph(
     val messageWindows: MessageWindowStores = MessageWindowStores(
         api = session.api,
         scope = scope,
-        snapshots = WindowSnapshots(File(snapshotDir, "windows")),
+        snapshots = snapshotDir?.let { WindowSnapshots(File(it, "windows")) },
         historyRetentionLimit = app.hapi.protocol.window.OLDER_LOAD_WINDOW_SIZE,
+        legacySnapshots = WindowSnapshots(File(context.filesDir, "hubs/${dirNameFor(session.hubUrl)}/windows")),
+        snapshotNamespace = initialNamespace,
     )
 
     private val mutableToasts = MutableSharedFlow<SyncEvent.Toast>(extraBufferCapacity = 16)
@@ -202,6 +229,34 @@ class HubGraph(
     /** Per-session composer drafts, keyed under this hub (process-wide DataStore). */
     val chatDrafts: ChatDrafts = DataStoreChatDrafts(context.chatDraftsDataStore, hubKey = session.hubUrl)
 
+    private val skillHistory = MutableStateFlow(initialNamespace?.let { DataStoreRecentSkills(context.hapiDataStore, session.hubUrl, it) })
+
+    // Keep the source held by an open chat, even if its namespace is still unknown.
+    val recentSkills: RecentSkills = object : RecentSkills {
+        @OptIn(ExperimentalCoroutinesApi::class)
+        override val names: Flow<List<String>> = skillHistory.flatMapLatest { it?.names ?: flowOf(emptyList()) }
+
+        override suspend fun record(name: String) {
+            // A successful skills request can precede the storage binding.
+            skillHistory.filterNotNull().first().record(name)
+        }
+    }
+
+    init {
+        if (initialNamespace == null) scope.launch(Dispatchers.IO) {
+            // A push worker can refresh before this graph's own authenticator.
+            // Bind once from the shared record, without replacing clients or view models.
+            val namespace = credentialStore.observeNamespace(session.hubUrl).filterNotNull().first()
+            val dir = snapshotDir(context, namespace)
+            sessionStore.enableSnapshots(dir)
+            machineStore.enableSnapshots(dir)
+            messageWindows.enableSnapshots(WindowSnapshots(File(dir, "windows")), namespace)
+            pairedNamespace = namespace
+            skillHistory.value = DataStoreRecentSkills(context.hapiDataStore, session.hubUrl, namespace)
+            configureReadState()
+        }
+    }
+
     override fun close() {
         networkMonitor.close()
         lastSeenStore.shutdown()
@@ -222,28 +277,8 @@ class HubGraph(
     }
 }
 
-/**
- * Adapts [HubSession.ensureFreshToken] to the engine's [SseTokenProvider].
- *
- * `forceRefresh` (the hub just 401'd the previous token) drops both JWT
- * caches — the persisted copy and the authenticator's in-memory one — so
- * `ensureFreshToken` has to do a genuine `POST /api/auth` exchange instead of
- * returning a token the hub already rejected (rotated jwt-secret, clock skew).
- */
-class SessionTokenProvider(
-    private val session: HubSession,
-    private val credentialStore: CredentialStore,
-) : SseTokenProvider {
-
-    override suspend fun freshToken(forceRefresh: Boolean): String? {
-        if (forceRefresh) {
-            withContext(Dispatchers.IO) {
-                credentialStore.get(session.hubUrl)?.let { credentials ->
-                    credentialStore.set(credentials.copy(jwt = null, jwtObtainedAtMs = null))
-                }
-            }
-            session.authenticator.clearCachedJwt()
-        }
-        return session.ensureFreshToken()
-    }
+/** SSE 401s invalidate the cached JWT, not the durable pairing identity. */
+private class SessionTokenProvider(private val session: HubSession) : SseTokenProvider {
+    override suspend fun freshToken(forceRefresh: Boolean): String? =
+        session.authenticator.ensureFreshToken(forceRefresh)
 }

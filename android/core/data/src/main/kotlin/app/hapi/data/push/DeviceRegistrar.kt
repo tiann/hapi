@@ -2,17 +2,18 @@ package app.hapi.data.push
 
 import app.hapi.data.api.ApiError
 import app.hapi.data.auth.HubRegistry
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
- * Current FCM registration token, or **null when push is unavailable** —
- * Firebase not configured (no `google-services.json`), Play services absent,
- * or the token fetch failed. A null token turns every registrar entry point
- * into a clean no-op (the `PushBinding.isAvailable` gate, threaded through).
+ * Current FCM registration token, or null when Firebase isn't configured.
+ * Lookup failures throw so registration can retry instead of treating push as disabled.
  */
 fun interface PushTokenSource {
     suspend fun currentToken(): String?
@@ -66,6 +67,7 @@ class ApiPushDeviceGateway(private val hubAccess: PushHubAccess) : PushDeviceGat
  *    re-registers every hub — cheap upsert, and it heals registrations lost
  *    to reinstalls or hub-side pruning. Later emissions register only newly
  *    added hubs (fresh pairings).
+ *  - [onHubRepaired]: the namespace changes without adding a URL to the roster.
  *  - [onNewToken]: FCM rotated the token — re-register everywhere.
  *  - [unregisterHub]: best-effort `DELETE` on sign-out, while the hub's JWT
  *    still works (the caller wipes credentials right after).
@@ -82,6 +84,9 @@ class DeviceRegistrar(
     private val retryScheduler: RegistrationRetryScheduler,
     private val scope: CoroutineScope,
 ) {
+
+    // An old in-flight request must not complete after the new namespace's upsert.
+    private val registrationLocks = ConcurrentHashMap<String, Mutex>()
 
     /**
      * Begins observing the hub roster. Call after `HubRegistry.load()` so the
@@ -100,6 +105,11 @@ class DeviceRegistrar(
         }
     }
 
+    /** Rebind after storing new credentials for a URL already in the roster. */
+    fun onHubRepaired(hubUrl: String) {
+        scope.launch { registerHubs(listOf(hubUrl)) }
+    }
+
     /** FCM token rotation (`onNewToken`): push [token] to every paired hub. */
     fun onNewToken(token: String) {
         scope.launch { registerHubs(registry.state.value.hubs, token) }
@@ -111,8 +121,7 @@ class DeviceRegistrar(
      */
     suspend fun registerHubOnce(hubUrl: String) {
         val token = tokenSource.currentToken() ?: return
-        val identity = identities.identity()
-        gateway.register(hubUrl, token, identity)
+        register(hubUrl, token)
     }
 
     /**
@@ -122,8 +131,8 @@ class DeviceRegistrar(
      * self-healing server-side — the hub prunes tokens FCM reports dead.)
      */
     suspend fun unregisterHub(hubUrl: String) {
-        val token = tokenSource.currentToken() ?: return
         try {
+            val token = tokenSource.currentToken() ?: return
             gateway.unregister(hubUrl, token)
         } catch (cancellation: CancellationException) {
             throw cancellation
@@ -133,16 +142,29 @@ class DeviceRegistrar(
     }
 
     private suspend fun registerHubs(hubs: List<String>, presetToken: String? = null) {
-        val token = presetToken ?: tokenSource.currentToken() ?: return // push unavailable
+        val token = try {
+            presetToken ?: tokenSource.currentToken() ?: return // push unavailable
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (error: Exception) {
+            if (isTransient(error)) hubs.forEach(retryScheduler::scheduleRetry)
+            return
+        }
         for (hubUrl in hubs) {
             try {
-                val identity = identities.identity()
-                gateway.register(hubUrl, token, identity)
+                register(hubUrl, token)
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (error: Exception) {
                 if (isTransient(error)) retryScheduler.scheduleRetry(hubUrl)
             }
+        }
+    }
+
+    private suspend fun register(hubUrl: String, token: String) {
+        registrationLocks.computeIfAbsent(hubUrl) { Mutex() }.withLock {
+            val identity = identities.identity()
+            gateway.register(hubUrl, token, identity)
         }
     }
 

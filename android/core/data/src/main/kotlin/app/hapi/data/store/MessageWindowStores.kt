@@ -3,6 +3,9 @@ package app.hapi.data.store
 import app.hapi.data.api.MessagesApi
 import app.hapi.protocol.window.MessageWindowLogic
 import app.hapi.protocol.window.HISTORY_WINDOW_SIZE
+import app.hapi.protocol.wire.Session
+import java.io.IOException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -18,28 +21,63 @@ import kotlinx.coroutines.sync.withLock
 class MessageWindowStores(
     private val api: MessagesApi,
     private val scope: CoroutineScope,
-    private val snapshots: WindowSnapshots? = null,
+    snapshots: WindowSnapshots? = null,
     private val historyRetentionLimit: Int = HISTORY_WINDOW_SIZE,
+    private val legacySnapshots: WindowSnapshots? = null,
+    snapshotNamespace: String? = null,
 ) {
     private val mutex = Mutex()
+    private var snapshots = snapshots
     private val stores = HashMap<String, MessageWindowStore>()
+    private val snapshotNamespaceReady = CompletableDeferred<String>().apply {
+        if (snapshotNamespace != null) complete(snapshotNamespace)
+    }
 
     /** The session's store, hydrating from its snapshot on first open. */
     suspend fun open(sessionId: String): MessageWindowStore {
-        mutex.withLock { stores[sessionId] }?.let { return it }
-        // Hydrate outside the lock (disk I/O), then race-tolerantly install.
-        val hydrated = snapshots?.load(sessionId)?.let { MessageWindowLogic.hydrate(sessionId, it) }
-        return mutex.withLock {
-            stores.getOrPut(sessionId) {
-                MessageWindowStore(
-                    sessionId = sessionId,
-                    api = api,
-                    scope = scope,
-                    snapshots = snapshots,
-                    initialState = hydrated,
-                    historyRetentionLimit = historyRetentionLimit,
-                )
+        while (true) {
+            val snapshots = mutex.withLock {
+                stores[sessionId]?.let { return it }
+                this.snapshots
             }
+            val hydrated = snapshots?.load(sessionId)?.let { MessageWindowLogic.hydrate(sessionId, it) }
+            mutex.withLock {
+                // Hydrate outside the lock. Retry if a namespace was bound mid-open.
+                if (snapshots === this.snapshots) {
+                    return stores.getOrPut(sessionId) {
+                        MessageWindowStore(
+                            sessionId = sessionId,
+                            api = api,
+                            scope = scope,
+                            snapshots = snapshots,
+                            initialState = hydrated,
+                            historyRetentionLimit = historyRetentionLimit,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    /** Late identity recovery must keep the same stores for already-open chats. */
+    suspend fun enableSnapshots(snapshots: WindowSnapshots, namespace: String) {
+        val open = mutex.withLock {
+            if (this.snapshots != null) return
+            this.snapshots = snapshots
+            stores.values.toList()
+        }
+        for (store in open) store.enableSnapshots(snapshots)
+        snapshotNamespaceReady.complete(namespace)
+    }
+
+    /** Call only with detail returned by an authenticated lookup of this exact session. */
+    suspend fun recoverLegacyFailedSends(sessionId: String, verified: Session) {
+        val legacy = legacySnapshots ?: return
+        if (verified.id != sessionId || verified.namespace != snapshotNamespaceReady.await()) return
+        try {
+            open(sessionId).recoverLegacyFailedSends(legacy)
+        } catch (_: IOException) {
+            // The old file stays intact; retry on the next verified open.
         }
     }
 

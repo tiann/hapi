@@ -75,9 +75,9 @@ import app.hapi.companion.feature.sessions.InMemorySessionListOrderStore
 import app.hapi.companion.feature.sessions.SessionListOrderStore
 import app.hapi.companion.feature.sessions.SessionListViewModel
 import app.hapi.companion.feature.share.ShareScreen
-import app.hapi.companion.feature.share.ShareSessionGateway
 import app.hapi.companion.feature.share.ShareTarget
 import app.hapi.companion.feature.share.ShareTargetController
+import app.hapi.companion.feature.share.StoreShareSessionGateway
 import app.hapi.companion.feature.settings.PasskeysGateway
 import app.hapi.companion.feature.settings.PasskeysScreen
 import app.hapi.companion.feature.settings.PasskeysViewModel
@@ -96,6 +96,7 @@ import kotlinx.serialization.json.JsonObject
 import java.util.Base64
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
@@ -456,7 +457,7 @@ fun HapiNavigation() {
                 }
             }
             val holder = viewModel<ChatViewModelHolder>(
-                key = "chat:${hubGraph.hubUrl}:$sessionId",
+                key = "chat:${hubGraph.instanceId}:$sessionId",
                 factory = viewModelFactory { ChatViewModelHolder(hubGraph, sessionId, appContext) },
             )
             DisposableEffect(holder) {
@@ -626,7 +627,7 @@ fun HapiNavigation() {
             val chatHolder = chatEntry?.let { owner ->
                 viewModel<ChatViewModelHolder>(
                     viewModelStoreOwner = owner,
-                    key = "chat:${hubGraph.hubUrl}:$sessionId",
+                    key = "chat:${hubGraph.instanceId}:$sessionId",
                     factory = viewModelFactory { ChatViewModelHolder(hubGraph, sessionId, appContext) },
                 )
             }
@@ -812,17 +813,7 @@ private class ShareViewModelHolder : ViewModel() {
         val nextScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         scope = nextScope
         graph = hub
-        val gateway = object : ShareSessionGateway {
-            override suspend fun isActive(sessionId: String) = hub.sessionStore.loadSessionDetail(sessionId).active
-            override suspend fun reopen(sessionId: String): String {
-                val response = hub.sessionStore.reopenSession(sessionId)
-                if (response.sessionId != sessionId) {
-                    hub.messageWindows.seed(sessionId, response.sessionId)
-                    hub.chatDrafts.move(sessionId, response.sessionId)
-                }
-                return response.sessionId
-            }
-        }
+        val gateway = StoreShareSessionGateway(hub.sessionStore, hub.messageWindows, hub.chatDrafts)
         return ShareModels(
             SessionListViewModel(
                 hub.sessionStore, hub.machineStore, hub.lastSeenStore, nextScope, hub.hubUrl,
@@ -882,7 +873,7 @@ private class ChatViewModelHolder(
     sessionId: String,
     appContext: Context,
 ) : ViewModel() {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob(hubGraph.scope.coroutineContext[Job]) + Dispatchers.Default)
 
     val viewModel = ChatViewModel(
         sessionId = sessionId,
@@ -896,6 +887,7 @@ private class ChatViewModelHolder(
         scope = scope,
         drafts = hubGraph.chatDrafts,
         scratchlist = hubGraph.scratchlistStore,
+        recentSkills = hubGraph.recentSkills,
     )
 
     /**
@@ -1105,13 +1097,7 @@ private fun pairingViewModel(
     val parentEntry = remember(entry) { navController.getBackStackEntry(Routes.PAIRING) }
     return viewModel(
         viewModelStoreOwner = parentEntry,
-        factory = viewModelFactory {
-            PairingViewModel(
-                clientFactory = graph.pairingClientFactory,
-                credentialStore = graph.credentialStore,
-                registry = graph.hubRegistry,
-            )
-        },
+        factory = viewModelFactory { graph.newPairingViewModel() },
     )
 }
 

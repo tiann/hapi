@@ -26,7 +26,9 @@ differences, pairing and features currently available through the web.
   replace navigation with the returned ID.
 - **Composer:** optimistic send, queue/steer where supported, drafts and
   attachments uploaded on selection. Slash suggestions combine session
-  metadata and the slash-command RPC; the skills `$` picker has no UI.
+  metadata and the slash-command RPC. Type `$` in a chat draft to browse the
+  current session's skills, type part of a name to filter, and tap a skill to
+  insert `$name` without sending the message.
 - **Incoming shares:** Android Share → HAPI accepts single/multiple files,
   captions, text and links. Choose a session on the current or another paired
   hub; stopped sessions require explicit restore before upload. Content is

@@ -21,6 +21,7 @@ import app.hapi.data.store.MachineListStore
 import app.hapi.data.store.SessionListStore
 import app.hapi.protocol.wire.Machine
 import app.hapi.protocol.wire.ReopenSessionResponse
+import app.hapi.protocol.wire.Session
 import app.hapi.protocol.wire.SessionSummary
 import app.hapi.protocol.wire.SessionSummaryMetadata
 import app.hapi.protocol.wire.SyncEvent
@@ -66,8 +67,16 @@ class SharePickerTest {
     private var reopens = 0
     private var switched: String? = null
     private val controller = ShareTargetController(object : ShareSessionGateway {
-        override suspend fun isActive(sessionId: String) = sessionId == "active"
-        override suspend fun reopen(sessionId: String): String { reopens++; return "replacement" }
+        override suspend fun loadSession(sessionId: String) = Session(
+            id = sessionId, namespace = "test", seq = 0, createdAt = 0, updatedAt = 0, active = sessionId == "active",
+            metadataVersion = 0, agentStateVersion = 0, thinking = false, thinkingAt = 0,
+        )
+
+        override suspend fun reopen(sessionId: String, verified: Session): String {
+            assertEquals(sessionId, verified.id)
+            reopens++
+            return "replacement"
+        }
     }, scope)
     private val sessions = SessionListViewModel(PickerSessions(), PickerMachines(), LastSeenStore(scope), scope)
     private var batch by mutableStateOf(PendingShare("batch", 1, "shared caption", emptyList()))

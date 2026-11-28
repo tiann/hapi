@@ -10,6 +10,7 @@ import app.hapi.protocol.wire.FileSearchResponse
 import app.hapi.protocol.wire.HubSettingsResponse
 import app.hapi.protocol.wire.ResumeSessionResponse
 import app.hapi.protocol.wire.SendMessageRequest
+import app.hapi.protocol.wire.SkillsResponse
 import app.hapi.protocol.wire.SlashCommandsResponse
 import app.hapi.protocol.wire.SteerQueuedMessageResponse
 import app.hapi.protocol.wire.UploadFileResponse
@@ -109,6 +110,9 @@ interface ChatSessionApi : MessagesApi, AttachmentUploadApi {
      * session's `metadata.slashCommands` names.
      */
     suspend fun getSlashCommands(sessionId: String): SlashCommandsResponse
+
+    /** `GET /api/sessions/:id/skills` — the composer's `$` suggestion source. */
+    suspend fun getSkills(sessionId: String): SkillsResponse
 
     /**
      * `GET /api/sessions/:id/files?query=&limit=` — ripgrep-backed file search,

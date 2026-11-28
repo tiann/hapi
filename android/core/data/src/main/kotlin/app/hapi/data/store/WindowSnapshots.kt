@@ -4,6 +4,7 @@ import app.hapi.protocol.window.PersistedMessageWindow
 import app.hapi.protocol.wire.HapiJson
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 import java.security.MessageDigest
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -41,26 +42,40 @@ class WindowSnapshots(
             stream.fd.sync()
         }
         if (!temp.renameTo(target)) {
-            // Windows-style rename-over-existing failure; best effort swap.
-            target.delete()
-            temp.renameTo(target)
+            temp.delete()
+            throw IOException("Could not replace message window snapshot")
         }
         prune()
     }
 
-    suspend fun load(sessionId: String): PersistedMessageWindow? = withContext(io) {
+    suspend fun load(sessionId: String): PersistedMessageWindow? = read(sessionId, readOnly = false)
+
+    internal suspend fun readLegacy(sessionId: String): PersistedMessageWindow? = read(sessionId, readOnly = true)
+
+    private suspend fun read(sessionId: String, readOnly: Boolean): PersistedMessageWindow? = withContext(io) {
         val file = fileFor(sessionId)
         if (!file.isFile) return@withContext null
         try {
             val snapshot = json.decodeFromString(PersistedMessageWindow.serializer(), file.readText())
             // Touch for LRU recency: reading a snapshot marks the session live.
-            file.setLastModified(System.currentTimeMillis())
+            if (!readOnly) file.setLastModified(System.currentTimeMillis())
             snapshot
         } catch (_: Exception) {
-            file.delete()
+            if (!readOnly) file.delete()
             null
         }
     }
+
+    internal suspend fun hasRecoveredFailedSends(sessionId: String): Boolean = withContext(io) {
+        recoveryReceipt(sessionId).isFile
+    }
+
+    internal suspend fun markFailedSendsRecovered(sessionId: String): Unit = withContext(io) {
+        dir.mkdirs()
+        recoveryReceipt(sessionId).createNewFile()
+    }
+
+    private fun recoveryReceipt(sessionId: String): File = File(dir, fileFor(sessionId).name + ".legacy-recovered")
 
     suspend fun delete(sessionId: String): Unit = withContext(io) {
         fileFor(sessionId).delete()

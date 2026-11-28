@@ -7,6 +7,7 @@ import app.hapi.companion.feature.newsession.DataStoreNewSessionPrefs
 import app.hapi.companion.feature.newsession.NewSessionPrefs
 import app.hapi.companion.feature.pairing.PairingClient
 import app.hapi.companion.feature.pairing.PairingClientFactory
+import app.hapi.companion.feature.pairing.PairingViewModel
 import app.hapi.companion.feature.settings.AppLanguage
 import app.hapi.companion.feature.settings.LanguagePrefs
 import app.hapi.companion.feature.sessions.SessionListOrderPrefs
@@ -24,6 +25,7 @@ import app.hapi.data.auth.AuthEvents
 import app.hapi.data.auth.AuthTerminalReason
 import app.hapi.data.auth.CredentialStore
 import app.hapi.data.auth.EncryptedPrefsCredentialStore
+import app.hapi.data.auth.HubCredentials
 import app.hapi.data.auth.HubRegistry
 import app.hapi.data.auth.HubRegistryStorage
 import app.hapi.data.push.ApiPushDeviceGateway
@@ -35,10 +37,12 @@ import app.hapi.protocol.wire.AuthResponse
 import app.hapi.protocol.wire.HapiJson
 import app.hapi.protocol.wire.HubHealthResponse
 import app.hapi.protocol.wire.PasskeyLoginResponse
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -51,6 +55,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
@@ -64,7 +70,7 @@ data class AuthTerminal(
 )
 
 /** Process-wide Preferences DataStore (hub roster + future app settings). */
-private val Context.hapiDataStore by preferencesDataStore(name = "hapi_prefs")
+internal val Context.hapiDataStore by preferencesDataStore(name = "hapi_prefs")
 
 /**
  * Process-singleton graph, hand-rolled (no Hilt by design — see plan track B).
@@ -76,7 +82,12 @@ private val Context.hapiDataStore by preferencesDataStore(name = "hapi_prefs")
  * ([ready] flips true) and then keeps [activeHubGraph] in sync with the
  * registry.
  */
-class AppGraph(context: Context) {
+class AppGraph internal constructor(
+    context: Context,
+    val credentialStore: CredentialStore,
+    deviceRegistrarFactory: ((HubRegistry, CoroutineScope) -> DeviceRegistrar)? = null,
+) {
+    constructor(context: Context) : this(context, EncryptedPrefsCredentialStore(context))
 
     private val appContext = context.applicationContext
 
@@ -109,8 +120,6 @@ class AppGraph(context: Context) {
 
     val hubRegistryStorage: HubRegistryStorage =
         DataStoreHubRegistryStorage(appContext.hapiDataStore)
-
-    val credentialStore: CredentialStore = EncryptedPrefsCredentialStore(appContext)
 
     val hubRegistry: HubRegistry = HubRegistry(hubRegistryStorage)
 
@@ -191,7 +200,7 @@ class AppGraph(context: Context) {
         .build()
 
     /** Builds the pairing probe for a candidate hub URL (normalized upstream). */
-    val pairingClientFactory: PairingClientFactory = PairingClientFactory { hubUrl ->
+    private val pairingClientFactory: PairingClientFactory = PairingClientFactory { hubUrl ->
         val api = HapiApi(hubUrl = hubUrl, client = pairingHttpClient)
         object : PairingClient {
             override suspend fun health(): HubHealthResponse = api.health()
@@ -201,6 +210,12 @@ class AppGraph(context: Context) {
                 api.passkeyLoginVerify(response)
         }
     }
+
+    internal fun newPairingViewModel(clientFactory: PairingClientFactory = pairingClientFactory) = PairingViewModel(
+        clientFactory = clientFactory,
+        registry = hubRegistry,
+        commitPairing = ::commitPairing,
+    )
 
     // ------------------------------------------------------------ push (B-M4a) --
 
@@ -219,7 +234,7 @@ class AppGraph(context: Context) {
     val pushIdentityManager = PushIdentityManager(EncryptedPrefsPushIdentityStore(appContext))
     val pushMessageDecoder = PushMessageDecoder(pushIdentityManager::existingKey)
 
-    val deviceRegistrar: DeviceRegistrar = DeviceRegistrar(
+    val deviceRegistrar: DeviceRegistrar = deviceRegistrarFactory?.invoke(hubRegistry, scope) ?: DeviceRegistrar(
         registry = hubRegistry,
         gateway = ApiPushDeviceGateway(pushHubAccess),
         tokenSource = { PushBinding.currentToken(appContext) },
@@ -244,8 +259,9 @@ class AppGraph(context: Context) {
     // --------------------------------------------------------------------------
 
     private val mutableActiveHubGraph = MutableStateFlow<HubGraph?>(null)
+    private val activeHubSwapMutex = Mutex()
 
-    /** Per-active-hub graph; null while unpaired. Recreated on hub switch. */
+    /** Per-active-hub graph; rebuilt on hub switch or re-pairing, not on a credential refresh. */
     val activeHubGraph: StateFlow<HubGraph?> = mutableActiveHubGraph.asStateFlow()
 
     private val mutableReady = MutableStateFlow(false)
@@ -269,7 +285,7 @@ class AppGraph(context: Context) {
             hubRegistry.state
                 .map { it.activeHubUrl }
                 .distinctUntilChanged()
-                .collect { activeHubUrl -> swapActiveHub(activeHubUrl) }
+                .collect { syncActiveHub() }
         }
     }
 
@@ -286,11 +302,41 @@ class AppGraph(context: Context) {
         hubRegistry.removeHub(hubUrl)
     }
 
-    /** Sequential by construction: only the [start] collector calls this. */
+    private suspend fun syncActiveHub() = activeHubSwapMutex.withLock {
+        val active = hubRegistry.activeHubUrl
+        if (active != mutableActiveHubGraph.value?.hubUrl) swapActiveHub(active)
+    }
+
+    /** The screen can cancel waiting for success, not a pairing commit already handed to the app. */
+    private suspend fun commitPairing(credentials: HubCredentials) {
+        scope.async(Dispatchers.IO) {
+            activeHubSwapMutex.withLock {
+                // Stop the old same-origin client before it can pick up the new pairing.
+                if (mutableActiveHubGraph.value?.hubUrl == credentials.hubUrl) {
+                    val previous = mutableActiveHubGraph.value
+                    mutableActiveHubGraph.value = null
+                    closeHubGraph(previous)
+                }
+                val previousNamespace = credentialStore.get(credentials.hubUrl)?.pairedNamespace
+                val namespaceChanged = credentials.hubUrl in hubRegistry.state.value.hubs &&
+                    credentials.pairedNamespace != null && credentials.pairedNamespace != previousNamespace
+                credentialStore.set(credentials.copy(pairingId = UUID.randomUUID().toString()))
+                hubRegistry.addHub(credentials.hubUrl, makeActive = true)
+                if (namespaceChanged) deviceRegistrar.onHubRepaired(credentials.hubUrl)
+                swapActiveHub(hubRegistry.activeHubUrl)
+            }
+        }.await()
+    }
+
+    /** Called with [activeHubSwapMutex] held. */
+    private suspend fun closeHubGraph(graph: HubGraph?) {
+        graph?.close()
+        graph?.lastSeenStore?.flushPersistence()
+    }
+
+    /** Called with [activeHubSwapMutex] held. */
     private suspend fun swapActiveHub(activeHubUrl: String?) {
-        val previous = mutableActiveHubGraph.value
-        previous?.close()
-        previous?.lastSeenStore?.flushPersistence()
+        closeHubGraph(mutableActiveHubGraph.value)
         mutableActiveHubGraph.value = activeHubUrl?.let { hubUrl ->
             HubGraph(
                 hubUrl = hubUrl,

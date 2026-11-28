@@ -79,11 +79,6 @@ class TokenAuthenticator(
         return stored
     }
 
-    /** Drops the in-memory JWT (sign-out / credential deletion). */
-    fun clearCachedJwt() {
-        cachedJwt = null
-    }
-
     override fun authenticate(route: Route?, response: Response): Request? {
         if (response.priorResponse != null) {
             // Second 401 for this call: the freshly-exchanged JWT was rejected too.
@@ -100,14 +95,28 @@ class TokenAuthenticator(
 
     /**
      * Proactively refreshes when the JWT is missing, undecodable, or expires
-     * within [FRESH_WINDOW_MS] (10 min). Returns the JWT to use, or null when
-     * refresh is impossible right now.
+     * within [FRESH_WINDOW_MS] (10 min). If SSE rejected the current JWT,
+     * clear both JWT caches but retain the durable pairing identity.
      */
-    suspend fun ensureFreshToken(): String? {
-        currentJwt()?.takeIf { !isStale(it) }?.let { return it }
+    suspend fun ensureFreshToken(forceRefresh: Boolean = false): String? {
+        if (!forceRefresh) currentJwt()?.takeIf { !isStale(it) }?.let { return it }
         return withContext(Dispatchers.IO) {
             mutex.withLock {
-                currentJwt()?.takeIf { !isStale(it) } ?: exchangeLocked()
+                if (forceRefresh) {
+                    val credentials = credentialStore.get(hubUrl)
+                    val failedJwt = cachedJwt ?: credentials?.jwt
+                    val cleared = if (credentials?.jwt != null) {
+                        val withoutJwt = credentials.withJwt(null, null)
+                        if (!credentialStore.replace(credentials, withoutJwt)) {
+                            return@withLock reuseSavedJwt(credentials, credentials.pairedNamespace, failedJwt)
+                        }
+                        withoutJwt
+                    } else credentials
+                    cachedJwt = null
+                    exchangeLocked(failedJwt, cleared)
+                } else {
+                    currentJwt()?.takeIf { !isStale(it) } ?: exchangeLocked()
+                }
             }
         }
     }
@@ -121,16 +130,16 @@ class TokenAuthenticator(
 
     private suspend fun refresh(failedJwt: String?): String? = mutex.withLock {
         val current = currentJwt()
-        if (current != null && current != failedJwt) current else exchangeLocked()
+        if (current != null && current != failedJwt) current else exchangeLocked(failedJwt)
     }
 
     /** Blocking `POST /api/auth`; call only while holding [mutex], off the main thread. */
-    private fun exchangeLocked(): String? {
-        val credentials = credentialStore.get(hubUrl) ?: run {
-            authEvents?.onAuthTerminal(hubUrl, AuthTerminalReason.MISSING_CREDENTIALS)
-            return null
-        }
-        val authRequest = credentials.authRequest ?: run {
+    private fun exchangeLocked(
+        failedJwt: String? = null,
+        credentials: HubCredentials? = credentialStore.get(hubUrl),
+    ): String? {
+        val authRequest = credentials?.authRequest
+        if (credentials == null || authRequest == null) {
             authEvents?.onAuthTerminal(hubUrl, AuthTerminalReason.MISSING_CREDENTIALS)
             return null
         }
@@ -145,6 +154,7 @@ class TokenAuthenticator(
         response.use {
             val text = it.body?.string().orEmpty()
             if (it.code == 401) {
+                if (credentialStore.get(hubUrl)?.let { isSamePairing(credentials, it) } != true) return null
                 rejectedSecret = credentials.secret
                 authEvents?.onAuthTerminal(hubUrl, terminalReason(credentials))
                 return null
@@ -155,11 +165,40 @@ class TokenAuthenticator(
             } catch (_: Exception) {
                 return null
             }
-            rejectedSecret = null
-            credentialStore.set(credentials.copy(jwt = auth.token, jwtObtainedAtMs = nowMs()))
-            cachedJwt = auth.token
-            return auth.token
+            val updated = credentials.withJwt(auth.token, nowMs())
+            if (credentialStore.replace(credentials, updated)) return rememberJwt(auth.token)
+
+            val namespace = JwtPeek.peek(auth.token)?.ns ?: return null
+            val latest = matchingCredentials(credentials, namespace) ?: return null
+            // SSE can clear the rejected token while a worker is already
+            // exchanging it. Fill the empty slot only if that same pairing is
+            // still present, without overwriting a competing refresh.
+            if (latest.jwt == null && credentials.jwt != null &&
+                auth.token != credentials.jwt && auth.token != failedJwt && !isStale(auth.token) &&
+                credentialStore.replace(latest, latest.withJwt(auth.token, nowMs()))
+            ) return rememberJwt(auth.token)
+            return reuseSavedJwt(credentials, namespace, failedJwt)
         }
+    }
+
+    private fun isSamePairing(expected: HubCredentials, latest: HubCredentials): Boolean =
+        expected.pairingId == latest.pairingId && expected.authRequest == latest.authRequest &&
+            (expected.pairedNamespace == null || expected.pairedNamespace == latest.pairedNamespace)
+
+    private fun matchingCredentials(expected: HubCredentials, namespace: String): HubCredentials? =
+        credentialStore.get(hubUrl)?.takeIf { it.pairedNamespace == namespace && isSamePairing(expected, it) }
+
+    private fun reuseSavedJwt(expected: HubCredentials, namespace: String?, failedJwt: String?): String? {
+        if (namespace == null) return null
+        val jwt = matchingCredentials(expected, namespace)?.jwt ?: return null
+        if (jwt == expected.jwt || jwt == failedJwt || JwtPeek.peek(jwt)?.ns != namespace || isStale(jwt)) return null
+        return rememberJwt(jwt)
+    }
+
+    private fun rememberJwt(jwt: String): String {
+        rejectedSecret = null
+        cachedJwt = jwt
+        return jwt
     }
 
     /**

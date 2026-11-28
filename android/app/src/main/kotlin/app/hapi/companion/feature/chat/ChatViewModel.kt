@@ -12,9 +12,13 @@ import app.hapi.companion.feature.chat.composer.ChatDrafts
 import app.hapi.companion.feature.chat.composer.MentionSuggestion
 import app.hapi.companion.feature.chat.composer.Mentions
 import app.hapi.companion.feature.chat.composer.PendingSchedule
+import app.hapi.companion.feature.chat.composer.RecentSkills
 import app.hapi.companion.feature.chat.composer.ScheduleSend
+import app.hapi.companion.feature.chat.composer.SkillSuggestion
+import app.hapi.companion.feature.chat.composer.SkillSuggestions
 import app.hapi.companion.feature.chat.composer.SlashCommands
 import app.hapi.companion.feature.chat.composer.appendTranscript
+import app.hapi.companion.feature.chat.composer.skillNameKey
 import app.hapi.companion.ui.markdown.MarkdownRenderCache
 import app.hapi.protocol.chat.AgentTextBlock
 import app.hapi.protocol.chat.AgentReasoningBlock
@@ -23,6 +27,7 @@ import app.hapi.companion.feature.sessions.SessionListViewModel
 import app.hapi.companion.feature.sessions.formatReopenError
 import app.hapi.data.api.ApiError
 import app.hapi.data.api.ChatSessionApi
+import app.hapi.data.sse.EngineEvent
 import app.hapi.data.sse.SseEngine
 import app.hapi.data.sse.SseSubscriptionKey
 import app.hapi.data.sse.SyncEventRouter
@@ -71,6 +76,7 @@ import app.hapi.protocol.wire.SlashCommand
 import app.hapi.protocol.wire.arrayOrNull
 import app.hapi.protocol.wire.objOrNull
 import app.hapi.protocol.wire.stringOrNull
+import java.io.IOException
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -92,6 +98,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
@@ -190,6 +197,8 @@ data class ComposerUiState(
      * external text. `-1` ⇒ the text tail; tracks the live caret otherwise.
      */
     val caretPosition: Int = -1,
+    /** A suggestion can move the caret even when the completed text is unchanged. */
+    val adoptCaret: Boolean = false,
 )
 
 data class ShareImportFailure(val fileId: String, val status: SharedFileStatus)
@@ -384,6 +393,7 @@ class ChatViewModel(
     private val drafts: ChatDrafts? = null,
     /** null ⇒ scratchlist UI hidden (badge, park) — tests/previews without a store. */
     private val scratchlist: SessionScratchlist? = null,
+    private val recentSkills: RecentSkills? = null,
     private val pipelineDispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val pipelineIntervalMs: Long = PIPELINE_INTERVAL_MS,
     private val draftSaveDebounceMs: Long = DRAFT_SAVE_DEBOUNCE_MS,
@@ -404,6 +414,7 @@ class ChatViewModel(
 
     private val windowStore = MutableStateFlow<MessageWindowStore?>(null)
     private val detailLoadFailed = MutableStateFlow(false)
+    private val detailLoadMutex = Mutex()
 
     private var sseJob: Job? = null
     private var initJob: Job? = null
@@ -473,9 +484,22 @@ class ChatViewModel(
         val text: String = "",
         val selectionStart: Int = 0,
         val selectionEnd: Int = 0,
-    )
+        val adoptCaret: Boolean = false,
+        val skillOpening: Long = 0,
+        val skillSuggestionsDismissed: Boolean = false,
+    ) {
+        val skillToken = if (skillSuggestionsDismissed) null else SkillSuggestions.token(text, selectionStart, selectionEnd)
+    }
 
     private val composerDraft = MutableStateFlow(ComposerDraft())
+
+    private fun updateComposerDraft(next: ComposerDraft) {
+        composerDraft.update { previous ->
+            // Preserve close/reopen transitions even when collectors only see the latest draft.
+            val entered = previous.skillToken == null && next.skillToken != null
+            next.copy(skillOpening = previous.skillOpening + if (entered) 1 else 0)
+        }
+    }
     private val sendInFlight = MutableStateFlow(false)
     private val importingShare = MutableStateFlow(false)
     private val draftReady = CompletableDeferred<Unit>()
@@ -636,6 +660,7 @@ class ChatViewModel(
             focusRequest = focusRequest,
             isImportingShare = importing,
             caretPosition = draft.selectionEnd,
+            adoptCaret = draft.adoptCaret,
         )
     }.stateIn(scope, SharingStarted.Eagerly, ComposerUiState(text = "", isSending = false, canSteer = false))
 
@@ -682,6 +707,39 @@ class ChatViewModel(
         val fetched = (fetch as? SlashFetch.Loaded)?.commands
         SlashCommands.filter(SlashCommands.merge(detail?.metadata?.slashCommands, fetched), query)
     }.stateIn(scope, SharingStarted.Eagerly, emptyList())
+
+    /** Fetch once per opening; typing further filters locally, and closing cancels the request. */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val skillSuggestions: StateFlow<List<SkillSuggestion>> = composerDraft
+        .map { draft -> draft.skillToken?.let { draft.skillOpening } }
+        .distinctUntilChanged()
+        .flatMapLatest { opening ->
+            if (opening == null) flowOf(emptyList()) else flow {
+                emit(emptyList())
+                val skills = try {
+                    val response = api.getSkills(sessionId)
+                    // Picker rows are keyed by exact name; case variants remain distinct.
+                    if (response.success) response.skills.orEmpty().distinctBy { it.name } else emptyList()
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (_: Exception) {
+                    emptyList()
+                }
+                if (skills.isNotEmpty()) {
+                    val knownNames = skills.map { skillNameKey(it.name) }.toSet()
+                    val maxNameLength = knownNames.maxOf { it.length }
+                    emitAll(combine(composerDraft, recentSkills?.names ?: flowOf(emptyList())) { draft, recent ->
+                        val token = draft.skillToken
+                        if (token == null || draft.skillOpening != opening) emptyList()
+                        else SkillSuggestions.filter(skills, token.query, recent).map {
+                            val end = SkillSuggestions.replacementEnd(token, it, knownNames, maxNameLength)
+                            SkillSuggestion(it, token, opening, replacementEnd = end)
+                        }
+                    })
+                }
+            }
+        }
+        .stateIn(scope, SharingStarted.Eagerly, emptyList())
 
     /**
      * Mention dropdown rows (B-M16a): non-empty only while the composer caret
@@ -782,6 +840,7 @@ class ChatViewModel(
                 }
             }
 
+            val initialDetail = launch(workerContext) { loadDetail() }
             // Subscribe only after the window exists: every routed message
             // event / gap resync then finds a peekable window, and the
             // collector registers before `subscribe` because the engine's
@@ -789,7 +848,15 @@ class ChatViewModel(
             sseJob = scope.launch {
                 sseEngine.events(subscriptionKey)
                     .onSubscription { sseEngine.subscribe(subscriptionKey) }
-                    .collect { router.route(subscriptionKey, it) }
+                    .collect { event ->
+                        router.route(subscriptionKey, event)
+                        if (event is EngineEvent.Handshake) launch {
+                            // The handshake may arrive while the offline REST
+                            // attempt is still failing. Do not block the stream.
+                            initialDetail.join()
+                            loadDetail(onlyIfFailed = true)
+                        }
+                    }
             }
 
             launch(workerContext) {
@@ -804,7 +871,6 @@ class ChatViewModel(
                 featuresRequested = true
                 launch(workerContext) { loadFeatures() }
             }
-            withContext(workerContext) { loadDetail() }
         }
 
         // Badge count + SSE-triggered refetches while this chat is on screen.
@@ -998,15 +1064,18 @@ class ChatViewModel(
         }
     }
 
-    private suspend fun loadDetail() {
-        try {
+    private suspend fun loadDetail(onlyIfFailed: Boolean = false) = detailLoadMutex.withLock {
+        if (onlyIfFailed && !detailLoadFailed.value) return@withLock
+        val verified = try {
             sessionStore.loadSessionDetail(sessionId)
-            detailLoadFailed.value = false
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (_: Exception) {
             detailLoadFailed.value = true
+            return@withLock
         }
+        detailLoadFailed.value = false
+        messageWindows.recoverLegacyFailedSends(sessionId, verified)
     }
 
     // ------------------------------------------------------------- composer --
@@ -1016,18 +1085,23 @@ class ChatViewModel(
     /**
      * [setComposerText] with an explicit resting caret (mention insert lands
      * mid-draft); every other programmatic set rests at the tail. The caret
-     * only moves when the text actually changes, so a same-text call never
-     * teleports the user's caret.
+     * only moves when the text actually changes unless a skill pick explicitly
+     * adopts the new caret after an already-complete token.
      */
-    private fun setComposerText(text: String, caret: Int) {
+    private fun setComposerText(text: String, caret: Int, selectedSkill: Boolean = false) {
         if (importingShare.value) return
         // Fetch the RPC command list on the transition INTO slash mode (the
         // web refetches when the menu opens) — not on every keystroke, so a
         // wedged CLI cannot be hammered while the user types a command.
         val enteredSlashMode = SlashCommands.queryOf(text) != null &&
             SlashCommands.queryOf(composerDraft.value.text) == null
-        if (text != composerDraft.value.text) {
-            composerDraft.value = ComposerDraft(text, caret, caret)
+        val textChanged = text != composerDraft.value.text
+        if (textChanged || selectedSkill) {
+            updateComposerDraft(ComposerDraft(
+                text, caret, caret,
+                adoptCaret = selectedSkill && !textChanged,
+                skillSuggestionsDismissed = selectedSkill,
+            ))
         }
         if (enteredSlashMode) loadSlashCommands()
         draftJob?.cancel()
@@ -1044,12 +1118,16 @@ class ChatViewModel(
      */
     fun onComposerChange(text: String, selectionStart: Int, selectionEnd: Int) {
         if (importingShare.value) return
+        val draft = composerDraft.value
+        if (draft.skillSuggestionsDismissed && text == draft.text &&
+            selectionStart == draft.selectionStart && selectionEnd == draft.selectionEnd
+        ) return
         // Fetch the RPC command list on the transition INTO slash mode (the
         // web refetches when the menu opens) — not on every keystroke, so a
         // wedged CLI cannot be hammered while the user types a command.
         val enteredSlashMode = SlashCommands.queryOf(text) != null &&
             SlashCommands.queryOf(composerDraft.value.text) == null
-        composerDraft.value = ComposerDraft(text, selectionStart, selectionEnd)
+        updateComposerDraft(ComposerDraft(text, selectionStart, selectionEnd))
         if (enteredSlashMode) loadSlashCommands()
         draftJob?.cancel()
         val store = drafts ?: return
@@ -1067,7 +1145,7 @@ class ChatViewModel(
     private fun replaceComposerTextRaw(text: String) {
         if (text == composerDraft.value.text) return
         val tail = text.length
-        composerDraft.value = ComposerDraft(text, tail, tail)
+        updateComposerDraft(ComposerDraft(text, tail, tail))
     }
 
     /** Commit the latest keystrokes before a share picker can reopen this session under a new ID. */
@@ -1164,6 +1242,25 @@ class ChatViewModel(
     /** Dropdown tap: replace the slash token with `/name ` ready for arguments. */
     fun selectSlashCommand(command: SlashCommand) {
         setComposerText("/${command.name} ")
+    }
+
+    /** Insert the skill in the draft without sending it or disturbing surrounding text. */
+    fun selectSkillSuggestion(suggestion: SkillSuggestion) {
+        if (importingShare.value || suggestion !in skillSuggestions.value) return
+        val draft = composerDraft.value
+        val token = draft.skillToken ?: return
+        if (draft.skillOpening != suggestion.opening || token != suggestion.token) return
+        val edit = SkillSuggestions.insert(draft.text, suggestion)
+        setComposerText(edit.text, edit.caret, selectedSkill = true)
+        recentSkills?.let { history ->
+            scope.launch {
+                try {
+                    history.record(suggestion.skill.name)
+                } catch (_: IOException) {
+                    // History is optional; the draft was already updated.
+                }
+            }
+        }
     }
 
     /**
