@@ -12,6 +12,8 @@ export const RPC_METHODS = {
     HandoffLocal: 'handoff-local',
     SpawnHappySession: 'spawn-happy-session',
     StopSession: 'stop-session',
+    /** Read-only session/PID exit probe — never tree-kills (#2658). */
+    ProbeSessionExit: 'probe-session-exit',
     StopRunner: 'stop-runner',
     ListMachineDirectory: 'list-directory',
     PathExists: 'path-exists',

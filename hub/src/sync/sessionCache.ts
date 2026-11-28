@@ -8,6 +8,11 @@ import { clampAliveTime } from './aliveTime'
 import { EventPublisher } from './eventPublisher'
 import { extractTodoWriteTodosFromMessageContent, TodosSchema } from './todos'
 import { InvalidExternalRefsError } from './externalRefErrors'
+import {
+    generationEntryHasWork,
+    projectLegacyLiveWork,
+    UNKNOWN_GENERATION_KEY,
+} from './liveWorkByGeneration'
 import { resolveSessionIdleTimeoutMs, shouldClearKeepaliveIdle, shouldMarkKeepaliveIdle } from './sessionIdle'
 
 export { InvalidExternalRefsError } from './externalRefErrors'
@@ -668,6 +673,12 @@ export class SessionCache {
         if (requestedThinking || pendingThinkingUntil <= hubNow) {
             this.pendingThinkingUntilBySessionId.delete(session.id)
         }
+        // Durable generation latch survives heartbeat expiry (#2658).
+        if (session.thinking) {
+            this.setUnresolvedTurn(session.id, true)
+        } else if (!preserveQueuedThinking) {
+            this.setUnresolvedTurn(session.id, false)
+        }
         // The agent says it's idle: whatever it does next is a new turn.
         if (!requestedThinking) this.forgetInterruptedTurn(session.id)
         this.recordTurn(session, wasThinking, hubNow, 'agent', 'idle')
@@ -856,12 +867,109 @@ export class SessionCache {
 
         session.backgroundTasks = tasks
         session.backgroundTaskCount = tasks.length
+        this.upsertCurrentGenerationLiveWork(sessionId, { backgroundTasks: tasks })
         this.recordAgentProgress(sessionId)
         this.publisher.emit({
             type: 'session-updated',
             sessionId,
             data: { backgroundTaskCount: tasks.length, backgroundTasks: tasks } satisfies SessionPatch
         })
+    }
+
+    /**
+     * Persist / clear the current worker's unresolved-turn bit in
+     * `liveWorkByGeneration` (#2658). Only mutates the reporting generation.
+     */
+    setUnresolvedTurn(sessionId: string, unresolved: boolean): void {
+        this.upsertCurrentGenerationLiveWork(sessionId, { unresolvedTurn: unresolved })
+    }
+
+    /**
+     * Drop one generation's durable live-work entry after verified exit (#2658).
+     */
+    clearGenerationLiveWork(sessionId: string, hostStartMarker: string): void {
+        const session = this.sessions.get(sessionId)
+        if (!session?.metadata || hostStartMarker.length === 0) return
+        const map = {
+            ...projectLegacyLiveWork(session.metadata),
+        }
+        if (!(hostStartMarker in map)) return
+        delete map[hostStartMarker]
+        // Hub-owned fields: `undefined` carries prior forward; `null` clears.
+        const metadata = {
+            ...session.metadata,
+            liveWorkByGeneration: Object.keys(map).length > 0 ? map : null,
+            // Stop projecting stale single-slot leftovers after keyed clear.
+            unresolvedTurn: null,
+            backgroundWork: null,
+        }
+        const metaResult = this.store.sessions.updateSessionMetadata(
+            sessionId,
+            metadata,
+            session.metadataVersion,
+            session.namespace,
+            { touchUpdatedAt: false },
+        )
+        if (metaResult.result === 'success') {
+            session.metadata = metaResult.value as typeof session.metadata
+            session.metadataVersion = metaResult.version
+        }
+    }
+
+    private upsertCurrentGenerationLiveWork(
+        sessionId: string,
+        patch: { unresolvedTurn?: boolean; backgroundTasks?: BackgroundTask[] },
+    ): void {
+        const session = this.sessions.get(sessionId)
+        if (!session?.metadata) return
+        const marker = typeof session.metadata.hostStartMarker === 'string'
+            && session.metadata.hostStartMarker.length > 0
+            ? session.metadata.hostStartMarker
+            : UNKNOWN_GENERATION_KEY
+        const map = projectLegacyLiveWork(session.metadata)
+        const existing = map[marker]
+        const machineId = typeof session.metadata.machineId === 'string'
+            ? session.metadata.machineId
+            : (existing?.machineId ?? '')
+        const hostPid = typeof session.metadata.hostPid === 'number' && session.metadata.hostPid > 0
+            ? session.metadata.hostPid
+            : existing?.hostPid
+        const nextTasks = patch.backgroundTasks !== undefined
+            ? patch.backgroundTasks
+            : existing?.backgroundTasks
+        const nextUnresolved = patch.unresolvedTurn !== undefined
+            ? patch.unresolvedTurn
+            : existing?.unresolvedTurn === true
+        const entry = {
+            machineId,
+            ...(typeof hostPid === 'number' ? { hostPid } : {}),
+            since: existing?.since ?? Date.now(),
+            ...(nextUnresolved ? { unresolvedTurn: true as const } : {}),
+            ...(nextTasks && nextTasks.length > 0 ? { backgroundTasks: nextTasks } : {}),
+        }
+        if (!generationEntryHasWork(entry)) {
+            delete map[marker]
+        } else {
+            map[marker] = entry
+        }
+        // Hub-owned fields: `undefined` carries prior forward; `null` clears.
+        const metadata = {
+            ...session.metadata,
+            liveWorkByGeneration: Object.keys(map).length > 0 ? map : null,
+            unresolvedTurn: null,
+            backgroundWork: null,
+        }
+        const metaResult = this.store.sessions.updateSessionMetadata(
+            sessionId,
+            metadata,
+            session.metadataVersion,
+            session.namespace,
+            { touchUpdatedAt: false },
+        )
+        if (metaResult.result === 'success') {
+            session.metadata = metaResult.value as typeof session.metadata
+            session.metadataVersion = metaResult.version
+        }
     }
 
     /**

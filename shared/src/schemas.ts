@@ -305,7 +305,8 @@ export const MetadataSchema = z.object({
     lifecycleStateSince: z.number().optional(),
     // Opt out of keepalive-idle reconciliation for sessions that are meant to
     // sit quiet indefinitely (operator holding pens, sessions owning work the
-    // hub cannot see). Never reconciled to 'idle' while true.
+    // hub cannot see). Never reconciled to 'idle' while true. Also blocks
+    // hard Archive before Kill (#2020 / #2658).
     idleReconcileExempt: z.boolean().optional(),
     // Externally blocked work distinct from turn-scoped `thinking` (#2020):
     // waiting on CI, a vendor, or a peer reply. Hub-visible so keepalive-idle
@@ -316,6 +317,36 @@ export const MetadataSchema = z.object({
         since: z.number(),
         reason: z.string().optional(),
     }).nullable().optional(),
+    // Generation-keyed durable live work (#2658). Key = hostStartMarker (or
+    // reserved unknown). Any entry with work blocks destroy-state callers;
+    // clear of a prior generation on runner-owned rows requires PID+marker
+    // ProbeSessionExit already_gone. Hub-owned.
+    liveWorkByGeneration: z.record(z.string(), z.object({
+        machineId: z.string(),
+        hostPid: z.number().int().positive().optional(),
+        since: z.number(),
+        unresolvedTurn: z.boolean().optional(),
+        backgroundTasks: z.array(z.object({
+            id: z.string(),
+            type: z.string(),
+            description: z.string(),
+        })).optional(),
+    })).optional(),
+    // Deprecated single-slot latches — read-path projects into
+    // liveWorkByGeneration when the keyed map is absent (#2658 migration).
+    // Writers should not create these going forward.
+    backgroundWork: z.object({
+        tasks: z.array(z.object({
+            id: z.string(),
+            type: z.string(),
+            description: z.string(),
+        })).default([]),
+        hostStartMarker: z.string().optional(),
+    }).optional(),
+    unresolvedTurn: z.object({
+        hostStartMarker: z.string().optional(),
+        since: z.number().optional(),
+    }).optional(),
     archivedBy: z.string().optional(),
     archiveReason: z.string().optional(),
     // Set only after a completed fresh-session clear. The source row remains

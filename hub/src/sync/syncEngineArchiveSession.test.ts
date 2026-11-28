@@ -628,4 +628,94 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         await expect(engine.archiveSession(sessionId)).rejects.toThrow()
         expect(cache().getSession(sessionId)?.active).toBe(true)
     })
+
+    it('refuses Archive while a prior generation still has durable live work (#2658)', async () => {
+        const sessionId = insertActiveSession('sess-gen-live', 'machine-x', 7001)
+        const before = cache().getSession(sessionId)!
+        expect(store.sessions.updateSessionMetadata(
+            sessionId,
+            {
+                ...before.metadata!,
+                hostStartMarker: 'worker-B',
+                hostPid: 7002,
+                liveWorkByGeneration: {
+                    'worker-A': {
+                        machineId: 'machine-x',
+                        hostPid: 7001,
+                        since: Date.now() - 1000,
+                        unresolvedTurn: true,
+                    },
+                },
+            },
+            before.metadataVersion,
+            NAMESPACE,
+        ).result).toBe('success')
+        cache().refreshSession(sessionId)
+
+        setKillSessionMissingTarget()
+        let stopCalled = false
+        let probed: Array<{ id: string; marker?: string }> = []
+        const gateway = engine as unknown as {
+            rpcGateway: {
+                stopRunnerSession: unknown
+                probeRunnerSessionExit: unknown
+            }
+        }
+        gateway.rpcGateway.stopRunnerSession = async () => {
+            stopCalled = true
+            return 'already_gone'
+        }
+        gateway.rpcGateway.probeRunnerSessionExit = async (
+            _machineId: string,
+            id: string,
+            opts?: { processStartMarker?: string },
+        ) => {
+            probed.push({ id, marker: opts?.processStartMarker })
+            return 'still_alive'
+        }
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(stopCalled).toBe(false)
+        expect(probed).toEqual([{ id: 'PID-7001', marker: 'worker-A' }])
+    })
+
+    it('clears a prior generation after PID+marker already_gone then archives (#2658)', async () => {
+        const sessionId = insertActiveSession('sess-gen-clear', 'machine-x', 7001)
+        const before = cache().getSession(sessionId)!
+        expect(store.sessions.updateSessionMetadata(
+            sessionId,
+            {
+                ...before.metadata!,
+                hostStartMarker: 'worker-B',
+                hostPid: 7002,
+                liveWorkByGeneration: {
+                    'worker-A': {
+                        machineId: 'machine-x',
+                        hostPid: 7001,
+                        since: Date.now() - 1000,
+                        unresolvedTurn: true,
+                    },
+                },
+            },
+            before.metadataVersion,
+            NAMESPACE,
+        ).result).toBe('success')
+        cache().refreshSession(sessionId)
+
+        setKillSessionMissingTarget()
+        const gateway = engine as unknown as {
+            rpcGateway: {
+                stopRunnerSession: unknown
+                probeRunnerSessionExit: unknown
+            }
+        }
+        gateway.rpcGateway.stopRunnerSession = async () => 'already_gone'
+        gateway.rpcGateway.probeRunnerSessionExit = async () => 'already_gone'
+
+        await engine.archiveSession(sessionId)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).toBe('archived')
+        expect(cache().getSession(sessionId)?.metadata?.liveWorkByGeneration?.['worker-A']).toBeUndefined()
+    })
 })

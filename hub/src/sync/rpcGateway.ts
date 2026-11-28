@@ -279,6 +279,32 @@ export class RpcGateway {
         throw new Error('Unexpected stop-session response')
     }
 
+    /**
+     * Read-only exit probe. Older Runners lack the handler → RpcTargetMissingError
+     * (hub must keep 409; never fall back to StopSession) (#2658).
+     */
+    async probeRunnerSessionExit(
+        machineId: string,
+        sessionId: string,
+        opts?: { processStartMarker?: string; timeoutMs?: number }
+    ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> {
+        const timeoutMs = opts?.timeoutMs ?? DEFAULT_RPC_TIMEOUT_MS
+        const started = performance.now()
+        let result: unknown
+        try {
+            result = await this.machineRpc(machineId, RPC_METHODS.ProbeSessionExit, {
+                sessionId,
+                ...(opts?.processStartMarker ? { processStartMarker: opts.processStartMarker } : {}),
+            }, timeoutMs)
+        } catch (error) {
+            if (error instanceof RpcTargetMissingError) throw error
+            throw new RunnerStopRpcError(performance.now() - started >= timeoutMs, error)
+        }
+        const status = result && typeof result === 'object' ? (result as { status?: unknown }).status : undefined
+        if (status === 'stopped' || status === 'already_gone' || status === 'still_alive' || status === 'unknown') return status
+        throw new Error('Unexpected probe-session-exit response')
+    }
+
     async handoffSessionToLocal(sessionId: string): Promise<void> {
         await this.sessionRpc(sessionId, RPC_METHODS.HandoffLocal, {})
     }

@@ -9,7 +9,10 @@ import { registerSessionHandlers } from '../socket/handlers/cli/sessionHandlers'
 import type { EventPublisher } from './eventPublisher'
 import { SessionCache } from './sessionCache'
 import {
+    blocksHardArchive,
     DEFAULT_SESSION_IDLE_TIMEOUT_MS,
+    hasDurableLiveWork,
+    hasLiveWork,
     resolveSessionIdleTimeoutMs,
     shouldClearKeepaliveIdle,
     shouldMarkKeepaliveIdle,
@@ -44,6 +47,45 @@ function session(overrides: Partial<Session> = {}): Session {
         ...overrides
     } as Session
 }
+
+describe('hasDurableLiveWork / blocksHardArchive', () => {
+    it('treats any generation entry with work as durable live work (#2658)', () => {
+        expect(hasDurableLiveWork(session({
+            metadata: {
+                path: '/tmp/p',
+                host: 'h',
+                hostStartMarker: 'worker-B',
+                liveWorkByGeneration: {
+                    'worker-A': {
+                        machineId: 'm1',
+                        hostPid: 1,
+                        since: NOW - 1000,
+                        unresolvedTurn: true,
+                    },
+                },
+            },
+        }))).toBe(true)
+    })
+
+    it('projects legacy unresolvedTurn into durable live work', () => {
+        expect(hasDurableLiveWork(session({
+            metadata: {
+                path: '/tmp/p',
+                host: 'h',
+                unresolvedTurn: { since: NOW - 1000, hostStartMarker: 'worker-A' },
+            },
+        }))).toBe(true)
+    })
+
+    it('honours idleReconcileExempt on hard Archive even without live work', () => {
+        const s = session({
+            thinking: false,
+            metadata: { path: '/tmp/p', host: 'h', idleReconcileExempt: true },
+        })
+        expect(hasLiveWork(s)).toBe(false)
+        expect(blocksHardArchive(s)).toBe(true)
+    })
+})
 
 describe('resolveSessionIdleTimeoutMs', () => {
     it('defaults when unset or unparseable', () => {
