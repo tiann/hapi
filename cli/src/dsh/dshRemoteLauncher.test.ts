@@ -5,6 +5,14 @@ import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 
 const FLASH = '["deepseek-official","deepseek-flash"]'
 const PRO = '["deepseek-official","deepseek-v4-pro"]'
+// The stock deepseek adapter's thought_level option: four explicit levels and
+// never "" (it always declares a default effort, so dsh rejects "").
+const STOCK_EFFORTS = [
+    { value: 'off', name: 'Off' },
+    { value: 'low', name: 'Low' },
+    { value: 'high', name: 'High' },
+    { value: 'max', name: 'Max' }
+]
 
 const harness = vi.hoisted(() => ({
     // Latest created backend (existing tests assert against it); `backends`
@@ -54,7 +62,12 @@ const harness = vi.hoisted(() => ({
     // catalog RPC while a respawn is still tearing the dead backend down.
     disconnectBlocker: null as null | Promise<void>,
     modelOption: null as { id: string; category?: string; currentValue?: string } | null,
-    thoughtLevelOption: null as { id: string; category?: string; currentValue?: string } | null,
+    thoughtLevelOption: null as {
+        id: string
+        category?: string
+        currentValue?: string
+        options?: Array<{ value: string; name?: string }>
+    } | null,
     modelsMetadata: null as {
         availableModels: Array<{ modelId: string; name?: string }>
         currentModelId: string | null
@@ -1209,9 +1222,15 @@ describe('DshRemoteLauncher', () => {
         expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
     })
 
-    it('applies reasoning effort through the thought_level config option, mapping Default to empty string', async () => {
+    it('applies reasoning effort through the thought_level config option, mapping Default to empty string where offered', async () => {
         harness.modelOption = { id: 'model', category: 'model', currentValue: FLASH }
-        harness.thoughtLevelOption = { id: 'reasoning_effort', category: 'thought_level', currentValue: '' }
+        // A model that declares no default effort offers "" as a real level.
+        harness.thoughtLevelOption = {
+            id: 'reasoning_effort',
+            category: 'thought_level',
+            currentValue: '',
+            options: [{ value: '', name: 'Provider default' }, { value: 'high', name: 'High' }]
+        }
         const session = createSessionWithBatches([
             ['first', { modelReasoningEffort: 'high' }],
             ['second', { modelReasoningEffort: null }]
@@ -1276,6 +1295,86 @@ describe('DshRemoteLauncher', () => {
             [{ type: 'text', text: 'first' }],
             [{ type: 'text', text: 'second' }]
         ])
+    })
+
+    it('adopts the level the agent runs with when no effort was requested', async () => {
+        harness.modelOption = { id: 'model', category: 'model', currentValue: FLASH }
+        harness.thoughtLevelOption = { id: 'reasoning_effort', category: 'thought_level', currentValue: 'high', options: STOCK_EFFORTS }
+        const onEffortDiscovered = vi.fn()
+        const session = createSessionWithBatches([['first', {}]])
+        const launcher = new DshRemoteLauncher(session as never, { onEffortDiscovered })
+
+        await launcher.launch()
+
+        // dsh always runs on SOME level and offers no "Default": the host is
+        // told which one it is, and nothing is switched.
+        expect(onEffortDiscovered).toHaveBeenCalledWith('high')
+        expect(harness.setConfigOptionCalls).toEqual([])
+        expect(harness.prompts).toHaveLength(1)
+    })
+
+    it('re-asserts the tracked effort after a model switch reset it', async () => {
+        harness.modelOption = { id: 'model', category: 'model', currentValue: FLASH }
+        harness.thoughtLevelOption = { id: 'reasoning_effort', category: 'thought_level', currentValue: 'high', options: STOCK_EFFORTS }
+        const session = createSessionWithBatches([
+            ['first', { modelReasoningEffort: 'max' }],
+            // dsh records the new route bare, which drops the session back to
+            // the new model's default even though the preference is unchanged.
+            ['second', { model: PRO, modelReasoningEffort: 'max' }],
+            ['third', { modelReasoningEffort: 'max' }]
+        ])
+        const launcher = new DshRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        expect(harness.setConfigOptionCalls.map((call) => `${call.configId}=${call.value}`)).toEqual([
+            'reasoning_effort=max',
+            `model=${PRO}`,
+            // re-sent after the switch, then deduped again on the plain turn
+            'reasoning_effort=max'
+        ])
+        expect(harness.prompts).toHaveLength(3)
+    })
+
+    it('never sends a Default the model does not offer, and reports the live level instead', async () => {
+        harness.modelOption = { id: 'model', category: 'model', currentValue: FLASH }
+        harness.thoughtLevelOption = { id: 'reasoning_effort', category: 'thought_level', currentValue: 'high', options: STOCK_EFFORTS }
+        const onEffortRollback = vi.fn()
+        const session = createSessionWithBatches([
+            ['first', { modelReasoningEffort: null }],
+            ['second', {}]
+        ])
+        const launcher = new DshRemoteLauncher(session as never, { onEffortRollback })
+
+        await launcher.launch()
+
+        // "" would be rejected by dsh: it never reaches the wire, no failure
+        // note is raised, and the host is corrected to what really runs.
+        expect(harness.setConfigOptionCalls.filter((call) => call.configId === 'reasoning_effort')).toEqual([])
+        expect(onEffortRollback).toHaveBeenCalledWith('high')
+        const notes = (session.sendSessionEvent as ReturnType<typeof vi.fn>).mock.calls
+            .map((call) => String((call[0] as { message?: string } | undefined)?.message ?? ''))
+        expect(notes.some((note) => note.includes('Failed to switch DSH reasoning effort'))).toBe(false)
+        expect(harness.prompts).toHaveLength(2)
+    })
+
+    it('answers ListDshModels with the live effort option of the current model', async () => {
+        harness.modelOption = { id: 'model', category: 'model', currentValue: FLASH }
+        harness.thoughtLevelOption = { id: 'reasoning_effort', category: 'thought_level', currentValue: 'max', options: STOCK_EFFORTS }
+        harness.modelsMetadata = {
+            availableModels: [{ modelId: FLASH, name: 'DeepSeek-V41-Flash' }],
+            currentModelId: FLASH
+        }
+        const session = createSessionWithMode()
+        const launcher = new DshRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        const registered = (session.client.rpcHandlerManager.registerHandler as ReturnType<typeof vi.fn>).mock.calls
+            .find((call) => call[0] === 'listDshModels')
+        const answer = await (registered![1] as () => Promise<Record<string, unknown>>)()
+        expect(answer.effortOptions).toEqual(STOCK_EFFORTS)
+        expect(answer.currentEffortId).toBe('max')
     })
 
     it('rolls the effort tracking back to unset when no thought_level option exists', async () => {
@@ -1451,7 +1550,11 @@ describe('DshRemoteLauncher', () => {
         await expect(pending).resolves.toEqual({
             success: true,
             availableModels: [{ modelId: FLASH, name: 'DeepSeek-V41-Flash' }],
-            currentModelId: FLASH
+            currentModelId: FLASH,
+            // No thought_level option in this harness: an EMPTY effort list is
+            // the positive "this model has no levels to pick" answer.
+            effortOptions: [],
+            currentEffortId: null
         })
     })
 
@@ -1479,7 +1582,11 @@ describe('DshRemoteLauncher', () => {
                 { modelId: FLASH, name: 'DeepSeek-V41-Flash' },
                 { modelId: PRO, name: 'DeepSeek-V4-Pro' }
             ],
-            currentModelId: FLASH
+            currentModelId: FLASH,
+            // No thought_level option in this harness: an EMPTY effort list is
+            // the positive "this model has no levels to pick" answer.
+            effortOptions: [],
+            currentEffortId: null
         })
     })
 
@@ -1526,7 +1633,11 @@ describe('DshRemoteLauncher', () => {
         await expect(pending).resolves.toEqual({
             success: true,
             availableModels: [{ modelId: FLASH, name: 'DeepSeek-V41-Flash' }],
-            currentModelId: FLASH
+            currentModelId: FLASH,
+            // No thought_level option in this harness: an EMPTY effort list is
+            // the positive "this model has no levels to pick" answer.
+            effortOptions: [],
+            currentEffortId: null
         })
     })
 
@@ -1570,7 +1681,11 @@ describe('DshRemoteLauncher', () => {
         await expect(pending).resolves.toEqual({
             success: true,
             availableModels: [{ modelId: FLASH, name: 'DeepSeek-V41-Flash' }],
-            currentModelId: FLASH
+            currentModelId: FLASH,
+            // No thought_level option in this harness: an EMPTY effort list is
+            // the positive "this model has no levels to pick" answer.
+            effortOptions: [],
+            currentEffortId: null
         })
         // The answer was served from the REPLACEMENT backend's metadata,
         // never from the corpse.

@@ -153,7 +153,7 @@ Source: `hub/src/web/routes/sessions.ts`; flavor gates in `shared/src/modes.ts` 
 | `POST /api/sessions/:id/permission-mode` | `{mode: PermissionMode}` | All flavors except `pi` and `dsh` (per-flavor allowed sets in `modes.ts`) |
 | `POST /api/sessions/:id/model` | `{model: string \| {provider, modelId} \| null, effort?: string \| null}` | Flavors with `supportsModelChange` (not `dsh`); remote-only for codex/cursor/grok. Only claude and agy accept `effort` with a model change. |
 | `POST /api/sessions/:id/effort` | `{effort: string \| null}` | agy, claude, copilot, grok, kimi, pi (`supportsEffort`) |
-| `POST /api/sessions/:id/model-reasoning-effort` | `{modelReasoningEffort: string \| null}` | codex, opencode (remote-only) |
+| `POST /api/sessions/:id/model-reasoning-effort` | `{modelReasoningEffort: string \| null}` | codex, opencode, dsh (remote-only; dsh accepts the levels its current model lists and has no provider-default level on the stock adapter) |
 | `POST /api/sessions/:id/service-tier` | `{serviceTier: 'fast' \| 'standard'}` | codex (remote-only) |
 | `POST /api/sessions/:id/collaboration-mode` | `{mode: 'default' \| 'plan'}` | codex (remote-only) |
 | `POST /api/sessions/:id/copilot-agent-mode` | `{mode}` | copilot (remote-only) |
@@ -188,9 +188,9 @@ The configuration routes in the table above respond `{ok: true}`; apply-failures
 
 | Method & path | Notes |
 |---|---|
-| `GET /api/sessions/:id/codex-models`, `/opencode-models`, `/cursor-models`, `/grok-models`, `/copilot-models`, `/kimi-models`, `/pi-models`, `/dsh-models` | Active session of the matching flavor; 400 otherwise |
+| `GET /api/sessions/:id/codex-models`, `/opencode-models`, `/cursor-models`, `/grok-models`, `/copilot-models`, `/kimi-models`, `/pi-models`, `/dsh-models` | Active session of the matching flavor; 400 otherwise. `dsh-models` also returns `effortOptions` (the current model's reasoning-effort levels; `[]` when it has none) and `currentEffortId` |
 | `GET /api/sessions/:id/opencode-reasoning-effort-options`, `/grok-reasoning-effort-options`, `/copilot-reasoning-effort-options`, `/kimi-reasoning-effort-options` | Same pattern |
-| `GET /api/machines/:id/agy-models`, `/pi-models`, `/codex-models`, `/cursor-models`, `/claude-models`, `/dsh-models` | Machine-level (pre-spawn pickers). `agy-models` takes `?refresh=true` to skip the machine's cached catalog, and may answer `success: true` with an advisory `error` (see [Errors](./errors.md#rpc-wrapped-endpoints)) |
+| `GET /api/machines/:id/agy-models`, `/pi-models`, `/codex-models`, `/cursor-models`, `/claude-models`, `/dsh-models` | Machine-level (pre-spawn pickers). `dsh-models` entries carry `reasoningEfforts` (each model's reasoning-effort levels). `agy-models` takes `?refresh=true` to skip the machine's cached catalog, and may answer `success: true` with an advisory `error` (see [Errors](./errors.md#rpc-wrapped-endpoints)) |
 | `GET /api/machines/:id/opencode-models?cwd=`, `/grok-models?cwd=`, `/copilot-models?cwd=`, `/kimi-models?cwd=` | `cwd` query required (400 without) |
 | `GET /api/machines/:id/opencode-model-variants?cwd=` | Effort variants per OpenCode model; `cwd` optional |
 

@@ -27,6 +27,15 @@ describe('parseDshCommandOptions', () => {
             .toThrow('Invalid --permission-mode value: bypassPermissions')
     })
 
+    it('rejects launch-effort and accepts a reasoning-effort pick', () => {
+        expect(() => parseDshCommandOptions(['--effort', 'high']))
+            .toThrow('launch-effort is not supported')
+        // --model-reasoning-effort seeds the reasoning-effort preference
+        // (off/low/high/max) applied via session/set_config_option.
+        expect(parseDshCommandOptions(['--model-reasoning-effort', 'high']))
+            .toEqual({ modelReasoningEffort: 'high', startingMode: 'remote' as const })
+    })
+
     it('accepts a model override applied through the ACP config option', () => {
         expect(parseDshCommandOptions(['--model', '["deepseek-official","deepseek-v4-pro"]']))
             .toEqual({

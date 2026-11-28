@@ -1057,6 +1057,36 @@ export function NewSession(props: {
         dshModelsState.isLoading,
         dshSelectedModel
     ])
+    // DSH reasoning-effort options ride the selected model's catalog entry
+    // (per-model `reasoningEfforts` captured by the machine probe). No
+    // options for the selected model = hide the field (no static fallback,
+    // no "Default" entry — the ACP option never carries one).
+    const dshEffortOptions = useMemo(() => {
+        if (agent !== 'dsh' || dshSelectedModel === null) return undefined
+        const selected = dshModelsState.availableModels.find(
+            (candidate) => candidate.modelId === dshSelectedModel
+        )
+        const efforts = selected?.reasoningEfforts
+        if (!efforts || efforts.length === 0) return undefined
+        return efforts.map((effort) => ({
+            value: effort.value,
+            label: effort.name ?? effort.value
+        }))
+    }, [agent, dshSelectedModel, dshModelsState.availableModels])
+    useEffect(() => {
+        if (
+            agent !== 'dsh'
+            || modelReasoningEffort === 'default'
+            || !dshEffortOptions
+        ) {
+            return
+        }
+        // Selected model changed under a picked effort it no longer exposes:
+        // drop the pick so spawn carries no stale value.
+        if (!dshEffortOptions.some((option) => option.value === modelReasoningEffort)) {
+            setModelReasoningEffort('default')
+        }
+    }, [agent, dshEffortOptions, modelReasoningEffort])
 
     useEffect(() => {
         if (agent !== 'agy' || agyModelsState.isLoading || agyModelsState.error
@@ -2134,7 +2164,9 @@ export function NewSession(props: {
                 : undefined
             const resolvedModelReasoningEffort = (agent === 'codex' || agent === 'opencode') && modelReasoningEffort !== 'default'
                 ? modelReasoningEffort
-                : undefined
+                : (agent === 'dsh' && modelReasoningEffort !== 'default' && dshEffortOptions?.some((option) => option.value === modelReasoningEffort)
+                    ? modelReasoningEffort
+                    : undefined)
             const preferredLaunchSettings = {
                 model: agent === 'agy'
                     ? (agySelectedModel ?? 'auto')
@@ -2696,6 +2728,7 @@ export function NewSession(props: {
                     agyOptions={agyEffortOptions}
                     claudeOptions={claudeEffortOptions}
                     codexReasoningOptions={agent === 'codex' ? codexReasoningEffortOptions : undefined}
+                    dshOptions={agent === 'dsh' ? dshEffortOptions : undefined}
                     opencodeVariantOptions={agent === 'opencode' ? opencodeVariantOptions : undefined}
                     piSelectedModel={agent === 'pi' ? piSelectedModel : null}
                 />

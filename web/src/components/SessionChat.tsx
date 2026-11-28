@@ -134,6 +134,7 @@ import { useCopilotReasoningEffortOptions } from '@/hooks/queries/useCopilotReas
 import { useKimiModelsForSession } from '@/hooks/queries/useKimiModelsForSession'
 import { useKimiReasoningEffortOptions } from '@/hooks/queries/useKimiReasoningEffortOptions'
 import { useDshModelsForSession } from '@/hooks/queries/useDshModels'
+import { getDshReasoningEffortSourceOptions } from '@/components/AssistantChat/codexReasoningEffortOptions'
 import { buildKimiSessionModelOptions } from '@/components/NewSession/grokModels'
 import { useGrokReasoningEffortOptions } from '@/hooks/queries/useGrokReasoningEffortOptions'
 import { usePiModels } from '@/hooks/queries/usePiModels'
@@ -1370,6 +1371,20 @@ function SessionChatInner(props: SessionChatProps) {
             ]
             : undefined
     ), [agentFlavor, dshModelsState.availableModels])
+    // dsh advertises its `reasoning_effort` config option (category
+    // thought_level) through the session catalog. `effortOptions` is
+    // undefined while the catalog is loading or failed (the static
+    // off/low/high/max presets stand in) and an EMPTY list once the catalog
+    // says the current model has no thought levels (the picker hides, like
+    // opencode).
+    const dshReasoningEffortOptions = useMemo(
+        () => agentFlavor === 'dsh'
+            ? (dshModelsState.effortOptions === undefined
+                ? getDshReasoningEffortSourceOptions()
+                : dshModelsState.effortOptions.map((option) => ({ value: option.value, name: option.name })))
+            : undefined,
+        [agentFlavor, dshModelsState.effortOptions]
+    )
     const machineCursorModelsState = useCursorModelsForMachine({
         api: props.api,
         machineId: sessionMachineId,
@@ -2619,7 +2634,15 @@ function SessionChatInner(props: SessionChatProps) {
                         collaborationMode={codexCollaborationModeSupported ? props.session.collaborationMode : undefined}
                         copilotAgentMode={agentFlavor === 'copilot' ? props.session.copilotAgentMode : undefined}
                         model={agentFlavor === 'agy' ? agyCurrentModel : props.session.model}
-                        modelReasoningEffort={agentFlavor === 'codex' || agentFlavor === 'opencode' ? props.session.modelReasoningEffort : undefined}
+                        modelReasoningEffort={agentFlavor === 'codex' || agentFlavor === 'opencode'
+                            ? props.session.modelReasoningEffort
+                            : agentFlavor === 'dsh'
+                                // dsh has no provider-default level: while HAPI
+                                // stores none, show what the agent really runs with.
+                                ? (props.session.modelReasoningEffort?.trim()
+                                    || dshModelsState.currentEffortId?.trim()
+                                    || null)
+                                : undefined}
                         effort={agentFlavor === 'agy' ? agyCurrentEffort : props.session.effort}
                         agentFlavor={agentFlavor}
                         machineId={sessionMachineId}
@@ -2668,7 +2691,9 @@ function SessionChatInner(props: SessionChatProps) {
                                 ? codexReasoningEffortOptions
                                 : agentFlavor === 'opencode' && opencodeReasoningEffortState.options.length > 0
                                     ? opencodeReasoningEffortState.options
-                                    : undefined
+                                    : agentFlavor === 'dsh'
+                                        ? dshReasoningEffortOptions
+                                        : undefined
                         }
                         availableEffortOptions={
                             agentFlavor === 'agy'

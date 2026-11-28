@@ -89,6 +89,26 @@ describe('buildCliArgs', () => {
         expect(args).toContain('high')
     })
 
+    it('passes --model and --model-reasoning-effort through for dsh, never --effort', () => {
+        // dsh reads the Codex-style reasoning axis; its command parser
+        // rejects the launch-effort flag, so a stale `effort` must not leak.
+        const args = buildCliArgs('dsh', {
+            directory: '/tmp',
+            model: '["deepseek-official","glm-5.4"]',
+            modelReasoningEffort: 'max',
+            effort: 'max',
+            resumeSessionId: 'dsh-native-1',
+            existingSessionId: 'hapi-row-1'
+        })
+        expect(args.slice(0, 2)).toEqual(['dsh', '--resume'])
+        expect(args[args.indexOf('--resume') + 1]).toBe('dsh-native-1')
+        expect(args.slice(args.indexOf('--model'), args.indexOf('--model') + 2))
+            .toEqual(['--model', '["deepseek-official","glm-5.4"]'])
+        expect(args.slice(args.indexOf('--model-reasoning-effort'), args.indexOf('--model-reasoning-effort') + 2))
+            .toEqual(['--model-reasoning-effort', 'max'])
+        expect(args).not.toContain('--effort')
+    })
+
     it('passes --service-tier through for codex (resume preserves Fast/Standard)', () => {
         const args = buildCliArgs('codex', {
             directory: '/tmp',

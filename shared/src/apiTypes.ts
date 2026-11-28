@@ -1343,9 +1343,21 @@ export type GrokModelSummary = {
     reasoningEfforts?: GrokReasoningEffortOption[]
 }
 
+export type DshReasoningEffortOption = {
+    value: string
+    name?: string
+    description?: string
+}
+
 export type DshModelSummary = {
     modelId: string
     name?: string
+    /** This model's reasoning-effort levels, captured at probe time by
+     * switching the throwaway probe session onto the model and reading its
+     * `reasoning_effort` config option (category thought_level). Absent when
+     * the model exposes no thought_level option, or when the probe used up
+     * its time budget before reaching the model. */
+    reasoningEfforts?: DshReasoningEffortOption[]
 }
 
 /**
@@ -1357,6 +1369,13 @@ export type DshModelsResponse = {
     success: boolean
     availableModels?: DshModelSummary[]
     currentModelId?: string | null
+    /** The live `reasoning_effort` config option of the session's CURRENT
+     * model — session-scoped queries only (the machine probe attaches
+     * per-model reasoningEfforts instead). Undefined until the session
+     * answered; `[]` once it says the current model has no thought levels. */
+    effortOptions?: DshReasoningEffortOption[]
+    /** The level the session currently runs with (session-scoped queries). */
+    currentEffortId?: string | null
     error?: string
 }
 export type ListDshModelsResponse = DshModelsResponse

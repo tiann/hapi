@@ -19,12 +19,13 @@ const CODEX_REASONING_EFFORT_LABELS: Record<string, string> = {
 }
 
 // DSH advertises a single session-wide `reasoning_effort` config option
-// (category thought_level) whose value set is fixed: off/low/high/max plus
-// '' meaning "Provider default". The composer maps '' to the null Default
-// entry, so only the four explicit levels are listed here.
+// (category thought_level). Its stock deepseek adapter always declares a
+// default effort, so the option lists the four explicit levels and never ""
+// — sending "" is rejected. The static presets below stand in only until the
+// live option arrives; they carry no Default row on purpose.
 export const DSH_REASONING_EFFORT_PRESETS = ['off', 'low', 'high', 'max'] as const
 
-/** Source options for SessionChat's dsh picker (mirrors what the agent's config option advertises). */
+/** Source options for SessionChat's dsh picker while the live option is undiscovered. */
 export function getDshReasoningEffortSourceOptions(): ComposerReasoningEffortSourceOption[] {
     return DSH_REASONING_EFFORT_PRESETS.map((value) => ({ value }))
 }
@@ -45,29 +46,30 @@ function formatCodexReasoningEffortLabel(effort: string): string {
 
 function buildDynamicReasoningEffortOptions(
     currentEffort: string | null,
-    dynamicOptions: ComposerReasoningEffortSourceOption[]
+    dynamicOptions: ComposerReasoningEffortSourceOption[],
+    options: { defaultEntry: boolean } = { defaultEntry: true }
 ): CodexComposerReasoningEffortOption[] {
     const filteredOptions = dynamicOptions.filter(
         (option) => normalizeCodexComposerReasoningEffort(option.value) !== null
     )
     const optionValues = new Set(filteredOptions.map((option) => option.value))
-    const options: CodexComposerReasoningEffortOption[] = [
-        { value: null, label: 'Default' }
-    ]
+    const effortOptions: CodexComposerReasoningEffortOption[] = options.defaultEntry
+        ? [{ value: null, label: 'Default' }]
+        : []
 
     if (currentEffort && !optionValues.has(currentEffort)) {
-        options.push({
+        effortOptions.push({
             value: currentEffort,
             label: formatCodexReasoningEffortLabel(currentEffort)
         })
     }
 
-    options.push(...filteredOptions.map((option) => ({
+    effortOptions.push(...filteredOptions.map((option) => ({
         value: option.value,
         label: option.name ?? formatCodexReasoningEffortLabel(option.value)
     })))
 
-    return options
+    return effortOptions
 }
 
 export function getCodexComposerReasoningEffortOptions(
@@ -85,12 +87,20 @@ export function getCodexComposerReasoningEffortOptions(
     }
 
     if (flavor === 'dsh') {
-        // DSH has a fixed thought_level value set; prefer discovered options
-        // when a catalog provides them, otherwise fall back to the presets.
+        // The live list describes the CURRENT model: empty means the model has
+        // no thought levels (nothing to pick), undefined means undiscovered
+        // (the static presets stand in). dsh's stock adapter always declares a
+        // default effort, so "" is not a selectable level and the Default row
+        // only exists when the live list actually offers it.
+        if (dynamicOptions && dynamicOptions.length === 0) {
+            return []
+        }
         const sourceOptions = dynamicOptions && dynamicOptions.length > 0
             ? dynamicOptions
             : getDshReasoningEffortSourceOptions()
-        return buildDynamicReasoningEffortOptions(normalizedCurrentEffort, sourceOptions)
+        return buildDynamicReasoningEffortOptions(normalizedCurrentEffort, sourceOptions, {
+            defaultEntry: sourceOptions.some((option) => option.value === '')
+        })
     }
 
     if (dynamicOptions && dynamicOptions.length > 0) {
