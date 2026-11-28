@@ -52,7 +52,6 @@ import { queryKeys } from '@/lib/query-keys'
 import { useAddToast } from '@/lib/toast-context'
 import { useTranslation } from '@/lib/use-translation'
 import { seedMessageWindowFromSession, syncTailMessages } from '@/lib/message-window-store'
-import { clearDraftsAfterSend } from '@/lib/clearDraftsAfterSend'
 import { transferComposerDraftThenNavigate } from '@/lib/composer-draft-transfer'
 import { getDraftAttachments } from '@/lib/composer-attachment-drafts'
 import { refreshSessionDetailPreservingActive } from '@/lib/session-detail-optimistic'
@@ -718,10 +717,11 @@ function SessionPage() {
         sendMessage,
         retryMessage,
         isSending,
+        sendSettlement,
+        consumeSendSettlement,
     } = useSendMessage(api, sessionId, {
         isSessionThinking: session?.thinking ?? false,
         onSuccess: (sentSessionId) => {
-            clearDraftsAfterSend(sentSessionId, sessionId)
             // 中文注释：一旦用户已经在 Hapi 内继续这个 Codex 会话，就清除"刚从 Codex 导入"的标记。
             clearCodexImportedSession(session?.metadata?.codexSessionId)
             // A successful send supersedes any previously-rendered error
@@ -759,13 +759,15 @@ function SessionPage() {
                 resolvedSessionId,
                 () => handleSessionResolved(resolvedSessionId),
                 [],
-                // assistant-ui clears composer text without awaiting this path;
-                // keep the submitted snapshot so deferred hydration still has it.
-                { textOverride: context.text },
+                // Only a composer-originated send has a submitted draft to
+                // rehydrate. A scratchlist queue send must not seed its note
+                // into the editor or replace the user's existing draft.
+                { textOverride: context.originalText },
             )
             // Cross-session resume: visible metadata may still carry source-scoped
             // upload paths, and inactive remounts hide stored files entirely.
             // Always defer so the active target can hydrate/re-upload before POST.
+            if (context.originalText === undefined && !context.attachments?.length) return undefined
             const stored = await getDraftAttachments(resolvedSessionId)
             if ((context.attachments?.length ?? 0) > 0 || stored.length > 0) {
                 return { deferUntilDraftHydrated: true }
@@ -974,6 +976,8 @@ function SessionPage() {
             cachedTailFirstFrame={messagesCachedTailFirstFrame}
             isLoadingMoreMessages={messagesLoadingMore}
             isSending={isSending}
+            sendSettlement={sendSettlement}
+            onConsumeSendSettlement={consumeSendSettlement}
             viewMode={messagesViewMode}
             messagesVersion={messagesVersion}
             historyVersion={historyVersion}

@@ -7,6 +7,7 @@ export type QueuedEditRecovery = {
     text: string
     pendingSchedule: PendingSchedule | null
     composerTextAtEdit: string
+    automaticallyCleared?: boolean
     pendingScheduleAtEdit: PendingSchedule | null
 }
 export type QueuedEditRecoveryInput = Omit<QueuedEditRecovery, 'id'>
@@ -16,6 +17,7 @@ export type QueuedOperationToken = symbol
 
 let cache: RecoveryMap | null = null
 let recoverySequence = 0
+const recoveryTextRevisions = new Map<string, number>()
 const listeners = new Map<string, Set<() => void>>()
 const pendingOperationTokens = new Map<string, QueuedOperationToken>()
 const pendingOperationListeners = new Map<string, Set<() => void>>()
@@ -90,6 +92,7 @@ function hydrate(): RecoveryMap {
                 text: record.text,
                 pendingSchedule,
                 composerTextAtEdit: record.composerTextAtEdit,
+                automaticallyCleared: record.automaticallyCleared === true,
                 pendingScheduleAtEdit,
             }
         }
@@ -137,11 +140,18 @@ export function getQueuedEditRecovery(sessionId: string): QueuedEditRecovery | n
         text: recovery.text,
         pendingSchedule: clonePendingSchedule(recovery.pendingSchedule),
         composerTextAtEdit: recovery.composerTextAtEdit,
+        automaticallyCleared: recovery.automaticallyCleared,
         pendingScheduleAtEdit: clonePendingSchedule(recovery.pendingScheduleAtEdit),
     }
 }
 
-export function saveQueuedEditRecovery(sessionId: string, recovery: QueuedEditRecoveryInput): void {
+export function getQueuedEditRecoveryTextRevision(sessionId: string): number | undefined {
+    return recoveryTextRevisions.get(sessionId)
+}
+
+export function saveQueuedEditRecovery(sessionId: string, recovery: QueuedEditRecoveryInput, textRevision?: number): void {
+    if (textRevision === undefined) recoveryTextRevisions.delete(sessionId)
+    else recoveryTextRevisions.set(sessionId, textRevision)
     const recoveries = hydrate()
     delete recoveries[sessionId]
     recoveries[sessionId] = {
@@ -149,6 +159,7 @@ export function saveQueuedEditRecovery(sessionId: string, recovery: QueuedEditRe
         text: recovery.text,
         pendingSchedule: clonePendingSchedule(recovery.pendingSchedule),
         composerTextAtEdit: recovery.composerTextAtEdit,
+        automaticallyCleared: recovery.automaticallyCleared,
         pendingScheduleAtEdit: clonePendingSchedule(recovery.pendingScheduleAtEdit),
     }
     persist()
@@ -156,7 +167,18 @@ export function saveQueuedEditRecovery(sessionId: string, recovery: QueuedEditRe
     notifyPendingOperation(sessionId)
 }
 
+// This is only an automatic clear if no later draft edit has superseded the
+// baseline captured by the cancellation. Keep both valid states: the
+// persisted draft may be empty while a mount still shows the submitted text.
+export function reconcileQueuedEditRecoveryClear(sessionId: string, text: string, revision: number): void {
+    const recovery = hydrate()[sessionId]
+    if (recovery?.composerTextAtEdit !== text || recoveryTextRevisions.get(sessionId) !== revision) return
+    recovery.automaticallyCleared = true
+    persist()
+}
+
 export function clearQueuedEditRecovery(sessionId: string): void {
+    recoveryTextRevisions.delete(sessionId)
     const recoveries = hydrate()
     if (!recoveries[sessionId]) return
     delete recoveries[sessionId]

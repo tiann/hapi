@@ -1,3 +1,4 @@
+import { recordComposerDraftChange, recordSuccessfulComposerClear, resetComposerSendStateForTests } from '@/lib/composer-send-state'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -262,6 +263,19 @@ describe('QueuedMessagesBar layout', () => {
 })
 
 describe('QueuedMessagesBar edit restore', () => {
+    it('restores the cancelled edit after a successful send automatically clears the remounted composer', async () => {
+        resetComposerSendStateForTests()
+        const { onEdit } = renderQueuedMessage(Date.now() + 60_000)
+        mocks.composerText = 'stale submitted text'
+        fireEvent.click(screen.getByRole('button', { name: 'Edit queued message' }))
+        recordSuccessfulComposerClear('session-1', mocks.composerText)
+        recordComposerDraftChange('session-1') // an unrelated attachment reorder
+        mocks.composerText = ''
+        await resolveCancel({ status: 'cancelled' })
+        expect(onEdit).toHaveBeenCalledOnce()
+        expect(mocks.composerSetText).toHaveBeenCalledOnce()
+    })
+
     it('keeps a newly typed draft and its schedule when the deferred cancel succeeds', async () => {
         const scheduledAt = Date.now() + 60_000
         const { onEdit } = renderQueuedMessage(scheduledAt)
@@ -442,6 +456,54 @@ describe('QueuedMessagesBar edit restore', () => {
             pendingSchedule: { type: 'absolute', ms: scheduledAt },
         })
         expect(getQueuedEditRecovery('session-1')).toBeNull()
+    })
+
+    it.each(['before', 'after'] as const)('persists the cleared draft baseline when the send settles %s the cancel', async (order) => {
+        const scheduledAt = Date.now() + 60_000
+        mocks.composerText = 'Previously submitted'
+        const { unmount } = renderQueuedMessage(scheduledAt)
+        fireEvent.click(screen.getByRole('button', { name: 'Edit queued message' }))
+        unmount()
+        const settle = () => recordSuccessfulComposerClear('session-1', 'Previously submitted')
+        if (order === 'before') settle()
+        await resolveCancel({ status: 'cancelled' })
+        if (order === 'after') settle()
+
+        const persisted = JSON.parse(sessionStorage.getItem('hapi:queued-edit-recovery')!)
+        expect(persisted['session-1']).toMatchObject({
+            composerTextAtEdit: 'Previously submitted',
+            automaticallyCleared: true,
+            text: 'Queued request',
+            pendingSchedule: { type: 'absolute', ms: scheduledAt },
+        })
+        resetComposerSendStateForTests()
+        mocks.composerText = ''
+        const { onEdit } = renderQueuedMessage(scheduledAt)
+        await waitFor(() => expect(mocks.composerSetText).toHaveBeenCalledWith('Queued request'))
+        expect(onEdit).toHaveBeenCalledWith({
+            text: 'Queued request',
+            pendingSchedule: { type: 'absolute', ms: scheduledAt },
+        })
+    })
+
+    it('recovers on a stale remount before slower composer hydration clears the submitted text', async () => {
+        const raf = installManualAnimationFrames()
+        const scheduledAt = Date.now() + 60_000
+        mocks.composerText = 'Previously submitted'
+        const first = renderQueuedMessage(scheduledAt)
+        fireEvent.click(screen.getByRole('button', { name: 'Edit queued message' }))
+        first.unmount()
+        const remount = renderQueuedMessage(scheduledAt)
+        await resolveCancel({ status: 'cancelled' })
+        recordSuccessfulComposerClear('session-1', 'Previously submitted')
+        // Durable send settlement has happened, but the visible composer has
+        // not finished attachment hydration and still shows the submitted text.
+        raf.flushPending()
+        await waitFor(() => expect(mocks.composerSetText).toHaveBeenCalledWith('Queued request'))
+        expect(remount.onEdit).toHaveBeenCalledWith({
+            text: 'Queued request',
+            pendingSchedule: { type: 'absolute', ms: scheduledAt },
+        })
     })
 
     it('keeps a remounted session busy until its queued-edit recovery is consumed', async () => {

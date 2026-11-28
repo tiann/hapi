@@ -1,3 +1,4 @@
+import { getComposerTextRevision, getSuccessfulComposerClear } from '@/lib/composer-send-state'
 import { useAui, useAuiState } from '@assistant-ui/react'
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
 import type { ApiClient } from '@/api/client'
@@ -18,6 +19,7 @@ import {
     clearQueuedEditRecovery,
     endQueuedOperation,
     getQueuedEditRecovery,
+    getQueuedEditRecoveryTextRevision,
     isQueuedOperationPending,
     saveQueuedEditRecovery,
     subscribeQueuedEditRecovery,
@@ -265,7 +267,9 @@ export function QueuedMessagesBar({
         const currentText = assistantApi.composer().getState().text
         // A new session starts at revision 0. Any schedule interaction, even
         // select-then-clear back to null, increments it and wins over recovery.
-        const textCompatible = currentText === recovery.composerTextAtEdit
+        const expectedRevision = getQueuedEditRecoveryTextRevision(sessionId)
+        const textCompatible = (expectedRevision === undefined || expectedRevision === getComposerTextRevision(sessionId))
+            && (currentText === recovery.composerTextAtEdit || (currentText === '' && recovery.automaticallyCleared))
         const scheduleCompatible = pendingScheduleRevisionRef.current === 0
         if (!textCompatible || !scheduleCompatible) {
             if (mountedRef.current) {
@@ -429,6 +433,8 @@ export function QueuedMessagesBar({
                             // The cancel request is asynchronous. Keep the exact composer text from the
                             // click so a newer draft or schedule is never replaced when success arrives.
                             const composerTextAtEdit = assistantApi.composer().getState().text
+                            const draftRevisionAtEdit = getComposerTextRevision(sessionId)
+                            const clearAtEdit = getSuccessfulComposerClear(sessionId)
                             const pendingScheduleAtEdit = pendingScheduleRef.current
                             const pendingScheduleRevisionAtEdit = pendingScheduleRevisionRef.current
                             const token = beginQueuedOperation(sessionId)
@@ -475,7 +481,12 @@ export function QueuedMessagesBar({
                                 const currentText = mountedRef.current
                                     ? assistantApi.composer().getState().text
                                     : composerTextRef.current
-                                const composerChanged = currentText !== composerTextAtEdit
+                                const currentRevision = getComposerTextRevision(sessionId)
+                                const latestClear = getSuccessfulComposerClear(sessionId)
+                                const matchingClear = latestClear !== clearAtEdit
+                                    && latestClear?.text === composerTextAtEdit && latestClear.revision === draftRevisionAtEdit
+                                const composerChanged = currentRevision !== draftRevisionAtEdit
+                                    || (currentText !== composerTextAtEdit && !(currentText === '' && matchingClear))
                                 const scheduleChanged = pendingScheduleRevisionRef.current !== pendingScheduleRevisionAtEdit
                                     || !pendingSchedulesEqual(pendingScheduleRef.current, pendingScheduleAtEdit)
                                 // Restore text and schedule as one unit. If either changed while the
@@ -499,8 +510,9 @@ export function QueuedMessagesBar({
                                         text: editText,
                                         pendingSchedule: restoredPendingSchedule,
                                         composerTextAtEdit,
+                                        automaticallyCleared: matchingClear,
                                         pendingScheduleAtEdit,
-                                    })
+                                    }, draftRevisionAtEdit)
                                     return
                                 }
                                 if (editText) {

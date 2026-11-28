@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode, TextareaHTMLAttributes } from 'react'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
@@ -8,14 +8,40 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '@/lib/i18n-context'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import type { ComposerSendIntent } from '@/lib/messageDelivery'
+import { clearDraftsAfterSend } from '@/lib/clearDraftsAfterSend'
+import * as composerAttachmentDrafts from '@/lib/composer-attachment-drafts'
+import {
+    clearDraftAttachments,
+    getDraftAttachments,
+    getRestoredUploadMetadata,
+    saveDraftAttachments,
+} from '@/lib/composer-attachment-drafts'
+import { clearDraft, getDraft, saveDraft } from '@/lib/composer-drafts'
+import { recordPendingComposerSend, consumePendingComposerSend, publishComposerSendSettlement, consumeComposerSendSettlement, getComposerDraftRevision, getPendingComposerSend, resetComposerSendStateForTests } from '@/lib/composer-send-state'
+import { appendFileReferenceToComposerDraft } from '@/lib/file-composer'
+import { appendTerminalExcerptToComposerDraft } from '@/lib/terminal-composer'
+
+vi.mock('@/lib/clearDraftsAfterSend', async () => {
+    const actual = await vi.importActual<typeof import('@/lib/clearDraftsAfterSend')>('@/lib/clearDraftsAfterSend')
+    return {
+        clearDraftsAfterSend: vi.fn((...args: Parameters<typeof actual.clearDraftsAfterSend>) => {
+            if (runtime.useRealDraftLifecycle) {
+                actual.clearDraftsAfterSend(...args)
+            }
+        }),
+    }
+})
+
 import { HappyComposer, type ComposerSendError } from './HappyComposer'
+
+const mockClearDraftsAfterSend = vi.mocked(clearDraftsAfterSend)
 
 /**
  * HappyComposer owns the recovery guard, while assistant-ui owns the live
  * composer store. This focused harness supplies the small subset of that
  * store necessary to exercise send → user interaction → delayed error races.
  */
-type FakeAttachment = { id: string; status: { type: 'complete' } }
+type FakeAttachment = { id: string; file?: File; path?: string; status: { type: 'complete' } }
 type MockComposerInputProps = TextareaHTMLAttributes<HTMLTextAreaElement> & {
     asChild?: boolean
     maxRows?: number
@@ -33,12 +59,18 @@ const runtime = vi.hoisted(() => ({
         thread: { isRunning: false, isDisabled: false },
     } as FakeRuntimeState,
     setSnapshot: null as null | ((updater: (current: FakeRuntimeState) => FakeRuntimeState) => void),
+    restoredAttachmentIds: null as null | ((ids: readonly string[]) => void),
+    attachmentRemove: null as null | (() => void),
+    attachmentReorder: null as null | ((activeId: string, targetId: string, position: 'before' | 'after') => void),
+    dictationTextChange: null as null | ((text: string) => void),
     pendingSendIntentRef: null as null | { current: ComposerSendIntent },
     sentIntents: [] as ComposerSendIntent[],
     modelChanges: [] as Array<{ provider: string; modelId: string } | string | null>,
     cancelRun: () => {},
     composerEnterBehavior: 'send' as 'send' | 'newline',
     pendingHydration: null as Promise<void> | null,
+    cancelPendingPreview: null as (() => void) | null,
+    useRealDraftLifecycle: false,
     dictationEnabled: false,
     dictation: { status: 'connected', supported: true, partialTranscript: '', error: null, toggle: vi.fn(), stopAndSend: vi.fn() },
 }))
@@ -54,6 +86,25 @@ vi.mock('@assistant-ui/react', async () => {
                     composer: { ...current.composer, text },
                 }))
             },
+            clearAttachments: async () => {
+                runtime.cancelPendingPreview?.()
+                runtime.setSnapshot!((current) => ({
+                    ...current,
+                    composer: { ...current.composer, attachments: [] },
+                }))
+            },
+            attachment: ({ id }: { id: string }) => ({
+                getState: () => runtime.snapshot.composer.attachments.find((item) => item.id === id),
+                remove: async () => {
+                    runtime.setSnapshot!((current) => ({
+                        ...current,
+                        composer: {
+                            ...current.composer,
+                            attachments: current.composer.attachments.filter((item) => item.id !== id),
+                        },
+                    }))
+                },
+            }),
             send: () => {
                 const intent = runtime.pendingSendIntentRef?.current ?? 'default'
                 runtime.sentIntents.push(intent)
@@ -63,7 +114,25 @@ vi.mock('@assistant-ui/react', async () => {
                     composer: { text: '', attachments: [] },
                 }))
             },
-            addAttachment: async () => {},
+            addAttachment: async (file?: File) => {
+                if (!file) return
+                const restored = getRestoredUploadMetadata(file)
+                runtime.setSnapshot!((current) => ({
+                    ...current,
+                    composer: {
+                        ...current.composer,
+                        attachments: [
+                            ...current.composer.attachments,
+                            {
+                                id: restored?.id ?? file.name,
+                                file,
+                                path: restored?.path,
+                                status: { type: 'complete' },
+                            },
+                        ],
+                    },
+                }))
+            },
         }),
         thread: () => ({ cancelRun: () => runtime.cancelRun() }),
     }
@@ -97,7 +166,10 @@ vi.mock('@assistant-ui/react', async () => {
                     />
                 ),
             ),
-            Attachments: () => null,
+            Attachments: (props: { components?: { Attachment?: React.ComponentType } }) => {
+                const Attachment = props.components?.Attachment
+                return Attachment ? <Attachment /> : null
+            },
         },
     }
 })
@@ -107,16 +179,50 @@ vi.mock('@/lib/composerSegments', () => ({
     resolveComposerPlaceholderKey: ({ showContinueHint }: { showContinueHint: boolean }) =>
         showContinueHint ? 'misc.typeMessage' : 'misc.typeAMessage',
 }))
-vi.mock('@/hooks/useComposerDraft', () => ({
-    useComposerDraft: (sessionId: string | undefined) => {
-        const [complete, setComplete] = useState(runtime.pendingHydration === null)
-        useEffect(() => { void runtime.pendingHydration?.then(() => setComplete(true)) }, [])
-        return { sessionId, complete, restoredAny: false, hasStoredAttachments: false }
+vi.mock('@/hooks/useComposerDraft', async () => {
+    const actual = await vi.importActual<typeof import('@/hooks/useComposerDraft')>('@/hooks/useComposerDraft')
+    return {
+        useComposerDraft: (
+            sessionId: string | undefined,
+            composerText: string,
+            attachments: readonly FakeAttachment[],
+            canRestoreAttachments: boolean,
+            setText: (text: string) => void,
+            addAttachment: (file: File) => Promise<void>,
+            onRestoredAttachmentIds?: (ids: readonly string[]) => void,
+        ) => {
+            if (runtime.useRealDraftLifecycle) {
+                return actual.useComposerDraft(
+                    sessionId,
+                    composerText,
+                    attachments as Parameters<typeof actual.useComposerDraft>[2],
+                    canRestoreAttachments,
+                    setText,
+                    addAttachment,
+                    onRestoredAttachmentIds,
+                )
+            }
+            runtime.restoredAttachmentIds = onRestoredAttachmentIds ?? null
+            const [complete, setComplete] = useState(runtime.pendingHydration === null)
+            useEffect(() => { void runtime.pendingHydration?.then(() => setComplete(true)) }, [])
+            return { sessionId, complete, restoredAny: false, hasStoredAttachments: false }
+        },
+    }
+})
+vi.mock('@/hooks/useDictation', () => ({
+    useDictation: (config: { onTextChange: (text: string) => void }) => {
+        runtime.dictationTextChange = config.onTextChange
+        return runtime.dictation
     },
 }))
-vi.mock('@/hooks/useDictation', () => ({ useDictation: () => runtime.dictation }))
 vi.mock('@/hooks/useVoiceInputPreferences', () => ({
     useVoiceInputPreferences: () => ({ voiceMode: runtime.dictationEnabled ? 'dictation' : 'conversation', provider: 'openai', transcriptionMode: 'standard' }),
+}))
+vi.mock('@/components/AssistantChat/AttachmentItem', () => ({
+    AttachmentItem: (props: { onRemove?: () => void }) => {
+        runtime.attachmentRemove = props.onRemove ?? null
+        return null
+    },
 }))
 vi.mock('@/hooks/useComposerEnterBehavior', () => ({
     useComposerEnterBehavior: () => ({ composerEnterBehavior: runtime.composerEnterBehavior }),
@@ -129,7 +235,14 @@ vi.mock('@/components/ChatInput/FloatingOverlay', () => ({ FloatingOverlay: ({ c
 vi.mock('@/components/ChatInput/Autocomplete', () => ({ Autocomplete: () => null }))
 vi.mock('@/components/AssistantChat/StatusBar', () => ({ StatusBar: () => null }))
 vi.mock('@/components/AssistantChat/SortableComposerAttachments', () => ({
-    SortableComposerAttachments: () => null,
+    SortableComposerAttachments: (props: {
+        onRemove?: () => void
+        onReorder?: (activeId: string, targetId: string, position: 'before' | 'after') => void
+    }) => {
+        runtime.attachmentRemove = props.onRemove ?? null
+        runtime.attachmentReorder = props.onReorder ?? null
+        return null
+    },
 }))
 vi.mock('@/components/AssistantChat/ComposerButtons', () => ({
     ComposerButtons: (props: {
@@ -173,8 +286,20 @@ type HarnessControls = {
     acceptAndClearSchedule: () => void
     remount: () => void
     programmaticSetText: (text: string) => void
+    queuedEditSetText: (text: string) => void
+    scratchlistPromoteSetText: (text: string) => void
+    hydrateSubmittedAttachment: () => void
+    hydrateReorderableAttachments: () => void
+    reorderAttachments: () => void
+    dictationSetText: (text: string) => void
+    abortRestore: (text: string) => void
+    acceptSend: (attachmentIds?: readonly string[]) => void
     setSending: (sending: boolean) => void
     setThreadDisabled: (disabled: boolean) => void
+    settleSend: (error?: ComposerSendError) => void
+    settleRetrySend: () => void
+    settleAttachmentSendFailure: () => void
+    resumeSameSession: () => void
     getClearErrorCalls: () => number
 }
 
@@ -182,6 +307,8 @@ function ComposerHarness(props: {
     initialText: string
     initialSchedule?: PendingSchedule | null
     piRunning?: boolean
+    sessionId?: string
+    canRestoreAttachments?: boolean
     abortPending?: boolean
     controls: { current: HarnessControls | null }
 }) {
@@ -192,7 +319,31 @@ function ComposerHarness(props: {
     const [schedule, setSchedule] = useState<PendingSchedule | null>(props.initialSchedule ?? null)
     const [sendError, setSendError] = useState<ComposerSendError | null>(null)
     const [isSending, setIsSending] = useState(false)
+    const [canRestoreAttachments, setCanRestoreAttachments] = useState(props.canRestoreAttachments ?? true)
     const [composerKey, setComposerKey] = useState('composer-a')
+    const [programmaticEditRevision, setProgrammaticEditRevision] = useState(0)
+    const [sendAcceptance, setSendAcceptance] = useState<{
+        attemptId: string | null
+        sessionId: string
+        programmaticEditRevision: number
+        draftRevision: number
+        originalText?: string
+        attachmentIds?: readonly string[]
+    } | null>(null)
+    const [sendSettlement, setSendSettlement] = useState<{
+        attemptId: string
+        sessionId: string
+        text: string
+        originalText?: string
+        status: 'success' | 'error'
+        source: 'send' | 'retry'
+    } | null>(null)
+    const sessionId = props.sessionId ?? 'session-a'
+    const consumeSendSettlement = useCallback((attemptId: string) => {
+        setSendSettlement((current) =>
+            current?.attemptId === attemptId ? null : current
+        )
+    }, [])
     const clearErrorCallsRef = useRef(0)
     const pendingSendIntentRef = useRef<ComposerSendIntent>('default')
 
@@ -208,21 +359,120 @@ function ComposerHarness(props: {
                 attachments: [{ id: 'new-attachment', status: { type: 'complete' } }],
             },
         })),
-        removeAttachments: () => setSnapshot((current) => ({
-            ...current,
-            composer: { ...current.composer, attachments: [] },
-        })),
+        removeAttachments: () => {
+            runtime.attachmentRemove?.()
+            setSnapshot((current) => ({
+                ...current,
+                composer: { ...current.composer, attachments: [] },
+            }))
+        },
         acceptAndClearSchedule: () => setSchedule(null),
         remount: () => setComposerKey((key) => key === 'composer-a' ? 'composer-b' : 'composer-a'),
         programmaticSetText: (text) => setSnapshot((current) => ({
             ...current,
             composer: { ...current.composer, text },
         })),
+        queuedEditSetText: (text) => {
+            setProgrammaticEditRevision((revision) => revision + 1)
+            setSnapshot((current) => ({
+                ...current,
+                composer: { ...current.composer, text },
+            }))
+        },
+        scratchlistPromoteSetText: (text) => {
+            setProgrammaticEditRevision((revision) => revision + 1)
+            setSnapshot((current) => ({
+                ...current,
+                composer: { ...current.composer, text },
+            }))
+        },
+        hydrateSubmittedAttachment: () => {
+            runtime.restoredAttachmentIds?.(['new-attachment'])
+            setSnapshot((current) => ({
+                ...current,
+                composer: {
+                    ...current.composer,
+                    attachments: [{ id: 'new-attachment', status: { type: 'complete' } }],
+                },
+            }))
+        },
+        hydrateReorderableAttachments: () => {
+            runtime.restoredAttachmentIds?.(['new-attachment', 'second-attachment'])
+            setSnapshot((current) => ({
+                ...current,
+                composer: {
+                    ...current.composer,
+                    text: 'foo',
+                    attachments: [
+                        { id: 'new-attachment', status: { type: 'complete' } },
+                        { id: 'second-attachment', status: { type: 'complete' } },
+                    ],
+                },
+            }))
+        },
+        reorderAttachments: () => runtime.attachmentReorder?.('new-attachment', 'second-attachment', 'after'),
+        dictationSetText: (text) => runtime.dictationTextChange?.(text),
+        abortRestore: (text) => {
+            setSendError(fail(2, text, null, true))
+        },
+        acceptSend: (attachmentIds) => {
+            setIsSending(true)
+            setSendSettlement(null)
+            setSendAcceptance({
+                attemptId: 'attempt-1',
+                sessionId,
+                programmaticEditRevision,
+                draftRevision: getComposerDraftRevision(sessionId),
+                originalText: props.initialText,
+                attachmentIds,
+            })
+        },
         setSending: setIsSending,
         setThreadDisabled: (disabled) => setSnapshot((current) => ({
             ...current,
             thread: { ...current.thread, isDisabled: disabled },
         })),
+        settleSend: (error) => {
+            if (error) setSendError(error)
+            setSendSettlement({
+                attemptId: 'attempt-1',
+                sessionId,
+                text: props.initialText.trim(),
+                originalText: props.initialText,
+                status: error ? 'error' : 'success',
+                source: 'send',
+            })
+            setIsSending(false)
+        },
+        settleRetrySend: () => {
+            setSendSettlement({
+                attemptId: 'retry-1',
+                sessionId,
+                text: props.initialText.trim(),
+                originalText: props.initialText,
+                status: 'success',
+                source: 'retry',
+            })
+            setIsSending(false)
+        },
+        settleAttachmentSendFailure: () => {
+            setSendSettlement({
+                attemptId: 'attempt-1',
+                sessionId,
+                text: props.initialText.trim(),
+                originalText: props.initialText,
+                status: 'error',
+                source: 'send',
+            })
+            setIsSending(false)
+        },
+        resumeSameSession: () => {
+            setCanRestoreAttachments(true)
+            setSnapshot((current) => ({
+                ...current,
+                composer: { ...current.composer, text: props.initialText },
+            }))
+        },
         getClearErrorCalls: () => clearErrorCallsRef.current,
     }
 
@@ -230,10 +480,15 @@ function ComposerHarness(props: {
         <I18nProvider>
             <HappyComposer
                 key={composerKey}
-                sessionId={composerKey}
+                sessionId={sessionId}
                 disabled={isSending}
                 isAborting={props.abortPending}
                 pendingSchedule={schedule}
+                canRestoreAttachments={canRestoreAttachments}
+                sendAcceptance={sendAcceptance}
+                programmaticEditRevision={programmaticEditRevision}
+                sendSettlement={sendSettlement}
+                onConsumeSendSettlement={consumeSendSettlement}
                 onSchedule={setSchedule}
                 onClearSchedule={() => setSchedule(null)}
                 sendError={sendError}
@@ -261,13 +516,15 @@ function renderComposer(
     initialText = 'failed text',
     initialSchedule: PendingSchedule | null = { type: 'absolute', ms: 1234 },
     piRunning = false,
+    sessionId = 'session-a',
+    canRestoreAttachments = true,
     composerEnterBehavior: 'send' | 'newline' = 'send',
 ) {
     const controls: { current: HarnessControls | null } = { current: null }
     runtime.sentIntents = []
     runtime.modelChanges = []
     runtime.composerEnterBehavior = composerEnterBehavior
-    render(<ComposerHarness initialText={initialText} initialSchedule={initialSchedule} piRunning={piRunning} controls={controls} />)
+    render(<ComposerHarness initialText={initialText} initialSchedule={initialSchedule} piRunning={piRunning} sessionId={sessionId} canRestoreAttachments={canRestoreAttachments} controls={controls} />)
     return controls
 }
 
@@ -317,6 +574,10 @@ describe('HappyComposer send-error atomic restore', () => {
     afterEach(() => {
         cleanup()
         runtime.setSnapshot = null
+        runtime.restoredAttachmentIds = null
+        runtime.attachmentRemove = null
+        resetComposerSendStateForTests()
+        mockClearDraftsAfterSend.mockReset()
     })
 
     it('collapses an expanded composer immediately when a send is submitted', () => {
@@ -326,6 +587,16 @@ describe('HappyComposer send-error atomic restore', () => {
 
         send()
         expect(screen.getByTestId('composer-shell')).not.toHaveAttribute('data-expanded')
+    })
+
+    it('does not collapse an editor reopened by the user while an accepted send settles', () => {
+        const controls = renderComposer('original draft', null)
+        fireEvent.click(screen.getByRole('button', { name: 'expand' }))
+        send()
+        acceptAndClearSchedule(controls)
+        fireEvent.click(screen.getByRole('button', { name: 'expand' }))
+        act(() => controls.current!.settleSend())
+        expect(screen.getByTestId('composer-shell')).toHaveAttribute('data-expanded', 'true')
     })
 
     it('keeps the composer collapsed when a submitted send later fails', async () => {
@@ -391,6 +662,619 @@ describe('HappyComposer send-error atomic restore', () => {
 
         await waitFor(() => expect(input()).toHaveValue('failed text'))
         expect(screen.getByTestId('pending-schedule')).toHaveTextContent('{"type":"absolute","ms":1234}')
+    })
+
+    it('clears an untouched remounted send draft after a successful settlement', async () => {
+        const controls = renderComposer('submitted text', null)
+        send()
+        act(() => controls.current!.acceptSend())
+        act(() => controls.current!.remount())
+        act(() => controls.current!.programmaticSetText('submitted text'))
+
+        act(() => controls.current!.settleSend())
+
+        await waitFor(() => expect(input()).toHaveValue(''))
+        fireEvent.change(input(), { target: { value: 'new draft after send' } })
+        expect(input()).toHaveValue('new draft after send')
+    })
+
+    it('preserves abort-restored text when a delayed send succeeds', async () => {
+        const controls = renderComposer('foo', null)
+        send()
+
+        act(() => controls.current!.acceptSend())
+        act(() => controls.current!.abortRestore('foo'))
+
+        await waitFor(() => expect(input()).toHaveValue('foo'))
+
+        act(() => controls.current!.settleSend())
+
+        await waitFor(() => expect(input()).toHaveValue('foo'))
+        expect(mockClearDraftsAfterSend).not.toHaveBeenCalled()
+    })
+
+    it('clears the visible submitted text before the attachment read finishes', async () => {
+        const controls = renderComposer('foo', null)
+        send()
+        act(() => controls.current!.acceptSend())
+        let finishHydration!: () => void
+        runtime.pendingHydration = new Promise<void>(resolve => { finishHydration = resolve })
+        try {
+            act(() => controls.current!.remount())
+            act(() => controls.current!.programmaticSetText('foo'))
+            await waitFor(() => expect(input()).toHaveValue('foo'))
+            act(() => controls.current!.settleSend())
+            await waitFor(() => expect(input()).toHaveValue(''))
+            expect(mockClearDraftsAfterSend).not.toHaveBeenCalled()
+            await act(async () => finishHydration())
+            await waitFor(() => expect(mockClearDraftsAfterSend).toHaveBeenCalledWith('session-a', null, 'foo'))
+        } finally {
+            runtime.pendingHydration = null
+            finishHydration()
+        }
+    })
+
+    it('clears submitted text when a simultaneous abort recovery is rejected', async () => {
+        const controls = renderComposer('foo', null)
+        send()
+        act(() => controls.current!.acceptSend())
+        act(() => controls.current!.remount())
+        act(() => controls.current!.programmaticSetText('foo'))
+        await waitFor(() => expect(input()).toHaveValue('foo'))
+
+        act(() => {
+            controls.current!.abortRestore('foo')
+            controls.current!.settleSend()
+        })
+
+        await waitFor(() => expect(input()).toHaveValue(''))
+        expect(mockClearDraftsAfterSend).toHaveBeenCalledWith('session-a', null, 'foo')
+    })
+
+    it('clears an untouched remounted send draft with surrounding whitespace', async () => {
+        const controls = renderComposer(' foo\n', null)
+        send()
+        act(() => controls.current!.acceptSend())
+        act(() => controls.current!.remount())
+        act(() => controls.current!.programmaticSetText(' foo\n'))
+
+        act(() => controls.current!.settleSend())
+
+        await waitFor(() => expect(input()).toHaveValue(''))
+        expect(mockClearDraftsAfterSend).toHaveBeenCalledWith('session-a', null, ' foo\n')
+    })
+
+    it('clears a remounted draft from the original user submission after success', async () => {
+        const controls = renderComposer('submitted text', null)
+        fireEvent.change(input(), { target: { value: 'submitted text' } })
+        send()
+        act(() => controls.current!.acceptSend())
+        act(() => controls.current!.remount())
+        act(() => controls.current!.programmaticSetText('submitted text'))
+
+        act(() => controls.current!.settleSend())
+
+        await waitFor(() => expect(input()).toHaveValue(''))
+    })
+
+    it('preserves a new user draft typed during a remounted send', async () => {
+        const controls = renderComposer('submitted text', null)
+        send()
+        act(() => controls.current!.acceptSend())
+        act(() => controls.current!.remount())
+        fireEvent.change(input(), { target: { value: 'new draft while pending' } })
+
+        act(() => controls.current!.settleSend())
+
+        await waitFor(() => expect(input()).toHaveValue('new draft while pending'))
+    })
+
+    it('preserves a different remounted draft after a successful settlement', async () => {
+        const controls = renderComposer('submitted text', null)
+        send()
+        act(() => controls.current!.acceptSend())
+        act(() => controls.current!.remount())
+        act(() => controls.current!.programmaticSetText('replacement draft'))
+
+        act(() => controls.current!.settleSend())
+
+        await waitFor(() => expect(input()).toHaveValue('replacement draft'))
+    })
+
+    it('preserves a same-text programmatic replacement during an accepted send', async () => {
+        const controls = renderComposer('foo', null)
+        send()
+
+        act(() => controls.current!.acceptSend())
+        act(() => controls.current!.queuedEditSetText('foo'))
+        act(() => controls.current!.settleSend())
+
+        await waitFor(() => expect(input()).toHaveValue('foo'))
+    })
+
+    it('preserves a same-text queued edit after the composer remounts', async () => {
+        const controls = renderComposer('foo', null)
+        send()
+
+        act(() => controls.current!.acceptSend())
+        act(() => controls.current!.remount())
+        act(() => controls.current!.queuedEditSetText('foo'))
+        act(() => controls.current!.settleSend())
+
+        await waitFor(() => expect(input()).toHaveValue('foo'))
+        expect(mockClearDraftsAfterSend).not.toHaveBeenCalled()
+
+        act(() => controls.current!.remount())
+        await waitFor(() => expect(input()).toHaveValue('foo'))
+    })
+
+    it('preserves a same-text user draft after a keyed remount', async () => {
+        const controls = renderComposer('foo', null)
+        send()
+
+        act(() => controls.current!.acceptSend())
+        act(() => controls.current!.remount())
+        fireEvent.change(input(), { target: { value: 'foo' } })
+        act(() => controls.current!.settleSend())
+
+        await waitFor(() => expect(input()).toHaveValue('foo'))
+        expect(mockClearDraftsAfterSend).not.toHaveBeenCalled()
+    })
+
+    it('clears stale text restored by a same-session resume', async () => {
+        const controls = renderComposer('foo', null, false, 'session-a', false)
+        send()
+
+        act(() => controls.current!.acceptSend())
+        act(() => controls.current!.resumeSameSession())
+        act(() => controls.current!.settleSend())
+
+        await waitFor(() => expect(input()).toHaveValue(''))
+        await waitFor(() => expect(runtime.snapshot.composer.attachments).toHaveLength(0))
+        expect(mockClearDraftsAfterSend).toHaveBeenCalledWith('session-a', null, 'foo', [])
+    })
+
+    it('preserves a same-text edit made before resumed acceptance is published', async () => {
+        const controls = renderComposer('foo', null)
+        act(() => controls.current!.programmaticSetText(''))
+        fireEvent.change(input(), { target: { value: 'foo' } })
+
+        act(() => controls.current!.acceptSend())
+        act(() => controls.current!.settleSend())
+
+        await waitFor(() => expect(input()).toHaveValue('foo'))
+        expect(mockClearDraftsAfterSend).not.toHaveBeenCalled()
+    })
+
+    it('preserves a matching draft when an attachment is added after the send', async () => {
+        const controls = renderComposer('foo', null)
+        send()
+
+        act(() => controls.current!.acceptSend())
+        act(() => controls.current!.programmaticSetText('foo'))
+        act(() => controls.current!.addAttachment())
+        act(() => controls.current!.settleSend())
+
+        await waitFor(() => expect(input()).toHaveValue('foo'))
+        expect(mockClearDraftsAfterSend).not.toHaveBeenCalled()
+    })
+
+    it('preserves a same-text dictation draft after a remount', async () => {
+        const controls = renderComposer('foo', null)
+        send()
+
+        act(() => controls.current!.acceptSend())
+        act(() => controls.current!.remount())
+        act(() => controls.current!.dictationSetText('foo'))
+        act(() => controls.current!.settleSend())
+
+        await waitFor(() => expect(input()).toHaveValue('foo'))
+        expect(mockClearDraftsAfterSend).not.toHaveBeenCalled()
+    })
+
+    it('clears sent attachments restored by draft hydration after a remount', async () => {
+        const controls = renderComposer('foo', null)
+        send()
+
+        act(() => controls.current!.acceptSend())
+        act(() => controls.current!.remount())
+        act(() => controls.current!.hydrateSubmittedAttachment())
+        act(() => controls.current!.settleSend())
+
+        await waitFor(() => expect(input()).toHaveValue(''))
+        expect(mockClearDraftsAfterSend).toHaveBeenCalledWith('session-a', null, 'foo')
+    })
+
+    it('preserves a reordered restored attachment draft after a remount', async () => {
+        const controls = renderComposer('foo', null)
+        send()
+
+        act(() => controls.current!.acceptSend())
+        act(() => controls.current!.remount())
+        act(() => controls.current!.hydrateReorderableAttachments())
+        act(() => controls.current!.reorderAttachments())
+        expect(getComposerDraftRevision('session-a')).toBe(1)
+        act(() => controls.current!.settleSend())
+
+        await waitFor(() => expect(input()).toHaveValue('foo'))
+        expect(mockClearDraftsAfterSend).not.toHaveBeenCalled()
+    })
+
+    it('preserves a same-text schedule change after a remount', async () => {
+        const controls = renderComposer('foo', null)
+        send()
+
+        act(() => controls.current!.acceptSend())
+        act(() => controls.current!.remount())
+        act(() => controls.current!.programmaticSetText('foo'))
+        fireEvent.click(screen.getByRole('button', { name: 'select schedule' }))
+        act(() => controls.current!.settleSend())
+
+        await waitFor(() => expect(input()).toHaveValue('foo'))
+        expect(mockClearDraftsAfterSend).not.toHaveBeenCalled()
+    })
+
+    it('preserves a same-text draft after removing a hydrated attachment', async () => {
+        const controls = renderComposer('foo', null)
+        send()
+
+        act(() => controls.current!.acceptSend())
+        act(() => controls.current!.remount())
+        act(() => controls.current!.hydrateSubmittedAttachment())
+        act(() => controls.current!.programmaticSetText('foo'))
+        act(() => controls.current!.removeAttachments())
+        act(() => controls.current!.settleSend())
+
+        await waitFor(() => expect(input()).toHaveValue('foo'))
+        expect(mockClearDraftsAfterSend).not.toHaveBeenCalled()
+    })
+
+    it('preserves a same-text scratchlist promotion after a remount', async () => {
+        const controls = renderComposer('foo', null)
+        send()
+
+        act(() => controls.current!.acceptSend())
+        act(() => controls.current!.remount())
+        act(() => controls.current!.scratchlistPromoteSetText('foo'))
+        act(() => controls.current!.settleSend())
+
+        await waitFor(() => expect(input()).toHaveValue('foo'))
+        expect(mockClearDraftsAfterSend).not.toHaveBeenCalled()
+    })
+
+    it('preserves a matching draft when a retry settles without composer acceptance', async () => {
+        const controls = renderComposer('foo', null)
+
+        act(() => controls.current!.settleRetrySend())
+
+        await waitFor(() => expect(input()).toHaveValue('foo'))
+    })
+
+    it('clears the matching draft in the resolved target session after success', async () => {
+        // The target session id models an inactive-session resume that retargets
+        // the accepted send from its original route to this composer.
+        const controls = renderComposer('foo', null, false, 'session-resolved')
+        send()
+
+        act(() => controls.current!.acceptSend())
+        act(() => controls.current!.settleSend())
+
+        await waitFor(() => expect(input()).toHaveValue(''))
+        expect(mockClearDraftsAfterSend).toHaveBeenCalledWith('session-resolved', null, 'foo', [])
+    })
+
+    it('preserves an unsent attachment hydrated from storage after sending restored text', async () => {
+        runtime.useRealDraftLifecycle = true
+        const sessionId = 'session-delayed-attachment-hydration'
+        saveDraft(sessionId, 'restored text')
+        saveDraftAttachments(sessionId, [{
+            id: 'unsent-attachment',
+            file: new File(['image-bytes'], 'unsent.png', { type: 'image/png' }),
+            path: '/tmp/unsent.png',
+        }])
+        const storedFiles = await getDraftAttachments(sessionId)
+        let resolveAttachmentHydration: (() => void) | undefined
+        const getDraftAttachmentsSpy = vi
+            .spyOn(composerAttachmentDrafts, 'getDraftAttachments')
+            .mockImplementation(() => new Promise<File[]>((resolve) => {
+                resolveAttachmentHydration = () => resolve(storedFiles)
+            }))
+
+        try {
+            const controls = renderComposer('', null, false, sessionId)
+
+            await waitFor(() => expect(input()).toHaveValue('restored text'))
+            expect(runtime.snapshot.composer.attachments).toEqual([])
+
+            send()
+            act(() => controls.current!.acceptSend())
+            expect(input()).toHaveValue('')
+
+            await act(async () => {
+                resolveAttachmentHydration?.()
+            })
+            await waitFor(() => expect(runtime.snapshot.composer.attachments).toEqual([
+                expect.objectContaining({ id: 'unsent-attachment', path: '/tmp/unsent.png' }),
+            ]))
+
+            getDraftAttachmentsSpy.mockRestore()
+            act(() => controls.current!.settleSend())
+
+            await waitFor(() => expect(mockClearDraftsAfterSend).toHaveBeenCalledWith(
+                sessionId,
+                null,
+                '',
+                [],
+            ))
+            expect(input()).toHaveValue('')
+            expect(runtime.snapshot.composer.attachments).toEqual([
+                expect.objectContaining({ id: 'unsent-attachment', path: '/tmp/unsent.png' }),
+            ])
+            expect(getDraft(sessionId)).toBe('')
+            const remainingAttachments = await getDraftAttachments(sessionId)
+            expect(remainingAttachments).toHaveLength(1)
+            expect(getRestoredUploadMetadata(remainingAttachments[0])?.id).toBe('unsent-attachment')
+        } finally {
+            getDraftAttachmentsSpy.mockRestore()
+            runtime.useRealDraftLifecycle = false
+            clearDraft(sessionId)
+            clearDraftAttachments(sessionId)
+        }
+    })
+
+    it('preserves a newer queued edit while removing only the sent attachment on remount', async () => {
+        const controls = renderComposer('submitted', null)
+        act(() => controls.current!.addAttachment())
+        send()
+        act(() => controls.current!.acceptSend(['new-attachment']))
+        act(() => controls.current!.remount())
+        act(() => {
+            controls.current!.hydrateSubmittedAttachment()
+            runtime.restoredAttachmentIds?.(['keep-attachment'])
+            runtime.setSnapshot!(current => ({
+                ...current, composer: { ...current.composer, attachments: [
+                    ...current.composer.attachments, { id: 'keep-attachment', status: { type: 'complete' } },
+                ] },
+            }))
+            controls.current!.queuedEditSetText('New queued edit')
+        })
+        act(() => controls.current!.settleSend())
+        await waitFor(() => expect(runtime.snapshot.composer.attachments.map(item => item.id)).toEqual(['keep-attachment']))
+        expect(input()).toHaveValue('New queued edit')
+        expect(mockClearDraftsAfterSend).toHaveBeenCalledWith('session-a', null, 'submitted', ['new-attachment'], true)
+    })
+
+    it('cleans chips from the second success while the first attempt still waits for hydration', async () => {
+        const controls = renderComposer('draft', null)
+        const sessionId = 'session-a'
+        let finishHydration!: () => void
+        runtime.pendingHydration = new Promise<void>(resolve => { finishHydration = resolve })
+        try {
+            act(() => controls.current!.remount())
+            act(() => {
+                for (const attemptId of ['first', 'second']) {
+                    recordPendingComposerSend({ sessionId, attemptId, text: '', attachmentIds: [attemptId],
+                        draftRevision: 0, programmaticEditRevision: 0 })
+                    publishComposerSendSettlement({ sessionId, attemptId, text: '', status: 'success', source: 'send' })
+                }
+                runtime.restoredAttachmentIds?.(['second'])
+                runtime.setSnapshot!(current => ({
+                    ...current, composer: { ...current.composer, attachments: [{ id: 'second', status: { type: 'complete' } }] },
+                }))
+            })
+            await waitFor(() => expect(runtime.snapshot.composer.attachments).toEqual([]))
+            expect(input()).toHaveValue('draft')
+        } finally {
+            runtime.pendingHydration = null
+            await act(async () => {
+                for (const id of ['first', 'second']) {
+                    consumePendingComposerSend(sessionId, id)
+                    consumeComposerSendSettlement(sessionId, id)
+                }
+                finishHydration()
+            })
+        }
+    })
+
+    it('clears a later successful draft while an earlier success still waits for attachment hydration', async () => {
+        const controls = renderComposer('Second submitted text', null)
+        const sessionId = 'session-a'
+        let finishHydration!: () => void
+        runtime.pendingHydration = new Promise<void>(resolve => { finishHydration = resolve })
+        try {
+            act(() => controls.current!.remount())
+            act(() => {
+                for (const [attemptId, text] of [['first', 'First submitted text'], ['second', 'Second submitted text']]) {
+                    recordPendingComposerSend({ sessionId, attemptId, text, attachmentIds: [attemptId],
+                        draftRevision: 0, programmaticEditRevision: 0 })
+                    publishComposerSendSettlement({ sessionId, attemptId, text, status: 'success', source: 'send' })
+                }
+                runtime.restoredAttachmentIds?.(['second'])
+                runtime.setSnapshot!(current => ({
+                    ...current, composer: { ...current.composer, attachments: [{ id: 'second', status: { type: 'complete' } }] },
+                }))
+            })
+            await waitFor(() => expect(runtime.snapshot.composer.attachments).toEqual([]))
+            await waitFor(() => expect(input()).toHaveValue(''))
+            expect(getPendingComposerSend(sessionId, 'first')).not.toBeNull()
+        } finally {
+            runtime.pendingHydration = null
+            await act(async () => {
+                for (const id of ['first', 'second']) {
+                    consumePendingComposerSend(sessionId, id)
+                    consumeComposerSendSettlement(sessionId, id)
+                }
+                finishHydration()
+            })
+        }
+    })
+
+    it('cleans an earlier attempt chip that hydrates after a second submission', async () => {
+        const controls = renderComposer('old text', null)
+        send()
+        act(() => {
+            recordPendingComposerSend({ sessionId: 'session-a', attemptId: 'attempt-1', text: 'old text',
+                attachmentIds: ['new-attachment'], draftRevision: 0, programmaticEditRevision: 0 })
+            recordPendingComposerSend({ sessionId: 'session-a', attemptId: 'attempt-2', text: 'second text',
+                attachmentIds: [], draftRevision: 0, programmaticEditRevision: 0 })
+        })
+        let finishHydration!: () => void
+        runtime.pendingHydration = new Promise<void>(resolve => { finishHydration = resolve })
+        try {
+            act(() => controls.current!.remount())
+            act(() => {
+                controls.current!.queuedEditSetText('A newer draft')
+                controls.current!.settleSend()
+            })
+            act(() => controls.current!.hydrateSubmittedAttachment())
+            await waitFor(() => expect(runtime.snapshot.composer.attachments).toEqual([]))
+            expect(input()).toHaveValue('A newer draft')
+            await act(async () => finishHydration())
+            expect(mockClearDraftsAfterSend).toHaveBeenCalledWith('session-a', null, 'old text', ['new-attachment'], true)
+        } finally {
+            runtime.pendingHydration = null
+            finishHydration()
+            consumePendingComposerSend('session-a', 'attempt-1')
+            consumePendingComposerSend('session-a', 'attempt-2')
+        }
+    })
+
+    it('removes a restored sent chip while a different attachment is still hydrating', async () => {
+        const controls = renderComposer('', null)
+        act(() => controls.current!.addAttachment())
+        send()
+        act(() => controls.current!.acceptSend(['new-attachment']))
+        let finishHydration!: () => void
+        runtime.pendingHydration = new Promise<void>(resolve => { finishHydration = resolve })
+        try {
+            act(() => controls.current!.remount())
+            act(() => controls.current!.hydrateSubmittedAttachment())
+            act(() => controls.current!.settleSend())
+            await waitFor(() => expect(runtime.snapshot.composer.attachments).toEqual([]))
+            expect(mockClearDraftsAfterSend).not.toHaveBeenCalled()
+            act(() => {
+                runtime.restoredAttachmentIds?.(['later-unsent'])
+                runtime.setSnapshot!(current => ({
+                    ...current, composer: {
+                        ...current.composer, attachments: [{ id: 'later-unsent', status: { type: 'complete' } }],
+                    },
+                }))
+            })
+            await act(async () => finishHydration())
+            expect(runtime.snapshot.composer.attachments.map(attachment => attachment.id)).toEqual(['later-unsent'])
+            expect(mockClearDraftsAfterSend).toHaveBeenCalledWith('session-a', null, '', ['new-attachment'])
+        } finally {
+            runtime.pendingHydration = null
+            finishHydration()
+        }
+    })
+
+    it('does not cancel an in-flight preview when all visible attachments were sent', async () => {
+        const controls = renderComposer('foo', null)
+        act(() => controls.current!.addAttachment())
+        send()
+        act(() => controls.current!.acceptSend())
+        act(() => controls.current!.hydrateSubmittedAttachment())
+        const cancelPreview = vi.fn()
+        runtime.cancelPendingPreview = cancelPreview
+        try {
+            act(() => controls.current!.settleSend())
+            await waitFor(() => expect(runtime.snapshot.composer.attachments).toEqual([]))
+            expect(cancelPreview).not.toHaveBeenCalled()
+        } finally {
+            runtime.cancelPendingPreview = null
+        }
+    })
+
+    it('removes only submitted attachments when an unsent attachment hydrates before settlement', async () => {
+        const controls = renderComposer('foo', null)
+        act(() => controls.current!.addAttachment())
+        send()
+
+        act(() => controls.current!.acceptSend())
+        act(() => {
+            runtime.restoredAttachmentIds?.(['new-attachment', 'unsent-attachment'])
+            runtime.setSnapshot!((current) => ({
+                ...current,
+                composer: {
+                    ...current.composer,
+                    attachments: [
+                        { id: 'new-attachment', status: { type: 'complete' } },
+                        { id: 'unsent-attachment', status: { type: 'complete' } },
+                    ],
+                },
+            }))
+        })
+        act(() => controls.current!.settleSend())
+
+        await waitFor(() => expect(runtime.snapshot.composer.attachments).toEqual([
+            { id: 'unsent-attachment', status: { type: 'complete' } },
+        ]))
+        expect(mockClearDraftsAfterSend).toHaveBeenCalledWith(
+            'session-a',
+            null,
+            'foo',
+            ['new-attachment'],
+        )
+    })
+
+    it('preserves a later same-text draft after success and a session remount', async () => {
+        const controls = renderComposer('foo', null)
+        fireEvent.change(input(), { target: { value: 'foo' } })
+        send()
+
+        act(() => controls.current!.acceptSend())
+        act(() => controls.current!.settleSend())
+
+        await waitFor(() => expect(input()).toHaveValue(''))
+
+        fireEvent.change(input(), { target: { value: 'foo' } })
+        act(() => controls.current!.remount())
+
+        await waitFor(() => expect(input()).toHaveValue('foo'))
+    })
+
+    it('preserves same-text drafts created from file and terminal routes before a send settlement is consumed on remount', async () => {
+        runtime.useRealDraftLifecycle = true
+        const fileSessionId = 'session-file-route-draft'
+        const terminalSessionId = 'session-terminal-route-draft'
+        const terminalExcerpt = { kind: 'selection' as const, text: 'npm test' }
+        const terminalText = '### Terminal selection\n\n```text\nnpm test\n```'
+
+        try {
+            const fileControls = renderComposer('`src/foo.ts`', null, false, fileSessionId)
+            await waitFor(() => expect(input()).toHaveValue('`src/foo.ts`'))
+            send()
+            act(() => fileControls.current!.acceptSend())
+
+            act(() => {
+                fileControls.current!.remount()
+                appendFileReferenceToComposerDraft(fileSessionId, 'src/foo.ts')
+                fileControls.current!.settleSend()
+            })
+
+            await waitFor(() => expect(input()).toHaveValue('`src/foo.ts`'))
+            expect(getDraft(fileSessionId)).toBe('`src/foo.ts`')
+            cleanup()
+
+            const terminalControls = renderComposer(terminalText, null, false, terminalSessionId)
+            await waitFor(() => expect(input()).toHaveValue(terminalText))
+            send()
+            act(() => terminalControls.current!.acceptSend())
+
+            act(() => {
+                terminalControls.current!.remount()
+                appendTerminalExcerptToComposerDraft(terminalSessionId, terminalExcerpt)
+                terminalControls.current!.settleSend()
+            })
+
+            await waitFor(() => expect(input()).toHaveValue(terminalText))
+            expect(getDraft(terminalSessionId)).toBe(terminalText)
+        } finally {
+            runtime.useRealDraftLifecycle = false
+            clearDraft(fileSessionId)
+            clearDraft(terminalSessionId)
+        }
     })
 
     it('does not implicitly restore after a keyed remount receives a new draft interaction', async () => {

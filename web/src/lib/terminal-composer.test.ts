@@ -8,6 +8,7 @@ import {
     type TerminalTextSource,
 } from './terminal-composer'
 import { getDraft, saveDraft } from '@/lib/composer-drafts'
+import { getComposerDraftRevision, resetComposerSendStateForTests } from '@/lib/composer-send-state'
 
 function makeTerminal(options: {
     selection?: string
@@ -44,6 +45,7 @@ function makeTerminal(options: {
 describe('terminal-composer', () => {
     beforeEach(() => {
         window.sessionStorage.clear()
+        resetComposerSendStateForTests()
     })
 
     it('prefers a nonempty selection over the buffer', () => {
@@ -120,7 +122,8 @@ describe('terminal-composer', () => {
         )
     })
 
-    it('writes a new draft when none exists', () => {
+    it('writes a new draft when none exists and increments composer draft revision', () => {
+        expect(getComposerDraftRevision('term-composer-empty')).toBe(0)
         appendTerminalExcerptToComposerDraft('term-composer-empty', {
             kind: 'selection',
             text: 'REFUSE: lane B',
@@ -128,5 +131,6 @@ describe('terminal-composer', () => {
         expect(getDraft('term-composer-empty')).toBe(
             '### Terminal selection\n\n```text\nREFUSE: lane B\n```'
         )
+        expect(getComposerDraftRevision('term-composer-empty')).toBe(1)
     })
 })
