@@ -114,6 +114,7 @@ import {
     hasInProgressJobSession,
     hasUnarchivedJob,
 } from '@/lib/sessionInProgress'
+import { usePinInProgressSessionsMode } from '@/hooks/usePinInProgressSessionsMode'
 import {
     compareDescWithKeyTiebreak,
     compareSessionsByOrderKeyDesc
@@ -1425,13 +1426,14 @@ function CollapsiblePanel(props: { open: boolean; children: ReactNode }) {
 
 type SessionItemProps = {
     onRequestDelete: (session: SessionSummary) => void
+    onRequestRename: (id: string) => void
+    renameOpen: boolean
     session: SessionSummary
     onSelect: (sessionId: string, targetMessageId?: string, targetMessageQuery?: string, pendingRequestId?: string) => void
     showPath?: boolean
     api: ApiClient | null
     features: FeaturesResponse | null
     prNowMs: number
-    titleSuggestionAvailable?: boolean
     selected?: boolean
     showDetailedStatus?: boolean
     inRunningSection?: boolean
@@ -1464,7 +1466,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
         api,
         features,
         prNowMs,
-        titleSuggestionAvailable = false,
+        renameOpen,
         selected = false,
         showDetailedStatus = false,
         inRunningSection = false,
@@ -1480,7 +1482,6 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
     const { haptic } = usePlatform()
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
-    const [renameOpen, setRenameOpen] = useState(false)
     const [linkPrOpen, setLinkPrOpen] = useState(false)
     const [exportOpen, setExportOpen] = useState(false)
     const [archiveOpen, setArchiveOpen] = useState(false)
@@ -1522,7 +1523,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
         ? t('session.action.reopenCursorUnverified')
         : undefined
 
-    const { archiveSession, reopenSession, renameSession, upsertExternalRef, removePrimaryExternalRef, suggestSessionTitle, updateSessionSummary, setPinMode, isPending } = useSessionActions(
+    const { archiveSession, reopenSession, upsertExternalRef, removePrimaryExternalRef, setPinMode, isPending } = useSessionActions(
         api,
         s.id,
         s.metadata?.flavor ?? null
@@ -1840,7 +1841,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                 sessionPinned={Boolean(s.pinned)}
                 sessionGlobalPinned={Boolean(s.globalPinned)}
                 onSetPinMode={(mode) => void handleSetPinMode(mode)}
-                onRename={() => setRenameOpen(true)}
+                onRename={() => props.onRequestRename(s.id)}
                 onLinkPr={githubPrAwarenessEnabled ? () => setLinkPrOpen(true) : undefined}
                 linkedPr={linkedPr}
                 onExport={() => setExportOpen(true)}
@@ -1914,20 +1915,6 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                     onConfirm={async () => setReopenError(null)}
                     isPending={false}
                     centerTitle
-                />
-            ) : null}
-
-            {renameOpen ? (
-                <RenameSessionDialog
-                    isOpen={true}
-                    onClose={() => setRenameOpen(false)}
-                    currentName={sessionName}
-                    currentTitleLocked={s.metadata?.titleLocked === true}
-                    sessionId={s.id}
-                    onRename={renameSession}
-                    onSuggestTitle={api && titleSuggestionAvailable ? suggestSessionTitle : undefined}
-                    onUpdateSummary={api && titleSuggestionAvailable ? updateSessionSummary : undefined}
-                    isPending={isPending}
                 />
             ) : null}
 
@@ -2013,6 +2000,30 @@ function PullRefreshIcon(props: { rotation: number }) {
     )
 }
 
+function SessionListRenameDialog({ session, api, titleSuggestionAvailable, onClose }: {
+    session: SessionSummary
+    api: ApiClient | null
+    titleSuggestionAvailable: boolean
+    onClose: () => void
+}) {
+    const { renameSession, suggestSessionTitle, updateSessionSummary, isPending } = useSessionActions(
+        api, session.id, session.metadata?.flavor ?? null
+    )
+    return (
+        <RenameSessionDialog
+            isOpen
+            onClose={onClose}
+            currentName={getSessionTitle(session)}
+            currentTitleLocked={session.metadata?.titleLocked === true}
+            sessionId={session.id}
+            onRename={renameSession}
+            onSuggestTitle={api && titleSuggestionAvailable ? suggestSessionTitle : undefined}
+            onUpdateSummary={api && titleSuggestionAvailable ? updateSessionSummary : undefined}
+            isPending={isPending}
+        />
+    )
+}
+
 export function SessionList(props: {
     sessions: SessionSummary[]
     onSelect: (sessionId: string, targetMessageId?: string, targetMessageQuery?: string, pendingRequestId?: string) => void
@@ -2042,6 +2053,13 @@ export function SessionList(props: {
         onNewSessionInDirectory
     } = props
     const [deleteTarget, setDeleteTarget] = useState<SessionSummary | null>(null)
+    // Rows may change parents as their live status changes. Keep the draft
+    // mounted in the list rather than tying its lifetime to a row.
+    const [renameSessionId, setRenameSessionId] = useState<string | null>(null)
+    const renameTarget = renameSessionId ? props.sessions.find(session => session.id === renameSessionId) : undefined
+    useEffect(() => {
+        if (renameSessionId && !renameTarget) setRenameSessionId(null)
+    }, [renameSessionId, renameTarget])
     const { features } = useFeatures(api)
     const githubPrAwarenessEnabled = Boolean(features?.githubPrAwareness.enabled)
     const hasJobs = useMemo(() => props.sessions.some(hasRunningAttachedJob), [props.sessions])
@@ -2085,6 +2103,9 @@ export function SessionList(props: {
     const { pinInProgressMode } = usePinInProgressSessions()
     // List sort/filter lives in SessionListView (#2263); jobs mode is #1404.
     const effectivePinInProgressMode: PinInProgressMode = pinInProgressMode
+    const { pinInProgressSessionsMode } = usePinInProgressSessionsMode()
+    const isCombinedPinLayout = effectivePinInProgressMode !== 'off'
+        && pinInProgressSessionsMode === 'combined'
     const { machineFilter, setMachineFilter } = useSessionListMachineFilter()
     const showDetailedStatus = sessionListStatusMode === 'detailed'
     const [searchQuery, setSearchQuery] = useState('')
@@ -2360,6 +2381,10 @@ export function SessionList(props: {
         () => groupSessionsByDirectory(allSessions),
         [allSessions]
     )
+    const unfilteredGroups = useMemo(
+        () => groupSessionsByDirectory(sidebarSessions),
+        [sidebarSessions]
+    )
     const machineFilters = useMemo(
         () => groupByMachine(allGroups, resolveMachineLabel),
         [allGroups, machineLabelsById] // eslint-disable-line react-hooks/exhaustive-deps
@@ -2592,6 +2617,24 @@ export function SessionList(props: {
         },
         [runningSessions, machineFilteredSessions, searchScoreIndex, hasTextQuery, listView]
     )
+    const { combinedActiveGroups, combinedArchivedGroups } = useMemo(() => {
+        if (!isCombinedPinLayout) return { combinedActiveGroups: [], combinedArchivedGroups: [] }
+        const active: SessionSummary[] = []
+        const archived: SessionSummary[] = []
+        const now = api?.hubClock?.now() ?? Date.now()
+        for (const session of machineFilteredSessions) {
+            if (session.globalPinned) continue
+            const section = session.active || hasInProgressJobSession(session, now) ? active : archived
+            section.push(session)
+        }
+        const group = (sessions: SessionSummary[]) => {
+            const grouped = groupSessionsByDirectory(sessions, hasTextQuery ? undefined : listView)
+            return searchScoreIndex && hasTextQuery
+                ? rankSessionGroupsBySearchRelevance(grouped, searchScoreIndex)
+                : grouped
+        }
+        return { combinedActiveGroups: group(active), combinedArchivedGroups: group(archived) }
+    }, [api, listClockTick, machineFilteredSessions, isCombinedPinLayout, searchScoreIndex, hasTextQuery, listView])
     // Directory groups whose rows all floated to the pinned sections still
     // render an action-only header so copy-path / new-session-in-directory
     // stay available (no rows to group, but the project itself is live).
@@ -2634,13 +2677,17 @@ export function SessionList(props: {
     const autoExpandedSelectedSessionKeyRef = useRef<string | null>(null)
     const previousSelection = useRef(selectedSessionId)
     const groupOverrides = ephemeralFilter ? filterCollapseOverrides : collapseOverrides
-    const isGroupCollapsed = (group: SessionGroup): boolean => {
-        const override = groupOverrides.get(group.key)
+    const isGroupCollapsed = (
+        group: SessionGroup,
+        stateKey = group.key,
+        expandedByDefault = false
+    ): boolean => {
+        const override = groupOverrides.get(stateKey)
         if (override !== undefined) return override
         // Keep matching groups open by default while filtering. Explicit
         // header clicks use a temporary override for the active filter.
         if (ephemeralFilter) return false
-        if (savedFolds.has(group.key)) return true
+        if (savedFolds.has(stateKey)) return true
         // Archived-only would otherwise collapse every group (none has an
         // active session), hiding exactly what was asked for.
         if (listView.status === 'archived') return false
@@ -2649,7 +2696,7 @@ export function SessionList(props: {
         const hasSelectedSession = selectedSessionId
             ? group.sessions.some(session => session.id === selectedSessionId)
             : false
-        return !group.hasActiveSession && !group.hasPinnedSession && !hasSelectedSession
+        return !expandedByDefault && !group.hasActiveSession && !group.hasPinnedSession && !hasSelectedSession
     }
 
     const toggleGroup = (groupKey: string, isCollapsed: boolean) => {
@@ -2804,6 +2851,8 @@ export function SessionList(props: {
                                     {sessions.map((s) => (
                                         <SessionItem
                                             onRequestDelete={setDeleteTarget}
+                                            onRequestRename={setRenameSessionId}
+                                            renameOpen={s.id === renameSessionId}
                                             key={s.id}
                                             session={s}
                                             onSelect={props.onSelect}
@@ -2811,7 +2860,6 @@ export function SessionList(props: {
                                             api={api}
                                             features={features}
                                             prNowMs={prNowMs}
-                                            titleSuggestionAvailable={titleSuggestionAvailable}
                                             selected={s.id === selectedSessionId}
                                             showDetailedStatus={showDetailedStatus}
                                             inRunningSection
@@ -2889,13 +2937,14 @@ export function SessionList(props: {
     const renderGroupSessionItem = (s: SessionSummary) => (
         <SessionItem
             onRequestDelete={setDeleteTarget}
+            onRequestRename={setRenameSessionId}
+            renameOpen={s.id === renameSessionId}
             session={s}
             onSelect={props.onSelect}
             showPath={false}
             api={api}
             features={features}
             prNowMs={prNowMs}
-            titleSuggestionAvailable={titleSuggestionAvailable}
             selected={s.id === selectedSessionId}
             showDetailedStatus={showDetailedStatus}
             contentSnippet={contentSnippetBySessionId.get(s.id)}
@@ -2907,9 +2956,14 @@ export function SessionList(props: {
         />
     )
 
-    const renderDirectoryGroup = (group: SessionGroup) => {
-        const isCollapsed = isGroupCollapsed(group)
-        const visibleGroupSessions = getVisibleGroupSessions(group)
+    const renderDirectoryGroup = (
+        group: SessionGroup,
+        options: { showAllSessions?: boolean; stateKey?: string; expandedByDefault?: boolean } = {}
+    ) => {
+        const showAllSessions = options.showAllSessions ?? false
+        const stateKey = options.stateKey ?? group.key
+        const isCollapsed = isGroupCollapsed(group, stateKey, options.expandedByDefault)
+        const visibleGroupSessions = showAllSessions ? group.sessions : getVisibleGroupSessions(group)
         const hiddenSessionCount = group.sessions.length - visibleGroupSessions.length
         const currentLimit = Math.min(
             getGroupVisibleCount(group),
@@ -2930,14 +2984,14 @@ export function SessionList(props: {
             ? `${group.displayName} · ${resolveMachineLabel(group.machineId)}`
             : group.displayName
         return (
-            <div key={group.key} data-session-scroll-anchor>
+            <div key={stateKey} data-session-scroll-anchor>
                 <ProjectGroupRow
                     className="group/project sticky top-0 z-10 flex items-center gap-2 bg-[var(--app-bg)] py-1.5 pl-2 pr-2 text-left rounded-lg transition-colors hover:bg-[var(--app-secondary-bg)] cursor-pointer min-w-0 w-full select-none"
                     directory={group.directory}
                     displayName={groupTitle}
                     sessions={projectSessionsByKey.get(group.key) ?? group.sessions}
                     api={api}
-                    onClick={() => toggleGroup(group.key, isCollapsed)}
+                    onClick={() => toggleGroup(stateKey, isCollapsed)}
                     expanded={!isCollapsed}
                     onNewSession={getNewSessionInGroup(group)}
                 >
@@ -2973,7 +3027,7 @@ export function SessionList(props: {
                             </div>
                         </CollapsiblePanel>
                     ))}
-                    {group.sessions.length > sessionPreviewLimit && (hiddenSessionCount > 0 || canShowFewerSessions) ? (
+                    {!showAllSessions && group.sessions.length > sessionPreviewLimit && (hiddenSessionCount > 0 || canShowFewerSessions) ? (
                         <CollapsiblePanel open={!isCollapsed}>
                             <div className="ml-2.5 mr-2 mt-1 mb-1.5 flex gap-1.5">
                                 {canShowFewerSessions ? (
@@ -3007,10 +3061,20 @@ export function SessionList(props: {
         )
     }
 
-    // Auto-expand group containing the selected session only when
-    // the selected-session/group pair changes. Without this guard, every live
-    // session-list refresh (for example tool-call updates from a running selected
-    // session) reopens a path the user just collapsed.
+    const visibleDirectoryGroups = useMemo(
+        () => isCombinedPinLayout
+            ? [
+                ...combinedActiveGroups.map((group) => ({ group, stateKey: `${group.key}::active` })),
+                ...combinedArchivedGroups.map((group) => ({ group, stateKey: `${group.key}::archived` })),
+            ]
+            : groups.map((group) => ({ group, stateKey: group.key })),
+        [combinedActiveGroups, combinedArchivedGroups, groups, isCombinedPinLayout]
+    )
+
+    // Auto-expand the directory containing the selected session only when the
+    // selected-session/group pair changes. Without this guard, every live
+    // session-list refresh (for example tool-call updates from a running
+    // selected session) reopens a path the user just collapsed.
     useEffect(() => {
         if (!selectedSessionId) {
             autoExpandedSelectedSessionKeyRef.current = null
@@ -3018,14 +3082,10 @@ export function SessionList(props: {
             return
         }
 
-        // Pinned "in progress" sessions are not rendered inside directory
-        // groups, so only auto-expand when the selected session actually lives
-        // in a visible group. Using `allGroups` here would expand the group
-        // below whenever a running session is opened.
-        const group = groups.find(g =>
-            g.sessions.some(s => s.id === selectedSessionId)
+        const visibleGroup = visibleDirectoryGroups.find(({ group }) =>
+            group.sessions.some(s => s.id === selectedSessionId)
         )
-        if (!group) {
+        if (!visibleGroup) {
             // Selecting a row in a floating bucket is real navigation now,
             // not a second navigation when the job expires and the row moves.
             if (machineFilteredSessions.some(s => s.id === selectedSessionId)) previousSelection.current = selectedSessionId
@@ -3033,16 +3093,17 @@ export function SessionList(props: {
             return
         }
 
-        const autoExpandKey = `${selectedSessionId}::${group.key}`
+        const autoExpandKey = `${selectedSessionId}::${visibleGroup.stateKey}`
         if (autoExpandedSelectedSessionKeyRef.current === autoExpandKey) return
         autoExpandedSelectedSessionKeyRef.current = autoExpandKey
 
         const movedWithoutNavigation = previousSelection.current === selectedSessionId
         previousSelection.current = selectedSessionId
-        if (movedWithoutNavigation && (groupOverrides.get(group.key) === true || (!ephemeralFilter && savedFolds.has(group.key)))) return
+        const { stateKey } = visibleGroup
+        if (movedWithoutNavigation && (groupOverrides.get(stateKey) === true || (!ephemeralFilter && savedFolds.has(stateKey)))) return
         const setOverrides = ephemeralFilter ? setFilterCollapseOverrides : setCollapseOverrides
-        setOverrides(prev => expandSelectedSessionCollapseOverrides(prev, group))
-    }, [selectedSessionId, groups, machineFilteredSessions, isFiltering, ephemeralFilter, savedFolds, groupOverrides])
+        setOverrides(prev => expandSelectedSessionCollapseOverrides(prev, { key: stateKey }))
+    }, [selectedSessionId, visibleDirectoryGroups, machineFilteredSessions, isFiltering, ephemeralFilter, savedFolds, groupOverrides])
 
     // Keep a keyboard-unpinned row reachable when it moves into a collapsed or
     // truncated destination section, or fall back to a visible row if removed.
@@ -3066,7 +3127,7 @@ export function SessionList(props: {
 
         const inRunning = [...runningSessions.jobs, ...runningSessions.working, ...runningSessions.pending]
             .some((session) => session.id === target.sessionId)
-        if (inRunning) {
+        if (inRunning && !isCombinedPinLayout) {
             if (runningSectionCollapsed && !isFiltering) {
                 setRunningSectionCollapsed(false)
                 return
@@ -3075,20 +3136,23 @@ export function SessionList(props: {
             return
         }
 
-        const targetGroup = groups.find((group) =>
-            group.sessions.some((session) => session.id === target.sessionId)
-        )
+        const containsTarget = (group: SessionGroup) => group.sessions.some((session) => session.id === target.sessionId)
+        const activeGroup = isCombinedPinLayout ? combinedActiveGroups.find(containsTarget) : undefined
+        const targetGroup = isCombinedPinLayout
+            ? activeGroup ?? combinedArchivedGroups.find(containsTarget)
+            : groups.find(containsTarget)
         if (targetGroup) {
-            const collapsed = isGroupCollapsed(targetGroup)
+            const stateKey = isCombinedPinLayout ? `${targetGroup.key}::${activeGroup ? 'active' : 'archived'}` : targetGroup.key
+            const collapsed = isGroupCollapsed(targetGroup, stateKey, isCombinedPinLayout)
             let expanding = false
             if (collapsed) {
                 expanding = true
                 const setOverrides = ephemeralFilter ? setFilterCollapseOverrides : setCollapseOverrides
-                setOverrides((prev) => expandSelectedSessionCollapseOverrides(prev, targetGroup))
+                setOverrides((prev) => expandSelectedSessionCollapseOverrides(prev, { key: stateKey }))
             }
 
             const targetIndex = targetGroup.sessions.findIndex((session) => session.id === target.sessionId)
-            if (targetIndex >= 0 && !getVisibleGroupSessions(targetGroup).some((session) => session.id === target.sessionId)) {
+            if (!activeGroup && targetIndex >= 0 && !getVisibleGroupSessions(targetGroup).some((session) => session.id === target.sessionId)) {
                 expanding = true
                 let neededLimit = targetIndex + 1
                 for (let i = targetIndex + 1; i < targetGroup.sessions.length; i += 1) {
@@ -3122,6 +3186,7 @@ export function SessionList(props: {
         quickUnpinFocusRef.current = null
     }, [
         globalPinnedSessions, runningSessions, groups, runningSectionCollapsed,
+        isCombinedPinLayout, combinedActiveGroups, combinedArchivedGroups,
         collapseOverrides, filterCollapseOverrides, sessionVisibleCounts,
         isFiltering, ephemeralFilter, selectedSessionId, sessionPreviewLimit, previewIsUnread,
     ])
@@ -3136,6 +3201,13 @@ export function SessionList(props: {
                 knownKeys.add(g.key)
                 knownKeys.add(`sessions::${g.key}`)
             }
+            // Keep both Combined-mode states for projects hidden by search,
+            // machine, unread, or active-only filters. Those filters should not
+            // reset a user's explicit collapse choice.
+            for (const g of unfilteredGroups) {
+                knownKeys.add(`${g.key}::active`)
+                knownKeys.add(`${g.key}::archived`)
+            }
             let changed = false
             for (const key of next.keys()) {
                 if (!knownKeys.has(key)) {
@@ -3145,7 +3217,7 @@ export function SessionList(props: {
             }
             return changed ? next : prev
         })
-    }, [allGroups])
+    }, [allGroups, unfilteredGroups])
 
     // Clean up reveal caps for groups that no longer exist.
     useEffect(() => {
@@ -3771,6 +3843,8 @@ export function SessionList(props: {
                                     {globalPinnedSessions.map((s) => (
                                         <SessionItem
                                             onRequestDelete={setDeleteTarget}
+                                            onRequestRename={setRenameSessionId}
+                                            renameOpen={s.id === renameSessionId}
                                             key={s.id}
                                             session={s}
                                             onSelect={props.onSelect}
@@ -3778,7 +3852,6 @@ export function SessionList(props: {
                                             api={api}
                                             features={features}
                                             prNowMs={prNowMs}
-                                            titleSuggestionAvailable={titleSuggestionAvailable}
                                             selected={s.id === selectedSessionId}
                                             showDetailedStatus={showDetailedStatus}
                                             inRunningSection
@@ -3799,6 +3872,27 @@ export function SessionList(props: {
                     </div>
                 ) : null}
 
+                {isCombinedPinLayout ? (
+                    <>
+                        {combinedActiveGroups.map((group) => renderDirectoryGroup(group, {
+                            showAllSessions: true,
+                            expandedByDefault: true,
+                            stateKey: `${group.key}::active`,
+                        }))}
+                        {combinedActiveGroups.length > 0 && combinedArchivedGroups.length > 0 ? (
+                            <div
+                                role="separator"
+                                aria-label={t('sessions.archivedSection')}
+                                className="ml-2.5 mr-2 my-1 border-t border-[var(--app-border)]"
+                            />
+                        ) : null}
+                        {combinedArchivedGroups.map((group) => renderDirectoryGroup(group, {
+                            stateKey: `${group.key}::archived`,
+                            expandedByDefault: true,
+                        }))}
+                    </>
+                ) : (
+                    <>
                 {renderPinnedSection({
                     sectionKey: 'running-section',
                     titleKey: 'sessions.runningSection',
@@ -3808,8 +3902,10 @@ export function SessionList(props: {
                     count: runningSessionTotal,
                     bucketKeys: ['jobs', 'working', 'pending'],
                 })}
-                {groups.map(renderDirectoryGroup)}
+                {groups.map((group) => renderDirectoryGroup(group))}
                 {actionOnlyGroups.map(renderActionOnlyGroupHeader)}
+                    </>
+                )}
             </SessionListScrollAnchor>
             </QuickUnpinFocusContext.Provider>
             </div>
@@ -3822,6 +3918,15 @@ export function SessionList(props: {
                 />
             ) : null}
             </div>
+            {renameTarget ? (
+                <SessionListRenameDialog
+                    key={renameTarget.id}
+                    session={renameTarget}
+                    api={api}
+                    titleSuggestionAvailable={titleSuggestionAvailable}
+                    onClose={() => setRenameSessionId(null)}
+                />
+            ) : null}
             <ConfirmDialog
                 isOpen={markAllReadOpen}
                 onClose={() => setMarkAllReadOpen(false)}

@@ -43,6 +43,8 @@ const NOT_SETTINGS_KEYS = new Set([
     'hapi-mention-inactive-collapsed',
     'hapi-session-list-machine-filter',
     'hapi.scratchlist-collapsed.v1.',
+    'hapi-pin-in-progress-sessions-changed',
+    'hapi-pin-in-progress-sessions-mode-changed',
     // Onboarding and dismissals
     'hapi.nativeAppPromo.v1',
     'hapi.fue.v1.',

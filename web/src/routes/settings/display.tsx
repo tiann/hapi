@@ -9,6 +9,7 @@ import { useShowActiveSessionsOnly } from '@/hooks/useShowActiveSessionsOnly'
 import { isIndicatorSmoothingEnabled, setIndicatorSmoothing } from '@/hooks/useLowRateAnimation'
 import { useKeepUnreadSessionsVisible } from '@/hooks/useKeepUnreadSessionsVisible'
 import { usePinInProgressSessions } from '@/hooks/usePinInProgressSessions'
+import { getPinInProgressSessionsModeOptions, usePinInProgressSessionsMode } from '@/hooks/usePinInProgressSessionsMode'
 import { MAX_SESSION_PREVIEW_LIMIT, MIN_SESSION_PREVIEW_LIMIT, normalizeSessionPreviewLimit, useSessionPreviewLimit } from '@/hooks/useSessionPreviewLimit'
 import { useThemeColors, type ThemeColorKeyId } from '@/hooks/useThemeColors'
 import { useSessionHeaderMetadata, type SessionHeaderMetadataKey } from '@/hooks/useSessionHeaderMetadata'
@@ -142,6 +143,7 @@ export default function SettingsDisplayPage() {
     const { sessionListStatusMode, setSessionListStatusMode } = useSessionListStatusMode()
     const { showActiveSessionsOnly, setShowActiveSessionsOnly } = useShowActiveSessionsOnly()
     const { pinInProgressMode, setPinInProgressMode } = usePinInProgressSessions()
+    const { pinInProgressSessionsMode, setPinInProgressSessionsMode } = usePinInProgressSessionsMode()
     const { keepUnreadSessionsVisible, setKeepUnreadSessionsVisible } = useKeepUnreadSessionsVisible()
     const { appBadgeEnabled, setAppBadgeEnabled } = useAppBadgePreference()
     const { openExternalLinksInNewTab, setOpenExternalLinksInNewTab } = useOpenExternalLinksInNewTab()
@@ -194,6 +196,16 @@ export default function SettingsDisplayPage() {
                     ]}
                     onChange={setPinInProgressMode}
                 />
+                <div data-testid="pin-in-progress-settings">
+                    <SettingsChoiceGroup
+                        label={t('settings.display.pinInProgressSessions.mode')}
+                        description={t('settings.display.pinInProgressSessions.mode.desc')}
+                        value={pinInProgressSessionsMode}
+                        options={getPinInProgressSessionsModeOptions().map((option) => ({ value: option.value, label: t(option.labelKey) }))}
+                        disabled={pinInProgressMode === 'off'}
+                        onChange={setPinInProgressSessionsMode}
+                    />
+                </div>
                 <SettingsSwitch label={t('settings.display.keepUnreadSessionsVisible')} description={t('settings.display.keepUnreadSessionsVisible.desc')} checked={keepUnreadSessionsVisible} onChange={setKeepUnreadSessionsVisible} />
                 <SettingsSwitch label={t('settings.display.appBadge')} description={t('settings.display.appBadge.desc')} checked={appBadgeEnabled} onChange={setAppBadgeEnabled} />
                 <SmoothIndicatorsControl />

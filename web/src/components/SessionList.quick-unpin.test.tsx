@@ -273,6 +273,33 @@ describe('session row hover unpin', () => {
         expect(document.activeElement).toBe(movedRowButton)
     })
 
+    it.each([true, false])('restores focus in a collapsed Combined section after unpin (active: %s)', async (active) => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+        localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')
+        const pinned = makeSession({ id: 'global-pin', active, globalPinned: true, updatedAt: 1000 })
+        const sibling = makeSession({ id: 'sibling', active, updatedAt: 900 })
+        markSessionSeen(pinned.id, 1000)
+        markSessionSeen(sibling.id, 900)
+        let finishUnpin: () => void = () => {}
+        const setSessionPinMode = vi.fn(() => new Promise<void>((resolve) => { finishUnpin = resolve }))
+        const { container, rerenderSessions } = renderList([pinned, sibling], { setSessionPinMode })
+        const project = container.querySelector<HTMLElement>('[title="/work/app"]')
+        expect(project).not.toBeNull()
+        fireEvent.click(project!)
+        const siblingPanel = screen.getByRole('button', { name: /Title sibling/ }).closest('.collapsible-panel')!
+        expect(siblingPanel).not.toHaveAttribute('data-open')
+        fireEvent.transitionEnd(siblingPanel)
+        expect(screen.queryByRole('button', { name: /Title sibling/ })).toBeNull()
+
+        const unpin = screen.getByRole('button', { name: 'Unpin' })
+        unpin.focus()
+        fireEvent.click(unpin, { detail: 0 })
+        await waitFor(() => expect(setSessionPinMode).toHaveBeenCalledWith(pinned.id, 'none'))
+        await act(async () => finishUnpin())
+        rerenderSessions([{ ...pinned, globalPinned: false }, sibling])
+        await waitFor(() => expect(screen.getByRole('button', { name: /Title global-pin/ })).toHaveFocus())
+    })
+
     it('reveals a destination row past the preview limit and preserves focus on keyboard unpin', async () => {
         let finishUnpin: () => void = () => {}
         const setSessionPinMode = vi.fn(() => new Promise<void>((resolve) => {
