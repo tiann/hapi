@@ -9,7 +9,12 @@ import { configuration } from '@/configuration'
 import { buildHubRequestHeaders } from '@/api/hubExtraHeaders'
 import { readSettings } from '@/persistence'
 import { projectPath } from '@/projectPath'
-import { cursorHapiMcpServerId } from '@/cursor/utils/cursorMcpOverlay'
+import { CURSOR_HAPI_MCP_SERVER_ID } from '@/cursor/utils/cursorMcpOverlay'
+import {
+    createDefaultCursorMcpPathDeps,
+    evaluateCursorMcpPath,
+    type CursorMcpPathProbeResult,
+} from './doctorCursorMcpPath'
 
 export type InlineMediaDoctorCheck = {
     ok: boolean
@@ -221,13 +226,39 @@ export async function runDoctorInlineMedia(): Promise<number> {
     }
 
     const cursorSessions = withBridge.filter((b) => b.flavor === 'cursor')
+    const cursorProbes: CursorMcpPathProbeResult[] = []
     if (cursorSessions.length > 0) {
-        console.log(chalk.bold('\nCursor ACP'))
-        console.log(chalk.gray('  Cursor ignores session/new mcpServers. Remote sessions use ~/.cursor/mcp.json + `agent mcp enable hapi-<sessionId>`.'))
-        console.log(chalk.gray('  Tool names are bare: display_image, display_video, display_media, change_title (not hapi_display_image).'))
+        console.log(chalk.bold('\nCursor ACP invoke path'))
+        console.log(chalk.gray(
+            `  HappyServer up is not enough — agent cwd + project \`${CURSOR_HAPI_MCP_SERVER_ID}\` mailbox + stdio child must match live hapiMcpUrl.`,
+        ))
+        const deps = createDefaultCursorMcpPathDeps()
         for (const session of cursorSessions) {
-            const serverId = cursorHapiMcpServerId(session.id)
-            console.log(chalk.gray(`  Verify (${session.prefix}): agent mcp list-tools ${serverId}`))
+            const probe = evaluateCursorMcpPath({
+                id: session.id,
+                path: session.path,
+                hapiMcpUrl: session.hapiMcpUrl,
+            }, deps)
+            cursorProbes.push(probe)
+            const mark = probe.ok ? chalk.green('✓') : chalk.red('✗')
+            console.log(`  ${mark} ${chalk.blue(session.prefix)} ${chalk.gray(session.name ?? session.path ?? session.id)}`)
+            if (probe.agentCwd) {
+                console.log(chalk.gray(`    agent cwd: ${probe.agentCwd}`))
+            }
+            if (probe.mailboxKey && probe.mailboxUrl) {
+                console.log(chalk.gray(`    mailbox: ${probe.mailboxKey} → ${probe.mailboxUrl}`))
+            }
+            if (probe.stdioChildUrl) {
+                console.log(chalk.gray(`    stdio child: ${probe.stdioChildUrl}`))
+            }
+            for (const failure of probe.failures) {
+                console.log(chalk.red(`    ✗ ${failure.code}: ${failure.detail}`))
+            }
+            if (probe.ok) {
+                console.log(chalk.gray(
+                    `    verify: cd ${session.path ? shellSingleQuote(session.path) : '.'} && agent mcp list-tools ${CURSOR_HAPI_MCP_SERVER_ID}`,
+                ))
+            }
         }
     }
 
@@ -246,12 +277,24 @@ export async function runDoctorInlineMedia(): Promise<number> {
         console.log(chalk.gray('  2. Shell fallback unavailable (packaged install / no repo checkout) — use MCP tools only'))
     }
 
+    const cursorPathOk = cursorProbes.every((p) => p.ok)
     // Core health: hub auth + live bridge or session id. Repo shell helper is optional.
-    const ok = jwt !== null && (withBridge.length > 0 || Boolean(envSessionId))
+    // Cursor sessions must also pass invoke-path probes (heavygee/hapi#194).
+    const ok = jwt !== null
+        && (withBridge.length > 0 || Boolean(envSessionId))
+        && cursorPathOk
 
     if (ok) {
         console.log(chalk.green('\n✓ Inline media path available\n'))
         return 0
+    }
+
+    if (!cursorPathOk) {
+        console.log(chalk.red(
+            '\n✗ Cursor HAPI MCP invoke path broken — CallDynamicTool hapi.* will fail even if HappyServer is up.\n'
+            + '  Fix: remat spawn-cwd (#1951) + bare project `hapi` overlay; restart the Cursor session.\n',
+        ))
+        return 1
     }
 
     if (withBridge.length === 0 && !envSessionId) {
