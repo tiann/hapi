@@ -3,16 +3,20 @@ import { randomUUID } from 'node:crypto';
 import type { RawJSONLines } from '@/claude/types';
 import { statSync, watch, type BigIntStats, type FSWatcher } from 'node:fs';
 import { RPC_METHODS, splitAgyModelSelection } from '@hapi/protocol';
+import type { PermissionMode as ProtocolPermissionMode } from '@hapi/protocol/types';
 import { getBuiltinSlashCommands, mergeSlashCommands } from '@hapi/protocol/slashCommands';
 import { logger } from '@/ui/logger';
+import { hashObject } from '@/utils/deterministicJson';
 import { RemoteModeDisplay } from '@/ui/ink/RemoteModeDisplay';
 import { convertAgentMessage } from '@/agent/messageConverter';
 import { GenerationClock } from '@/agent/generationClock';
-import { createAcpSessionTitleSync, registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
-import type { AgentMessage, FormElicitationRequest, FormElicitationResponse, PermissionRequest, PromptContent } from '@/agent/types';
-import type { AcpAvailableCommand, AcpSdkBackend } from '@/agent/backends/acp';
+import { createAcpSessionTitleSync, registerAcpSessionTitleSync, type AcpSessionTitleController } from '@/agent/acpSessionTitle';
+import type { AgentMessage, FormElicitationRequest, FormElicitationResponse, McpServerStdio, PermissionRequest, PromptContent } from '@/agent/types';
+import { formatAcpImageEchoToken, type AcpAvailableCommand, type AcpSdkBackend } from '@/agent/backends/acp';
 import { isAcpIndeterminateError } from '@/agent/backends/acp/AcpStdioTransport';
+import { buildHapiMcpBridge, type HapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge';
 import { AcpPermissionHandler } from '@/modules/common/permission/AcpPermissionHandler';
+import type { AutoApprovalDecision } from '@/modules/common/permission/BasePermissionHandler';
 import {
     listSlashCommands,
     type ListSlashCommandsResponse,
@@ -47,6 +51,8 @@ import {
 } from './agyReactiveWakeup';
 import type { AgyMode, PermissionMode } from './types';
 import { createAgyAcpBackend } from './utils/agyAcpBackend';
+import { buildAgyPromptContent } from './utils/agyPromptContent';
+import { AGY_SAFE_HAPI_MCP_TOOLS, getAgySystemPromptAppend } from './utils/systemPrompt';
 import { applyAgySessionTitleFallback } from './agySessionTitle';
 import { readAgyConversationTitle } from './agyNativeTitle';
 import {
@@ -167,6 +173,63 @@ export function isAgyQuestionRequest(request: PermissionRequest): boolean {
     return Array.isArray(input?.questions) || /\bask_question\b/.test(request.title ?? '');
 }
 
+const AGY_SAFE_HAPI_MCP_TOOL_NAMES = new Set<string>(AGY_SAFE_HAPI_MCP_TOOLS);
+
+const AGY_SAFE_DIRECT_HAPI_MCP_NAMES = new Set(
+    [...AGY_SAFE_HAPI_MCP_TOOL_NAMES].map((tool) => `mcp__hapi__${tool}`)
+);
+
+function toAcpMcpServers(config: Record<string, { command: string; args: string[] }>): McpServerStdio[] {
+    return Object.entries(config).map(([name, entry]) => ({
+        name,
+        command: entry.command,
+        args: entry.args,
+        env: []
+    }));
+}
+
+/**
+ * Auto-approves only verified safe HAPI MCP tools on the `hapi` server while
+ * never matching free-text `run_command` titles or mutating/peer tools
+ * (`ping_peer`, `inspect_peer`, `spawn_peer`, `link_pr`, `display_*`).
+ */
+export function resolveAgyHapiMcpAutoApproval(
+    request: PermissionRequest,
+    _mode: ProtocolPermissionMode | undefined,
+    nativeName?: string
+): AutoApprovalDecision | null {
+    if (request.kind === 'execute') return null;
+    const rawInput = request.rawInput && typeof request.rawInput === 'object' && !Array.isArray(request.rawInput)
+        ? (request.rawInput as Record<string, unknown>)
+        : null;
+    if (rawInput && typeof rawInput.CommandLine === 'string') return null;
+
+    const normalizedNative = typeof nativeName === 'string' ? nativeName.trim().toLowerCase() : undefined;
+    if (normalizedNative && normalizedNative !== 'call_mcp_tool' && !AGY_SAFE_DIRECT_HAPI_MCP_NAMES.has(normalizedNative)) {
+        return null;
+    }
+
+    if (rawInput && typeof rawInput.ServerName === 'string' && typeof rawInput.ToolName === 'string') {
+        const server = rawInput.ServerName.trim().toLowerCase();
+        const tool = rawInput.ToolName.trim().toLowerCase();
+        if (server === 'hapi' && AGY_SAFE_HAPI_MCP_TOOL_NAMES.has(tool)) {
+            return 'approved';
+        }
+        return null;
+    }
+
+    if (normalizedNative && AGY_SAFE_DIRECT_HAPI_MCP_NAMES.has(normalizedNative)) {
+        return 'approved';
+    }
+    if (!normalizedNative && typeof request.title === 'string') {
+        const title = request.title.trim().toLowerCase();
+        if (AGY_SAFE_DIRECT_HAPI_MCP_NAMES.has(title)) {
+            return 'approved';
+        }
+    }
+    return null;
+}
+
 /** agy's ask_question tool call (titled "Run ask_question"), as the question card. */
 function asQuestionCard(message: AgentMessage): { message: AgentMessage; shownLabels: string[][] | null } {
     if (message.type !== 'tool_call' || !/\bask_question\b/.test(message.name)) return { message, shownLabels: null };
@@ -181,8 +244,27 @@ function asQuestionCard(message: AgentMessage): { message: AgentMessage; shownLa
 /** agy acp did not come up; the caller may fall back to another transport. */
 export class AgyAcpStartError extends Error {}
 
+/** Hashes turn settings used for steer compatibility, ignoring per-message attachments. */
+function agyTurnConfigKey(mode: AgyMode): string {
+    return hashObject({
+        permissionMode: mode.permissionMode,
+        model: mode.model,
+        effort: mode.effort
+    });
+}
+
+function promptTextForEcho(prompt: PromptContent[]): string {
+    return prompt
+        .map((block) => block.type === 'text'
+            ? block.text
+            : formatAcpImageEchoToken(block.mimeType, block.data))
+        .filter((part) => part.trim().length > 0)
+        .join(' ');
+}
+
 type AgyTurn = {
     modeHash: string;
+    steerConfigKey: string;
     aborted: boolean;
     stopReason: string | null;
     sentAt: number | null;
@@ -246,12 +328,16 @@ type AgyTurn = {
 export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private readonly session: AgySession;
     private readonly createBackend: () => AcpSdkBackend;
+    private readonly buildMcpBridge: typeof buildHapiMcpBridge;
     private readonly steerCancelGraceMs: number;
     private readonly cancelHardStopMs: number;
     private readonly killSettleMs: number;
     private readonly brainDir: string;
     private readonly reactivePollMs: number;
     private readonly reactiveTimings: AgyReactiveTimingConfig;
+    private happyServer: HapiMcpBridge['server'] | null = null;
+    private acpMcpServers: McpServerStdio[] = [];
+    private titleSync: AcpSessionTitleController | null = null;
     private turnSettled: Promise<void> | null = null;
     // Option labels each question card showed, by agy tool call id.
     private readonly questionLabels = new Map<string, string[][]>();
@@ -320,6 +406,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
     constructor(session: AgySession, opts: {
         createBackend?: () => AcpSdkBackend;
+        buildMcpBridge?: typeof buildHapiMcpBridge;
         steerCancelGraceMs?: number;
         cancelHardStopMs?: number;
         killSettleMs?: number;
@@ -333,6 +420,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         super(process.env.DEBUG ? session.logPath : undefined);
         this.session = session;
         this.createBackend = opts.createBackend ?? createAgyAcpBackend;
+        this.buildMcpBridge = opts.buildMcpBridge ?? buildHapiMcpBridge;
         this.steerCancelGraceMs = opts.steerCancelGraceMs ?? STEER_CANCEL_GRACE_MS;
         this.cancelHardStopMs = opts.cancelHardStopMs ?? CANCEL_HARD_STOP_MS;
         this.killSettleMs = opts.killSettleMs ?? KILL_SETTLE_MS;
@@ -377,6 +465,17 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             RPC_METHODS.ListSlashCommands,
             async () => await this.handleListSlashCommands()
         );
+        const titleSync = createAcpSessionTitleSync(session.client);
+        this.titleSync = titleSync;
+        const { server: happyServer, mcpServers } = await this.buildMcpBridge(session.client, {
+            onChangeTitle: () => titleSync.markManualTitle(),
+            workingDirectory: session.path,
+            skillLookup: { workingDirectory: session.path, flavor: 'agy' },
+            enabledTools: AGY_SAFE_HAPI_MCP_TOOLS
+        });
+        this.happyServer = happyServer;
+        this.acpMcpServers = toAcpMcpServers(mcpServers);
+        if (this.shouldExit) return;
         try {
             await this.startBackend(session.sessionId);
         } catch (error) {
@@ -631,6 +730,19 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         });
     }
 
+    private sessionMetaForBackend(backend: AcpSdkBackend): Record<string, unknown> | undefined {
+        if (backend.supportsAntigravitySystemPromptAppend?.() !== true) {
+            return undefined;
+        }
+        return {
+            antigravity: {
+                systemPrompt: {
+                    append: getAgySystemPromptAppend(AGY_SAFE_HAPI_MCP_TOOLS)
+                }
+            }
+        };
+    }
+
     /**
      * Advances `agy acp`'s internal `SkipHistory` cursor via `session/resume`
      * after HAPI emits a completed reactive wakeup from `transcript.jsonl`,
@@ -642,10 +754,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         if (!backend || !acpSessionId || this.backendLost || !backend.isTransportAlive()) return;
         if (!backend.supportsSessionResume()) return;
         try {
+            const meta = this.sessionMetaForBackend(backend);
             await backend.resumeSession({
                 sessionId: acpSessionId,
                 cwd: this.session.path,
-                mcpServers: []
+                mcpServers: this.acpMcpServers,
+                ...(meta ? { meta } : {})
             });
             const reported = backend.getSessionModelsMetadata(acpSessionId)?.currentModelId ?? null;
             if (reported) this.currentModelId = reported;
@@ -901,7 +1015,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         this.backend = backend;
         this.backendLost = false;
         try {
-            const titleSync = createAcpSessionTitleSync(session.client);
+            const titleSync = this.titleSync ?? createAcpSessionTitleSync(session.client);
+            this.titleSync = titleSync;
             registerAcpSessionTitleSync(backend, session.client, titleSync);
             backend.setAvailableCommandsUpdateListener?.((_sessionId, commands) => {
                 this.recordAvailableCommands(commands);
@@ -915,6 +1030,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
             await backend.initialize();
 
+            const sessionMeta = this.sessionMetaForBackend(backend);
             let acpSessionId: string | null = null;
             if (resumeSessionId) {
                 try {
@@ -924,7 +1040,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     acpSessionId = await backend.resumeSession({
                         sessionId: resumeSessionId,
                         cwd: session.path,
-                        mcpServers: []
+                        mcpServers: this.acpMcpServers,
+                        ...(sessionMeta ? { meta: sessionMeta } : {})
                     });
                 } catch (error) {
                     logger.warn('[agy-acp] resume failed, starting a new conversation', error);
@@ -935,7 +1052,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 }
             }
             if (!acpSessionId) {
-                acpSessionId = await backend.newSession({ cwd: session.path, mcpServers: [] });
+                acpSessionId = await backend.newSession({
+                    cwd: session.path,
+                    mcpServers: this.acpMcpServers,
+                    ...(sessionMeta ? { meta: sessionMeta } : {})
+                });
                 this.backgroundCommands.length = 0;
                 this.retainedAmbiguousCompletions.length = 0;
                 this.nativeToolNames.clear();
@@ -972,12 +1093,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 backend,
                 () => this.turnPermissionMode ?? (session.getPermissionMode() as PermissionMode | undefined),
                 {
-                    // agy titles run_command requests with the command line and
-                    // gets no HAPI MCP tools, so the tool-name hints could only
-                    // match command text.
-                    autoApprovalRules: { alwaysToolNameHints: [], alwaysToolIdHints: [] },
+                    // agy titles run_command requests with the command line, so
+                    // generic tool-name hints could match command text; only verified
+                    // safe HAPI MCP tools auto-approve outside always-proceed.
+                    autoApprovalRules: { alwaysToolNameHints: [], alwaysToolIdHints: [], exactToolNames: [] },
                     autoApproveOnce: true,
                     requiresUser: isAgyQuestionRequest,
+                    resolveAutoApproval: (request, mode) =>
+                        resolveAgyHapiMcpAutoApproval(request, mode, this.nativeToolNames.get(request.toolCallId)),
                     onUserWait: () => {
                         const turn = this.turn;
                         if (!turn) return () => {};
@@ -1083,6 +1206,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         };
         const turn: AgyTurn = {
             modeHash,
+            steerConfigKey: agyTurnConfigKey(mode),
             aborted: false,
             stopReason: null,
             sentAt: null,
@@ -1211,11 +1335,22 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     }
                 }
             };
+            const prompt: PromptContent[] = await buildAgyPromptContent(backend, message, mode.imageAttachments, {
+                sessionId: session.client.sessionId,
+                onNotice: (notice) => {
+                    session.sendSessionEvent({ type: 'message', message: notice });
+                    this.messageBuffer.addMessage(notice, 'status');
+                }
+            });
+            turn.promptEcho.text = normalizeEcho(promptTextForEcho(prompt));
+            if (turn.aborted) {
+                restoreIfUserTurn();
+                return;
+            }
             if (!live) await beginWindow();
             if (!internalWakeup) {
                 this.messageBuffer.addMessage(message, 'user');
             }
-            const prompt: PromptContent[] = [{ type: 'text', text: message }];
             session.client.updateAgentState((state) => ({ ...state, steeringActive: true }));
             try {
                 await backend.prompt(acpSessionId, prompt, (update) => this.handleTurnUpdate(turn, update), {
@@ -1461,7 +1596,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             session.queue.restoreReservation(taken);
             return { steered: false, error: 'Control commands cannot be steered' };
         }
-        if (taken.item.modeHash !== turn.modeHash) {
+        if (agyTurnConfigKey(taken.item.mode) !== turn.steerConfigKey) {
             session.queue.restoreReservation(taken);
             return { steered: false, error: 'Queued message mode differs from the active turn' };
         }
@@ -1517,11 +1652,32 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             return { steered: false, error: 'Antigravity is waiting for your approval or answer; respond to it, then steer' };
         }
 
+        const steerPrompt: PromptContent[] = await buildAgyPromptContent(
+            backend,
+            taken.item.message,
+            taken.item.mode.imageAttachments,
+            {
+                sessionId: session.client.sessionId,
+                onNotice: (notice) => {
+                    session.sendSessionEvent({ type: 'message', message: notice });
+                    this.messageBuffer.addMessage(notice, 'status');
+                }
+            }
+        );
+        if (this.turn !== turn || this.backend !== backend || turn.aborted) {
+            await restoreQueued();
+            return { steered: false, error: 'Active turn changed' };
+        }
+        if (this.permissionHandler?.hasPendingRequests()) {
+            await restoreQueued();
+            return { steered: false, error: 'Antigravity is waiting for your approval or answer; respond to it, then steer' };
+        }
+
         let steer: ReturnType<AcpSdkBackend['beginSoftSteerPrompt']>;
         try {
             steer = backend.beginSoftSteerPrompt(
                 acpSessionId,
-                [{ type: 'text', text: taken.item.message }],
+                steerPrompt,
                 {
                     onUsage: (usage) => {
                         // Answered after its turn ended: the turn's summary is already
@@ -1565,7 +1721,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         forgetEcho = () => {
             turn.unechoedSteers = turn.unechoedSteers.filter((entry) => entry.accept !== accept);
         };
-        turn.unechoedSteers.push({ text: normalizeEcho(taken.item.message), echo: '', accept });
+        turn.unechoedSteers.push({ text: normalizeEcho(promptTextForEcho(steerPrompt)), echo: '', accept });
         turn.abandonSteers.push(markIndeterminate);
 
         try {
@@ -1624,12 +1780,43 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         // text echoed since it was sent, and the longest match wins when one
         // steer's text contains another's. One chunk may echo several steers,
         // so a match only uses up its own text.
+        const windowSize = turn.unechoedSteers.reduce((size, entry) => Math.max(size, entry.text.length), ECHO_BUFFER_LIMIT);
         for (const entry of turn.unechoedSteers) {
-            entry.echo = normalizeEcho(`${entry.echo} ${text}`).slice(-ECHO_BUFFER_LIMIT);
+            entry.echo = normalizeEcho(`${entry.echo} ${text}`).slice(-windowSize);
         }
         for (;;) {
             const match = turn.unechoedSteers
-                .filter((entry) => entry.text && entry.echo.includes(entry.text))
+                .filter((entry) => {
+                    if (!entry.text || !entry.echo.includes(entry.text)) return false;
+                    // If every echoed occurrence of this steer could still be part
+                    // of a longer pending steer (including a coalesced or partial
+                    // image caption), wait until that longer steer's remaining
+                    // text or image token is ruled out.
+                    let from = 0;
+                    for (;;) {
+                        const pos = entry.echo.indexOf(entry.text, from);
+                        if (pos === -1) return false;
+                        const tailLen = entry.echo.length - pos;
+                        const isAmbiguousWithLongerSteer = turn.unechoedSteers.some((other) => {
+                            if (other === entry || other.text.length <= entry.text.length) return false;
+                            let otherFrom = 0;
+                            for (;;) {
+                                const otherPos = other.text.indexOf(entry.text, otherFrom);
+                                if (otherPos === -1) return false;
+                                const prefixLen = otherPos + tailLen;
+                                if (prefixLen <= other.text.length) {
+                                    const otherPrefix = other.text.slice(0, prefixLen);
+                                    if (entry.echo.endsWith(otherPrefix) && other.echo.endsWith(otherPrefix)) {
+                                        return true;
+                                    }
+                                }
+                                otherFrom = otherPos + 1;
+                            }
+                        });
+                        if (!isAmbiguousWithLongerSteer) return true;
+                        from = pos + 1;
+                    }
+                })
                 .sort((a, b) => b.text.length - a.text.length)[0];
             if (!match) return;
             for (const entry of turn.unechoedSteers) {
@@ -2198,6 +2385,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const backend = this.backend;
         this.backend = null;
         await backend?.disconnect();
+        const happyServer = this.happyServer;
+        this.happyServer = null;
+        happyServer?.stop();
         logger.debug('[agy-acp] cleanup done');
     }
 }

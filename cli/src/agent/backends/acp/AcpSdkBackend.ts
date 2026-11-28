@@ -13,7 +13,7 @@ import {
     type ToolCallScope
 } from './toolCallLifetimes';
 import { defaultToolCallLifetimeStore, type ToolCallLifetimeStore } from './toolCallLifetimeStore';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 /** Why the backend is bumping/clearing hub thinking — launchers filter chatter here (#1553). */
 export type AgentActivitySource =
@@ -115,13 +115,26 @@ type AcpInitializeResult = {
         loadSession?: boolean;
         promptCapabilities?: unknown;
         sessionCapabilities?: Record<string, unknown>;
+        _meta?: Record<string, unknown>;
     };
 };
+
+export function formatAcpImageEchoToken(mimeType: string, data: string): string {
+    const digest = createHash('sha256').update(data).digest('hex');
+    return `[acp-image:${mimeType}:${data.length}:${digest}]`;
+}
 
 function userMessageChunkText(update: unknown): string | null {
     if (!isObject(update) || update.sessionUpdate !== 'user_message_chunk') return null;
     const content = update.content;
-    return isObject(content) && content.type === 'text' ? asString(content.text) : null;
+    if (!isObject(content)) return null;
+    if (content.type === 'text') return asString(content.text);
+    if (content.type === 'image') {
+        const mimeType = asString(content.mimeType);
+        const data = asString(content.data);
+        return mimeType && data ? formatAcpImageEchoToken(mimeType, data) : null;
+    }
+    return null;
 }
 
 export class AcpSdkBackend implements AgentBackend {
@@ -380,6 +393,9 @@ export class AcpSdkBackend implements AgentBackend {
                     promptCapabilities: response.agentCapabilities.promptCapabilities,
                     sessionCapabilities: isObject(response.agentCapabilities.sessionCapabilities)
                         ? response.agentCapabilities.sessionCapabilities
+                        : undefined,
+                    _meta: isObject(response.agentCapabilities._meta)
+                        ? response.agentCapabilities._meta
                         : undefined
                 }
                 : undefined
@@ -441,6 +457,14 @@ export class AcpSdkBackend implements AgentBackend {
         return isObject(promptCapabilities) && promptCapabilities.image === true;
     }
 
+    /** Whether Antigravity ACP advertises `_meta.antigravity.systemPrompt.append`. */
+    supportsAntigravitySystemPromptAppend(): boolean {
+        const meta = this.initializeResult?.agentCapabilities?._meta;
+        const antigravity = isObject(meta) && isObject(meta.antigravity) ? meta.antigravity : null;
+        const systemPrompt = antigravity && isObject(antigravity.systemPrompt) ? antigravity.systemPrompt : null;
+        return systemPrompt?.append === true;
+    }
+
     getSessionConfigOptions(sessionId: string): AcpConfigOptionDescriptor[] | undefined {
         return this.sessionConfigOptions.get(sessionId);
     }
@@ -498,7 +522,8 @@ export class AcpSdkBackend implements AgentBackend {
         const response = await withRetry(
             () => this.transport!.sendRequest('session/new', {
                 cwd: config.cwd,
-                mcpServers: config.mcpServers
+                mcpServers: config.mcpServers,
+                ...(config.meta ? { _meta: config.meta } : {})
             }),
             {
                 ...AcpSdkBackend.INIT_RETRY_OPTIONS,
@@ -527,7 +552,8 @@ export class AcpSdkBackend implements AgentBackend {
             () => this.transport!.sendRequest('session/load', {
                 sessionId: config.sessionId,
                 cwd: config.cwd,
-                mcpServers: config.mcpServers
+                mcpServers: config.mcpServers,
+                ...(config.meta ? { _meta: config.meta } : {})
             }),
             {
                 ...AcpSdkBackend.INIT_RETRY_OPTIONS,
@@ -558,7 +584,8 @@ export class AcpSdkBackend implements AgentBackend {
             () => this.transport!.sendRequest('session/resume', {
                 sessionId: config.sessionId,
                 cwd: config.cwd,
-                mcpServers: config.mcpServers
+                mcpServers: config.mcpServers,
+                ...(config.meta ? { _meta: config.meta } : {})
             }),
             {
                 ...AcpSdkBackend.INIT_RETRY_OPTIONS,

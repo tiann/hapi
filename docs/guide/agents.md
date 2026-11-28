@@ -465,7 +465,11 @@ the prompt is loaded by DSH through its own `skill` tool and catalog.
 
   Remote-only — there is no local terminal input path or PTY/TUI wrapper. MCP
   servers are loaded natively from `~/.gemini/config/mcp_config.json` or
-  workspace `.agents/mcp_config.json`; HAPI does not inject its own MCP server.
+  workspace `.agents/mcp_config.json`, and over ACP HAPI attaches its own
+  narrowed MCP bridge exposing self-session tools (`change_title`, `session_job`,
+  `skill_lookup`). System prompt instructions (`_meta.antigravity.systemPrompt.append`),
+  inline image prompts (`promptCapabilities.image` with `@path` fallback), and
+  Antigravity manifest/plugin skill discovery are applied automatically when supported.
   [Google Antigravity](https://antigravity.google)
 
   On ACP, HAPI offers agy's own slash commands in the `/` menu, including

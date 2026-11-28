@@ -15,6 +15,7 @@ export type AutoApprovalRuleSet = {
     alwaysToolNameHints?: string[];
     alwaysToolIdHints?: string[];
     writeToolNameHints?: string[];
+    exactToolNames?: readonly string[];
 };
 
 const AUTO_APPROVE_TOOL_NAME_HINTS = [
@@ -103,6 +104,9 @@ export function resolveToolAutoApprovalDecision(
         alwaysToolIdHints: ruleOverrides?.alwaysToolIdHints ?? AUTO_APPROVE_TOOL_ID_HINTS,
         writeToolNameHints: ruleOverrides?.writeToolNameHints ?? AUTO_APPROVE_WRITE_TOOL_HINTS
     };
+    const exactToolNames = ruleOverrides?.exactToolNames
+        ? new Set(ruleOverrides.exactToolNames.map((name) => name.toLowerCase()))
+        : AUTO_APPROVE_EXACT_TOOL_NAMES;
 
     const lowerTool = toolName.toLowerCase();
     const lowerId = toolCallId.toLowerCase();
@@ -119,7 +123,7 @@ export function resolveToolAutoApprovalDecision(
     }
 
     if (
-        AUTO_APPROVE_EXACT_TOOL_NAMES.has(lowerTool)
+        exactToolNames.has(lowerTool)
         || rules.alwaysToolNameHints.some((name) => lowerTool.includes(name))
     ) {
         return decisionForMode;
