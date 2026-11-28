@@ -1,40 +1,38 @@
+import type { ServerChanErrorDestination } from '../config/notificationDestinations'
 import type { Session } from '../sync/syncEngine'
 import type { SessionEndReason } from '@hapi/protocol'
 import type { NotificationChannel } from '../notifications/notificationTypes'
-import { getAgentName, getSessionName } from '../notifications/sessionInfo'
+import { buildSessionUrl, getAgentName, getSessionName } from '../notifications/sessionInfo'
+import { shouldSuppressBackgroundNotification } from '../notifications/backgroundOnly'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
 import { composeInputRequestNotification, getFirstPendingRequest } from '../notifications/inputRequest'
 
-function buildSessionUrl(baseUrl: string, sessionId: string): string {
-    try {
-        return new URL(`/sessions/${sessionId}`, baseUrl).toString()
-    } catch {
-        const normalized = baseUrl.replace(/\/+$/, '')
-        return `${normalized}/sessions/${sessionId}`
-    }
-}
+const SERVERCHAN_REQUEST_TIMEOUT_MS = 10_000
 
 export class ServerChanChannel implements NotificationChannel {
+    readonly independent = true
+
     constructor(
-        private readonly sendKey: string,
+        private readonly sendKey: string | null,
         private readonly publicUrl: string,
         private readonly visibilityTracker: VisibilityTracker | null = null,
-        private readonly backgroundOnly = false
+        private readonly backgroundOnly = false,
+        private readonly errorDestinations: ReadonlyMap<string, ServerChanErrorDestination> = new Map()
     ) {}
 
     async sendReady(session: Session): Promise<void> {
-        if (!session.active || this.shouldSuppress(session)) {
+        if (!this.sendKey || !session.active || this.shouldSuppress(session)) {
             return
         }
 
         const agentName = getAgentName(session)
         const name = getSessionName(session)
         const url = buildSessionUrl(this.publicUrl, session.id)
-        await this.send('HAPI Ready for input', `${agentName} 正在等待输入\n\n会话：${name}\n\n${url}`)
+        await this.send(this.sendKey, 'HAPI Ready for input', `${agentName} 正在等待输入\n\n会话：${name}\n\n${url}`)
     }
 
     async sendPermissionRequest(session: Session): Promise<void> {
-        if (!session.active || this.shouldSuppress(session)) {
+        if (!this.sendKey || !session.active || this.shouldSuppress(session)) {
             return
         }
 
@@ -45,24 +43,37 @@ export class ServerChanChannel implements NotificationChannel {
         const toolName = request?.tool ? ` (${request.tool})` : ''
         const url = buildSessionUrl(this.publicUrl, session.id)
         await this.send(
+            this.sendKey,
             inputNotification ? `HAPI ${inputNotification.title}` : 'HAPI Permission Request',
             `${inputNotification?.body ?? `${name}${toolName}`}\n\n${url}`
         )
     }
 
     async sendSessionCompletion(session: Session, _reason: SessionEndReason): Promise<void> {
-        if (this.shouldSuppress(session)) {
+        if (!this.sendKey || this.shouldSuppress(session)) {
             return
         }
 
         const agentName = getAgentName(session)
         const name = getSessionName(session)
         const url = buildSessionUrl(this.publicUrl, session.id)
-        await this.send('HAPI Session completed', `${agentName} · ${name}\n\n会话已结束。\n\n${url}`)
+        await this.send(this.sendKey, 'HAPI Session completed', `${agentName} · ${name}\n\n会话已结束。\n\n${url}`)
     }
 
-    private async send(title: string, desp: string): Promise<void> {
-        const url = `https://sctapi.ftqq.com/${this.sendKey}.send`
+    async sendSessionError(session: Session, _reason: SessionEndReason): Promise<void> {
+        const destination = this.errorDestinations.get(session.namespace)
+        if (!destination || shouldSuppressBackgroundNotification(session, this.visibilityTracker, destination.backgroundOnly)) {
+            return
+        }
+
+        const agentName = getAgentName(session)
+        const name = getSessionName(session)
+        const url = buildSessionUrl(this.publicUrl, session.id)
+        await this.send(destination.sendKey, 'HAPI Session error', `${agentName} · ${name}\n\n会话异常结束。\n\n${url}`)
+    }
+
+    private async send(sendKey: string, title: string, desp: string): Promise<void> {
+        const url = `https://sctapi.ftqq.com/${encodeURIComponent(sendKey)}.send`
         const body = new URLSearchParams({
             title,
             desp
@@ -73,7 +84,8 @@ export class ServerChanChannel implements NotificationChannel {
             headers: {
                 'content-type': 'application/x-www-form-urlencoded'
             },
-            body
+            body,
+            signal: AbortSignal.timeout(SERVERCHAN_REQUEST_TIMEOUT_MS),
         })
 
         if (!response.ok) {
@@ -83,8 +95,6 @@ export class ServerChanChannel implements NotificationChannel {
     }
 
     private shouldSuppress(session: Session): boolean {
-        return this.backgroundOnly
-            && this.visibilityTracker !== null
-            && this.visibilityTracker.hasVisibleConnection(session.namespace)
+        return shouldSuppressBackgroundNotification(session, this.visibilityTracker, this.backgroundOnly)
     }
 }

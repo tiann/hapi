@@ -6,7 +6,7 @@ import type {
     NotificationHubOptions
 } from './notificationTypes'
 import type { NotificationSendContext } from './notificationSendContext'
-import { extractMessageEventType } from './eventParsing'
+import { extractMessageEventData } from './eventParsing'
 
 export class NotificationHub {
     private readonly channels: NotificationChannel[]
@@ -14,8 +14,10 @@ export class NotificationHub {
     private readonly permissionDebounceMs: number
     private readonly modelErrorRetryDelaysMs: number[]
     private readonly lastKnownRequests: Map<string, Set<string>> = new Map()
+    private readonly pendingPermissionNotifications = new Map<string, Set<string>>()
     private readonly notificationDebounce: Map<string, NodeJS.Timeout> = new Map()
     private readonly lastReadyNotificationAt: Map<string, number> = new Map()
+    private readonly lastGenuineReadyAt: Map<string, number> = new Map()
     /**
      * sessionId -> the `eventId` of the last `lastModelError` we already
      * notified for. Fire ONCE per distinct error event; subsequent
@@ -79,6 +81,7 @@ export class NotificationHub {
         }
         this.notificationDebounce.clear()
         this.lastKnownRequests.clear()
+        this.pendingPermissionNotifications.clear()
         this.lastReadyNotificationAt.clear()
         this.lastModelErrorNotifiedId.clear()
         for (const timer of this.modelErrorRetryTimers.values()) {
@@ -123,14 +126,19 @@ export class NotificationHub {
                 this.sendSessionCompletion(event.sessionId, event.reason).catch((error) => {
                     console.error('[NotificationHub] Failed to send session completion notification:', error)
                 })
+            } else if (event.reason === 'error') {
+                this.sendSessionError(event.sessionId, event.reason).catch((error) => {
+                    console.error('[NotificationHub] Failed to send session error notification:', error)
+                })
             }
             return
         }
 
         if (event.type === 'message-received' && event.sessionId) {
-            const eventType = extractMessageEventType(event)
-            if (eventType === 'ready') {
-                this.sendReadyNotification(event.sessionId).catch((error) => {
+            const data = extractMessageEventData(event)
+            if (data?.type === 'ready') {
+                const reason = data.reason === 'reactive-polling-paused' ? data.reason : undefined
+                this.sendReadyNotification(event.sessionId, reason).catch((error) => {
                     console.error('[NotificationHub] Failed to send ready notification:', error)
                 })
             }
@@ -144,7 +152,9 @@ export class NotificationHub {
             this.notificationDebounce.delete(sessionId)
         }
         this.lastKnownRequests.delete(sessionId)
+        this.pendingPermissionNotifications.delete(sessionId)
         this.lastReadyNotificationAt.delete(sessionId)
+        this.lastGenuineReadyAt.delete(sessionId)
         if (removeModelErrorWatermark) {
             this.lastModelErrorNotifiedId.delete(sessionId)
             this.clearModelErrorRetry(sessionId)
@@ -334,28 +344,15 @@ export class NotificationHub {
     }
 
     private checkForPermissionNotification(session: Session): void {
-        const requests = session.agentState?.requests
-
-        if (requests == null) {
-            return
-        }
-
-        const newRequestIds = new Set(Object.keys(requests))
-        const oldRequestIds = this.lastKnownRequests.get(session.id) || new Set()
-
-        let hasNewRequests = false
-        for (const requestId of newRequestIds) {
-            if (!oldRequestIds.has(requestId)) {
-                hasNewRequests = true
-                break
-            }
-        }
-
-        this.lastKnownRequests.set(session.id, newRequestIds)
-
-        if (!hasNewRequests) {
-            return
-        }
+        const current = new Set(Object.keys(session.agentState?.requests ?? {}))
+        const previous = this.lastKnownRequests.get(session.id) ?? new Set()
+        this.lastKnownRequests.set(session.id, current)
+        const pending = this.pendingPermissionNotifications.get(session.id) ?? new Set<string>()
+        for (const id of pending) if (!current.has(id)) pending.delete(id)
+        const added = [...current].filter(id => !previous.has(id))
+        if (!added.length) return
+        for (const id of added) pending.add(id)
+        this.pendingPermissionNotifications.set(session.id, pending)
 
         const existingTimer = this.notificationDebounce.get(session.id)
         if (existingTimer) {
@@ -364,7 +361,10 @@ export class NotificationHub {
 
         const timer = setTimeout(() => {
             this.notificationDebounce.delete(session.id)
-            this.sendPermissionNotification(session.id).catch((error) => {
+            const added = this.pendingPermissionNotifications.get(session.id)
+            this.pendingPermissionNotifications.delete(session.id)
+            if (!added?.size) return
+            this.sendPermissionNotification(session.id, added).catch((error) => {
                 console.error('[NotificationHub] Failed to send permission notification:', error)
             })
         }, this.permissionDebounceMs)
@@ -372,29 +372,30 @@ export class NotificationHub {
         this.notificationDebounce.set(session.id, timer)
     }
 
-    private async sendPermissionNotification(sessionId: string): Promise<void> {
+    private async sendPermissionNotification(sessionId: string, requestIds: ReadonlySet<string>): Promise<void> {
         const session = this.getNotifiableSession(sessionId)
         if (!session) {
             return
         }
 
-        await this.notifyPermission(session)
+        const pending = new Set([...requestIds].filter(id => Object.hasOwn(session.agentState?.requests ?? {}, id)))
+        if (pending.size) await this.notifyPermission(session, pending)
     }
 
-    private async sendReadyNotification(sessionId: string): Promise<void> {
+    private async sendReadyNotification(sessionId: string, reason?: NotificationSendContext['readyReason']): Promise<void> {
         const session = this.getNotifiableSession(sessionId)
         if (!session) {
             return
         }
 
         const now = Date.now()
-        const last = this.lastReadyNotificationAt.get(sessionId) ?? 0
-        if (now - last < this.readyCooldownMs) {
-            return
-        }
-        this.lastReadyNotificationAt.set(sessionId, now)
-
-        await this.notifyReady(session)
+        const ordinaryReady = now - (this.lastReadyNotificationAt.get(sessionId) ?? 0) >= this.readyCooldownMs
+        const genuineReady = reason === undefined
+            && now - (this.lastGenuineReadyAt.get(sessionId) ?? 0) >= this.readyCooldownMs
+        if (!ordinaryReady && !genuineReady) return
+        if (ordinaryReady) this.lastReadyNotificationAt.set(sessionId, now)
+        if (genuineReady) this.lastGenuineReadyAt.set(sessionId, now)
+        await this.notifyReady(session, reason, ordinaryReady, genuineReady)
     }
 
     private async sendSessionCompletion(sessionId: string, reason: SessionEndReason): Promise<void> {
@@ -406,39 +407,54 @@ export class NotificationHub {
         await this.notifySessionCompletion(session, reason)
     }
 
-    private async notifyReady(session: Session): Promise<void> {
-        const ctx: NotificationSendContext = { nativeGate: { sent: false } }
-        for (const channel of this.channels) {
-            try {
-                await channel.sendReady(session, ctx)
-            } catch (error) {
-                console.error('[NotificationHub] Failed to send ready notification:', error)
-            }
+    private async sendSessionError(sessionId: string, reason: SessionEndReason): Promise<void> {
+        const session = this.syncEngine.getSession(sessionId)
+        if (!session) {
+            return
         }
+
+        await this.notifySessionError(session, reason)
     }
 
-    private async notifyPermission(session: Session): Promise<void> {
-        const ctx: NotificationSendContext = { nativeGate: { sent: false } }
-        for (const channel of this.channels) {
+    private async dispatchNotification(
+        label: string,
+        send: (channel: NotificationChannel) => Promise<void> | undefined
+    ): Promise<void> {
+        const sendSafely = async (channel: NotificationChannel) => {
             try {
-                await channel.sendPermissionRequest(session, ctx)
+                await send(channel)
             } catch (error) {
-                console.error('[NotificationHub] Failed to send permission notification:', error)
+                console.error(`[NotificationHub] Failed to send ${label} notification:`, error)
             }
         }
+        const independent = this.channels.filter(channel => channel.independent).map(sendSafely)
+        // Preserve native push ordering and its handoff to Web Push. Independent
+        // HTTP providers must not hold up that chain or one another.
+        for (const channel of this.channels) {
+            if (!channel.independent) await sendSafely(channel)
+        }
+        await Promise.all(independent)
+    }
+
+    private async notifyReady(session: Session, reason: NotificationSendContext['readyReason'], ordinary: boolean, genuine: boolean): Promise<void> {
+        const ctx: NotificationSendContext = { nativeGate: { sent: false } }
+        await this.dispatchNotification('ready', channel => {
+            if (channel.requiresGenuineReady ? !genuine : !ordinary) return undefined
+            return channel.sendReady(session, channel.independent ? { readyReason: reason } : ctx)
+        })
+    }
+
+    private async notifyPermission(session: Session, pendingRequestIds: ReadonlySet<string>): Promise<void> {
+        const ctx: NotificationSendContext = { nativeGate: { sent: false }, pendingRequestIds }
+        await this.dispatchNotification('permission', channel => channel.sendPermissionRequest(session, channel.independent ? { pendingRequestIds } : ctx))
     }
 
     private async notifySessionCompletion(session: Session, reason: SessionEndReason): Promise<void> {
-        for (const channel of this.channels) {
-            if (typeof channel.sendSessionCompletion !== 'function') {
-                continue
-            }
-            try {
-                await channel.sendSessionCompletion(session, reason)
-            } catch (error) {
-                console.error('[NotificationHub] Failed to send session completion notification:', error)
-            }
-        }
+        await this.dispatchNotification('session completion', channel => channel.sendSessionCompletion?.(session, reason))
+    }
+
+    private async notifySessionError(session: Session, reason: SessionEndReason): Promise<void> {
+        await this.dispatchNotification('session error', channel => channel.sendSessionError?.(session, reason))
     }
 
     private async notifyModelError(session: Session, notification: ModelErrorNotification): Promise<boolean> {

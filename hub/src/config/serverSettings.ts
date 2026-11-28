@@ -9,6 +9,15 @@
  */
 
 import { getSettingsFile, updateSettings } from './settings'
+import {
+    assertWxPusherRecipientLimits,
+    readDestinationBackgroundOnly,
+    readDestinationCredential,
+    readNamespaceDestinations,
+    setLegacyDefaultDestination,
+    type ServerChanErrorDestination,
+    type WxPusherDestination,
+} from './notificationDestinations'
 
 const OLD_SETTINGS_FIELDS = ['webappHost', 'webappPort', 'webappUrl'] as const
 
@@ -37,6 +46,13 @@ export interface ServerSettings {
     serverChanSendKey: string | null
     serverChanNotification: boolean
     serverChanBackgroundOnly: boolean
+    serverChanErrorDestinations: ReadonlyMap<string, ServerChanErrorDestination>
+    wxPusherAppToken: string | null
+    wxPusherUids: string[]
+    wxPusherTopicIds: number[]
+    wxPusherNotification: boolean
+    wxPusherBackgroundOnly: boolean
+    wxPusherDestinations: ReadonlyMap<string, WxPusherDestination>
     listenHost: string
     listenPort: number
     publicUrl: string
@@ -61,6 +77,11 @@ export interface ServerSettingsResult {
         serverChanSendKey: 'env' | 'file' | 'default'
         serverChanNotification: 'env' | 'file' | 'default'
         serverChanBackgroundOnly: 'env' | 'file' | 'default'
+        wxPusherAppToken: 'env' | 'file' | 'default'
+        wxPusherUids: 'env' | 'file' | 'default'
+        wxPusherTopicIds: 'env' | 'file' | 'default'
+        wxPusherNotification: 'env' | 'file' | 'default'
+        wxPusherBackgroundOnly: 'env' | 'file' | 'default'
         listenHost: 'env' | 'file' | 'default'
         listenPort: 'env' | 'file' | 'default'
         publicUrl: 'env' | 'file' | 'default'
@@ -106,6 +127,33 @@ function deriveCorsOrigins(publicUrl: string): string[] {
     }
 }
 
+function parseCommaSeparatedStrings(value: string): string[] {
+    return [...new Set(value.split(',').map((entry) => entry.trim()).filter(Boolean))]
+}
+
+function parseTopicIds(value: string): number[] {
+    const entries = parseCommaSeparatedStrings(value)
+    const topicIds = entries.map((entry) => Number(entry))
+    if (topicIds.some((topicId) => !Number.isSafeInteger(topicId) || topicId <= 0)) {
+        throw new Error('WXPUSHER_TOPIC_IDS must be a comma-separated list of positive integers')
+    }
+    return [...new Set(topicIds)]
+}
+
+function readStringArraySetting(value: unknown, field: string): string[] {
+    if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string')) {
+        throw new Error(`${field} must be an array of strings`)
+    }
+    return [...new Set(value.map((entry) => entry.trim()).filter(Boolean))]
+}
+
+function readTopicIdArraySetting(value: unknown, field: string): number[] {
+    if (!Array.isArray(value) || value.some((entry) => !Number.isSafeInteger(entry) || entry <= 0)) {
+        throw new Error(`${field} must be an array of positive integers`)
+    }
+    return [...new Set(value)]
+}
+
 function rejectOldSettingsFields(settings: object, settingsFile: string): void {
     const oldFields = OLD_SETTINGS_FIELDS.filter((field) => field in settings)
     if (oldFields.length === 0) {
@@ -133,6 +181,11 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
             serverChanSendKey: 'default',
             serverChanNotification: 'default',
             serverChanBackgroundOnly: 'default',
+            wxPusherAppToken: 'default',
+            wxPusherUids: 'default',
+            wxPusherTopicIds: 'default',
+            wxPusherNotification: 'default',
+            wxPusherBackgroundOnly: 'default',
             listenHost: 'default',
             listenPort: 'default',
             publicUrl: 'default',
@@ -218,6 +271,110 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
             sources.serverChanBackgroundOnly = 'file'
         } else if (settings.serverChanBackgroundOnly !== undefined) {
             throw new Error('serverChanBackgroundOnly must be a boolean')
+        }
+
+        const serverChanErrorDestinations = readNamespaceDestinations(settings.serverChanErrorsByNamespace, 'serverChanErrorsByNamespace', (entry, field) => ({
+            sendKey: readDestinationCredential(entry.sendKey, `${field}.sendKey`),
+            backgroundOnly: readDestinationBackgroundOnly(entry.backgroundOnly, `${field}.backgroundOnly`),
+        }))
+        setLegacyDefaultDestination(serverChanErrorDestinations,
+            serverChanSendKey ? { sendKey: serverChanSendKey, backgroundOnly: serverChanBackgroundOnly } : null)
+
+        const wxPusherDestinations = readNamespaceDestinations(settings.wxPusherByNamespace, 'wxPusherByNamespace', (entry, field) => {
+            const appToken = readDestinationCredential(entry.appToken, `${field}.appToken`)
+            const uids = entry.uids === undefined ? [] : readStringArraySetting(entry.uids, `${field}.uids`)
+            const topicIds = entry.topicIds === undefined ? [] : readTopicIdArraySetting(entry.topicIds, `${field}.topicIds`)
+            assertWxPusherRecipientLimits(uids, topicIds, field)
+            if (uids.length === 0 && topicIds.length === 0) {
+                throw new Error(`${field} must specify at least one UID or topic ID`)
+            }
+            return { appToken, uids, topicIds, backgroundOnly: readDestinationBackgroundOnly(entry.backgroundOnly, `${field}.backgroundOnly`) }
+        })
+        // wxPusherNotification: env > file > true
+        let wxPusherNotification = true
+        if (process.env.WXPUSHER_NOTIFICATION !== undefined) {
+            wxPusherNotification = process.env.WXPUSHER_NOTIFICATION === 'true'
+            sources.wxPusherNotification = 'env'
+            if (settings.wxPusherNotification === undefined) {
+                settings.wxPusherNotification = wxPusherNotification
+                needsSave = true
+            }
+        } else if (settings.wxPusherNotification !== undefined) {
+            if (typeof settings.wxPusherNotification !== 'boolean') {
+                throw new Error('wxPusherNotification must be a boolean')
+            }
+            wxPusherNotification = settings.wxPusherNotification
+            sources.wxPusherNotification = 'file'
+        }
+
+        let wxPusherAppToken: string | null = null
+        let wxPusherUids: string[] = []
+        let wxPusherTopicIds: number[] = []
+        let wxPusherBackgroundOnly = false
+        if (!wxPusherDestinations.has('default')) {
+            // wxPusherAppToken: env > file > null
+            if (process.env.WXPUSHER_APP_TOKEN) {
+                wxPusherAppToken = process.env.WXPUSHER_APP_TOKEN
+                sources.wxPusherAppToken = 'env'
+                if (settings.wxPusherAppToken === undefined) {
+                    settings.wxPusherAppToken = wxPusherAppToken
+                    needsSave = true
+                }
+            } else if (settings.wxPusherAppToken !== undefined) {
+                if (typeof settings.wxPusherAppToken !== 'string') {
+                    throw new Error('wxPusherAppToken must be a string')
+                }
+                wxPusherAppToken = settings.wxPusherAppToken
+                sources.wxPusherAppToken = 'file'
+            }
+
+            // wxPusherUids: env > file > []
+            if (process.env.WXPUSHER_UIDS !== undefined) {
+                wxPusherUids = parseCommaSeparatedStrings(process.env.WXPUSHER_UIDS)
+                sources.wxPusherUids = 'env'
+                if (settings.wxPusherUids === undefined) {
+                    settings.wxPusherUids = wxPusherUids
+                    needsSave = true
+                }
+            } else if (settings.wxPusherUids !== undefined) {
+                wxPusherUids = readStringArraySetting(settings.wxPusherUids, 'wxPusherUids')
+                sources.wxPusherUids = 'file'
+            }
+
+            // wxPusherTopicIds: env > file > []
+            if (process.env.WXPUSHER_TOPIC_IDS !== undefined) {
+                wxPusherTopicIds = parseTopicIds(process.env.WXPUSHER_TOPIC_IDS)
+                sources.wxPusherTopicIds = 'env'
+                if (settings.wxPusherTopicIds === undefined) {
+                    settings.wxPusherTopicIds = wxPusherTopicIds
+                    needsSave = true
+                }
+            } else if (settings.wxPusherTopicIds !== undefined) {
+                wxPusherTopicIds = readTopicIdArraySetting(settings.wxPusherTopicIds, 'wxPusherTopicIds')
+                sources.wxPusherTopicIds = 'file'
+            }
+
+            // wxPusherBackgroundOnly: env > file > false
+            if (process.env.WXPUSHER_BACKGROUND_ONLY !== undefined) {
+                wxPusherBackgroundOnly = process.env.WXPUSHER_BACKGROUND_ONLY === 'true'
+                sources.wxPusherBackgroundOnly = 'env'
+                if (settings.wxPusherBackgroundOnly === undefined) {
+                    settings.wxPusherBackgroundOnly = wxPusherBackgroundOnly
+                    needsSave = true
+                }
+            } else if (typeof settings.wxPusherBackgroundOnly === 'boolean') {
+                wxPusherBackgroundOnly = settings.wxPusherBackgroundOnly
+                sources.wxPusherBackgroundOnly = 'file'
+            } else if (settings.wxPusherBackgroundOnly !== undefined) {
+                throw new Error('wxPusherBackgroundOnly must be a boolean')
+            }
+
+            if (wxPusherAppToken && (wxPusherUids.length || wxPusherTopicIds.length)) {
+                assertWxPusherRecipientLimits(wxPusherUids, wxPusherTopicIds, 'Legacy WxPusher configuration')
+                setLegacyDefaultDestination(wxPusherDestinations, {
+                    appToken: wxPusherAppToken, uids: wxPusherUids, topicIds: wxPusherTopicIds, backgroundOnly: wxPusherBackgroundOnly,
+                })
+            }
         }
 
         // listenHost: env > file > default
@@ -337,6 +494,13 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
                     serverChanSendKey,
                     serverChanNotification,
                     serverChanBackgroundOnly,
+                    serverChanErrorDestinations,
+                    wxPusherAppToken,
+                    wxPusherUids,
+                    wxPusherTopicIds,
+                    wxPusherNotification,
+                    wxPusherBackgroundOnly,
+                    wxPusherDestinations,
                     listenHost,
                     listenPort,
                     publicUrl,

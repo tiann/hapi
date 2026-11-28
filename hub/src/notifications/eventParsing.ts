@@ -23,7 +23,7 @@ function extractEventEnvelope(message: unknown): EventEnvelope | null {
     return content as EventEnvelope
 }
 
-export function extractMessageEventType(event: SyncEvent): string | null {
+export function extractMessageEventData(event: SyncEvent): Record<string, unknown> | null {
     if (event.type !== 'message-received') {
         return null
     }
@@ -34,7 +34,10 @@ export function extractMessageEventType(event: SyncEvent): string | null {
         return null
     }
 
-    const data = isObject(envelope.data) ? envelope.data : null
-    const eventType = data?.type
+    return isObject(envelope.data) ? envelope.data : null
+}
+
+export function extractMessageEventType(event: SyncEvent): string | null {
+    const eventType = extractMessageEventData(event)?.type
     return typeof eventType === 'string' ? eventType : null
 }

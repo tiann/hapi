@@ -3056,6 +3056,10 @@ describe('session model', () => {
                 path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'pi',
             }, null, 'default')
             engine.handleSessionAlive({ sid: temp.id, time: Date.now() })
+            const endings: Array<{ sessionId: string; reason: unknown }> = []
+            engine.subscribe(event => {
+                if (event.type === 'session-ended' && event.sessionId) endings.push({ sessionId: event.sessionId, reason: event.reason })
+            })
             ;(engine as any).rpcGateway.stopRunnerSession = async () => {
                 engine.handleSessionEnd({ sid: temp.id, time: Date.now(), reason: 'error' })
                 return 'still_alive'
@@ -3064,8 +3068,62 @@ describe('session model', () => {
             expect(await (engine as any).terminateUnexpectedPiTemp('machine-1', temp.id, original.id, 'default')).toBe(true)
             await flushAsyncWork()
             expect(store.sessions.getSession(temp.id)).toBeNull()
+            expect(endings).toEqual([{ sessionId: temp.id, reason: 'terminated' }])
             expect(engine.getSessionByNamespace(original.id, 'default')?.metadata?.piResumeAttempt).toBeUndefined()
         } finally { engine.stop() }
+    })
+
+    it('classifies an error emitted during failed-fork child cleanup as deliberate termination', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        try {
+            const child = engine.getOrCreateSession('failed-fork-notification-cleanup', {
+                path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'claude'
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: child.id, time: Date.now() })
+            const endings: unknown[] = []
+            engine.subscribe(event => {
+                if (event.type === 'session-ended' && event.sessionId === child.id) endings.push(event.reason)
+            })
+            const internal = engine as unknown as {
+                cleanupFailedForkChild(childId: string, machineId: string, spawnAttempted: boolean): Promise<void>
+                rpcGateway: { stopRunnerSession(): Promise<'stopped'> }
+            }
+            internal.rpcGateway.stopRunnerSession = async () => {
+                engine.handleSessionEnd({ sid: child.id, time: Date.now(), reason: 'error' })
+                return 'stopped'
+            }
+            await internal.cleanupFailedForkChild(child.id, 'machine-1', true)
+            expect(endings).toEqual(['terminated'])
+            expect(store.sessions.getSession(child.id)).toBeNull()
+        } finally { engine.stop(); store.close() }
+    })
+
+    it('classifies a persisted temporary Pi child cleanup separately from a real crash', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        try {
+            const temp = engine.getOrCreateSession('pi-persisted-cleanup-child', {
+                path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'pi'
+            }, null, 'default')
+            const original = engine.getOrCreateSession('pi-persisted-cleanup-parent', {
+                path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'pi', piSessionId: 'native-parent',
+                piResumeAttempt: { state: 'quarantined', machineId: 'machine-1', startedAt: 1, childSessionId: temp.id }
+            }, null, 'default')
+            const genuine = engine.getOrCreateSession('pi-real-crash', {
+                path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'pi'
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: temp.id, time: Date.now() })
+            engine.handleSessionAlive({ sid: genuine.id, time: Date.now() })
+            const endings: Array<{ sessionId: string; reason: unknown }> = []
+            engine.subscribe(event => {
+                if (event.type === 'session-ended' && event.sessionId) endings.push({ sessionId: event.sessionId, reason: event.reason })
+            })
+            ;(engine as any).rpcGateway.stopRunnerSession = async () => 'already_gone'
+            expect(await (engine as any).reconcilePersistedPiResumeAttempt(original)).toBe(true)
+            engine.handleSessionEnd({ sid: genuine.id, time: Date.now(), reason: 'error' })
+            expect(endings).toEqual([{ sessionId: temp.id, reason: 'terminated' }, { sessionId: genuine.id, reason: 'error' }])
+        } finally { engine.stop(); store.close() }
     })
 
     it('keeps still-alive Pi children quarantined even when Hub cache is inactive', async () => {

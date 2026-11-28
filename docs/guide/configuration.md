@@ -95,6 +95,13 @@ See [Notifications](./notifications.md) for setup.
 | `SERVERCHAN_SENDKEY` | `serverChanSendKey` | – | ServerChan (Server酱) SendKey. |
 | `SERVERCHAN_NOTIFICATION` | `serverChanNotification` | `true` | Enable ServerChan notifications. In the environment, any value other than `true` disables. |
 | `SERVERCHAN_BACKGROUND_ONLY` | `serverChanBackgroundOnly` | `false` | Only send when no visible HAPI client is connected in the namespace. |
+| – | `serverChanErrorsByNamespace` | – | Explicit ServerChan destinations for session errors only. See [ServerChan setup](./notifications.md#serverchan-server酱-setup). |
+| `WXPUSHER_APP_TOKEN` | `wxPusherAppToken` | – | WxPusher application token for App/client notifications. |
+| `WXPUSHER_UIDS` | `wxPusherUids` | – | Comma-separated WxPusher recipient UIDs. |
+| `WXPUSHER_TOPIC_IDS` | `wxPusherTopicIds` | – | Comma-separated WxPusher topic IDs. |
+| `WXPUSHER_NOTIFICATION` | `wxPusherNotification` | `true` | Enable WxPusher notifications. |
+| `WXPUSHER_BACKGROUND_ONLY` | `wxPusherBackgroundOnly` | `false` | Background-only delivery for the legacy `default` destination. |
+| – | `wxPusherByNamespace` | – | Explicit WxPusher destinations by namespace. See [WxPusher setup](./notifications.md#wxpusher-app-setup). |
 | `VAPID_SUBJECT` | – | `mailto:admin@hapi.run` | Web Push contact. VAPID keys are generated into `vapidKeys`. |
 | `HAPI_ANDROID_PUSH` | `androidPushMode` | `auto` | `auto` (direct FCM when `fcmServiceAccountPath` is set, otherwise the push relay), `relay`, `fcm`, or `off`. Unknown values disable Android push. |
 | `FCM_SERVICE_ACCOUNT_PATH` | `fcmServiceAccountPath` | – | Firebase service-account JSON for private builds of the Android app. |

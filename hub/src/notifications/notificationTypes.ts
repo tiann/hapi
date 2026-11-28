@@ -32,9 +32,14 @@ export type ModelErrorNotification = {
 export type ModelErrorSendOutcome = 'delivered' | 'unavailable' | 'failed'
 
 export type NotificationChannel = {
+    /** This provider does not participate in native/Web Push coordination. */
+    readonly independent?: boolean
+    /** Ignore temporary polling pauses without consuming a genuine ready cooldown. */
+    readonly requiresGenuineReady?: boolean
     sendReady: (session: Session, ctx?: NotificationSendContext) => Promise<void>
     sendPermissionRequest: (session: Session, ctx?: NotificationSendContext) => Promise<void>
     sendSessionCompletion?: (session: Session, reason: SessionEndReason) => Promise<void>
+    sendSessionError?: (session: Session, reason: SessionEndReason) => Promise<void>
     /**
      * Optional. Channels that don't implement it just skip model-error
      * pings (matches sendSessionCompletion's pattern). Wire this when
@@ -50,6 +55,7 @@ export type NotificationChannel = {
         notification: ModelErrorNotification,
         ctx?: NotificationSendContext
     ) => Promise<ModelErrorSendOutcome>
+
 }
 
 export type NotificationHubOptions = {

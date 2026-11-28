@@ -55,7 +55,7 @@ Related environment variables:
 
 ## ServerChan (Server酱) Setup
 
-Server酱 pushes notifications to WeChat and other channels. The hub sends ServerChan messages when a session is ready for input, requests a permission, or a session completes.
+Server酱 pushes notifications to WeChat and other channels. The hub sends ServerChan messages when a session is ready for input, requests a permission, ends unexpectedly with an error, or completes.
 
 1. Get a SendKey from [sct.ftqq.com](https://sct.ftqq.com/)
 2. Set the SendKey and start the hub:
@@ -77,6 +77,70 @@ Related environment variables:
 When `SERVERCHAN_BACKGROUND_ONLY=true`, a visible HAPI connection suppresses ServerChan for the entire namespace. Hidden, disconnected, or closed HAPI pages do not count as visible, so ServerChan can act as a background fallback. This is namespace-wide and does not select a particular device.
 
 These values can also be set in `settings.json` (`serverChanSendKey`, `serverChanNotification`, `serverChanBackgroundOnly`).
+
+For **session-error alerts**, the legacy SendKey applies only to `default`. Other namespaces must configure their own error destination in `settings.json`, for example:
+
+```json
+{
+  "serverChanErrorsByNamespace": {
+    "team-a": { "sendKey": "SCT_team-a-example", "backgroundOnly": true }
+  }
+}
+```
+
+A namespace with no matching error destination receives no session-error alert. An explicit `default` entry replaces the legacy error destination as a whole. The `SERVERCHAN_NOTIFICATION` switch controls both legacy and namespace-specific delivery. This setting does not change routing for existing ready, permission, or completion alerts. Keep `settings.json` private and restart the Hub after editing it.
+
+## WxPusher App Setup
+
+WxPusher sends notifications to its own Android, iOS, and desktop clients. This integration targets the standard WxPusher App/client delivery path, not the separate WeChat ClawBot channel.
+
+1. Create a WxPusher application and copy its `appToken`
+2. Install a WxPusher client, subscribe to the application, and copy your UID
+3. Set the token and recipient before starting the hub:
+
+```bash
+export WXPUSHER_APP_TOKEN="AT_your-app-token"
+export WXPUSHER_UIDS="UID_your-uid"
+export HAPI_PUBLIC_URL="https://your-public-url"
+
+hapi hub
+```
+
+Multiple UIDs can be separated by commas. Each destination supports at most 2,000 distinct UIDs and 5 distinct topic IDs, whether configured through environment variables or `settings.json`. Topic recipients can be configured with `WXPUSHER_TOPIC_IDS` instead:
+
+```bash
+export WXPUSHER_UIDS=""
+export WXPUSHER_TOPIC_IDS="123,456"
+```
+
+If UIDs were saved from an earlier launch, unsetting `WXPUSHER_UIDS` does not clear them. For a persistent topic-only setup, also remove the saved `wxPusherUids` field or set it to `[]` in `settings.json`. If both recipient lists are configured, WxPusher sends to both.
+
+The WxPusher channel sends notifications when a session is ready for input, requests a permission, ends unexpectedly with an error, or completes. Successful intermediate task notifications are not sent. It remains disabled unless an app token and at least one UID or topic ID are configured.
+
+Related environment variables:
+
+- `WXPUSHER_APP_TOKEN` - WxPusher application token
+- `WXPUSHER_UIDS` - Comma-separated recipient UIDs
+- `WXPUSHER_TOPIC_IDS` - Comma-separated topic IDs
+- `WXPUSHER_NOTIFICATION` - Enable/disable WxPusher notifications (default: `true`)
+- `WXPUSHER_BACKGROUND_ONLY` - Only send WxPusher notifications when the namespace has no visible HAPI connection (default: `false`)
+
+When `WXPUSHER_BACKGROUND_ONLY=true`, a visible HAPI connection suppresses WxPusher for the entire namespace. Hidden, disconnected, or closed HAPI pages do not count as visible, so WxPusher can act as a background fallback. This is namespace-wide and does not select a particular device.
+
+These values can also be set in `settings.json` (`wxPusherAppToken`, `wxPusherUids`, `wxPusherTopicIds`, `wxPusherNotification`, `wxPusherBackgroundOnly`).
+
+The legacy app token and recipients are used **only** for the `default` namespace. On a shared Hub, give each other namespace its own destination in `settings.json`:
+
+```json
+{
+  "wxPusherByNamespace": {
+    "team-a": { "appToken": "AT_team-a-example", "uids": ["UID_team-a-example"], "backgroundOnly": true },
+    "team-b": { "appToken": "AT_team-b-example", "topicIds": [123] }
+  }
+}
+```
+
+Namespace keys are exact and case-sensitive. A namespace with no destination gets no WxPusher notifications. An explicit `default` entry replaces the legacy destination as a whole; no credentials or recipients are inherited. `WXPUSHER_NOTIFICATION=false` disables all WxPusher destinations. `backgroundOnly` is per destination (default: `false`) and checks visibility only within that namespace. Keep this file private and restart the Hub after editing it.
 
 ## Voice assistant setup
 

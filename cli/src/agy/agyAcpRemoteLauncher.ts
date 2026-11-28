@@ -803,7 +803,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     if (this.usesLiveWakeupRendering()) await this.backend?.flushPendingMessageBuffers();
                     session.onThinkingChange(false);
                     if (session.queue.size() === 0 && !this.shouldExit) {
-                        session.sendSessionEvent({ type: 'ready' });
+                        session.sendSessionEvent({ type: 'ready', reason: 'reactive-polling-paused' });
                     }
                     return;
                 }

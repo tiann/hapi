@@ -9,6 +9,12 @@ function makeTempDir(): string {
 }
 
 const PUSH_ENV_KEYS = [
+    'SERVERCHAN_SENDKEY',
+    'WXPUSHER_APP_TOKEN',
+    'WXPUSHER_UIDS',
+    'WXPUSHER_TOPIC_IDS',
+    'WXPUSHER_NOTIFICATION',
+    'WXPUSHER_BACKGROUND_ONLY',
     'FCM_SERVICE_ACCOUNT_PATH',
     'HAPI_IOS_PUSH',
     'HAPI_PUSH_RELAY_URL',
@@ -158,6 +164,174 @@ describe('loadServerSettings', () => {
         }))
 
         await expect(loadServerSettings(dir)).rejects.toThrow('serverChanBackgroundOnly must be a boolean')
+    })
+
+    it('scopes the legacy ServerChan key to default for error alerts and allows an explicit replacement', async () => {
+        dir = makeTempDir()
+        process.env.SERVERCHAN_SENDKEY = 'SCT_LEGACY'
+        process.env.SERVERCHAN_BACKGROUND_ONLY = 'true'
+        const file = join(dir, 'settings.json')
+        writeFileSync(file, JSON.stringify({ serverChanErrorsByNamespace: { team: { sendKey: 'SCT_TEAM' } } }))
+        const legacy = (await loadServerSettings(dir)).settings
+        expect(legacy.serverChanErrorDestinations.get('default')).toEqual({ sendKey: 'SCT_LEGACY', backgroundOnly: true })
+        expect(legacy.serverChanErrorDestinations.get('team')).toEqual({ sendKey: 'SCT_TEAM', backgroundOnly: false })
+        expect(legacy.serverChanErrorDestinations.has('unknown')).toBe(false)
+
+        writeFileSync(file, JSON.stringify({ serverChanErrorsByNamespace: { default: { sendKey: 'SCT_EXPLICIT' } } }))
+        const explicit = (await loadServerSettings(dir)).settings
+        expect(explicit.serverChanErrorDestinations.get('default')).toEqual({ sendKey: 'SCT_EXPLICIT', backgroundOnly: false })
+        expect(explicit.serverChanSendKey).toBe('SCT_LEGACY')
+    })
+
+    it('does not inherit the default ServerChan key when an explicit destination is incomplete', async () => {
+        dir = makeTempDir()
+        process.env.SERVERCHAN_SENDKEY = 'SCT_LEGACY'
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({ serverChanErrorsByNamespace: { team: { backgroundOnly: true } } }))
+        await expect(loadServerSettings(dir)).rejects.toThrow(/sendKey must be a non-empty string/)
+    })
+
+    it('defaults WxPusher settings to disabled without credentials or recipients', async () => {
+        dir = makeTempDir()
+
+        const result = await loadServerSettings(dir)
+
+        expect(result.settings.wxPusherAppToken).toBeNull()
+        expect(result.settings.wxPusherUids).toEqual([])
+        expect(result.settings.wxPusherTopicIds).toEqual([])
+        expect(result.settings.wxPusherNotification).toBe(true)
+        expect(result.settings.wxPusherBackgroundOnly).toBe(false)
+        expect(result.sources.wxPusherAppToken).toBe('default')
+        expect(result.sources.wxPusherUids).toBe('default')
+        expect(result.sources.wxPusherTopicIds).toBe('default')
+    })
+
+    it('loads WxPusher settings from environment variables with normalized recipients', async () => {
+        dir = makeTempDir()
+        process.env.WXPUSHER_APP_TOKEN = 'AT_TEST'
+        process.env.WXPUSHER_UIDS = ' UID_ONE,UID_TWO,UID_ONE '
+        process.env.WXPUSHER_TOPIC_IDS = '12, 34,12'
+        process.env.WXPUSHER_NOTIFICATION = 'false'
+        process.env.WXPUSHER_BACKGROUND_ONLY = 'true'
+
+        const result = await loadServerSettings(dir)
+
+        expect(result.settings.wxPusherAppToken).toBe('AT_TEST')
+        expect(result.settings.wxPusherUids).toEqual(['UID_ONE', 'UID_TWO'])
+        expect(result.settings.wxPusherTopicIds).toEqual([12, 34])
+        expect(result.settings.wxPusherNotification).toBe(false)
+        expect(result.settings.wxPusherBackgroundOnly).toBe(true)
+        expect(result.sources.wxPusherAppToken).toBe('env')
+        expect(result.sources.wxPusherUids).toBe('env')
+        expect(result.sources.wxPusherTopicIds).toBe('env')
+        expect(result.sources.wxPusherNotification).toBe('env')
+        expect(result.sources.wxPusherBackgroundOnly).toBe('env')
+    })
+
+    it('limits legacy WxPusher settings to default and never fills other namespace entries', async () => {
+        dir = makeTempDir()
+        process.env.WXPUSHER_APP_TOKEN = 'AT_LEGACY'
+        process.env.WXPUSHER_UIDS = 'UID_LEGACY'
+        process.env.WXPUSHER_BACKGROUND_ONLY = 'true'
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({ wxPusherByNamespace: {
+            'team-a': { appToken: ' AT_EXPLICIT ', topicIds: [7, 7] },
+        } }))
+        const { settings } = await loadServerSettings(dir)
+        expect(settings.wxPusherDestinations.get('default')).toEqual({
+            appToken: 'AT_LEGACY', uids: ['UID_LEGACY'], topicIds: [], backgroundOnly: true,
+        })
+        expect(settings.wxPusherDestinations.get('team-a')).toEqual({
+            appToken: 'AT_EXPLICIT', uids: [], topicIds: [7], backgroundOnly: false,
+        })
+        expect(settings.wxPusherDestinations.get('team-b')).toBeUndefined()
+    })
+
+    it('replaces the whole legacy destination with an explicit default', async () => {
+        dir = makeTempDir()
+        process.env.WXPUSHER_APP_TOKEN = 'AT_LEGACY'
+        process.env.WXPUSHER_UIDS = 'UID_LEGACY'
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({ wxPusherByNamespace: {
+            default: { appToken: 'AT_EXPLICIT', topicIds: [7], backgroundOnly: true },
+        } }))
+        expect((await loadServerSettings(dir)).settings.wxPusherDestinations.get('default')).toEqual({
+            appToken: 'AT_EXPLICIT', uids: [], topicIds: [7], backgroundOnly: true,
+        })
+    })
+
+    it.each([
+        [{ ' team': { appToken: 'AT_EXPLICIT', uids: ['UID_ONE'] } }, /invalid namespace/],
+        [{ team: { uids: ['UID_ONE'] } }, /appToken must be a non-empty string/],
+        [{ team: { appToken: 'AT_EXPLICIT', uids: [' '] } }, /at least one UID or topic ID/],
+        [{ team: { appToken: 'AT_EXPLICIT', uids: ['UID_ONE'], backgroundOnly: 'true' } }, /backgroundOnly must be a boolean/],
+    ])('rejects invalid namespace destinations without inheriting credentials', async (wxPusherByNamespace, error) => {
+        dir = makeTempDir()
+        process.env.WXPUSHER_APP_TOKEN = 'AT_LEGACY'
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({ wxPusherByNamespace }))
+        await expect(loadServerSettings(dir)).rejects.toThrow(error)
+    })
+
+    it.each(['1,2,3,4,5,6', '12,nope'])('ignores superseded legacy topic IDs: %s', async topicIds => {
+        dir = makeTempDir()
+        process.env.WXPUSHER_APP_TOKEN = 'AT_LEGACY'
+        process.env.WXPUSHER_TOPIC_IDS = topicIds
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({ wxPusherByNamespace: {
+            default: { appToken: 'AT_EXPLICIT', topicIds: [42] },
+        } }))
+        expect((await loadServerSettings(dir)).settings.wxPusherDestinations.get('default')?.topicIds).toEqual([42])
+    })
+
+    it('rejects an oversized legacy topic list', async () => {
+        dir = makeTempDir()
+        process.env.WXPUSHER_APP_TOKEN = 'AT_TEST'
+        process.env.WXPUSHER_TOPIC_IDS = '1,2,3,4,5,6'
+        await expect(loadServerSettings(dir)).rejects.toThrow(/at most 2000 distinct UIDs and 5 distinct topic IDs/)
+    })
+
+    it('rejects an oversized explicit UID list after deduplication', async () => {
+        dir = makeTempDir()
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({ wxPusherByNamespace: {
+            team: { appToken: 'AT_TEST', uids: Array.from({ length: 2001 }, (_, i) => `UID_${i}`) },
+        } }))
+        await expect(loadServerSettings(dir)).rejects.toThrow(/at most 2000 distinct UIDs and 5 distinct topic IDs/)
+    })
+
+    it('loads WxPusher settings from settings.json', async () => {
+        dir = makeTempDir()
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({
+            wxPusherAppToken: 'AT_FILE',
+            wxPusherUids: ['UID_FILE'],
+            wxPusherTopicIds: [99],
+            wxPusherNotification: false,
+            wxPusherBackgroundOnly: true,
+        }))
+
+        const result = await loadServerSettings(dir)
+
+        expect(result.settings.wxPusherAppToken).toBe('AT_FILE')
+        expect(result.settings.wxPusherUids).toEqual(['UID_FILE'])
+        expect(result.settings.wxPusherTopicIds).toEqual([99])
+        expect(result.settings.wxPusherNotification).toBe(false)
+        expect(result.settings.wxPusherBackgroundOnly).toBe(true)
+        expect(result.sources.wxPusherAppToken).toBe('file')
+        expect(result.sources.wxPusherUids).toBe('file')
+        expect(result.sources.wxPusherTopicIds).toBe('file')
+    })
+
+    it('rejects invalid WxPusher topic IDs from the environment', async () => {
+        dir = makeTempDir()
+        process.env.WXPUSHER_TOPIC_IDS = '12,nope'
+
+        await expect(loadServerSettings(dir)).rejects.toThrow(
+            'WXPUSHER_TOPIC_IDS must be a comma-separated list of positive integers'
+        )
+    })
+
+    it('rejects invalid WxPusher recipient arrays from settings.json', async () => {
+        dir = makeTempDir()
+        writeFileSync(join(dir, 'settings.json'), JSON.stringify({
+            wxPusherUids: ['UID_OK', 123],
+        }))
+
+        await expect(loadServerSettings(dir)).rejects.toThrow('wxPusherUids must be an array of strings')
     })
 
     it('defaults push settings to null', async () => {

@@ -26,6 +26,7 @@ import { TunnelManager } from './tunnel'
 import { refreshRejectedRelayAuthKey, resolveRelayAuthKey } from './tunnel/relayAuth'
 import { waitForTunnelTlsReady } from './tunnel/tlsGate'
 import { ServerChanChannel } from './serverchan/channel'
+import { createWxPusherChannels } from './wxpusher/channel'
 import QRCode from 'qrcode'
 import type { Server as BunServer } from 'bun'
 import type { WebSocketData } from '@socket.io/bun-engine'
@@ -167,8 +168,16 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
         console.log(`[Hub] ServerChan notifications: ${config.serverChanNotification ? 'enabled' : 'disabled'} (${notificationSource})`)
         console.log(`[Hub] ServerChan background-only: ${config.serverChanBackgroundOnly ? 'enabled' : 'disabled'} (${backgroundOnlySource})`)
     } else {
-        console.log('[Hub] ServerChan: disabled (no SERVERCHAN_SENDKEY)')
+        console.log('[Hub] ServerChan legacy notifications: disabled (no SERVERCHAN_SENDKEY)')
     }
+    const serverChanErrorDestinationCount = config.serverChanNotification ? config.serverChanErrorDestinations.size : 0
+    console.log(`[Hub] ServerChan session errors: ${serverChanErrorDestinationCount > 0
+        ? `enabled for ${serverChanErrorDestinationCount} namespace(s)`
+        : 'disabled (no enabled namespace destinations)'}`)
+    const wxPusherDestinationCount = config.wxPusherNotification ? config.wxPusherDestinations.size : 0
+    console.log(`[Hub] WxPusher: ${wxPusherDestinationCount > 0
+        ? `enabled for ${wxPusherDestinationCount} namespace(s)`
+        : 'disabled (no enabled namespace destinations)'}`)
 
     // Display tunnel status
     if (relayFlag.enabled) {
@@ -253,13 +262,18 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
         )
     )
 
-    if (config.serverChanSendKey && config.serverChanNotification) {
+    if (config.serverChanNotification && (config.serverChanSendKey || config.serverChanErrorDestinations.size > 0)) {
         notificationChannels.push(new ServerChanChannel(
             config.serverChanSendKey,
             config.publicUrl,
             visibilityTracker,
-            config.serverChanBackgroundOnly
+            config.serverChanBackgroundOnly,
+            config.serverChanErrorDestinations
         ))
+    }
+
+    if (config.wxPusherNotification) {
+        notificationChannels.push(...createWxPusherChannels(config.wxPusherDestinations, config.publicUrl, visibilityTracker))
     }
 
     // Initialize Telegram bot (optional)

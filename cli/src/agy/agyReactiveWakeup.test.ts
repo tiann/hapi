@@ -1294,7 +1294,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
 
         // First window hits reactiveMaxIdleMs (60ms): pauses to ready WITHOUT calling resumeSession.
         await vi.waitFor(() => {
-            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready', reason: 'reactive-polling-paused' });
         });
         expect(backend.resumeCalls).toEqual([]);
         client.sendSessionEvent.mockClear();
@@ -5564,7 +5564,9 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             h.client.sendSessionEvent.mockClear();
             h.notify({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'PARTIAL' } });
             h.append(wakeup(2, 'PARTIAL', [], false));
-            await h.ready();
+            await vi.waitFor(() => expect(h.client.sendSessionEvent).toHaveBeenCalledWith({
+                type: 'ready', reason: 'reactive-polling-paused',
+            }));
             expect(h.texts()).toContain('PARTIAL');
             await h.finish();
         });
