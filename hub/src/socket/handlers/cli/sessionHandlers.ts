@@ -97,7 +97,10 @@ const HUB_OWNED_METADATA_KEYS = [
     'jobsTransferredToSessionId',
     'jobKeyRedirects',
     'promptTitle',
-    'translateInput'
+    'translateInput',
+    'liveWorkByGeneration',
+    'unresolvedTurn',
+    'backgroundWork',
 ] as const
 
 function preserveHubOwnedMetadata(incoming: unknown, current: unknown): unknown {

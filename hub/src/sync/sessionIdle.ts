@@ -16,6 +16,7 @@
 
 import { SESSION_LIFECYCLE_IDLE, SESSION_LIFECYCLE_RUNNING } from '@hapi/protocol'
 import type { Session } from '@hapi/protocol/types'
+import { liveWorkByGenerationHasWork, resolveLiveWorkByGeneration } from './liveWorkByGeneration'
 
 /** Keepalive-only for this long ⇒ reconcile `running` → `idle`. */
 export const DEFAULT_SESSION_IDLE_TIMEOUT_MS = 12 * 60 * 60 * 1000
@@ -39,6 +40,20 @@ export function resolveSessionIdleTimeoutMs(
 }
 
 /**
+ * Durable / progress work that survives heartbeat expiry (excludes stale requests).
+ * Includes every generation entry in `liveWorkByGeneration` (#2658).
+ */
+export function hasDurableLiveWork(session: Session): boolean {
+    if (session.thinking) return true
+    if (session.derivedToolWork === true) return true
+    if ((session.backgroundTaskCount ?? 0) > 0) return true
+    if (liveWorkByGenerationHasWork(resolveLiveWorkByGeneration(session))) return true
+    const waiting = session.metadata?.waiting
+    if (waiting && typeof waiting === 'object') return true
+    return false
+}
+
+/**
  * Work the hub can see that must never be reconciled away as a zombie.
  *
  * Reports hub *visibility*, not process liveness. A false result means none of
@@ -47,19 +62,23 @@ export function resolveSessionIdleTimeoutMs(
  * original three turn signals; callers that destroy state must not promote a
  * false result into a liveness verdict (tiann/hapi#2020). Prefer consulting
  * `metadata.waiting` / `idleReconcileExempt` as well when the action is
- * irreversible.
+ * irreversible. Use `blocksHardArchive` for destroy paths (#2658).
  */
 export function hasLiveWork(session: Session): boolean {
-    if (session.thinking) return true
-    if ((session.backgroundTaskCount ?? 0) > 0) return true
+    if (hasDurableLiveWork(session)) return true
     // A permission / input request waiting on the operator is real state the
     // agent is blocked on, not an abandoned socket.
     const requests = session.agentState?.requests
     if (requests && Object.keys(requests).length > 0) return true
-    // Externally blocked work distinct from turn-scoped thinking (#2020).
-    const waiting = session.metadata?.waiting
-    if (waiting && typeof waiting === 'object') return true
     return false
+}
+
+/**
+ * Refuse hard Archive / KillSession before stop RPCs (#2020 / #2658).
+ */
+export function blocksHardArchive(session: Session): boolean {
+    if (session.metadata?.idleReconcileExempt === true) return true
+    return hasLiveWork(session)
 }
 
 /**

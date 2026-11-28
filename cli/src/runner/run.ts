@@ -1761,6 +1761,52 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       }
     });
 
+    /**
+     * Read-only exit probe for generation-keyed live-work clear (#2658).
+     * Never tree-kills. PID- path honours processStartMarker (mismatch → unknown).
+     */
+    const probeSessionExit = async (
+      sessionId: string,
+      opts?: { processStartMarker?: string },
+    ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
+      if (sessionId.startsWith('PID-')) {
+        const pid = parseInt(sessionId.slice(4), 10);
+        if (!Number.isFinite(pid) || pid <= 0) return 'unknown';
+        if (!isProcessAlive(pid)) {
+          rememberVerifiedExit(sessionId);
+          return 'already_gone';
+        }
+        const expected = opts?.processStartMarker;
+        if (expected) {
+          const current = getProcessStartMarker(pid);
+          if (!current || current !== expected) return 'unknown';
+        }
+        return 'still_alive';
+      }
+
+      for (const [pid, session] of pidToTrackedSession) {
+        const matches = session.happySessionId === sessionId
+          || session.requestedHappySessionId === sessionId
+          || Boolean(session.sharedSessions?.[sessionId]);
+        if (!matches) continue;
+        if (isProcessAlive(pid)) return 'still_alive';
+      }
+      for (const [pid, record] of persistedResumeProcesses) {
+        if (record.requestedSessionId !== sessionId && record.confirmedSessionId !== sessionId) continue;
+        if (isProcessAlive(pid)) return 'still_alive';
+      }
+      for (const [pid, requested] of pidToRequestedSessionId) {
+        if (requested !== sessionId) continue;
+        if (isProcessAlive(pid)) return 'still_alive';
+      }
+      for (const [pid, confirmed] of pidToConfirmedSessionId) {
+        if (confirmed !== sessionId) continue;
+        if (isProcessAlive(pid)) return 'still_alive';
+      }
+      if (hasVerifiedExit(sessionId)) return 'already_gone';
+      return 'unknown';
+    };
+
     // A reused PID invalidates a binding, not every runtime for that session.
     const discardStaleProcess = (pid: number) => {
       pidToErrorAwaiter.get(pid)?.(`Session process PID ${pid} generation changed before startup was confirmed`);
@@ -1920,6 +1966,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     apiMachine.setRPCHandlers({
       spawnSession,
       stopSession,
+      probeSessionExit,
       requestShutdown: () => requestShutdown('hapi-app')
     });
 

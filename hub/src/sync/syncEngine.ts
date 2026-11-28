@@ -90,6 +90,12 @@ import {
 } from './rpcGateway'
 import { SessionCache } from './sessionCache'
 import { ArchiveCleanupError } from './archiveCleanupError'
+import {
+    generationEntryProbeClearable,
+    isRunnerOwnedSession,
+    resolveLiveWorkByGeneration,
+} from './liveWorkByGeneration'
+import { blocksHardArchive, hasDurableLiveWork } from './sessionIdle'
 import { AutomaticTitleSuggestionService } from './automaticTitleSuggestion'
 import { extractMessageEventType } from '../notifications/eventParsing'
 import { SessionEnumerationCache } from './sessionEnumerationCache'
@@ -3845,6 +3851,51 @@ export class SyncEngine {
                 throw new ArchiveCleanupError(error instanceof RunnerStopRpcError && error.timedOut ? 'timeout' : 'unavailable', error)
             }
         }
+
+        // Live-work precondition before any stop RPC (#2658 / #2020).
+        // Runner-owned prior generations: probe PID+marker and clear only
+        // already_gone entries, then recheck. Missing hostPid on a runner
+        // entry fails closed (stays blocking). Non-runner rows never enter
+        // the keyed probe — they were never on the verified-cleanup path.
+        const liveBeforeStop = this.sessionCache.getSession(sessionId)
+        if (liveBeforeStop) {
+            if (isRunnerOwnedSession(liveBeforeStop) && hasDurableLiveWork(liveBeforeStop)) {
+                const caps = liveBeforeStop.metadata?.machineId
+                    ? this.getMachine(liveBeforeStop.metadata.machineId)?.metadata?.capabilities
+                    : undefined
+                const probeSupported = !caps
+                    || caps.includes(MACHINE_CAPABILITIES.ProbeSessionExit)
+                if (probeSupported) {
+                    const map = resolveLiveWorkByGeneration(liveBeforeStop)
+                    for (const [marker, entry] of Object.entries(map)) {
+                        if (!generationEntryProbeClearable(liveBeforeStop, marker, entry)) continue
+                        const timeoutMs = Math.ceil(deadline - performance.now())
+                        if (timeoutMs <= 0) throw new ArchiveCleanupError('timeout')
+                        let status: 'stopped' | 'already_gone' | 'still_alive' | 'unknown' = 'unknown'
+                        try {
+                            status = await this.rpcGateway.probeRunnerSessionExit(
+                                entry.machineId,
+                                `PID-${entry.hostPid}`,
+                                { timeoutMs, processStartMarker: marker },
+                            )
+                        } catch (error) {
+                            if (error instanceof RunnerStopRpcError && error.timedOut) {
+                                throw new ArchiveCleanupError('timeout', error)
+                            }
+                            status = 'unknown'
+                        }
+                        if (status === 'already_gone' || status === 'stopped') {
+                            this.sessionCache.clearGenerationLiveWork(sessionId, marker)
+                        }
+                    }
+                }
+            }
+            const afterProbe = this.sessionCache.getSession(sessionId) ?? liveBeforeStop
+            if (blocksHardArchive(afterProbe)) {
+                throw new ArchiveCleanupError('working')
+            }
+        }
+
         // tiann/hapi#916 / #1910: KillSession is a session-socket RPC. A missing
         // target does not prove the runner child is dead (stale registration,
         // mid-reconnect, id rotation on resume). Always fall through to the
