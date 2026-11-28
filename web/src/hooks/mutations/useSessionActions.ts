@@ -1,7 +1,7 @@
 import { useCallback } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol'
-import type { ApiClient } from '@/api/client'
+import { ApiError, type ApiClient } from '@/api/client'
 import type { CodexCollaborationMode, CopilotAgentMode, PermissionMode, SessionResponse, SessionsResponse } from '@/types/api'
 import type { ReopenSessionResponse } from '@hapi/protocol/apiTypes'
 import { queryKeys } from '@/lib/query-keys'
@@ -35,7 +35,7 @@ export function useSessionActions(
     upsertExternalRef: (ref: import('@/types/api').ExternalRef) => Promise<void>
     removePrimaryExternalRef: () => Promise<void>
     suggestSessionTitle: () => Promise<string>
-    updateSessionSummary: (text: string, titleLocked?: boolean) => Promise<void>
+    updateSessionSummary: (text: string, titleLocked: boolean, expectedName: string | null, expectedTitleLocked: boolean) => Promise<void>
     setPinMode: (mode: 'none' | 'project' | 'global') => Promise<void>
     deleteSession: () => Promise<void>
     isPending: boolean
@@ -295,13 +295,16 @@ export function useSessionActions(
     })
 
     const summaryMutation = useMutation({
-        mutationFn: async ({ text, titleLocked }: { text: string; titleLocked?: boolean }) => {
+        mutationFn: async ({ text, expectedName, expectedTitleLocked, titleLocked }: { text: string; expectedName: string | null; expectedTitleLocked: boolean; titleLocked: boolean }) => {
             if (!api || !sessionId) {
                 throw new Error('Session unavailable')
             }
-            await api.updateSessionSummary(sessionId, text, titleLocked)
+            await api.updateSessionSummary(sessionId, text, { clearName: true, expectedName, expectedTitleLocked, titleLocked })
         },
         onSuccess: () => void invalidateSession(),
+        onError: (error) => {
+            if (error instanceof ApiError && error.status === 409) void invalidateSession()
+        },
     })
 
     const pinMutation = useMutation({
@@ -346,7 +349,7 @@ export function useSessionActions(
         upsertExternalRef: upsertExternalRefMutation.mutateAsync,
         removePrimaryExternalRef: removePrimaryExternalRefMutation.mutateAsync,
         suggestSessionTitle: titleSuggestionMutation.mutateAsync,
-        updateSessionSummary: (text: string, titleLocked?: boolean) => summaryMutation.mutateAsync({ text, titleLocked }),
+        updateSessionSummary: (text: string, titleLocked: boolean, expectedName: string | null, expectedTitleLocked: boolean) => summaryMutation.mutateAsync({ text, expectedName, expectedTitleLocked, titleLocked }),
         setPinMode: pinMutation.mutateAsync,
         deleteSession: deleteMutation.mutateAsync,
         isPending: abortMutation.isPending

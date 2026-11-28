@@ -238,6 +238,31 @@
         "type": "string"
       },
       "description": "Hub-managed voice and dictation provider credentials, keyed by env var name (OPENAI_API_KEY, ELEVENLABS_API_KEY, DEEPGRAM_API_KEY, GROQ_API_KEY, TRANSCRIPTION_BASE_URL, TRANSCRIPTION_MODEL, TRANSCRIPTION_API_KEY, GEMINI_API_KEY, GOOGLE_API_KEY, DASHSCOPE_API_KEY, QWEN_API_KEY). Managed from web Settings; process environment variables win over settings-backed values."
+    },
+    "titleProvider": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "baseUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "OpenAI-compatible Chat Completions base URL for generated session titles. ENV: HAPI_TITLE_PROVIDER_BASE_URL"
+        },
+        "apiKey": {
+          "type": "string",
+          "description": "Server-only API key for generated session titles. ENV: HAPI_TITLE_PROVIDER_API_KEY"
+        },
+        "model": {
+          "type": "string",
+          "description": "Lightweight model used for generated session titles. ENV: HAPI_TITLE_PROVIDER_MODEL"
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Provider request timeout in milliseconds (default: 10000). ENV: HAPI_TITLE_PROVIDER_TIMEOUT_MS"
+        }
+      },
+      "description": "Server-only OpenAI-compatible provider for on-demand and automatic session title suggestions. Both can send recent conversation text to the configured provider. Environment variables override these fields per key."
     }
   },
   "additionalProperties": false

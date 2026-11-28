@@ -5,6 +5,7 @@ import {
     unwrapRoleWrappedRecordEnvelope
 } from '@hapi/protocol/messages'
 import { isObject } from '@hapi/protocol'
+import type { TitleProviderSettings } from '../config/settings'
 import type { Store, StoredMessage } from '../store'
 import { extractMessageEventType } from '../notifications/eventParsing'
 
@@ -14,19 +15,35 @@ export const TITLE_SUGGESTION_MAX_TITLE_CHARS = 80
 export const TITLE_SUGGESTION_RATE_LIMIT = 5
 export const TITLE_SUGGESTION_RATE_WINDOW_MS = 10 * 60 * 1000
 export const TITLE_SUGGESTION_TIMEOUT_MS = 10_000
-export const TITLE_SUGGESTION_MAX_TOKENS = 64
+export const TITLE_SUGGESTION_MAX_TOKENS = 256
 const TITLE_SUGGESTION_RATE_LIMIT_ENV = 'HAPI_TITLE_SUGGESTION_RATE_LIMIT'
 const TITLE_SUGGESTION_RATE_WINDOW_ENV = 'HAPI_TITLE_SUGGESTION_RATE_WINDOW_MS'
+const TITLE_PROVIDER_TIMEOUT_ENV = 'HAPI_TITLE_PROVIDER_TIMEOUT_MS'
 const TITLE_PROVIDER_MAX_TOKENS_ENV = 'HAPI_TITLE_PROVIDER_MAX_TOKENS'
-const TITLE_PROVIDER_TIMEOUT_MS_ENV = 'HAPI_TITLE_PROVIDER_TIMEOUT_MS'
+export const TITLE_SUGGESTION_UNAVAILABLE_MESSAGE =
+    'Title suggestions are not configured on this Hub. Configure titleProvider.baseUrl, titleProvider.apiKey, and titleProvider.model in $HAPI_HOME/settings.json (default ~/.hapi/settings.json), or set HAPI_TITLE_PROVIDER_BASE_URL, HAPI_TITLE_PROVIDER_API_KEY, and HAPI_TITLE_PROVIDER_MODEL in the Hub environment, then restart the Hub.'
 
 type TitleSuggestionErrorCode = 'unavailable' | 'empty' | 'rate-limited' | 'provider'
+
+export type TitleSuggestionProviderReason =
+    | 'request-rejected'
+    | 'authentication-failed'
+    | 'access-denied'
+    | 'endpoint-or-model-not-found'
+    | 'request-timed-out'
+    | 'rate-limited'
+    | 'provider-service-unavailable'
+    | 'connection-failed'
+    | 'empty-response'
+    | 'invalid-response'
 
 export class TitleSuggestionError extends Error {
     constructor(
         readonly code: TitleSuggestionErrorCode,
         message: string,
-        readonly status: 422 | 429 | 500 | 503
+        readonly status: 422 | 429 | 500 | 503,
+        readonly reason?: TitleSuggestionProviderReason,
+        readonly providerStatus?: number
     ) {
         super(message)
         this.name = 'TitleSuggestionError'
@@ -49,11 +66,18 @@ type TitleProviderFetch = (
 ) => Promise<Response>
 
 export function readTitleProviderConfig(
-    env: TitleProviderEnvironment = process.env
+    env: TitleProviderEnvironment = process.env,
+    settings?: TitleProviderSettings | null
 ): OpenAICompatibleTitleProviderConfig | null {
-    const baseUrl = env.HAPI_TITLE_PROVIDER_BASE_URL?.trim()
-    const apiKey = env.HAPI_TITLE_PROVIDER_API_KEY?.trim()
-    const model = env.HAPI_TITLE_PROVIDER_MODEL?.trim()
+    const readValue = (envValue: string | undefined, fileValue: unknown): string | undefined => {
+        const fromEnv = envValue?.trim()
+        if (fromEnv) return fromEnv
+        return typeof fileValue === 'string' && fileValue.trim() ? fileValue.trim() : undefined
+    }
+
+    const baseUrl = readValue(env.HAPI_TITLE_PROVIDER_BASE_URL, settings?.baseUrl)
+    const apiKey = readValue(env.HAPI_TITLE_PROVIDER_API_KEY, settings?.apiKey)
+    const model = readValue(env.HAPI_TITLE_PROVIDER_MODEL, settings?.model)
     if (!baseUrl || !apiKey || !model) return null
 
     try {
@@ -63,10 +87,18 @@ export function readTitleProviderConfig(
         return null
     }
 
-    return { baseUrl, apiKey, model }
+    return {
+        baseUrl,
+        apiKey,
+        model,
+        timeoutMs: readPositiveInteger(
+            env[TITLE_PROVIDER_TIMEOUT_ENV],
+            settings?.timeoutMs ?? TITLE_SUGGESTION_TIMEOUT_MS
+        )
+    }
 }
 
-function readPositiveInteger(value: string | undefined, fallback: number): number {
+function readPositiveInteger(value: unknown, fallback: number): number {
     const parsed = Number(value)
     return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback
 }
@@ -88,7 +120,7 @@ export function readTitleProviderRequestLimits(
 ): { maxTokens: number; timeoutMs: number } {
     return {
         maxTokens: readPositiveInteger(env[TITLE_PROVIDER_MAX_TOKENS_ENV], TITLE_SUGGESTION_MAX_TOKENS),
-        timeoutMs: readPositiveInteger(env[TITLE_PROVIDER_TIMEOUT_MS_ENV], TITLE_SUGGESTION_TIMEOUT_MS)
+        timeoutMs: readPositiveInteger(env[TITLE_PROVIDER_TIMEOUT_ENV], TITLE_SUGGESTION_TIMEOUT_MS)
     }
 }
 
@@ -229,11 +261,94 @@ export function chatCompletionsUrl(baseUrl: string): string {
     return base.endsWith('/chat/completions') ? base : `${base}/chat/completions`
 }
 
-export function extractProviderText(value: unknown): string | null {
-    if (!isObject(value) || !Array.isArray(value.choices)) return null
+export function extractProviderText(value: unknown, strict = false): string | null {
+    if (value === undefined) return null // physically empty response body
+    if (!isObject(value) || !Array.isArray(value.choices)) {
+        if (!strict) return null
+        throw new TitleProviderRequestError('Title provider returned malformed JSON or choices', 'invalid-response')
+    }
+    if (!value.choices.length) return null
     const choice = value.choices[0]
-    if (!isObject(choice) || !isObject(choice.message)) return null
-    return extractChatText(choice.message.content)
+    if (!isObject(choice) || !isObject(choice.message)) {
+        if (!strict) return null
+        throw new TitleProviderRequestError('Title provider returned an invalid message', 'invalid-response')
+    }
+    const content = choice.message.content
+    if (content === null) return null
+    const singleTextPart = isObject(content)
+        && (content.type === 'text' || content.type === 'input_text') && typeof content.text === 'string'
+    if (typeof content !== 'string' && !Array.isArray(content) && !singleTextPart) {
+        if (!strict) return null
+        throw new TitleProviderRequestError('Title provider returned invalid message content', 'invalid-response')
+    }
+    return extractChatText(content)
+}
+
+const TITLE_PROVIDER_HTTP_REASONS: Record<number, string> = {
+    400: 'request rejected',
+    401: 'authentication failed',
+    403: 'access denied',
+    404: 'endpoint or model not found',
+    408: 'request timed out',
+    429: 'rate limited'
+}
+
+function titleProviderHttpReason(status: number): TitleSuggestionProviderReason {
+    switch (status) {
+        case 401: return 'authentication-failed'
+        case 403: return 'access-denied'
+        case 404: return 'endpoint-or-model-not-found'
+        case 408: return 'request-timed-out'
+        case 429: return 'rate-limited'
+        default: return status >= 500 ? 'provider-service-unavailable' : 'request-rejected'
+    }
+}
+
+function titleProviderHttpError(status: number): string {
+    const reason = TITLE_PROVIDER_HTTP_REASONS[status]
+        ?? (status >= 500 ? 'provider service unavailable' : 'request rejected')
+    return `Title provider request failed (HTTP ${status}): ${reason}`
+}
+
+async function readTitleProviderResponseBody(response: Response): Promise<unknown> {
+    let text: string
+    try {
+        text = await response.text()
+    } catch (error) {
+        if (isAbortError(error)) throw error
+        throw new TitleProviderRequestError('Title provider connection failed', 'connection-failed')
+    }
+    if (!text.trim()) return undefined
+
+    try {
+        return JSON.parse(text) as unknown
+    } catch {
+        throw new TitleProviderRequestError('Title provider returned malformed JSON', 'invalid-response')
+    }
+}
+
+function isAbortError(error: unknown): boolean {
+    return isObject(error) && error.name === 'AbortError'
+}
+
+class TitleProviderRequestError extends Error {
+    constructor(
+        message: string,
+        readonly reason: TitleSuggestionProviderReason = 'connection-failed',
+        readonly providerStatus?: number
+    ) {
+        super(message)
+        this.name = 'TitleProviderRequestError'
+    }
+}
+
+class TitleProviderTimeoutError extends Error {
+    constructor(message: string) {
+        super(message)
+        // Preserve the fetch contract expected by callers while retaining a
+        // safe, user-readable message for the Hub service layer.
+        this.name = 'AbortError'
+    }
 }
 
 export class OpenAICompatibleTitleProvider {
@@ -274,14 +389,32 @@ export class OpenAICompatibleTitleProvider {
                 signal: controller.signal
             })
 
-            const body: unknown = await response.json().catch(() => null)
             if (!response.ok) {
-                throw new Error(`Title provider returned HTTP ${response.status}`)
+                if (response.body) {
+                    await response.body.cancel().catch(() => undefined)
+                }
+                throw new TitleProviderRequestError(
+                    titleProviderHttpError(response.status),
+                    titleProviderHttpReason(response.status),
+                    response.status
+                )
             }
 
-            const text = extractProviderText(body)
-            if (!text) throw new Error('Title provider returned no text')
+            const body = await readTitleProviderResponseBody(response)
+            const text = extractProviderText(body, true)
+            if (!text) {
+                throw new TitleProviderRequestError('Title provider returned no text', 'empty-response')
+            }
             return text
+        } catch (error) {
+            if (error instanceof TitleProviderRequestError) throw error
+            if (isAbortError(error)) {
+                throw new TitleProviderTimeoutError(
+                    `Title provider request timed out after ${this.timeoutMs} ms`
+                )
+            }
+
+            throw new TitleProviderRequestError('Title provider request failed')
         } finally {
             clearTimeout(timeout)
         }
@@ -380,7 +513,7 @@ export class TitleSuggestionService {
         if (!this.provider) {
             throw new TitleSuggestionError(
                 'unavailable',
-                'Title suggestions are not configured on this Hub',
+                TITLE_SUGGESTION_UNAVAILABLE_MESSAGE,
                 503
             )
         }
@@ -414,14 +547,34 @@ export class TitleSuggestionService {
         try {
             const rawTitle = await this.provider.suggest(buildTitlePrompt(conversation))
             const title = normalizeTitleSuggestion(rawTitle)
-            if (!title) throw new Error('Title provider returned an invalid title')
+            if (!title) {
+                throw new TitleProviderRequestError('Title provider returned an invalid title', 'invalid-response')
+            }
             return title
         } catch (error) {
             if (error instanceof TitleSuggestionError) throw error
+            const detail = error instanceof TitleProviderRequestError
+                ? error.message
+                : error instanceof TitleProviderTimeoutError
+                    ? error.message
+                    : isAbortError(error)
+                        ? 'Title provider request timed out'
+                        : null
+            const reason = error instanceof TitleProviderRequestError
+                ? error.reason
+                : error instanceof TitleProviderTimeoutError || isAbortError(error)
+                    ? 'request-timed-out'
+                    : undefined
+            const providerStatus = error instanceof TitleProviderRequestError
+                ? error.providerStatus
+                : undefined
             throw new TitleSuggestionError(
                 'provider',
-                'The title suggestion provider failed',
-                500
+                detail ?? 'The title suggestion provider failed',
+                // Proxies such as Cloudflare Tunnel can replace 502/504 bodies.
+                500,
+                reason,
+                providerStatus
             )
         } finally {
             this.inFlightSessionIds.delete(sessionId)
@@ -431,15 +584,19 @@ export class TitleSuggestionService {
 
 export function createTitleSuggestionService(
     store: Store,
-    env: TitleProviderEnvironment = process.env
+    env: TitleProviderEnvironment = process.env,
+    config: OpenAICompatibleTitleProviderConfig | null = readTitleProviderConfig(env)
 ): TitleSuggestionService {
-    const config = readTitleProviderConfig(env)
     const limits = readTitleSuggestionLimits(env)
     const requestLimits = readTitleProviderRequestLimits(env)
     return new TitleSuggestionService(
         store,
         {
-            provider: config ? new OpenAICompatibleTitleProvider({ ...config, ...requestLimits }) : null,
+            provider: config ? new OpenAICompatibleTitleProvider({
+                ...config,
+                maxTokens: requestLimits.maxTokens,
+                timeoutMs: config.timeoutMs ?? requestLimits.timeoutMs,
+            }) : null,
             ...limits
         }
     )

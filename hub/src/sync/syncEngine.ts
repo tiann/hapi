@@ -48,7 +48,11 @@ import { isUserInputMessage } from '../store/sessionUserActivity'
 import { EventPublisher, type SyncEventListener } from './eventPublisher'
 import { MachineCache, type Machine } from './machineCache'
 import { MessageService, type RetryIndeterminateMessageResult } from './messageService'
-import { createTitleSuggestionService, type TitleSuggestionService } from './titleSuggestion'
+import {
+    createTitleSuggestionService,
+    type OpenAICompatibleTitleProviderConfig,
+    type TitleSuggestionService
+} from './titleSuggestion'
 import { createInputTranslationService, type InputTranslationService } from './inputTranslation'
 import { createPromptTitle } from './promptTitle'
 import { resolveForkBoundary, resolveRewindBoundary, invokedTailSeq, type ResolvedBoundary } from './forkBoundary'
@@ -335,6 +339,7 @@ export class SyncEngine {
         private readonly io: Server,
         rpcRegistry: RpcRegistry,
         sseManager: SSEManager,
+        titleProviderConfig?: OpenAICompatibleTitleProviderConfig | null,
     ) {
         this.eventPublisher = new EventPublisher(sseManager, (event) => this.resolveNamespace(event))
         this.sessionCache = new SessionCache(store, this.eventPublisher, {
@@ -372,7 +377,7 @@ export class SyncEngine {
                 return settings.translateInputByDefault === true
             }
         )
-        this.titleSuggestionService = createTitleSuggestionService(store)
+        this.titleSuggestionService = createTitleSuggestionService(store, undefined, titleProviderConfig)
         this.automaticTitleSuggestionService = new AutomaticTitleSuggestionService(
             this.sessionCache,
             this.titleSuggestionService
@@ -4225,8 +4230,12 @@ export class SyncEngine {
         return await this.titleSuggestionService.suggestTitle(sessionId)
     }
 
-    async updateSessionSummary(sessionId: string, text: string, titleLocked?: boolean): Promise<void> {
-        await this.sessionCache.updateSessionSummary(sessionId, text, titleLocked)
+    async updateSessionSummary(
+        sessionId: string,
+        text: string,
+        options?: boolean | { clearName?: boolean; titleLocked?: boolean; expectedName?: string | null; expectedTitleLocked?: boolean }
+    ): Promise<void> {
+        await this.sessionCache.updateSessionSummary(sessionId, text, options)
     }
 
     async acknowledgeModelError(sessionId: string, eventId: string): Promise<void> {

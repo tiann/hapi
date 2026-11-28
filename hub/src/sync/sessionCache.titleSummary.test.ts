@@ -11,7 +11,7 @@ function createPublisher(events: SyncEvent[]): EventPublisher {
 }
 
 describe('SessionCache.updateSessionSummary', () => {
-    it('preserves metadata.name while stamping the generated summary timestamp', async () => {
+    it('preserves metadata.name by default while stamping the generated summary timestamp', async () => {
         const store = new Store(':memory:')
         const cache = new SessionCache(store, createPublisher([]))
         const created = cache.getOrCreateSession(
@@ -33,6 +33,94 @@ describe('SessionCache.updateSessionSummary', () => {
             name: 'Manual name',
             summary: { text: 'Generated title' }
         })
+    })
+
+    it('clears an existing metadata.name when explicitly replacing it with a generated summary', async () => {
+        const store = new Store(':memory:')
+        const cache = new SessionCache(store, createPublisher([]))
+        const created = cache.getOrCreateSession(
+            'summary-replace-session',
+            { path: '/tmp', host: 'localhost', name: 'Manual name' },
+            null,
+            'default'
+        )
+
+        await cache.updateSessionSummary(created.id, 'Generated title', { clearName: true, expectedName: 'Manual name', expectedTitleLocked: false })
+
+        const updated = cache.getSession(created.id)
+        expect(updated?.metadata?.name).toBeUndefined()
+        expect(updated?.metadata?.summary?.text).toBe('Generated title')
+        expect(store.sessions.getSession(created.id)?.metadata).toMatchObject({
+            summary: { text: 'Generated title' }
+        })
+        expect(store.sessions.getSession(created.id)?.metadata).not.toHaveProperty('name')
+    })
+
+    it.each([null, 'Previous name'])('rejects replacement if the current manual name differs from %s', async (expectedName) => {
+        const store = new Store(':memory:')
+        const cache = new SessionCache(store, createPublisher([]))
+        const created = cache.getOrCreateSession(
+            'summary-concurrent-rename',
+            { path: '/tmp', host: 'localhost', name: 'Newer manual name', summary: { text: 'Old summary', updatedAt: 1 } },
+            null,
+            'default'
+        )
+
+        await expect(cache.updateSessionSummary(created.id, 'Generated title', {
+            clearName: true, expectedName, expectedTitleLocked: false, titleLocked: true
+        })).rejects.toThrow('concurrently')
+        expect(store.sessions.getSession(created.id)?.metadata).toMatchObject({
+            name: 'Newer manual name', summary: { text: 'Old summary' }
+        })
+        expect(cache.getSession(created.id)?.metadata?.titleLocked).not.toBe(true)
+    })
+
+    it('rechecks the expected name after retrying a stale cached version', async () => {
+        const store = new Store(':memory:')
+        const cache = new SessionCache(store, createPublisher([]))
+        const created = cache.getOrCreateSession('summary-stale-cache', { path: '/tmp', host: 'localhost' }, null, 'default')
+        const metadata = { path: '/tmp', host: 'localhost', name: 'Newer manual name' }
+        const result = store.sessions.updateSessionMetadata(created.id, metadata, created.metadataVersion, 'default')
+        expect(result.result).toBe('success')
+        expect(cache.getSession(created.id)?.metadata?.name).toBeUndefined()
+
+        await expect(cache.updateSessionSummary(created.id, 'Generated title', {
+            clearName: true, expectedName: null, expectedTitleLocked: false
+        })).rejects.toThrow('concurrently')
+        expect(store.sessions.getSession(created.id)?.metadata).toHaveProperty('name', 'Newer manual name')
+        expect(store.sessions.getSession(created.id)?.metadata).not.toHaveProperty('summary')
+    })
+
+    it('does not clear a manual title after another client locks that same name', async () => {
+        const store = new Store(':memory:')
+        const cache = new SessionCache(store, createPublisher([]))
+        const metadata = { path: '/tmp', host: 'localhost', name: 'Manual name' }
+        const created = cache.getOrCreateSession('summary-concurrent-lock', metadata, null, 'default')
+        expect(store.sessions.updateSessionMetadata(created.id, metadata, created.metadataVersion, 'default', {
+            allowTitleUpdate: true, titleLocked: true
+        }).result).toBe('success')
+
+        await expect(cache.updateSessionSummary(created.id, 'Generated title', {
+            clearName: true, expectedName: 'Manual name', expectedTitleLocked: false, titleLocked: false
+        })).rejects.toThrow('concurrently')
+        expect(store.sessions.getSession(created.id)?.metadata).toMatchObject({ name: 'Manual name', titleLocked: true })
+    })
+
+    it('clears a whitespace-only metadata.name when explicitly replacing it with a generated summary', async () => {
+        const store = new Store(':memory:')
+        const cache = new SessionCache(store, createPublisher([]))
+        const created = cache.getOrCreateSession(
+            'summary-whitespace-name-session',
+            { path: '/tmp', host: 'localhost', name: '   ' },
+            null,
+            'default'
+        )
+
+        await cache.updateSessionSummary(created.id, 'Generated title', { clearName: true, expectedName: '   ', expectedTitleLocked: false })
+
+        const updated = cache.getSession(created.id)
+        expect(updated?.metadata?.name).toBeUndefined()
+        expect(updated?.metadata?.summary?.text).toBe('Generated title')
     })
 })
 

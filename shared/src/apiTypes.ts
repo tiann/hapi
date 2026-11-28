@@ -523,7 +523,16 @@ export type RenameSessionRequest = z.infer<typeof RenameSessionRequestSchema>
 
 export const UpdateSessionSummaryRequestSchema = z.object({
     text: z.string().trim().min(1).max(255),
+    clearName: z.boolean().optional(),
+    expectedName: z.string().nullable().optional(),
+    expectedTitleLocked: z.boolean().optional(),
     titleLocked: z.boolean().optional()
+}).refine(value => value.clearName !== true || value.expectedName !== undefined, {
+    path: ['expectedName'],
+    message: 'expectedName is required when replacing a manual name'
+}).refine(value => value.clearName !== true || value.expectedTitleLocked !== undefined, {
+    path: ['expectedTitleLocked'],
+    message: 'expectedTitleLocked is required when replacing a manual name'
 })
 
 export type UpdateSessionSummaryRequest = z.infer<typeof UpdateSessionSummaryRequestSchema>

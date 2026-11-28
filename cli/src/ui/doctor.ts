@@ -48,11 +48,45 @@ export function getEnvironmentInfo(): Record<string, any> {
 }
 
 export function redactSettingsForDisplay(settings: Record<string, unknown>): Record<string, unknown> {
-    return {
+    const displaySettings: Record<string, unknown> = {
         ...settings,
         cliApiToken: settings.cliApiToken ? '***' : undefined,
         extraHeaders: settings.extraHeaders === undefined ? undefined : '***'
     }
+
+    const titleProvider = settings.titleProvider
+    if (titleProvider !== undefined) {
+        if (titleProvider && typeof titleProvider === 'object' && !Array.isArray(titleProvider)) {
+            const titleProviderSettings = titleProvider as Record<string, unknown>
+            const stringOrUndefined = (value: unknown) => typeof value === 'string' ? value : undefined
+            const safeUrlOrUndefined = (value: unknown) => {
+                if (typeof value !== 'string') return undefined
+                try {
+                    const url = new URL(value)
+                    // Provider URLs can embed credentials in arbitrary path
+                    // segments as well as the username or query string.
+                    return url.protocol === 'https:' || url.protocol === 'http:' ? url.origin : undefined
+                } catch {
+                    return undefined
+                }
+            }
+            const timeoutMs = typeof titleProviderSettings.timeoutMs === 'number'
+                && Number.isSafeInteger(titleProviderSettings.timeoutMs)
+                && titleProviderSettings.timeoutMs > 0
+                ? titleProviderSettings.timeoutMs
+                : undefined
+            displaySettings.titleProvider = {
+                baseUrl: safeUrlOrUndefined(titleProviderSettings.baseUrl),
+                apiKey: titleProviderSettings.apiKey ? '***' : undefined,
+                model: stringOrUndefined(titleProviderSettings.model),
+                ...(timeoutMs === undefined ? {} : { timeoutMs })
+            }
+        } else {
+            displaySettings.titleProvider = '***'
+        }
+    }
+
+    return displaySettings
 }
 
 function getLogFiles(logDir: string): { file: string, path: string, modified: Date }[] {

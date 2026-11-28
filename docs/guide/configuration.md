@@ -130,27 +130,27 @@ wins and cannot be edited from Settings. See
 
 ### Generated session titles
 
-All three `HAPI_TITLE_PROVIDER_*` connection variables are required to enable
-the **Generate** action in the session rename dialog. The key is never sent
-to the browser. Each request sends recent visible conversation text (up to
-200 messages, bounded in size) to the configured provider.
+The session rename dialog shows **Generate** whenever a Hub connection is
+available. Without a configured provider, selecting it shows setup instructions;
+manual rename still works. Configuring the provider also enables HAPI's automatic
+fallback for untitled sessions after an eligible turn; generation is not limited to
+clicking **Generate**. Both paths send recent visible conversation text (up to 200
+messages, bounded in size) to the configured provider. The API key stays on the Hub.
 
-With a provider configured, the hub also makes one best-effort automatic
-request after the first completed turn when the session has no name or
-summary yet. Failures are ignored and the attempt is remembered across
-restarts; **Generate** stays available to retry. A manual or agent-set title
-that arrives meanwhile takes precedence. Without a provider, titles behave as
-before.
+Configure the connection through the environment, through the `titleProvider`
+object in `settings.json`, or a combination of both. Environment variables
+win per field. Environment-only title provider values are not saved to the file.
+Restart the Hub after changing the provider configuration.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `HAPI_TITLE_PROVIDER_BASE_URL` | – | OpenAI-compatible Chat Completions base URL. |
-| `HAPI_TITLE_PROVIDER_API_KEY` | – | API key for that provider. |
-| `HAPI_TITLE_PROVIDER_MODEL` | – | Model id, preferably a small one. |
-| `HAPI_TITLE_PROVIDER_MAX_TOKENS` | `64` | Completion-token budget per title; raise for reasoning models. |
-| `HAPI_TITLE_PROVIDER_TIMEOUT_MS` | `10000` | Request timeout. |
-| `HAPI_TITLE_SUGGESTION_RATE_LIMIT` | `5` | Suggestions per session per window. |
-| `HAPI_TITLE_SUGGESTION_RATE_WINDOW_MS` | `600000` | Rate-limit window. |
+| Variable | settings.json | Default | Description |
+|----------|---------------|---------|-------------|
+| `HAPI_TITLE_PROVIDER_BASE_URL` | `titleProvider.baseUrl` | – | OpenAI-compatible Chat Completions base URL. |
+| `HAPI_TITLE_PROVIDER_API_KEY` | `titleProvider.apiKey` | – | Server-only API key. |
+| `HAPI_TITLE_PROVIDER_MODEL` | `titleProvider.model` | – | Model id, preferably a small one. |
+| `HAPI_TITLE_PROVIDER_TIMEOUT_MS` | `titleProvider.timeoutMs` | `10000` | Request timeout in milliseconds. |
+| `HAPI_TITLE_PROVIDER_MAX_TOKENS` | – | `256` | Completion-token budget per title. |
+| `HAPI_TITLE_SUGGESTION_RATE_LIMIT` | – | `5` | Suggestions per session per window. |
+| `HAPI_TITLE_SUGGESTION_RATE_WINDOW_MS` | – | `600000` | Rate-limit window in milliseconds. |
 
 ### Translating input to English
 
@@ -180,7 +180,12 @@ receives your original text.
 - Each translated prompt is sent to the configured provider.
 
 The `HAPI_TRANSLATION_PROVIDER_*` connection variables are optional. If they
-are unset, the hub uses the `HAPI_TITLE_PROVIDER_*` connection.
+are unset, the hub uses the `HAPI_TITLE_PROVIDER_*` environment connection.
+It does not reuse `titleProvider` from `settings.json` for input translation.
+Before removing the title environment variables during migration, set
+`HAPI_TRANSLATION_PROVIDER_BASE_URL`, `HAPI_TRANSLATION_PROVIDER_API_KEY`, and
+`HAPI_TRANSLATION_PROVIDER_MODEL` to keep input translation available. Choose a
+provider that is approved to receive user prompts.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
