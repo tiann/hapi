@@ -576,4 +576,40 @@ describe('OpenCode durable Hub rewind commit', () => {
             expect(f.store.messages.getAllMessages(f.id)).toHaveLength(4)
         } finally { f.engine.stop() }
     })
+
+    it('refuses rewind to the spawn prompt while a child is running without an open tool (#2021)', async () => {
+        const { AGENT_MESSAGE_PAYLOAD_TYPE } = await import('@hapi/protocol')
+        const f = fixture()
+        let rpcCount = 0
+        try {
+            // Parent idle (thinking false) but child reported running after the
+            // spawn prompt — rewinding to that prompt would delete the only
+            // running marker and leave archive free to KillSession.
+            f.store.messages.addMessage(f.id, {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: {
+                        type: 'turn-complete',
+                        stopReason: 'running',
+                        childSessionId: 'ses_child',
+                        childStatus: 'running',
+                    },
+                },
+            })
+            expect(f.store.messages.getLiveToolWork(f.id)).toBe(true)
+            ;(f.engine as any).rpcGateway.rewindConversation = async () => {
+                rpcCount++
+                throw new Error('must not dispatch rewind while child work is live')
+            }
+            expect(await f.engine.rewindConversation(f.id, 'default', 'one')).toMatchObject({
+                type: 'error',
+                message: 'Session is busy',
+            })
+            expect(rpcCount).toBe(0)
+            // Marker still present — fence refused before truncate.
+            expect(f.store.messages.getLiveToolWork(f.id)).toBe(true)
+            expect(f.store.messages.getAllMessages(f.id).length).toBeGreaterThanOrEqual(5)
+        } finally { f.engine.stop(); f.store.close() }
+    })
 })

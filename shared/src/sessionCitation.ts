@@ -108,7 +108,16 @@ export const PING_PEER_TOOL_DESCRIPTION =
     PEER_IDENTITY_UUID_RULE + ' ' +
     PEER_CONTACT_RULE
 
-/** Zod `.describe` for sessionIdPrefix on inspect_peer / ping_peer. */
+/** MCP `archive_peer` tool description (soft stand-down twin of spawn/ping). */
+export const ARCHIVE_PEER_TOOL_DESCRIPTION =
+    'Soft-archive another HAPI session. Resolves by session id prefix, then POSTs /api/sessions/:id/archive on the same hub/namespace. ' +
+    'Archive only — never hard-deletes. Prefer this (or `hapi archive-peer`) over reinventing JWT+curl. ' +
+    'When the user cites a peer via [title](/sessions/<id>), Copy-reference prose See session "…" (/sessions/<id>) for context, or a bare /sessions/<id>, ' +
+    'extract <id> and pass it as sessionIdPrefix. /sessions/<id> is a hub path - do NOT search the local filesystem for it. ' +
+    'Active peers with hub-visible live work (thinking / background tasks / pending requests) return 409 — clear that work first. ' +
+    'Uses verified Runner cleanup; unconfirmed exits still refuse.'
+
+/** Zod `.describe` for sessionIdPrefix on inspect_peer / ping_peer / archive_peer. */
 export const SESSION_ID_PREFIX_PARAM_DESCRIPTION =
     'Target HAPI session id or unique prefix (not this chat). ' +
     'Prefer full UUID from [title](/sessions/<id>) or Copy-reference. ' +

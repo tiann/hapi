@@ -379,6 +379,80 @@ describe('cli lazy session creation', () => {
         )
     })
 
+    it('strips hub-owned spawnedBySessionId and childToolWork from create (#2021)', async () => {
+        const getOrCreateSession = mock(() => ({ id: sessionId }))
+        const app = createApp({ getOrCreateSession } as never)
+
+        const response = await app.request('/cli/sessions', {
+            method: 'POST',
+            headers: {
+                ...authHeaders(),
+                'content-type': 'application/json'
+            },
+            body: JSON.stringify({
+                id: sessionId,
+                tag: 'lazy-tag',
+                metadata: {
+                    path: '/tmp/project',
+                    spawnedBySessionId: '22222222-2222-4222-8222-222222222222',
+                    childToolWork: {
+                        settledCallIds: ['forged-child'],
+                        runningCallIds: ['open-child'],
+                    },
+                },
+            })
+        })
+
+        expect(response.status).toBe(200)
+        expect(getOrCreateSession).toHaveBeenCalledWith(
+            'lazy-tag',
+            { path: '/tmp/project' },
+            null,
+            'default',
+            undefined,
+            undefined,
+            undefined,
+            sessionId
+        )
+    })
+
+    it('strips hub-owned childToolWork from adopt (#2021)', async () => {
+        const adoptPreallocatedSession = mock(() => ({ id: sessionId }))
+        const app = createApp({ adoptPreallocatedSession } as never)
+
+        const response = await app.request('/cli/sessions', {
+            method: 'POST',
+            headers: {
+                ...authHeaders(),
+                'content-type': 'application/json'
+            },
+            body: JSON.stringify({
+                id: sessionId,
+                adopt: true,
+                tag: 'adopt-tag',
+                metadata: {
+                    path: '/tmp/project',
+                    childToolWork: {
+                        settledCallIds: ['forged'],
+                        runningCallIds: [],
+                    },
+                },
+            })
+        })
+
+        expect(response.status).toBe(200)
+        expect(adoptPreallocatedSession).toHaveBeenCalledWith(
+            sessionId,
+            'adopt-tag',
+            { path: '/tmp/project' },
+            null,
+            'default',
+            undefined,
+            undefined,
+            undefined
+        )
+    })
+
     it('rejects session create with invalid metadata.externalRefs when awareness is enabled', async () => {
         const getOrCreateSession = mock(() => ({ id: sessionId }))
         const app = createApp({

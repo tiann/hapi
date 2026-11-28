@@ -9,6 +9,7 @@ import {
     addMessage,
     upsertToolCallMessage,
     getLiveToolWork,
+    retireOpenChildToolWork,
     syncNativeQueuedMessage,
     addImportedMessage,
     cancelQueuedMessage,
@@ -38,6 +39,7 @@ import {
     setMessagesDeliveryState,
     markUninvokedImmediateMessages,
     mergeSessionMessages,
+    invalidateChildToolWorkState,
     moveUninvokedScheduledMessages,
     moveUninvokedMessages,
     copyMessageToSession as copyStoredMessageToSession,
@@ -74,7 +76,11 @@ export class MessageStore {
         this.db = db
     }
 
-    truncateOpenCodeRewind(sessionId: string, cutoffSeq: number, boundaryId: string): number {
+    truncateOpenCodeRewind(sessionId: string, cutoffSeq: number, boundaryId: string): {
+        epoch: number
+        harvestedSettledCallIds: string[]
+        harvestedSettledChildren: string[]
+    } {
         return truncateOpenCodeRewind(this.db, sessionId, cutoffSeq, boundaryId)
     }
 
@@ -103,6 +109,11 @@ export class MessageStore {
      *  getLiveToolWork in messages.ts for the liveness contract). */
     getLiveToolWork(sessionId: string): boolean {
         return getLiveToolWork(this.db, sessionId)
+    }
+
+    /** Clear open child / running-child work when the owning worker exits. */
+    retireOpenChildToolWork(sessionId: string): boolean {
+        return retireOpenChildToolWork(this.db, sessionId)
     }
 
     syncNativeQueuedMessage(sessionId: string, localId: string, text: string): StoredMessage {
@@ -321,6 +332,11 @@ export class MessageStore {
 
     mergeSessionMessages(fromSessionId: string, toSessionId: string): { moved: number; oldMaxSeq: number; newMaxSeq: number } {
         return mergeSessionMessages(this.db, fromSessionId, toSessionId)
+    }
+
+    /** Rebuild OpenCode child-work registry on next live-work check (#2021). */
+    invalidateChildToolWorkState(sessionId: string): void {
+        invalidateChildToolWorkState(this.db, sessionId)
     }
 
     truncateMessagesFromLocalId(

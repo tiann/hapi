@@ -1,12 +1,32 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
+
+const { spawnSyncMock } = vi.hoisted(() => ({
+    spawnSyncMock: vi.fn(),
+}))
+
+vi.mock('cross-spawn', () => ({
+    default: { sync: spawnSyncMock },
+}))
 
 vi.mock('node:fs', async (importOriginal) => {
     const actual = await importOriginal<typeof import('node:fs')>()
     return { ...actual, readFileSync: vi.fn(actual.readFileSync) }
 })
 
-import { getSystemBootId, getProcessThreadGroupId, normalizeBootId } from './process'
+import {
+    getSystemBootId,
+    getProcessGroupId,
+    getProcessThreadGroupId,
+    normalizeBootId,
+    classifyRetainedIdentity,
+    classifyAgentOwnedProcessGroup,
+    isAgentOwnedProcessGroup,
+    killRetainedProcessTree,
+    parseWindowsAncestryTableJson,
+    retainedIdentityStillAlive,
+    type RetainedProcessIdentity,
+} from './process'
 
 const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!
 const bootId = 'e7c92900-5693-4ba0-b40c-9dfc57512edb'
@@ -19,6 +39,8 @@ function platform(value: string) {
 afterEach(() => {
     Object.defineProperty(process, 'platform', originalPlatform)
     read.mockReset()
+    spawnSyncMock.mockReset()
+    vi.restoreAllMocks()
 })
 
 describe('Linux recovered process identity', () => {
@@ -64,5 +86,264 @@ describe('Linux recovered process identity', () => {
         platform('linux')
         expect(getProcessThreadGroupId(value)).toBeNull()
         expect(read).not.toHaveBeenCalled()
+    })
+})
+
+describe('retained process identity classification (#2021)', () => {
+    const identity = (overrides: Partial<RetainedProcessIdentity> = {}): RetainedProcessIdentity => ({
+        pid: 4242,
+        startMarker: 'Wed Nov 25 00:00:00 2026',
+        bootId,
+        tgid: 4242,
+        pgid: 4242,
+        ...overrides,
+    })
+
+    beforeEach(() => {
+        platform('linux')
+        spawnSyncMock.mockReset()
+        vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+            if (signal === 0 || signal === undefined) return true
+            return true
+        }) as typeof process.kill)
+    })
+
+    function mockPsMarker(marker: string | null, status = 0) {
+        spawnSyncMock.mockImplementation((cmd: string, args?: string[]) => {
+            if (cmd === 'ps') {
+                return {
+                    status: marker === null ? 1 : status,
+                    stdout: marker ?? '',
+                    stderr: '',
+                    error: null,
+                }
+            }
+            // Process-group recheck after retained kills — empty group = verified.
+            if (cmd === 'pgrep' && Array.isArray(args) && args[0] === '-g') {
+                return { status: 1, stdout: '', stderr: '', error: null }
+            }
+            return { status: 1, stdout: '', stderr: '', error: null }
+        })
+    }
+
+    it('distinguishes match, gone, and unknown — signals only confirmed matches', async () => {
+        mockPsMarker('Wed Nov 25 00:00:00 2026')
+        expect(classifyRetainedIdentity(identity())).toBe('match')
+        expect(retainedIdentityStillAlive(identity())).toBe(true)
+
+        mockPsMarker('Thu Nov 26 00:00:00 2026')
+        expect(classifyRetainedIdentity(identity())).toBe('gone')
+        expect(retainedIdentityStillAlive(identity())).toBe(false)
+
+        // Probe failed while PID appears alive → unknown (do not signal).
+        mockPsMarker(null)
+        expect(classifyRetainedIdentity(identity())).toBe('unknown')
+        expect(retainedIdentityStillAlive(identity())).toBe(true)
+
+        // Alive without a start-marker cannot confirm generation (boot+tgid alone).
+        expect(classifyRetainedIdentity(identity({ startMarker: null }))).toBe('unknown')
+
+        vi.mocked(process.kill).mockImplementation((() => {
+            throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' })
+        }) as typeof process.kill)
+        expect(classifyRetainedIdentity(identity())).toBe('gone')
+
+        // Restore alive + failed marker: killRetained must not signal, return false.
+        vi.mocked(process.kill).mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+            if (signal === 0) return true
+            throw new Error('should not signal unknown identity')
+        }) as typeof process.kill)
+        mockPsMarker(null)
+        expect(await killRetainedProcessTree([identity()])).toBe(false)
+
+        // Confirmed match then gone after kill → verified.
+        let alive = true
+        const signals: Array<NodeJS.Signals | number | undefined> = []
+        vi.mocked(process.kill).mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+            if (signal === 0) {
+                if (!alive) throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' })
+                return true
+            }
+            signals.push(signal)
+            alive = false
+            return true
+        }) as typeof process.kill)
+        mockPsMarker('Wed Nov 25 00:00:00 2026')
+        expect(await killRetainedProcessTree([identity()], true)).toBe(true)
+        // Phase-1 SIGKILL; process exits before phase-2 so no second PID signal.
+        // Group verify sees an empty PGID and does not emit -pgid.
+        expect(signals).toEqual(['SIGKILL'])
+
+        // Generation changes after SIGTERM — must not escalate SIGKILL to the replacement.
+        alive = true
+        let marker = 'Wed Nov 25 00:00:00 2026'
+        signals.length = 0
+        mockPsMarker(marker)
+        spawnSyncMock.mockImplementation((cmd: string) => {
+            if (cmd === 'ps') {
+                return { status: 0, stdout: marker, stderr: '', error: null }
+            }
+            return { status: 1, stdout: '', stderr: '', error: null }
+        })
+        vi.mocked(process.kill).mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+            if (signal === 0) return true
+            // Process-group cleanup uses negative pgid — ignore for this assertion.
+            if (pid < 0) return true
+            signals.push(signal)
+            if (signal === 'SIGTERM') {
+                marker = 'Thu Nov 26 00:00:00 2026' // PID reused during grace
+            }
+            return true
+        }) as typeof process.kill)
+        expect(await killRetainedProcessTree([identity()], false)).toBe(true)
+        // Phase-1 SIGTERM against the PID; phase-2 must not escalate that PID.
+        expect(signals).toEqual(['SIGTERM'])
+    })
+
+    it('refuses process-group signals when the agent inherited HAPI’s group (#2021 Blocker)', async () => {
+        // Not a group leader (pgid !== pid) — typical inherited wrapper group.
+        expect(isAgentOwnedProcessGroup(identity({ pid: 4242, pgid: 7 }))).toBe(false)
+
+        let alive = true
+        const signals: Array<{ pid: number; signal?: NodeJS.Signals | number }> = []
+        vi.mocked(process.kill).mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+            if (signal === 0) {
+                if (!alive) throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' })
+                return true
+            }
+            signals.push({ pid, signal })
+            alive = false
+            return true
+        }) as typeof process.kill)
+        mockPsMarker('Wed Nov 25 00:00:00 2026')
+        // Captured PIDs exit, but inherited-group coverage must keep Stop unresolved
+        // rather than SIGKILL -pgid against HAPI (#2021).
+        expect(await killRetainedProcessTree([identity({ pid: 4242, pgid: 7 })], true)).toBe(false)
+        expect(signals.every((entry) => entry.pid > 0)).toBe(true)
+        expect(signals.some((entry) => entry.pid < 0)).toBe(false)
+    })
+
+    it('does not SIGKILL a recycled process group with a replacement leader (#2021 Blocker)', async () => {
+        const signals: number[] = []
+        vi.mocked(process.kill).mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+            if (signal === 0) return true
+            signals.push(pid)
+            return true
+        }) as typeof process.kill)
+        // pgrep finds a live leader at the old pgid, but its start marker differs
+        // from the retained root — foreign generation.
+        spawnSyncMock.mockImplementation((cmd: string, args?: string[]) => {
+            if (cmd === 'pgrep' && Array.isArray(args) && args[0] === '-g') {
+                return { status: 0, stdout: '4242\n', stderr: '', error: null }
+            }
+            if (cmd === 'ps') {
+                return { status: 0, stdout: 'Thu Nov 26 00:00:00 2026', stderr: '', error: null }
+            }
+            return { status: 1, stdout: '', stderr: '', error: null }
+        })
+        expect(classifyAgentOwnedProcessGroup(identity())).toBe('foreign')
+        expect(await killRetainedProcessTree([identity()], true)).toBe(true)
+        expect(signals.some((pid) => pid < 0)).toBe(false)
+    })
+
+    it('does not treat a leaderless recycled group as ours (#2021 Blocker)', async () => {
+        let alive = true
+        const signals: number[] = []
+        vi.mocked(process.kill).mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+            if (signal === 0) {
+                if (!alive) throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' })
+                return true
+            }
+            signals.push(pid)
+            alive = false
+            return true
+        }) as typeof process.kill)
+        // Captured PIDs exit; members remain under the old pgid but the
+        // replacement leader has already exited — unknown, no -pgid.
+        spawnSyncMock.mockImplementation((cmd: string, args?: string[]) => {
+            if (cmd === 'pgrep' && Array.isArray(args) && args[0] === '-g') {
+                return { status: 0, stdout: '9999\n', stderr: '', error: null }
+            }
+            if (cmd === 'ps') {
+                return { status: 0, stdout: 'Wed Nov 25 00:00:00 2026', stderr: '', error: null }
+            }
+            return { status: 1, stdout: '', stderr: '', error: null }
+        })
+        expect(classifyAgentOwnedProcessGroup(identity())).toBe('unknown')
+        expect(await killRetainedProcessTree([identity()], true)).toBe(false)
+        expect(signals.some((pid) => pid < 0)).toBe(false)
+    })
+
+    it('signals the process group while the leader is still identifiable (#2021 Major)', async () => {
+        const signals: number[] = []
+        let groupSignalled = false
+        read.mockReturnValue(`${bootId}\n`)
+        vi.mocked(process.kill).mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+            if (signal === 0) {
+                // Whole group disappears once -pgid lands (#2021 Major).
+                if (groupSignalled) {
+                    throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' })
+                }
+                return true
+            }
+            signals.push(pid)
+            if (pid < 0) groupSignalled = true
+            return true
+        }) as typeof process.kill)
+        spawnSyncMock.mockImplementation((cmd: string, args?: string[]) => {
+            if (cmd === 'pgrep' && Array.isArray(args) && args[0] === '-g') {
+                if (groupSignalled) {
+                    return { status: 1, stdout: '', stderr: '', error: null }
+                }
+                // Leader + mid-snapshot child still in the owned group.
+                return { status: 0, stdout: '4242\n9999\n', stderr: '', error: null }
+            }
+            if (cmd === 'ps') {
+                return { status: 0, stdout: 'Wed Nov 25 00:00:00 2026', stderr: '', error: null }
+            }
+            return { status: 1, stdout: '', stderr: '', error: null }
+        })
+        expect(classifyAgentOwnedProcessGroup(identity())).toBe('ours')
+        expect(await killRetainedProcessTree([identity()], true)).toBe(true)
+        const groupIdx = signals.indexOf(-4242)
+        expect(groupIdx).toBeGreaterThanOrEqual(0)
+        // Group signal must happen while the leader still bound the generation —
+        // not after a leader-first per-PID kill left the group leaderless.
+        const leaderIdx = signals.indexOf(4242)
+        if (leaderIdx >= 0) {
+            expect(groupIdx).toBeLessThan(leaderIdx)
+        }
+    })
+
+    it('skips Windows System Idle Process (PID 0) in ancestry scans (#2021 Major)', () => {
+        const table = parseWindowsAncestryTableJson(JSON.stringify([
+            { ProcessId: 0, ParentProcessId: 0, CreationDate: null },
+            { ProcessId: 4242, ParentProcessId: 100, CreationDate: '2026-01-01T00:00:00.0000000Z' },
+            { ProcessId: 9001, ParentProcessId: 4242, CreationDate: '2026-01-01T00:00:01.0000000Z' },
+            { ProcessId: process.pid, ParentProcessId: 1, CreationDate: '2026-01-01T00:00:00.0000000Z' },
+        ]), process.pid)
+        expect(table).not.toBeNull()
+        expect(table!.has(0)).toBe(false)
+        expect(table!.get(4242)).toEqual({
+            parentPid: 100,
+            marker: '2026-01-01T00:00:00.0000000Z',
+        })
+        expect(table!.get(9001)?.parentPid).toBe(4242)
+    })
+
+    it('reads process group id on macOS via ps (#2021)', () => {
+        platform('darwin')
+        spawnSyncMock.mockImplementation((cmd: string, args?: string[]) => {
+            if (cmd === 'ps' && Array.isArray(args) && args.includes('pgid=')) {
+                return { status: 0, stdout: '  4242\n', stderr: '', error: null }
+            }
+            return { status: 1, stdout: '', stderr: '', error: null }
+        })
+        expect(getProcessGroupId(4242)).toBe(4242)
+        expect(spawnSyncMock).toHaveBeenCalledWith(
+            'ps',
+            ['-o', 'pgid=', '-p', '4242'],
+            expect.objectContaining({ encoding: 'utf8' }),
+        )
     })
 })

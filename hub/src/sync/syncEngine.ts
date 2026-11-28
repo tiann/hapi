@@ -90,6 +90,7 @@ import {
 } from './rpcGateway'
 import { SessionCache } from './sessionCache'
 import { ArchiveCleanupError } from './archiveCleanupError'
+import { blocksHardArchive, hasDurableLiveWork } from './sessionIdle'
 import { AutomaticTitleSuggestionService } from './automaticTitleSuggestion'
 import { extractMessageEventType } from '../notifications/eventParsing'
 import { SessionEnumerationCache } from './sessionEnumerationCache'
@@ -1028,12 +1029,23 @@ export class SyncEngine {
 
     private reconcileSteerDeliveryOwner(before: Session['metadata'], after: Session | undefined): void {
         const current = after?.metadata
-        if ((before?.flavor !== 'opencode' && before?.flavor !== 'claude')
-            || current?.flavor !== before.flavor) return
-        // Steer admission closes before an existing request finishes draining.
+        if (!before || !current || current.flavor !== before.flavor || !after?.id) return
         // Only replacement of the owning worker ends its confirmation lease.
-        if (before.machineId !== current.machineId || before.hostPid !== current.hostPid
-            || before.hostStartMarker !== current.hostStartMarker) {
+        if (before.machineId === current.machineId && before.hostPid === current.hostPid
+            && before.hostStartMarker === current.hostStartMarker) {
+            return
+        }
+        // Do NOT retire sticky tool work or clear durable background /
+        // unresolvedTurn on generation replace. The previous wrapper may have
+        // left a detached agent group (or Codex app-server) still running
+        // (#2021 / #2657). Zero in-memory background count so a stale A count
+        // cannot be mistaken for B's work under current-marker-only.
+        // Refresh derivedToolWork from the transcript so the guard stays honest.
+        this.sessionCache.clearInMemoryBackgroundTasks(after.id)
+        this.sessionCache.noteDerivedWork(after.id, this.store.messages.getLiveToolWork(after.id))
+        // Steer admission ownership is OpenCode/Claude only; Cursor/Codex keep
+        // their separate delivery owner (see steerDeliveryLifecycle tests).
+        if (before.flavor === 'opencode' || before.flavor === 'claude') {
             this.markSteerDispatchesUncertain(after)
         }
     }
@@ -1050,6 +1062,10 @@ export class SyncEngine {
 
     handleSessionEnd(payload: { sid: string; time: number; reason?: SessionEndReason }): void {
         const before = this.sessionCache.getSession(payload.sid)
+        // Do NOT retire open child work on wrapper session-end alone. ACP
+        // agents run in a detached process group / Job; wrapper exit is not
+        // containment proof. Sticky tools stay until Archive probe returns
+        // already_gone (Runner verified agent root exit) (#2021).
         if (before?.metadata?.opencodeClearOperation?.state === 'reserved' && payload.reason !== 'cleared') {
             const operation = before.metadata.opencodeClearOperation
             if (this.transitionClearOperation(payload.sid, before.namespace, operation, 'abort-needed')) {
@@ -1141,7 +1157,14 @@ export class SyncEngine {
             const ownerRegisteredAt = session.metadata?.lifecycleStateSince
             if (ownerRegisteredAt === undefined || payload.time < ownerRegisteredAt) return false
         }
-        if (!session.active && !session.thinking) return false
+        if (!session.active && !session.thinking) {
+            // Heartbeat expiry can flip inactive before this exit notice
+            // arrives. Do NOT retire sticky tool work or clear background here
+            // — wrapper exit is not agent-containment proof (#2021 Approach).
+            // Archive probeSessionExit retires after the Runner verifies the
+            // agent root (or reports already_gone with no live agent root).
+            return false
+        }
 
         this.handleSessionEnd({ sid: session.id, time: payload.time, reason: 'error' })
         return true
@@ -1920,21 +1943,24 @@ export class SyncEngine {
             }
         }
         if (candidates.length === 0) return
-        // One batched primary-job read: a session with a running attached
-        // job already renders work; the sweep must not double-report.
-        const primaryJobs = this.getPrimaryAttachedJobsBySessionIds(candidates.map((session) => session.id))
+        // Refresh derivedToolWork even when a primary attached job is running.
+        // Archive eligibility reads derivedToolWork independently of the job
+        // meter; skipping left a stale true flag that hid Archive while the
+        // endpoint would accept (#2021 Minor). Display still shows the job.
         for (const session of candidates) {
-            if ((primaryJobs.get(session.id) ?? null) !== null) continue
             this.sessionCache.noteDerivedWork(session.id, this.store.messages.getLiveToolWork(session.id))
         }
     }
 
-    /** Eligibility for the derived-work sweep: connected, no thinking flag,
-     *  and no declared background tasks. */
+    /** Eligibility for the derived-work sweep: no thinking flag and no
+     *  declared background tasks. Active sessions always qualify; inactive
+     *  live-lifecycle rows also qualify so durable OpenCode child work keeps
+     *  derivedToolWork honest after heartbeat expiry (#2021 Minor). */
     private isDerivedToolWorkCandidate(session: Session): boolean {
-        if (!session.active || session.thinking) return false
+        if (session.thinking) return false
         if ((session.backgroundTaskCount ?? 0) > 0) return false
-        return true
+        if (session.active) return true
+        return isLiveLifecycleState(session.metadata?.lifecycleState)
     }
 
     private async reconcileOpenCodeClears(): Promise<void> {
@@ -3556,6 +3582,12 @@ export class SyncEngine {
         }
         try {
             this.assertConversationHistoryIdle(session)
+            // Fence TRUNCATING ops only. Rewind can delete the only running-child
+            // marker and leave archive free to KillSession; fork copies and leaves
+            // the source intact, so it stays outside this check (#2021).
+            if (this.store.messages.getLiveToolWork(session.id)) {
+                throw new Error('Session is busy')
+            }
         } catch (error) {
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }
         }
@@ -3715,6 +3747,7 @@ export class SyncEngine {
             if (current.metadataVersion !== expectedVersion) throw new Error('OpenCode rewind metadata version changed')
             let next: OpenCodeRewindOperation = { ...op }
             let nextMetadata = metadata
+            let casVersion = current.metadataVersion
             // A reserved operation has not durably authorized native mutation.
             // Keep it rejectable when preparation failed before persistence.
             if (report.phase === 'unknown') next.phase = op.phase === 'reserved' ? 'reserved' : 'unknown'
@@ -3753,14 +3786,42 @@ export class SyncEngine {
                         if (nextIndex >= 0) indexes[local] = nextIndex
                     }
                     if (JSON.stringify(Object.entries(indexes).sort()) !== JSON.stringify(Object.entries(report.indexes ?? {}).sort())) throw new Error('Retained locator mismatch')
-                    this.store.messages.truncateOpenCodeRewind(sessionId, op.cutoffSeq, hubBoundary.id)
+                    const rewindCut = this.store.messages.truncateOpenCodeRewind(sessionId, op.cutoffSeq, hubBoundary.id)
                     next = { ...op, phase: 'committed' }
-                    nextMetadata = { ...metadata, opencodeHistoryCheckpoint: checkpoint, conversationHistoryIndexes: indexes,
-                        conversationHistoryPoints: Object.fromEntries(Object.keys(indexes).map(key => [key, true as const])) }
+                    // truncate may have latched settlements (bumps metadata_version).
+                    // Re-read so the enclosing CAS uses the post-truncate version and
+                    // keeps harvested childToolWork (#2021).
+                    const afterCut = this.store.sessions.getSession(sessionId)
+                    const cutMeta = MetadataSchema.parse(afterCut?.metadata ?? metadata)
+                    const priorChild = asRecord(cutMeta.childToolWork) ?? asRecord(metadata.childToolWork)
+                    const priorSettledCalls = Array.isArray(priorChild?.settledCallIds)
+                        ? priorChild.settledCallIds.filter((id): id is string => typeof id === 'string')
+                        : []
+                    const priorSettledChildren = Array.isArray(priorChild?.settled)
+                        ? priorChild.settled.filter((id): id is string => typeof id === 'string')
+                        : []
+                    const priorRunning = Array.isArray(priorChild?.running)
+                        ? priorChild.running.filter((id): id is string => typeof id === 'string')
+                        : []
+                    const settledCallIds = [...new Set([...priorSettledCalls, ...rewindCut.harvestedSettledCallIds])]
+                    const settledChildren = [...new Set([...priorSettledChildren, ...rewindCut.harvestedSettledChildren])]
+                    const runningChildren = priorRunning.filter((id) => !settledChildren.includes(id))
+                    nextMetadata = {
+                        ...cutMeta,
+                        opencodeHistoryCheckpoint: checkpoint,
+                        conversationHistoryIndexes: indexes,
+                        conversationHistoryPoints: Object.fromEntries(Object.keys(indexes).map(key => [key, true as const])),
+                        childToolWork: {
+                            running: runningChildren.sort(),
+                            settled: settledChildren.sort(),
+                            settledCallIds,
+                        },
+                    }
+                    casVersion = afterCut?.metadataVersion ?? current.metadataVersion
                     invalidated = true
                 }
             }
-            const updated = this.store.sessions.updateSessionMetadata(sessionId, { ...nextMetadata, opencodeRewind: next }, current.metadataVersion, namespace)
+            const updated = this.store.sessions.updateSessionMetadata(sessionId, { ...nextMetadata, opencodeRewind: next }, casVersion, namespace)
             if (updated.result !== 'success') throw new Error('OpenCode rewind metadata CAS failed')
             if (invalidated) {
                 const todos = this.store.messages.getAllMessages(sessionId).map(m => extractTodoWriteTodosFromMessageContent(m.content)).filter(Boolean).at(-1) ?? null
@@ -3813,7 +3874,9 @@ export class SyncEngine {
         if (existing) return existing
         const operation = this.archiveSessionOnce(sessionId)
         this.archiveRequests.set(sessionId, operation)
-        try { await operation } finally {
+        try {
+            await operation
+        } finally {
             if (this.archiveRequests.get(sessionId) === operation) this.archiveRequests.delete(sessionId)
             this.archiveDrainedGenerations.delete(sessionId)
         }
@@ -3843,6 +3906,129 @@ export class SyncEngine {
                 })
             } catch (error) {
                 throw new ArchiveCleanupError(error instanceof RunnerStopRpcError && error.timedOut ? 'timeout' : 'unavailable', error)
+            }
+        }
+        // tiann/hapi#2020: refuse archive while hub-visible work remains.
+        // Refresh transcript-derived work synchronously: tool_call rows land
+        // on the socket path immediately, but derivedToolWork only updates on
+        // the 5s sweep. Always consult durable/transcript evidence — including
+        // when heartbeat expiry flipped active=false — so a durable OpenCode
+        // running child still blocks stop RPCs (#2021 Major).
+        //
+        // Disconnected rows may retain stale agentState.requests after
+        // heartbeat expiry; those must not block Runner-verified cleanup
+        // (/abort requires active). Durable thinking / derivedToolWork /
+        // background still do.
+        this.sessionCache.noteDerivedWork(
+            sessionId,
+            this.store.messages.getLiveToolWork(sessionId),
+        )
+        const liveBeforeStop = this.sessionCache.getSession(sessionId)
+        if (liveBeforeStop) {
+            if (liveBeforeStop.active === true) {
+                // Destroy-state gate: hub-visible work OR idleReconcileExempt
+                // OR waiting-on-external (#2020). Do not Kill a CI-watching /
+                // holding-pen peer that hasLiveWork alone would miss.
+                if (blocksHardArchive(liveBeforeStop)) {
+                    throw new ArchiveCleanupError('working')
+                }
+            } else if (hasDurableLiveWork(liveBeforeStop)) {
+                // Heartbeat-expired durable evidence can strand Archive after a
+                // Runner restart that recorded verified exit without emitting
+                // session-child-exited. Use the dedicated read-only probe RPC —
+                // never StopSession (older Runners ignore unknown flags and
+                // would kill a live worker) (#2021 Approach).
+                const meta = liveBeforeStop.metadata
+                const reconcileMachineId = meta?.codexResumePending?.machineId ?? meta?.machineId
+                const reconcileRunnerSpawned = Boolean(meta?.codexResumePending)
+                    || meta?.startedBy === 'runner'
+                    || meta?.startedFromRunner === true
+                let reconciledGone = false
+                if (reconcileMachineId && reconcileRunnerSpawned) {
+                    const machine = this.getMachine(reconcileMachineId)
+                    const caps = machine?.metadata?.capabilities
+                    // Advertised caps without ProbeSessionExit ⇒ older Runner.
+                    // Do not fall back to StopSession / KillSession.
+                    const probeSupported = !caps
+                        || caps.includes(MACHINE_CAPABILITIES.ProbeSessionExit)
+                    if (probeSupported) {
+                        const probe = async (id: string, processStartMarker?: string) => {
+                            const timeoutMs = Math.ceil(deadline - performance.now())
+                            if (timeoutMs <= 0) throw new ArchiveCleanupError('timeout')
+                            try {
+                                return await this.rpcGateway.probeRunnerSessionExit(
+                                    reconcileMachineId,
+                                    id,
+                                    {
+                                        timeoutMs,
+                                        ...(processStartMarker ? { processStartMarker } : {}),
+                                    },
+                                )
+                            } catch (error) {
+                                if (error instanceof RunnerStopRpcError && error.timedOut) {
+                                    throw new ArchiveCleanupError('timeout', error)
+                                }
+                                // Handler absent / unreachable — cannot prove exit.
+                                return 'unknown' as const
+                            }
+                        }
+                        let status = await probe(sessionId)
+                        if (status === 'unknown') {
+                            const hostPid = meta?.hostPid
+                            const hostStartMarker = typeof meta?.hostStartMarker === 'string'
+                                ? meta.hostStartMarker
+                                : undefined
+                            if (typeof hostPid === 'number' && hostPid > 0) {
+                                const pidStatus = await probe(`PID-${hostPid}`, hostStartMarker)
+                                // PID-only already_gone proves the wrapper is
+                                // gone, not Codex/app-server or agent
+                                // containment. Only promote still_alive so we
+                                // never clear durable work on a raw-PID
+                                // fallback (#2021 Approach).
+                                if (pidStatus === 'still_alive') {
+                                    status = 'still_alive'
+                                }
+                            }
+                        }
+                        if (status === 'already_gone') {
+                            // Session-id already_gone proves the *current*
+                            // wrapper generation is gone — not a prior detached
+                            // group that still owns sticky tools / latches
+                            // after resume (#2021 Approach).
+                            const ownerMarker = typeof meta?.hostStartMarker === 'string'
+                                ? meta.hostStartMarker
+                                : undefined
+                            const bgMarker = meta?.backgroundWork
+                                && typeof meta.backgroundWork.hostStartMarker === 'string'
+                                ? meta.backgroundWork.hostStartMarker
+                                : undefined
+                            const turnMarker = meta?.unresolvedTurn
+                                && typeof meta.unresolvedTurn.hostStartMarker === 'string'
+                                ? meta.unresolvedTurn.hostStartMarker
+                                : undefined
+                            const bgIsCurrent = !bgMarker
+                                || !ownerMarker
+                                || bgMarker === ownerMarker
+                            const turnIsCurrent = !turnMarker
+                                || !ownerMarker
+                                || turnMarker === ownerMarker
+                            if (bgIsCurrent && turnIsCurrent) {
+                                this.store.messages.retireOpenChildToolWork(sessionId)
+                                this.sessionCache.setBackgroundTasks(sessionId, [])
+                                this.sessionCache.setUnresolvedTurn(sessionId, false)
+                            }
+                            this.sessionCache.noteDerivedWork(
+                                sessionId,
+                                this.store.messages.getLiveToolWork(sessionId),
+                            )
+                            const after = this.sessionCache.getSession(sessionId)
+                            reconciledGone = Boolean(after && !hasDurableLiveWork(after))
+                        }
+                    }
+                }
+                if (!reconciledGone) {
+                    throw new ArchiveCleanupError('working')
+                }
             }
         }
         // tiann/hapi#916 / #1910: KillSession is a session-socket RPC. A missing
@@ -3920,6 +4106,9 @@ export class SyncEngine {
                 }
             }
             if (status === 'still_alive' || status === 'unknown') {
+                // Verified cleanup for every caller (#2020 reframe): no soft
+                // stand-down exception. Idle agents that still fail to die are
+                // a separate escalation/sweep problem, not an archive success.
                 throw new ArchiveCleanupError('unconfirmed')
             }
         } else if (machineId && !runnerSpawned) {
@@ -3942,7 +4131,7 @@ export class SyncEngine {
                 sessionId,
                 cliUnreachable
                     ? 'Archived from hub (CLI unreachable)'
-                    : 'Archived from hub (CLI stopped before archive metadata)'
+                    : 'Archived from hub (CLI stopped before archive metadata)',
             )
             this.emitCliSessionMetadataUpdate(sessionId)
         }
@@ -4374,7 +4563,12 @@ export class SyncEngine {
         // argv before the first webhook (#1911 Major: unreapable window).
         namespace?: string,
         /** Claude: resume the spawned child truncated to this entry uuid. */
-        resumeSessionAt?: string
+        resumeSessionAt?: string,
+        /**
+         * Parent hub session UUID when this is an orchestrated peer spawn
+         * (telemetry only — archive must not consult this).
+         */
+        spawnedBySessionId?: string
     ): ReturnType<RpcGateway['spawnSession']> {
         // Fresh machine spawns historically omitted existingSessionId, so
         // buildCliArgs could not stamp --hapi-session-id / --existing-session-id.
@@ -4396,6 +4590,7 @@ export class SyncEngine {
                     machineId,
                     startedBy: 'runner',
                     startedFromRunner: true,
+                    ...(spawnedBySessionId ? { spawnedBySessionId } : {}),
                 },
                 null,
                 namespace,

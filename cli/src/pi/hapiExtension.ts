@@ -9,6 +9,7 @@ import {
     PING_PEER_TOOL_DESCRIPTION,
     LIST_PEERS_TOOL_DESCRIPTION,
     SPAWN_PEER_TOOL_DESCRIPTION,
+    ARCHIVE_PEER_TOOL_DESCRIPTION,
     SESSION_ID_PREFIX_PARAM_DESCRIPTION,
     PEER_DELIVERY_MODE_DESCRIPTION,
     PEER_WAKE_PARAM_DESCRIPTION,
@@ -45,12 +46,14 @@ const PEER_TOOL_NAMES = Object.freeze({
     inspect: 'mcp__hapi__inspect_peer',
     ping: 'mcp__hapi__ping_peer',
     spawn: 'mcp__hapi__spawn_peer',
+    archive: 'mcp__hapi__archive_peer',
     list: 'mcp__hapi__list_peers'
 });
 const PEER_TOOL_APPROVALS = Object.freeze({
     [PEER_TOOL_NAMES.inspect]: 'Read metadata and recent messages from another HAPI session?',
     [PEER_TOOL_NAMES.ping]: 'Send a message to another HAPI session?',
-    [PEER_TOOL_NAMES.spawn]: 'Create a new HAPI session with an injected work request?'
+    [PEER_TOOL_NAMES.spawn]: 'Create a new HAPI session with an injected work request?',
+    [PEER_TOOL_NAMES.archive]: 'Soft-archive another HAPI session?'
 });
 
 const TITLE_INSTRUCTION = [
@@ -290,6 +293,18 @@ export default function hapiPiExtension(pi) {
             }),
             async execute(_toolCallId, params, third, _fourth, fifth) {
                 return await executePeerTool('spawn_peer', params, extractSignal(third, fifth));
+            }
+        });
+
+        piInstance.registerTool({
+            name: PEER_TOOL_NAMES.archive,
+            label: 'Archive Peer Session',
+            description: ${JSON.stringify(ARCHIVE_PEER_TOOL_DESCRIPTION)},
+            parameters: Type.Object({
+                sessionIdPrefix: Type.String({ minLength: 1, description: ${JSON.stringify(SESSION_ID_PREFIX_PARAM_DESCRIPTION)} })
+            }),
+            async execute(_toolCallId, params, third, _fourth, fifth) {
+                return await executePeerTool('archive_peer', params, extractSignal(third, fifth));
             }
         });
     }

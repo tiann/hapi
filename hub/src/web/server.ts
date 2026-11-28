@@ -25,6 +25,7 @@ import {
 import { createEventsRoutes } from './routes/events'
 import { createFeaturesRoutes } from './routes/features'
 import { createSessionsRoutes } from './routes/sessions'
+import { maybeExtendArchiveRequestTimeout } from './archiveRequestTimeout'
 import { createMessagesRoutes } from './routes/messages'
 import { createPermissionsRoutes } from './routes/permissions'
 import { createMachinesRoutes } from './routes/machines'
@@ -654,11 +655,18 @@ export async function startWebServer(options: {
                 }
             }
         },
-        fetch: async (req: Request, server: { upgrade: (req: Request, opts?: unknown) => boolean }) => {
+        fetch: async (req: Request, server: {
+            upgrade: (req: Request, opts?: unknown) => boolean
+            timeout?: (req: Request, seconds: number) => void
+        }) => {
             const url = new URL(req.url)
             if (url.pathname.startsWith('/socket.io/')) {
                 return socketHandler.fetch(req, server as never)
             }
+
+            // Archive can wait up to 90s for Runner cleanup with no response bytes;
+            // raise per-request idle past the Socket.IO-derived ~50s global default.
+            maybeExtendArchiveRequestTimeout(req, server, url.pathname)
 
             // Voice WebSocket proxies — require JWT auth via query param
             // (browser WebSocket API cannot set custom headers)

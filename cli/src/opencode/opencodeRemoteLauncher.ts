@@ -2503,10 +2503,22 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         if (this.backend) {
             try {
                 await this.backend.disconnect();
+                // Remote→local keeps the wrapper PID, so hub never sees worker-exit.
+                // Do not release the backend (or finish handoff) while tree exit /
+                // deferred child settlement is still unverified (#2021).
+                if (!this.backend.wasAgentTreeEnded()) {
+                    const verified = await this.backend.verifyRetainedAgentExit(true);
+                    if (!verified) {
+                        throw new Error('OpenCode agent process still open after disconnect');
+                    }
+                }
+                this.backend = null;
             } catch (error) {
                 failures.push(error);
-            } finally {
-                this.backend = null;
+                // Keep backend when exit is unverified so a later retry can settle children.
+                if (this.backend?.wasAgentTreeEnded()) {
+                    this.backend = null;
+                }
             }
         }
         if (this.happyServer) {
@@ -3119,7 +3131,12 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 this.messageBuffer.addMessage(`Generated image: ${message.fileName}`, 'assistant');
                 break;
             case 'turn_complete':
-                this.messageBuffer.addMessage('Turn complete', 'status');
+                // Child created/running markers reuse turn_complete for Hub
+                // live-work — do not announce "Turn complete" in the terminal
+                // while the parent/child are still working (#2021 Minor).
+                if (!('childSessionId' in message && message.childSessionId)) {
+                    this.messageBuffer.addMessage('Turn complete', 'status');
+                }
                 break;
             case 'round_summary':
                 break;

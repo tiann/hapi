@@ -106,6 +106,11 @@ type MachineRpcHandlers = {
         sessionId: string,
         opts?: { processStartMarker?: string }
     ) => Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'>
+    /** Read-only exit probe — never tree-kills (#2021 Approach). */
+    probeSessionExit: (
+        sessionId: string,
+        opts?: { processStartMarker?: string }
+    ) => Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'>
     requestShutdown: () => void
 }
 
@@ -633,7 +638,7 @@ export class ApiMachineClient {
         return this.pathPolicy.isWithinSpawnRoots(resolvedCwd)
     }
 
-    setRPCHandlers({ spawnSession, stopSession, requestShutdown }: MachineRpcHandlers): void {
+    setRPCHandlers({ spawnSession, stopSession, probeSessionExit, requestShutdown }: MachineRpcHandlers): void {
         this.rpcHandlerManager.registerHandler(RPC_METHODS.ForkArchivedCodex, async (raw: unknown) => {
             const request = ForkArchivedCodexRequestSchema.parse(raw)
             const { forkArchivedCodex } = await import('@/codex/shared/archivedFork')
@@ -705,6 +710,18 @@ export class ApiMachineClient {
             }
 
             const status = await stopSession(
+                sessionId,
+                typeof processStartMarker === 'string' ? { processStartMarker } : undefined
+            )
+            return { status }
+        })
+
+        this.rpcHandlerManager.registerHandler(RPC_METHODS.ProbeSessionExit, async (params: any) => {
+            const { sessionId, processStartMarker } = params || {}
+            if (!sessionId) {
+                throw new Error('Session ID is required')
+            }
+            const status = await probeSessionExit(
                 sessionId,
                 typeof processStartMarker === 'string' ? { processStartMarker } : undefined
             )

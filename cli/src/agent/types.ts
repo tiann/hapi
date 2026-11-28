@@ -76,8 +76,17 @@ export type AgentMessage =
         // standard fields (agy does: `name`, `args`).
         nativeName?: string;
         nativeArgs?: unknown;
+        /** OpenCode v2 background child session this call belongs to. */
+        childSessionId?: string;
     }
-    | { type: 'tool_result'; id: string; output: unknown; status: 'completed' | 'failed' }
+    | {
+        type: 'tool_result';
+        id: string;
+        output: unknown;
+        status: 'completed' | 'failed';
+        /** OpenCode v2 background child session this result belongs to. */
+        childSessionId?: string;
+    }
     | {
         type: 'usage';
         inputTokens: number;
@@ -91,7 +100,17 @@ export type AgentMessage =
     }
     | { type: 'plan'; items: PlanItem[] }
     | { type: 'generated_image'; imageId: string; fileName: string; mimeType: string; source?: InlineMediaSource }
-    | { type: 'turn_complete'; stopReason: string; numTurns?: number }
+    | {
+        type: 'turn_complete';
+        stopReason: string;
+        numTurns?: number;
+        /** HAPI tool-call lifetime ids retired by this turn (scoped settlement). */
+        settledCallIds?: string[];
+        /** OpenCode child session this marker refers to (running / terminal). */
+        childSessionId?: string;
+        /** Child lifecycle for archive live-work (`running`/`created`/terminal). */
+        childStatus?: string;
+    }
     | { type: 'round_summary'; summary: AgentRoundSummary }
     | { type: 'error'; message: string };
 

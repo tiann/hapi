@@ -147,9 +147,9 @@ export async function buildHapiMcpBridge(
             approval_mode: 'approve'
         };
     }
-    // ping_peer / inspect_peer / spawn_peer are registered on the HTTP MCP
+    // ping_peer / inspect_peer / spawn_peer / archive_peer are registered on the HTTP MCP
     // server / stdio bridge, but are not auto-approved: they target another
-    // session (resume + inject, read peer histories, or create + inject).
+    // session (resume + inject, read peer histories, create + inject, or soft-archive).
     if (options.skillLookup && enabledTools.has('skill_lookup')) {
         tools.skill_lookup = {
             approval_mode: 'approve'

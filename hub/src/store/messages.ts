@@ -10,6 +10,7 @@ import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 
 import type { StoredMessage } from './types'
 import { decodeMessageContent, encodeMessageContent, truncateOversizedMessageContent } from './contentCodec'
+import { safeJsonParse } from './json'
 import {
     indexMessageContent,
     invalidateMessageContentSearchInjectedTurnCache,
@@ -218,6 +219,8 @@ export function addMessage(
         const row = prepareCached(db, 'SELECT * FROM messages WHERE id = ?').get(id) as DbMessageRow | undefined
         if (!row) throw new Error('Failed to create message')
         updateLiveTailAfterAppend(db, sessionId, row.id, row.seq, canonicalContent)
+        // One settlement pass per stored row — the prior twin helpers were identical (#2021).
+        noteChildToolCallState(db, sessionId, canonicalContent)
         return toStoredMessage(row)
     })()
 }
@@ -232,6 +235,507 @@ export function addMessage(
  * errs toward inserting a fresh row (the pre-upsert behavior).
  */
 const TOOL_CALL_UPSERT_LOOKBACK = 200
+
+/**
+ * OpenCode child tool calls can outlive the parent transcript lookback.
+ * A bounded scan cannot answer "is any child still working?" — track open
+ * child call ids explicitly and clear them only on settlement (#2021).
+ *
+ * State is rebuilt from durable messages on first access after a hub restart
+ * so Archive cannot fail open when the in-memory WeakMap is cold. Settled ids
+ * stay latched: a late nonterminal snapshot with the same callId must not
+ * reopen work after a result or scoped turn-complete.
+ */
+type ChildToolCallState = {
+    /** OpenCode child-scoped ACP call ids (survive parent human turns). */
+    open: Set<string>
+    /** Parent-scope ACP call ids — cleared on an invoked human turn (#2021). */
+    openForeground: Set<string>
+    /** Seq of the message that opened each foreground call (#2021). */
+    openForegroundSeq: Map<string, number>
+    settled: Set<string>
+    /** OpenCode children that reported running/created with no open tool yet. */
+    runningChildren: Set<string>
+    /** Child session ids the hub has observed complete/fail/interrupt. */
+    settledChildren: Set<string>
+    rebuilt: boolean
+    /**
+     * Durable metadata overlay applied once on a cold WeakMap entry. Must not
+     * re-run after an incremental transition (e.g. settled→running) or the
+     * write path would restore the stale settled entry (#2021).
+     */
+    durableSeeded: boolean
+}
+
+type DurableChildToolWork = {
+    running: string[]
+    settled: string[]
+    settledCallIds: string[]
+}
+
+const childToolCallsByDb = new WeakMap<Database, Map<string, ChildToolCallState>>()
+
+function childToolCallState(db: Database, sessionId: string): ChildToolCallState {
+    let bySession = childToolCallsByDb.get(db)
+    if (!bySession) {
+        bySession = new Map()
+        childToolCallsByDb.set(db, bySession)
+    }
+    let state = bySession.get(sessionId)
+    if (!state) {
+        state = {
+            open: new Set(),
+            openForeground: new Set(),
+            openForegroundSeq: new Map(),
+            settled: new Set(),
+            runningChildren: new Set(),
+            settledChildren: new Set(),
+            rebuilt: false,
+            durableSeeded: false,
+        }
+        bySession.set(sessionId, state)
+    }
+    return state
+}
+
+function readSessionFlavor(db: Database, sessionId: string): string | null {
+    const row = prepareCached(db, 'SELECT metadata FROM sessions WHERE id = ?').get(sessionId) as
+        | { metadata: string | null }
+        | undefined
+    const metadata = safeJsonParse(row?.metadata ?? null)
+    if (!isRecord(metadata)) return null
+    return typeof metadata.flavor === 'string' ? metadata.flavor : null
+}
+
+function readDurableChildToolWork(db: Database, sessionId: string): DurableChildToolWork | null {
+    const row = prepareCached(db, 'SELECT metadata FROM sessions WHERE id = ?').get(sessionId) as
+        | { metadata: string | null }
+        | undefined
+    const metadata = safeJsonParse(row?.metadata ?? null)
+    if (!isRecord(metadata) || !isRecord(metadata.childToolWork)) return null
+    const work = metadata.childToolWork
+    const running = Array.isArray(work.running)
+        ? work.running.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+        : []
+    const settled = Array.isArray(work.settled)
+        ? work.settled.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+        : []
+    const settledCallIds = Array.isArray(work.settledCallIds)
+        ? work.settledCallIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+        : []
+    return { running, settled, settledCallIds }
+}
+
+/**
+ * Seed in-memory state from durable metadata when the WeakMap is cold
+ * (post-rewind / post-restart) so an incremental status write cannot clobber
+ * verified settlements that exist only in metadata (#2021).
+ * Callers must seed *before* applying an incoming transition; writeDurable
+ * must not re-seed after that transition (#2021 tip Major).
+ */
+function seedDurableChildToolWorkIfNeeded(db: Database, sessionId: string, state: ChildToolCallState): void {
+    if (state.rebuilt || state.durableSeeded) return
+    applyDurableChildToolWork(state, readDurableChildToolWork(db, sessionId))
+    state.durableSeeded = true
+}
+
+/** Dual-write running/settled child session ids + settled ACP call ids. */
+function writeDurableChildToolWork(db: Database, sessionId: string, state: ChildToolCallState): void {
+    // Do not seed here — note*/rebuild seed before applying transitions so a
+    // live running status can clear a durable settled entry (#2021).
+    const flavor = readSessionFlavor(db, sessionId)
+    const row = prepareCached(db, 'SELECT metadata FROM sessions WHERE id = ?').get(sessionId) as
+        | { metadata: string | null }
+        | undefined
+    if (!row) return
+    const prior = safeJsonParse(row.metadata)
+    const metadata = isRecord(prior) ? { ...prior } : {}
+    const existing = isRecord(metadata.childToolWork) ? metadata.childToolWork : null
+    const priorRunning = Array.isArray(existing?.running) ? existing.running : []
+    const priorSettled = Array.isArray(existing?.settled) ? existing.settled : []
+    const priorSettledCalls = Array.isArray(existing?.settledCallIds)
+        ? existing.settledCallIds.filter((id): id is string => typeof id === 'string')
+        : []
+    // settledCallIds are an OpenCode rewind latch (null flavor uses the same
+    // full-rebuild path). Named non-OpenCode flavors still settle in memory
+    // but must not grow metadata on every foreground tool result (#2021 Minor).
+    // Do not dump every in-memory settled ID into metadata on ordinary results
+    // (quadratic SQLite writes). Latch grows only via turn-complete settledCallIds
+    // / rewind harvest through latchOpenCodeSettledCallIds (#2021 Minor).
+    let settledCallIds: string[]
+    if (flavor === null || flavor === 'opencode') {
+        settledCallIds = priorSettledCalls
+    } else {
+        settledCallIds = priorSettledCalls
+    }
+    const next: DurableChildToolWork = {
+        running: [...state.runningChildren].sort(),
+        settled: [...state.settledChildren].sort(),
+        settledCallIds,
+    }
+    if (
+        priorRunning.length === next.running.length
+        && priorSettled.length === next.settled.length
+        && priorSettledCalls.length === next.settledCallIds.length
+        && priorRunning.every((id, i) => id === next.running[i])
+        && priorSettled.every((id, i) => id === next.settled[i])
+        && priorSettledCalls.every((id, i) => id === next.settledCallIds[i])
+    ) {
+        return
+    }
+    metadata.childToolWork = next
+    prepareCached(db, `
+        UPDATE sessions
+        SET metadata = ?, metadata_version = metadata_version + 1, seq = seq + 1
+        WHERE id = ?
+    `).run(JSON.stringify(metadata), sessionId)
+}
+
+function applyDurableChildToolWork(state: ChildToolCallState, durable: DurableChildToolWork | null): void {
+    if (!durable) return
+    for (const id of durable.settledCallIds) {
+        state.settled.add(id)
+        state.open.delete(id)
+        clearForegroundCall(state, id)
+    }
+    for (const id of durable.settled) {
+        state.settledChildren.add(id)
+        state.runningChildren.delete(id)
+    }
+    for (const id of durable.running) {
+        if (state.settledChildren.has(id)) continue
+        state.runningChildren.add(id)
+    }
+}
+
+function clearForegroundCall(state: ChildToolCallState, callId: string): void {
+    state.openForeground.delete(callId)
+    state.openForegroundSeq.delete(callId)
+}
+
+/** Clear foreground opens at or before `boundarySeq` (invoked human turn). */
+function clearForegroundAtOrBefore(state: ChildToolCallState, boundarySeq: number): void {
+    for (const [callId, seq] of state.openForegroundSeq) {
+        if (seq <= boundarySeq) {
+            state.openForeground.delete(callId)
+            state.openForegroundSeq.delete(callId)
+        }
+    }
+}
+
+function applyChildToolCallContent(state: ChildToolCallState, content: unknown, seq?: number): void {
+    // Invoked human turns close parent-scope ACP work at/before this seq;
+    // child registry and newer foreground starts survive (#2021).
+    if (isUserMessageRow(content)) {
+        if (typeof seq === 'number') clearForegroundAtOrBefore(state, seq)
+        else {
+            state.openForeground.clear()
+            state.openForegroundSeq.clear()
+        }
+        return
+    }
+    const resultCallId = toolCallResultCallId(content)
+    if (resultCallId !== null) {
+        state.open.delete(resultCallId)
+        clearForegroundCall(state, resultCallId)
+        state.settled.add(resultCallId)
+    }
+    for (const callId of acpTurnCompleteSettledCallIds(content)) {
+        state.open.delete(callId)
+        clearForegroundCall(state, callId)
+        state.settled.add(callId)
+    }
+    for (const childSessionId of acpTurnCompleteRetiredChildSessionIds(content)) {
+        state.runningChildren.delete(childSessionId)
+        state.settledChildren.add(childSessionId)
+    }
+    const childStatus = acpTurnCompleteChildStatus(content)
+    if (childStatus) {
+        if (childStatus.status === 'running' || childStatus.status === 'created') {
+            state.runningChildren.add(childStatus.childSessionId)
+            state.settledChildren.delete(childStatus.childSessionId)
+        } else {
+            state.runningChildren.delete(childStatus.childSessionId)
+            state.settledChildren.add(childStatus.childSessionId)
+        }
+    }
+    // Codex child threads publish lifecycle as agent-run-update and wrap tool
+    // traffic in agent-run-trace (#2021 Major).
+    const codexChild = codexAgentRunChildStatus(content)
+    if (codexChild) {
+        if (codexChild.status === 'running') {
+            // Wait / late agent-run-update must not reopen a verified completion
+            // (#2021 Major) — that would re-block Archive after the child finished.
+            if (!state.settledChildren.has(codexChild.childSessionId)) {
+                state.runningChildren.add(codexChild.childSessionId)
+            }
+        } else {
+            state.runningChildren.delete(codexChild.childSessionId)
+            state.settledChildren.add(codexChild.childSessionId)
+        }
+    }
+    const traced = unwrapCodexAgentRunTraceTool(content)
+    if (traced) {
+        applyChildToolCallContent(state, traced, seq)
+    }
+    const callId = getToolCallId(content)
+    // Track child-scoped AND parent-scope ACP starts. Lookback alone cannot
+    // keep an autonomous foreground call alive once 200 newer rows push it
+    // out of the scan (#2021 Major).
+    if (!callId || !isAcpToolCallStartOrResult(content)) return
+    if (isTerminalToolCallRow(content) || state.settled.has(callId)) {
+        state.open.delete(callId)
+        clearForegroundCall(state, callId)
+        state.settled.add(callId)
+        return
+    }
+    if (isChildScopedAcpToolCall(content)) {
+        state.open.add(callId)
+    } else if (isParentScopedAcpToolCallStart(content)) {
+        state.openForeground.add(callId)
+        if (typeof seq === 'number') state.openForegroundSeq.set(callId, seq)
+    }
+}
+
+/**
+ * Rebuild open/settled child ids once per session per process. Hub restart
+ * clears the WeakMap; archive must still see a lookback-evicted open child.
+ *
+ * OpenCode child running/settled also dual-writes to hub-owned metadata so a
+ * rewind that drops a terminal marker cannot forget verified completion
+ * (#2021). Non-OpenCode flavors skip the full transcript replay — they have
+ * no child registry traffic, and the periodic derived-work sweep must not
+ * decode every session history on cold start.
+ *
+ * Full replay stays off the ingestion hot path — only archive / live-work
+ * evaluation and worker-exit retirement call this (#2021).
+ */
+function ensureChildToolCallStateRebuilt(db: Database, sessionId: string): ChildToolCallState {
+    const state = childToolCallState(db, sessionId)
+    if (state.rebuilt) return state
+
+    const durable = readDurableChildToolWork(db, sessionId)
+    const flavor = readSessionFlavor(db, sessionId)
+
+    // Claude uses passthrough tool_use in the bounded lookback — skip the
+    // full decode on cold Hub sweeps (#2021 Minor). Every other flavor that
+    // can emit ACP tool-call payloads needs unbounded opens across restart
+    // (#2021 Major: grok/kimi/copilot/dsh/pi/…).
+    if (flavor === 'claude') {
+        applyDurableChildToolWork(state, durable)
+        state.durableSeeded = true
+        state.rebuilt = true
+        return state
+    }
+
+    state.open.clear()
+    state.openForeground.clear()
+    state.openForegroundSeq.clear()
+    state.settled.clear()
+    state.runningChildren.clear()
+    state.settledChildren.clear()
+    const rows = prepareCached(db, `
+        SELECT content, invoked_at, seq FROM messages
+        WHERE session_id = ?
+        ORDER BY seq ASC
+    `).all(sessionId) as Array<Pick<DbMessageRow, 'content' | 'invoked_at' | 'seq'>>
+    for (const row of rows) {
+        const decoded = decodeMessageContent(row.content)
+        // Only invoked user turns clear foreground opens (match lookback).
+        if (isUserMessageRow(decoded) && row.invoked_at == null) continue
+        applyChildToolCallContent(state, decoded, row.seq)
+    }
+    // Durable settled wins over a transcript that lost its terminal marker
+    // (OpenCode rewind). Running overlays only for ids not yet settled.
+    applyDurableChildToolWork(state, durable)
+    state.durableSeeded = true
+    state.rebuilt = true
+    if (flavor === null || flavor === 'opencode') {
+        writeDurableChildToolWork(db, sessionId, state)
+    }
+    return state
+}
+
+/** Latch OpenCode settled call IDs into durable metadata without a full rewrite of in-memory settled. */
+function latchOpenCodeSettledCallIds(db: Database, sessionId: string, callIds: string[]): void {
+    if (callIds.length === 0) return
+    const flavor = readSessionFlavor(db, sessionId)
+    if (flavor !== null && flavor !== 'opencode') return
+    const state = childToolCallState(db, sessionId)
+    seedDurableChildToolWorkIfNeeded(db, sessionId, state)
+    for (const id of callIds) {
+        state.settled.add(id)
+        state.open.delete(id)
+        clearForegroundCall(state, id)
+    }
+    const row = prepareCached(db, 'SELECT metadata FROM sessions WHERE id = ?').get(sessionId) as
+        | { metadata: string | null }
+        | undefined
+    if (!row) return
+    const prior = safeJsonParse(row.metadata)
+    const metadata = isRecord(prior) ? { ...prior } : {}
+    const existing = isRecord(metadata.childToolWork) ? metadata.childToolWork : null
+    const priorSettledCalls = Array.isArray(existing?.settledCallIds)
+        ? existing.settledCallIds.filter((id): id is string => typeof id === 'string')
+        : []
+    const merged = new Set(priorSettledCalls)
+    for (const id of callIds) merged.add(id)
+    const settledCallIds = [...merged]
+    if (
+        priorSettledCalls.length === settledCallIds.length
+        && priorSettledCalls.every((id, i) => id === settledCallIds[i])
+    ) {
+        writeDurableChildToolWork(db, sessionId, state)
+        return
+    }
+    const next: DurableChildToolWork = {
+        running: Array.isArray(existing?.running) ? [...existing.running].map(String).sort() : [...state.runningChildren].sort(),
+        settled: Array.isArray(existing?.settled) ? [...existing.settled].map(String).sort() : [...state.settledChildren].sort(),
+        settledCallIds,
+    }
+    // Prefer live state for running/settled children.
+    next.running = [...state.runningChildren].sort()
+    next.settled = [...state.settledChildren].sort()
+    metadata.childToolWork = next
+    prepareCached(db, `
+        UPDATE sessions
+        SET metadata = ?, metadata_version = metadata_version + 1, seq = seq + 1
+        WHERE id = ?
+    `).run(JSON.stringify(metadata), sessionId)
+}
+
+/** Incremental update only — never full-scan the transcript on ingest. */
+function noteChildToolCallState(db: Database, sessionId: string, content: unknown): void {
+    const state = childToolCallState(db, sessionId)
+    seedDurableChildToolWorkIfNeeded(db, sessionId, state)
+    // Undispatched scheduled/queued prompts are not turn boundaries.
+    if (isUserMessageRow(content)) {
+        const row = prepareCached(db, `
+            SELECT invoked_at FROM messages
+            WHERE session_id = ?
+            ORDER BY seq DESC
+            LIMIT 1
+        `).get(sessionId) as { invoked_at: number | null } | undefined
+        if (row?.invoked_at == null) return
+    }
+    const latest = prepareCached(db, `
+        SELECT seq FROM messages WHERE session_id = ? ORDER BY seq DESC LIMIT 1
+    `).get(sessionId) as { seq: number } | undefined
+    applyChildToolCallContent(state, content, latest?.seq)
+    const turnSettled = acpTurnCompleteSettledCallIds(content)
+    if (turnSettled.length > 0) {
+        latchOpenCodeSettledCallIds(db, sessionId, turnSettled)
+        return
+    }
+    if (
+        acpTurnCompleteChildStatus(content)
+        || codexAgentRunChildStatus(content)
+        || unwrapCodexAgentRunTraceTool(content) !== null
+        || acpTurnCompleteRetiredChildSessionIds(content).length > 0
+        || toolCallResultCallId(content) !== null
+        || isChildScopedAcpToolCall(content)
+        || isParentScopedAcpToolCallStart(content)
+        || isUserMessageRow(content)
+    ) {
+        writeDurableChildToolWork(db, sessionId, state)
+    }
+}
+
+/**
+ * Retire open tool / running-child work when its worker generation exits or is
+ * replaced. Covers:
+ *   - child-scoped ACP registry entries + runningChildren
+ *   - foreground ACP `tool-call` rows in the lookback
+ *   - Claude passthrough `tool_use` ids still open in the lookback
+ * A dead worker cannot settle them; the replacement idle session must stay
+ * archivable (#2021).
+ */
+export function retireOpenChildToolWork(db: Database, sessionId: string): boolean {
+    const state = ensureChildToolCallStateRebuilt(db, sessionId)
+    const settledCallIds = new Set<string>([...state.open, ...state.openForeground])
+    const retiredChildSessionIds = [...state.runningChildren]
+
+    const rows = prepareCached(db, `
+        SELECT content, invoked_at FROM messages
+        WHERE session_id = ?
+        ORDER BY seq DESC
+        LIMIT ?
+    `).all(sessionId, TOOL_CALL_UPSERT_LOOKBACK) as Array<Pick<DbMessageRow, 'content' | 'invoked_at'>>
+    const settledInWindow = new Set<string>()
+    const settledClaudeToolUseIds = new Set<string>()
+    let claudeTurnClosed = false
+    for (const row of rows) {
+        const decoded = decodeMessageContent(row.content)
+        for (const callId of acpTurnCompleteSettledCallIds(decoded)) {
+            settledInWindow.add(callId)
+            settledClaudeToolUseIds.add(callId)
+        }
+        const resultCallId = toolCallResultCallId(decoded)
+        if (resultCallId !== null) settledInWindow.add(resultCallId)
+        const callId = getToolCallId(decoded)
+        if (
+            callId !== null
+            && !settledInWindow.has(callId)
+            && !state.settled.has(callId)
+            && !isTerminalToolCallRow(decoded)
+        ) {
+            settledCallIds.add(callId)
+        }
+
+        // Claude passthrough: collect open tool_use ids the ACP path cannot see.
+        if (isUserMessageRow(decoded) && row.invoked_at != null) {
+            claudeTurnClosed = true
+            continue
+        }
+        const claudeData = claudeOutputData(decoded)
+        if (claudeData === null || isHiddenClaudeOutput(claudeData)) continue
+        if (claudeData.type === 'result') {
+            claudeTurnClosed = true
+            continue
+        }
+        if (claudeData.type === 'user') {
+            if (!collectClaudeToolResultIds(claudeData, settledClaudeToolUseIds)) {
+                claudeTurnClosed = true
+            }
+            continue
+        }
+        if (claudeData.type === 'assistant' && !claudeTurnClosed) {
+            const blocks = claudeMessageBlocks(claudeData)
+            if (!blocks) continue
+            for (const block of blocks) {
+                if (!isRecord(block) || block.type !== 'tool_use') continue
+                if (typeof block.id !== 'string' || block.id.trim().length === 0) continue
+                if (settledClaudeToolUseIds.has(block.id) || state.settled.has(block.id)) continue
+                settledCallIds.add(block.id)
+            }
+        }
+    }
+
+    if (settledCallIds.size === 0 && retiredChildSessionIds.length === 0) return false
+    state.open.clear()
+    state.openForeground.clear()
+    state.openForegroundSeq.clear()
+    for (const childSessionId of retiredChildSessionIds) {
+        state.settledChildren.add(childSessionId)
+    }
+    state.runningChildren.clear()
+    for (const callId of settledCallIds) state.settled.add(callId)
+    writeDurableChildToolWork(db, sessionId, state)
+    const settledList = [...settledCallIds]
+    addMessage(db, sessionId, {
+        role: 'agent',
+        content: {
+            type: AGENT_MESSAGE_PAYLOAD_TYPE,
+            data: {
+                type: 'turn-complete',
+                stopReason: 'worker-exited',
+                ...(settledList.length > 0 ? { settledCallIds: settledList } : {}),
+                ...(retiredChildSessionIds.length > 0 ? { retiredChildSessionIds } : {}),
+            },
+        },
+    })
+    return true
+}
 
 /** `tool-call` payload fields merged newest-wins-when-non-null. */
 const TOOL_CALL_MERGE_FIELDS = ['name', 'input', 'nativeTitle', 'nativeKind', 'nativeName', 'nativeArgs'] as const
@@ -321,6 +825,34 @@ function getCurrentTailHead(db: Database, sessionId: string): { id: string | nul
 
 function invalidateLiveTail(db: Database, sessionId: string): void {
     liveTailByDb.get(db)?.delete(sessionId)
+}
+
+/**
+ * Drop the in-memory OpenCode child-work registry so the next live-work check
+ * rebuilds from transcript + durable childToolWork (e.g. after session-row
+ * dedup merge writes a new ledger onto a warmed destination) (#2021).
+ */
+export function invalidateChildToolWorkState(db: Database, sessionId: string): void {
+    const state = childToolCallsByDb.get(db)?.get(sessionId)
+    if (!state) return
+    state.rebuilt = false
+    state.durableSeeded = false
+    state.open.clear()
+    state.openForeground.clear()
+    state.openForegroundSeq.clear()
+    state.settled.clear()
+    state.runningChildren.clear()
+    state.settledChildren.clear()
+    invalidateLiveTail(db, sessionId)
+}
+
+/**
+ * Evict the session's tool-work and live-tail cache entries after deletion so
+ * settled IDs do not accumulate for the life of the hub process (#2021).
+ */
+export function releaseChildToolWorkState(db: Database, sessionId: string): void {
+    childToolCallsByDb.get(db)?.delete(sessionId)
+    invalidateLiveTail(db, sessionId)
 }
 
 function classifyTailRow(id: string, seq: number, decoded: unknown): TailRowMeta {
@@ -547,14 +1079,23 @@ function collectClaudeToolResultIds(data: Record<string, unknown>, into: Set<str
 
 /** Whether a Claude assistant passthrough row holds a `tool_use` block whose
  *  result has not settled yet (work the agent is still waiting on). */
-function claudeAssistantHasOpenToolUse(data: Record<string, unknown>, settledToolUseIds: Set<string>): boolean {
+function claudeAssistantHasOpenToolUse(
+    data: Record<string, unknown>,
+    ...settledSets: Array<ReadonlySet<string>>
+): boolean {
     const blocks = claudeMessageBlocks(data)
     if (!blocks) return false
     for (const block of blocks) {
         if (!isRecord(block) || block.type !== 'tool_use') continue
-        if (typeof block.id === 'string' && block.id.length > 0 && !settledToolUseIds.has(block.id)) {
-            return true
+        if (typeof block.id !== 'string' || block.id.length === 0) continue
+        let settled = false
+        for (const set of settledSets) {
+            if (set.has(block.id)) {
+                settled = true
+                break
+            }
         }
+        if (!settled) return true
     }
     return false
 }
@@ -570,6 +1111,114 @@ function isTerminalToolCallRow(value: unknown): boolean {
     return toolCallStatusRank(data.status) === TOOL_CALL_STATUS_RANK.completed
 }
 
+/** ACP turn-end marker (`turn_complete` from the CLI converter). Carries the
+ *  specific call ids retired by that prompt — never a blanket "settle all
+ *  older rows", so an OpenCode parent cancel cannot hide a still-open child. */
+function acpTurnCompleteSettledCallIds(value: unknown): string[] {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (record?.role !== 'agent' || !isRecord(record.content)) return []
+    if (record.content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) return []
+    const data = isRecord(record.content.data) ? record.content.data : null
+    if (!data || data.type !== 'turn-complete') return []
+    if (!Array.isArray(data.settledCallIds)) return []
+    return data.settledCallIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+}
+
+/** Codex child lifecycle via agent-run-update (#2021 Major). */
+function codexAgentRunChildStatus(value: unknown): { childSessionId: string; status: string } | null {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (record?.role !== 'agent' || !isRecord(record.content)) return null
+    if (record.content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) return null
+    const data = isRecord(record.content.data) ? record.content.data : null
+    if (!data || data.type !== 'agent-run-update') return null
+    const childSessionId = typeof data.agentId === 'string' ? data.agentId.trim() : ''
+    const status = typeof data.status === 'string' ? data.status.trim() : ''
+    if (!childSessionId || !status) return null
+    return { childSessionId, status }
+}
+
+/**
+ * Unwrap Codex agent-run-trace so nested tool-call / result rows feed the child
+ * registry (#2021 Major).
+ */
+function unwrapCodexAgentRunTraceTool(value: unknown): unknown | null {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (record?.role !== 'agent' || !isRecord(record.content)) return null
+    if (record.content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) return null
+    const data = isRecord(record.content.data) ? record.content.data : null
+    if (!data || data.type !== 'agent-run-trace') return null
+    const nested = isRecord(data.message) ? data.message : null
+    if (!nested) return null
+    const agentId = typeof data.agentId === 'string' ? data.agentId.trim() : ''
+    // Present nested tool traffic as a child-scoped ACP-shaped row.
+    const nestedType = nested.type
+    if (nestedType !== 'tool-call' && nestedType !== 'tool-call-result') return null
+    return {
+        role: 'agent',
+        content: {
+            type: AGENT_MESSAGE_PAYLOAD_TYPE,
+            data: {
+                ...nested,
+                ...(agentId ? { childSessionId: agentId } : {}),
+            },
+        },
+    }
+}
+
+/** OpenCode child alive/terminal marker on a turn-complete row (#2021). */
+function acpTurnCompleteChildStatus(value: unknown): { childSessionId: string; status: string } | null {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (record?.role !== 'agent' || !isRecord(record.content)) return null
+    if (record.content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) return null
+    const data = isRecord(record.content.data) ? record.content.data : null
+    if (!data || data.type !== 'turn-complete') return null
+    const childSessionId = data.childSessionId
+    const status = data.childStatus
+    if (typeof childSessionId !== 'string' || childSessionId.trim().length === 0) return null
+    if (typeof status !== 'string' || status.trim().length === 0) return null
+    return { childSessionId, status }
+}
+
+/** Child session ids retired with a worker-exited turn-complete (#2021). */
+function acpTurnCompleteRetiredChildSessionIds(value: unknown): string[] {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (record?.role !== 'agent' || !isRecord(record.content)) return []
+    if (record.content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) return []
+    const data = isRecord(record.content.data) ? record.content.data : null
+    if (!data || data.type !== 'turn-complete') return []
+    if (!Array.isArray(data.retiredChildSessionIds)) return []
+    return data.retiredChildSessionIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+}
+
+/** OpenCode v2 child (background subagent) tool traffic outlives parent turns. */
+function isChildScopedAcpToolCall(value: unknown): boolean {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (record?.role !== 'agent' || !isRecord(record.content)) return false
+    if (record.content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) return false
+    const data = isRecord(record.content.data) ? record.content.data : null
+    if (!data || (data.type !== 'tool-call' && data.type !== 'tool-call-result')) return false
+    return typeof data.childSessionId === 'string' && data.childSessionId.trim().length > 0
+}
+
+/** Parent-scope ACP tool-call / result payloads (no childSessionId). */
+function isAcpToolCallStartOrResult(value: unknown): boolean {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (record?.role !== 'agent' || !isRecord(record.content)) return false
+    if (record.content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) return false
+    const data = isRecord(record.content.data) ? record.content.data : null
+    return !!data && (data.type === 'tool-call' || data.type === 'tool-call-result')
+}
+
+/** Unmatched parent-scope ACP starts outlive the lookback window (#2021). */
+function isParentScopedAcpToolCallStart(value: unknown): boolean {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (record?.role !== 'agent' || !isRecord(record.content)) return false
+    if (record.content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) return false
+    const data = isRecord(record.content.data) ? record.content.data : null
+    if (!data || data.type !== 'tool-call') return false
+    return typeof data.childSessionId !== 'string' || data.childSessionId.trim().length === 0
+}
+
 /** Whether the session tail still holds tool work that started but never
  *  settled — the transcript-derived "the agent is demonstrably working"
  *  signal for the hub's work-scoped liveness sweep.
@@ -579,7 +1228,11 @@ function isTerminalToolCallRow(value: unknown): boolean {
  *  call is closed by a later result row, and every live call of the session
  *  is closed by a later human turn. Walking newest-first:
  *
- *  - ACP flavors: an unsettled, non-terminal `tool-call` row means open work.
+ *  - ACP flavors: an unsettled, non-terminal `tool-call` row means open work
+ *    inside the lookback window. OpenCode `childSessionId` calls are also
+ *    tracked in an unbounded open-child registry (lookback cannot answer
+ *    "is a long-running child still working?"). `turn-complete.settledCallIds`
+ *    clears both the scan and that registry.
  *  - Claude passthrough: an assistant `tool_use` block with no later user
  *    `tool_result` for its id means open work. Tool-result carriers do NOT
  *    close the turn (the agent loop continues through them); a user row with
@@ -588,20 +1241,85 @@ function isTerminalToolCallRow(value: unknown): boolean {
  *  Anything older than the window reads as no work — the same err-closed
  *  bias the upsert scan uses for ancient rows. */
 export function getLiveToolWork(db: Database, sessionId: string): boolean {
+    // Child work is tracked out-of-band: a lookback scan cannot see a child
+    // call older than TOOL_CALL_UPSERT_LOOKBACK, and must not fail open.
+    // Settled ids are latched across restarts so a late nonterminal snapshot
+    // with the same callId cannot reopen work in the scan either (#2021).
+    //
+    // Open tool-call ids OR a child that reported running/created without an
+    // open tool yet. "Between tools" is live work — Runner-verified cleanup
+    // only proves the process died, not that it was idle. Prefer stranding a
+    // finished-but-flagged child over archiving a busy one (#2021 Meta).
+    // Child running is ACP-published status. Verified completion dual-writes
+    // to hub-owned metadata so rewind that drops a terminal cannot orphan a
+    // running marker (#2021).
+    const childState = ensureChildToolCallStateRebuilt(db, sessionId)
+    if (
+        childState.open.size > 0
+        || childState.openForeground.size > 0
+        || childState.runningChildren.size > 0
+    ) {
+        return true
+    }
+
     const rows = prepareCached(db, `
-        SELECT id, content FROM messages
+        SELECT id, content, scheduled_at, invoked_at FROM messages
         WHERE session_id = ?
         ORDER BY seq DESC
         LIMIT ?
-    `).all(sessionId, TOOL_CALL_UPSERT_LOOKBACK) as Array<Pick<DbMessageRow, 'id' | 'content'>>
+    `).all(sessionId, TOOL_CALL_UPSERT_LOOKBACK) as Array<Pick<DbMessageRow, 'id' | 'content' | 'scheduled_at' | 'invoked_at'>>
 
+    // Lookback-local settled set only — do not copy the unbounded lifetime
+    // latch into every derived-work scan. Latched ids are membership-checked
+    // below (#2021 ingestion/scan cost).
+    // Pass 1: collect ACP/Claude settlements across the whole lookback before
+    // deciding any call is open. ACP can emit result then a later start with
+    // the same lifetime id in one prompt; DESC order alone would see the
+    // pending row first and falsely report live work after a cold rebuild (#2021).
     const settledAcpCallIds = new Set<string>()
     const settledClaudeToolUseIds = new Set<string>()
     for (const row of rows) {
         const decoded = decodeMessageContent(row.content)
-        // A human turn (web prompt, native user row) starts a new round and
-        // closes every tool call older than it — stop, nothing is open.
-        if (isUserMessageRow(decoded)) return false
+        if (isUserMessageRow(decoded)) {
+            // Invoked user turn: older rows are a previous turn — stop collecting.
+            if (row.invoked_at != null) break
+            continue
+        }
+        const turnCompleteSettled = acpTurnCompleteSettledCallIds(decoded)
+        if (turnCompleteSettled.length > 0) {
+            for (const callId of turnCompleteSettled) settledAcpCallIds.add(callId)
+            continue
+        }
+        const claudeData = claudeOutputData(decoded)
+        if (claudeData !== null) {
+            if (isHiddenClaudeOutput(claudeData)) continue
+            if (claudeData.type === 'user') {
+                collectClaudeToolResultIds(claudeData, settledClaudeToolUseIds)
+                continue
+            }
+            if (claudeData.type === 'result') {
+                // Idle Claude ends here — do not decompress the rest of lookback (#2021).
+                break
+            }
+            continue
+        }
+        const resultCallId = toolCallResultCallId(decoded)
+        if (resultCallId !== null) settledAcpCallIds.add(resultCallId)
+    }
+
+    // Pass 2: decide open work with the full settled set.
+    for (const row of rows) {
+        const decoded = decodeMessageContent(row.content)
+        // A human turn closes parent-scope work in the lookback window. Child
+        // work is handled by the open-child registry above, not this scan.
+        // Undispatched scheduled / queued prompts are not turn boundaries.
+        if (isUserMessageRow(decoded)) {
+            if (row.invoked_at == null) continue
+            return false
+        }
+
+        const turnCompleteSettled = acpTurnCompleteSettledCallIds(decoded)
+        if (turnCompleteSettled.length > 0) continue
 
         const claudeData = claudeOutputData(decoded)
         if (claudeData !== null) {
@@ -616,20 +1334,27 @@ export function getLiveToolWork(db: Database, sessionId: string): boolean {
                 // here, which keeps the sweep's every-tick scan to one row.
                 return false
             }
-            if (claudeData.type === 'assistant'
-                && claudeAssistantHasOpenToolUse(claudeData, settledClaudeToolUseIds)) {
-                return true
+            if (claudeData.type === 'assistant') {
+                // Membership only — never copy childState.settled into a new
+                // Set per assistant row on the periodic sweep (#2021).
+                if (claudeAssistantHasOpenToolUse(claudeData, settledClaudeToolUseIds, settledAcpCallIds, childState.settled)) {
+                    return true
+                }
             }
             continue
         }
 
         const resultCallId = toolCallResultCallId(decoded)
-        if (resultCallId !== null) {
-            settledAcpCallIds.add(resultCallId)
-            continue
-        }
+        if (resultCallId !== null) continue
         const callId = getToolCallId(decoded)
-        if (callId !== null && !settledAcpCallIds.has(callId) && !isTerminalToolCallRow(decoded)) {
+        if (
+            callId !== null
+            && !settledAcpCallIds.has(callId)
+            && !childState.settled.has(callId)
+            && !isTerminalToolCallRow(decoded)
+        ) {
+            // Child-scoped rows are already covered by the registry; still
+            // report them from the scan while they remain in-window.
             return true
         }
     }
@@ -674,6 +1399,7 @@ export function upsertToolCallMessage(
     return db.transaction(() => {
         const existing = findLiveToolCallRow(db, sessionId, callId)
         if (!existing) {
+            // addMessage notes open-child state for the new row.
             return { message: addMessage(db, sessionId, content, localId, undefined, createdAt), updated: false }
         }
         const storedContent = decodeMessageContent(existing.content)
@@ -681,6 +1407,7 @@ export function upsertToolCallMessage(
         // A re-emitted tick that changes nothing must not rewrite the row:
         // only observable content changes touch the database.
         if (isDeepStrictEqual(mergedContent, storedContent)) {
+            noteChildToolCallState(db, sessionId, mergedContent)
             return { message: toStoredMessage(existing), updated: true }
         }
         const encoded = encodeMessageContent(mergedContent)
@@ -689,6 +1416,7 @@ export function upsertToolCallMessage(
         prepareCached(db, 'UPDATE messages SET content = ? WHERE id = ?').run(encoded, existing.id)
         const row = prepareCached(db, 'SELECT * FROM messages WHERE id = ?').get(existing.id) as DbMessageRow | undefined
         if (!row) throw new Error('Failed to update tool-call message')
+        noteChildToolCallState(db, sessionId, mergedContent)
         return { message: toStoredMessage(row), updated: true }
     })()
 }
@@ -1617,14 +2345,23 @@ export function markMessagesInvoked(
                 WHERE session_id = ? AND local_id IN (${placeholders}) AND invoked_at IS NOT NULL
             `).all(sessionId, ...localIds) as DbMessageRow[]
             for (const row of rows) {
+                const decoded = decodeMessageContent(row.content)
                 indexMessageContent(db, {
                     id: row.id,
                     sessionId: row.session_id,
-                    content: decodeMessageContent(row.content),
+                    content: decoded,
                     seq: row.seq,
                     createdAt: row.created_at,
                     invokedAt: row.invoked_at
                 })
+                // Durable ack path: clear only foreground opens at/before this
+                // prompt's seq so newer starts survive (#2021 Major).
+                if (isUserMessageRow(decoded)) {
+                    const state = childToolCallState(db, sessionId)
+                    seedDurableChildToolWorkIfNeeded(db, sessionId, state)
+                    clearForegroundAtOrBefore(state, row.seq)
+                    writeDurableChildToolWork(db, sessionId, state)
+                }
             }
         }
         return changes
@@ -1899,7 +2636,17 @@ export function mergeSessionMessages(
  * Truncate the invocation-ordered suffix at the boundary identified by seq.
  * Bumps message epoch so web clients reset their window.
  */
-export function truncateOpenCodeRewind(db: Database, sessionId: string, cutoffSeq: number, boundaryId: string): number {
+/**
+ * Truncate OpenCode rewind suffix. Returns harvested settlement evidence so the
+ * caller can fold it into the enclosing metadata CAS (must not bump
+ * metadata_version here — syncEngine CAS would reject) (#2021).
+ */
+export function truncateOpenCodeRewind(
+    db: Database,
+    sessionId: string,
+    cutoffSeq: number,
+    boundaryId: string,
+): { epoch: number; harvestedSettledCallIds: string[]; harvestedSettledChildren: string[] } {
     return db.transaction(() => {
         const target = prepareCached(db, `
             SELECT seq, COALESCE(invoked_at, created_at) AS position_at
@@ -1907,11 +2654,42 @@ export function truncateOpenCodeRewind(db: Database, sessionId: string, cutoffSe
         `).get(sessionId, boundaryId, cutoffSeq) as { seq: number; position_at: number } | undefined
         if (!target) throw new Error('Rewind boundary not found')
         const deletedRows = prepareCached(db, `
-            SELECT id FROM messages WHERE session_id = ? AND (
+            SELECT id, content FROM messages WHERE session_id = ? AND (
                 COALESCE(invoked_at, created_at) > ?
                 OR (COALESCE(invoked_at, created_at) = ? AND seq >= ?)
             )
-        `).all(sessionId, target.position_at, target.position_at, target.seq) as Array<{ id: string }>
+        `).all(sessionId, target.position_at, target.position_at, target.seq) as Array<{ id: string; content: string }>
+        // Collect terminal evidence only — do not replay running transitions
+        // from deleted rows into the settled registry (#2021).
+        const harvestedSettledIds = new Set<string>()
+        const harvestedSettledChildren = new Set<string>()
+        for (const row of deletedRows) {
+            const decoded = decodeMessageContent(row.content)
+            const resultCallId = toolCallResultCallId(decoded)
+            if (resultCallId) harvestedSettledIds.add(resultCallId)
+            for (const id of acpTurnCompleteSettledCallIds(decoded)) harvestedSettledIds.add(id)
+            for (const id of acpTurnCompleteRetiredChildSessionIds(decoded)) harvestedSettledChildren.add(id)
+            const childStatus = acpTurnCompleteChildStatus(decoded)
+            if (
+                childStatus
+                && (childStatus.status === 'completed'
+                    || childStatus.status === 'failed'
+                    || childStatus.status === 'interrupted')
+            ) {
+                harvestedSettledChildren.add(childStatus.childSessionId)
+            }
+            const codexChild = codexAgentRunChildStatus(decoded)
+            if (
+                codexChild
+                && (codexChild.status === 'completed' || codexChild.status === 'failed')
+            ) {
+                harvestedSettledChildren.add(codexChild.childSessionId)
+            }
+            if (isTerminalToolCallRow(decoded)) {
+                const callId = getToolCallId(decoded)
+                if (callId) harvestedSettledIds.add(callId)
+            }
+        }
         prepareCached(db, `
             DELETE FROM messages WHERE session_id = ? AND (
                 COALESCE(invoked_at, created_at) > ?
@@ -1920,11 +2698,40 @@ export function truncateOpenCodeRewind(db: Database, sessionId: string, cutoffSe
         `).run(sessionId, target.position_at, target.position_at, target.seq)
         invalidateMessageContentSearchInjectedTurnCache(db, [sessionId])
         for (const row of deletedRows) removeMessageContentSearchIndex(db, row.id)
+        // Drop in-memory child-work state, then latch harvested terminals into
+        // durable metadata (callers that CAS afterward must re-read
+        // metadata_version). Do not replay deleted running markers (#2021).
+        const state = childToolCallState(db, sessionId)
+        state.rebuilt = false
+        state.durableSeeded = false
+        state.open.clear()
+        state.openForeground.clear()
+        state.openForegroundSeq.clear()
+        state.settled.clear()
+        state.runningChildren.clear()
+        state.settledChildren.clear()
+        seedDurableChildToolWorkIfNeeded(db, sessionId, state)
+        for (const id of harvestedSettledIds) {
+            state.settled.add(id)
+            state.open.delete(id)
+            clearForegroundCall(state, id)
+        }
+        for (const id of harvestedSettledChildren) {
+            state.settledChildren.add(id)
+            state.runningChildren.delete(id)
+        }
+        latchOpenCodeSettledCallIds(db, sessionId, [...harvestedSettledIds])
+        writeDurableChildToolWork(db, sessionId, state)
+        state.durableSeeded = true
         prepareCached(db, `UPDATE sessions SET read_revision = content_revision, read_state_version = read_state_version + 1
             WHERE id = ? AND read_revision < content_revision AND NOT EXISTS (
                 SELECT 1 FROM messages WHERE session_id = sessions.id AND content_revision > sessions.read_revision
             )`).run(sessionId)
-        return bumpMessageEpoch(db, sessionId)
+        return {
+            epoch: bumpMessageEpoch(db, sessionId),
+            harvestedSettledCallIds: [...harvestedSettledIds],
+            harvestedSettledChildren: [...harvestedSettledChildren],
+        }
     })()
 }
 

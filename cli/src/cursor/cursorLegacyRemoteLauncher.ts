@@ -1,8 +1,32 @@
 import React from 'react';
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { logger } from '@/ui/logger';
-import { killProcessByChildProcess } from '@/utils/process';
+import {
+    classifyRetainedIdentity,
+    getProcessGroupId,
+    getProcessStartMarker,
+    getProcessThreadGroupId,
+    getSystemBootId,
+    isAgentOwnedProcessGroup,
+    isWindows,
+    killAndExpandWindowsRetainedTree,
+    killRetainedProcessTree,
+    retainedIdentityStillAlive,
+    snapshotProcessTreeIdentities,
+    verifyAgentOwnedProcessGroupExited,
+    type RetainedProcessIdentity,
+} from '@/utils/process';
+import {
+    clearAgentRootForCurrentHost,
+    publishAgentRootFromIdentity,
+} from '@/runner/agentRootRegistry';
+import { getAgentLaunchCommand, resolveExecutable } from '@/agent/agentLaunchCommand';
+import { canContainWithoutShell, type WindowsAgentJob } from '@/utils/windowsJobObject';
+import {
+    asNodeChild,
+    spawnWindowsContainedProcess,
+} from '@/utils/windowsContainedSpawn';
 import { convertAgentMessage } from '@/agent/messageConverter';
 import { OpencodeDisplay } from '@/ui/ink/OpencodeDisplay';
 import {
@@ -13,7 +37,6 @@ import {
 import type { CursorSession } from './session';
 import type { EnhancedMode } from './loop';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
-import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand';
 // TODO(cursor-acp): remove legacy stream-json resume path after migration window.
 // New Cursor sessions use ACP only. This path exists because pre-ACP Cursor
 // session_id values are not loadable via ACP session/load.
@@ -44,6 +67,9 @@ const STDERR_DISPLAY_LIMIT = 400;
 // In-memory stderr cap. Display only uses STDERR_DISPLAY_LIMIT chars; this is a
 // safety bound so a chatty `agent` failure cannot balloon CLI process memory.
 const STDERR_CAPTURE_LIMIT = 8_192;
+/** After a confirmed tree kill, bound how long we wait for stdio close before
+ *  publishing settlement so a stuck descendant pipe cannot block Archive. */
+const STOP_DRAIN_MS = Number(process.env.HAPI_CURSOR_STOP_DRAIN_MS) || 10_000;
 
 function getTransientBackoffMs(): number {
     const raw = process.env.CURSOR_LEGACY_TRANSIENT_BACKOFF_MS;
@@ -124,10 +150,63 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
     private abortController = new AbortController();
     private displayPermissionMode: string | null = null;
     private consecutiveTransientFailures = 0;
+    /** Live agent subprocess — kept across abortController swaps so a second
+     *  Stop can retry tree termination when the first kill did not confirm. */
+    private activeChild: ChildProcess | null = null;
+    /** Escalate to force kill on Stop retry after an unconfirmed soft kill. */
+    private stopKillEscalated = false;
+    /** Arm the post-Stop stdout drain bound only after tree kill confirms. */
+    private stopDrainArmed = false;
+    /** Invoked after a confirmed kill so a Stop retry can still bound drain
+     *  after the original abortController was replaced. */
+    private armActiveChildDrain: (() => void) | null = null;
+    /**
+     * Latest Stop tree-kill outcome for the active child. `null` while kill is
+     * still running; aborted turns must not settle until this is `true` (#2021).
+     */
+    private stopTreeVerified: boolean | null = null;
+    /**
+     * Generation-bound snapshot of the original agent tree, captured before the
+     * first Stop signal. Retries kill/verify these members — not a fresh scan
+     * from a possibly-exited root (#2021 tip Major).
+     */
+    private retainedStopTree: RetainedProcessIdentity[] | null = null;
+    /** Windows Job Object for the live agent — containment that survives root exit (#2021). */
+    private windowsAgentJob: WindowsAgentJob | null = null;
+    /**
+     * First pre-signal snapshot failed — never take a replacement scan from a
+     * possibly-exited root on later Stops; keep thinking unresolved (#2021).
+     */
+    private stopTreeSnapshotIncomplete = false;
+    /** Root identity captured at spawn — first Stop snapshot must match it (#2021). */
+    private spawnedRootIdentity: RetainedProcessIdentity | null = null;
+    /** Open tool-call ids for the active subprocess — ordinary close skips group
+     *  verify when this set is empty (#2021 Major). */
+    private currentProcessOpenToolCallIds: Set<string> | null = null;
+    /** Resolve a close that arrived before Stop finished verifying the tree. */
+    private resolveAfterStopTreeVerified: (() => void) | null = null;
+    /**
+     * Rejected Switch/Exit abandons the Stop verify gate so a later natural
+     * process close is not stranded (#2021).
+     */
+    private abandonStopVerification: (() => void) | null = null;
 
     constructor(session: CursorSession) {
         super(process.env.DEBUG ? session.logPath : undefined);
         this.session = session;
+    }
+
+    /** Publish scoped settlement for call ids still open after a subprocess
+     *  drains. Used after Stop (and any exit that left tools unsettled) so
+     *  Archive does not stick on in_progress rows (#2021). */
+    private publishToolSettlements(settledCallIds: string[]): void {
+        if (settledCallIds.length === 0) return;
+        const settlement = convertAgentMessage({
+            type: 'turn_complete',
+            stopReason: 'cancelled',
+            settledCallIds,
+        });
+        if (settlement) this.session.sendAgentMessage(settlement);
     }
 
     public async launch(): Promise<RemoteLauncherExitReason> {
@@ -206,6 +285,11 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             logger.debug(`[cursor-remote] Spawning agent with args: ${args.join(' ')}`);
 
             session.onThinkingChange(true);
+            // Per-subprocess open ids so Stop can settle after stdout drains,
+            // including buffered tool_call starts that arrive between abort and
+            // close (#2021).
+            const processOpenToolCallIds = new Set<string>();
+            this.currentProcessOpenToolCallIds = processOpenToolCallIds;
 
             try {
                 const { exitCode, stderr } = await this.runAgentProcess(args, session.path, (event) => {
@@ -228,12 +312,23 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                                     messageBuffer.addMessage(agentMsg.text, 'assistant');
                                     break;
                                 case 'tool_call':
+                                    processOpenToolCallIds.add(agentMsg.id);
                                     messageBuffer.addMessage(`Tool: ${agentMsg.name}`, 'tool');
+                                    // Refresh Windows retained ownership while the
+                                    // root still matches so late tool children enter
+                                    // the generation-bound set before close (#2021).
+                                    this.refreshWindowsRetainedTreeWhileRootAlive();
                                     break;
                                 case 'tool_result':
+                                    processOpenToolCallIds.delete(agentMsg.id);
                                     messageBuffer.addMessage('Tool result', 'result');
                                     break;
                                 case 'turn_complete':
+                                    // Keep unmatched ids until subprocess close.
+                                    // A final `result` converts to turn_complete
+                                    // with no settlement IDs — clearing here would
+                                    // leave the close handler with nothing to
+                                    // publish (#2021).
                                     break;
                                 default:
                                     break;
@@ -267,6 +362,12 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
                 }
                 messageBuffer.addMessage(message, 'status');
             } finally {
+                // Settle after close/drain so a late buffered tool_call start
+                // between abort and close is included in settledCallIds.
+                this.currentProcessOpenToolCallIds = null;
+                const unsettled = [...processOpenToolCallIds];
+                processOpenToolCallIds.clear();
+                this.publishToolSettlements(unsettled);
                 session.onThinkingChange(false);
                 if (session.queue.size() === 0 && !this.shouldExit) {
                     sendReady();
@@ -275,34 +376,182 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
-    private runAgentProcess(
+    private async runAgentProcess(
         args: string[],
         cwd: string,
         onEvent: (event: ReturnType<typeof parseCursorEvent> & object) => void
     ): Promise<{ exitCode: number | null; stderr: string }> {
-        return new Promise((resolve, reject) => {
-            const child = spawn(getAgentLaunchCommand('cursor'), args, {
+        // CREATE_SUSPENDED → Assign → Resume on Windows PE launches so the
+        // agent cannot run before Job Object membership (#2021 Approach).
+        const launchCmd = getAgentLaunchCommand('cursor');
+        // Prefer PE over PATH .cmd shim so shell:false + Job Object stay viable
+        // (#2021 Major — same as ACP).
+        const resolved = isWindows()
+            ? (
+                resolveExecutable(launchCmd, { cwd, pathExt: '.COM;.EXE' })
+                ?? resolveExecutable(launchCmd, { cwd })
+                ?? launchCmd
+            )
+            : launchCmd;
+        this.windowsAgentJob?.release();
+        this.windowsAgentJob = null;
+        let child: ChildProcess;
+        const windowsShim = isWindows() && /\.(cmd|bat)$/i.test(resolved);
+        if (isWindows() && canContainWithoutShell(resolved)) {
+            const contained = await spawnWindowsContainedProcess({
+                file: resolved,
+                args,
                 cwd,
                 env: process.env,
                 stdio: ['ignore', 'pipe', 'pipe'],
-                shell: process.platform === 'win32',
-                windowsHide: process.platform === 'win32'
             });
+            if (contained) {
+                child = asNodeChild(contained);
+                this.windowsAgentJob = contained.windowsAgentJob;
+            } else {
+                child = spawn(resolved, args, {
+                    cwd,
+                    env: process.env,
+                    stdio: ['ignore', 'pipe', 'pipe'],
+                    shell: false,
+                    windowsHide: true,
+                });
+            }
+        } else {
+            child = spawn(resolved, args, {
+                cwd,
+                env: process.env,
+                stdio: ['ignore', 'pipe', 'pipe'],
+                shell: windowsShim,
+                windowsHide: process.platform === 'win32',
+                // Own process group on POSIX so Stop can signal -pgid without
+                // killing the HAPI wrapper (#2021 Blocker).
+                detached: process.platform !== 'win32',
+            });
+        }
+        this.activeChild = child;
+        this.stopKillEscalated = false;
+        this.stopDrainArmed = false;
+        this.stopTreeVerified = null;
+        this.stopTreeSnapshotIncomplete = false;
+        // Capture identity + tree at spawn while the root is still alive —
+        // a later Stop after root exit can still verify retained members (#2021).
+        if (typeof child.pid === 'number' && child.pid > 0) {
+            this.spawnedRootIdentity = {
+                pid: child.pid,
+                startMarker: getProcessStartMarker(child.pid),
+                bootId: getSystemBootId(),
+                tgid: getProcessThreadGroupId(child.pid),
+                pgid: getProcessGroupId(child.pid),
+            };
+            publishAgentRootFromIdentity(this.spawnedRootIdentity, {
+                containmentEstablished: !!this.windowsAgentJob?.establishedAtCreate || !isWindows(),
+            });
+            this.retainedStopTree = snapshotProcessTreeIdentities(child.pid);
+            if (isWindows()) {
+                // Empty-job settlement only when CREATE_SUSPENDED path confirmed
+                // membership before ResumeThread (#2021 Approach).
+                this.stopTreeSnapshotIncomplete = !(this.windowsAgentJob?.establishedAtCreate);
+            } else if (!this.retainedStopTree) {
+                this.stopTreeSnapshotIncomplete = true;
+            }
+        } else {
+            this.spawnedRootIdentity = null;
+            this.retainedStopTree = null;
+            this.stopTreeSnapshotIncomplete = true;
+        }
+
+        return new Promise((resolve, reject) => {
+            this.resolveAfterStopTreeVerified = null;
+            this.abandonStopVerification = null;
 
             let stderrCapture = '';
+            let settled = false;
+            let drainTimer: ReturnType<typeof setTimeout> | undefined;
+            let stdoutClosed = false;
+            let closeExitCode: number | null = null;
 
-            const abortHandler = () => {
-                killProcessByChildProcess(child, false).catch(() => {});
-                resolve({ exitCode: null, stderr: stderrCapture });
+            // Abort marks the turn cancelled but must NOT resolve early — wait
+            // for `close` (or the post-kill drain bound) so buffered stdout
+            // drains before settlement (#2021). Capture abort on a local flag:
+            // handleAbort replaces this.abortController after signalling, so
+            // reading the new controller's signal from `close` would miss it.
+            // Tree kill itself lives in handleAbort so a second Stop can retry
+            // against the same activeChild when the first kill is unconfirmed.
+            // For Stop, also wait for tree verification — root stdio can close
+            // while a descendant survives (#2021).
+            let aborted = false;
+            const runSignal = this.abortController.signal;
+            const finish = (exitCode: number | null) => {
+                if (settled) return;
+                settled = true;
+                cleanup(true);
+                this.windowsAgentJob?.release();
+                this.windowsAgentJob = null;
+                resolve({ exitCode, stderr: stderrCapture });
             };
-            this.abortController.signal.addEventListener('abort', abortHandler);
+            const tryFinishAfterStop = () => {
+                if (settled || !aborted || !stdoutClosed) return;
+                if (this.stopTreeVerified === true) {
+                    this.resolveAfterStopTreeVerified = null;
+                    finish(null);
+                    return;
+                }
+                // Unverified or still pending: keep activeChild for Stop retry.
+                this.resolveAfterStopTreeVerified = () => {
+                    if (settled || !stdoutClosed) return;
+                    if (this.stopTreeVerified === true) finish(null);
+                };
+            };
+            this.abandonStopVerification = () => {
+                // Rejected Switch: keep the Stop gate and process identity so a
+                // later Stop can retry. Do NOT finish the turn here — stdout
+                // close alone must not settle while descendants may live (#2021).
+                this.resolveAfterStopTreeVerified = () => {
+                    if (settled || !stdoutClosed) return;
+                    if (this.stopTreeVerified === true) finish(null);
+                };
+            };
+            const armDrainBound = () => {
+                if (settled || drainTimer !== undefined || !this.stopDrainArmed) return;
+                drainTimer = setTimeout(() => {
+                    if (settled) return;
+                    stdoutClosed = true;
+                    try { child.stdout?.destroy(); } catch { /* ignore */ }
+                    try { child.stderr?.destroy(); } catch { /* ignore */ }
+                    tryFinishAfterStop();
+                    if (!aborted) finish(null);
+                }, STOP_DRAIN_MS);
+                drainTimer.unref?.();
+            };
+            this.armActiveChildDrain = armDrainBound;
+            const abortHandler = () => {
+                aborted = true;
+                armDrainBound();
+            };
+            runSignal.addEventListener('abort', abortHandler);
 
-            const cleanup = () => {
-                this.abortController.signal.removeEventListener('abort', abortHandler);
+            const cleanup = (clearChild: boolean) => {
+                runSignal.removeEventListener('abort', abortHandler);
+                if (drainTimer !== undefined) clearTimeout(drainTimer);
+                if (clearChild && this.activeChild === child) {
+                    this.activeChild = null;
+                    this.stopKillEscalated = false;
+                    this.stopDrainArmed = false;
+                    this.armActiveChildDrain = null;
+                    this.resolveAfterStopTreeVerified = null;
+                    this.abandonStopVerification = null;
+                    this.stopTreeVerified = null;
+                    this.retainedStopTree = null;
+                    this.stopTreeSnapshotIncomplete = false;
+                    this.spawnedRootIdentity = null;
+                }
             };
 
             child.on('error', (err) => {
-                cleanup();
+                if (settled) return;
+                settled = true;
+                cleanup(true);
                 reject(err);
             });
 
@@ -310,13 +559,96 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             // firing. Otherwise stderr from an agent that prints + exits quickly
             // (e.g. "Authentication required" → exit 1) can arrive after we
             // already classified the failure, turning a transient error into a
-            // dropped message.
-            child.on('close', (code, signal) => {
-                cleanup();
-                resolve({ exitCode: code, stderr: stderrCapture });
+            // dropped message. Stop also relies on this so settlement runs
+            // after the last buffered tool_call line is forwarded — and after
+            // tree verification when the turn was explicitly stopped (#2021).
+            child.on('close', (code, _signal) => {
+                if (settled) return;
+                stdoutClosed = true;
+                closeExitCode = aborted ? null : code;
+                if (aborted) {
+                    tryFinishAfterStop();
+                    return;
+                }
+                // Ordinary close with no outstanding tools: finish without a
+                // process-group scan (pgrep may be unavailable) (#2021 Major).
+                // Keep tree verification for Stop/handoff and unresolved tools.
+                const openTools = this.currentProcessOpenToolCallIds;
+                if (!openTools || openTools.size === 0) {
+                    finish(closeExitCode);
+                    return;
+                }
+                // Ordinary close with open tools: stdio close is not proof that
+                // descendants with separate stdio are gone. Verify the retained
+                // tree / agent-owned group before settling (#2021).
+                void (async () => {
+                    if (settled) return;
+                    let verified = true;
+                    try {
+                        // Job emptiness is authoritative only when CREATE_SUSPENDED
+                        // confirmed membership before ResumeThread (#2021 Approach).
+                        if (this.windowsAgentJob?.establishedAtCreate) {
+                            verified = this.windowsAgentJob.isEmpty();
+                            if (verified) this.stopTreeSnapshotIncomplete = false;
+                        } else if (this.retainedStopTree) {
+                            if (isWindows()) {
+                                // Generation-bound expand+kill stays valid after
+                                // the root exits; never clear incomplete from a
+                                // PID-only pass that misses later tool children
+                                // (#2021 Major).
+                                const result = await killAndExpandWindowsRetainedTree(
+                                    this.retainedStopTree,
+                                    true,
+                                    { incomplete: this.stopTreeSnapshotIncomplete },
+                                );
+                                this.retainedStopTree = result.tree;
+                                verified = result.verified;
+                                if (verified) this.stopTreeSnapshotIncomplete = false;
+                            } else {
+                                verified = await killRetainedProcessTree(this.retainedStopTree, true);
+                                if (
+                                    verified
+                                    && this.stopTreeSnapshotIncomplete
+                                    && this.retainedStopTree.some((identity) => retainedIdentityStillAlive(identity))
+                                ) {
+                                    verified = false;
+                                } else if (verified && this.stopTreeSnapshotIncomplete) {
+                                    this.stopTreeSnapshotIncomplete = false;
+                                }
+                            }
+                        } else if (
+                            this.spawnedRootIdentity
+                            && isAgentOwnedProcessGroup(this.spawnedRootIdentity)
+                        ) {
+                            verified = await verifyAgentOwnedProcessGroupExited(
+                                this.spawnedRootIdentity,
+                                true,
+                            );
+                        } else if (this.spawnedRootIdentity || this.stopTreeSnapshotIncomplete) {
+                            verified = false;
+                        }
+                    } catch (error) {
+                        logger.debug('[cursor-remote] ordinary-close tree verify failed', error);
+                        verified = false;
+                    }
+                    this.stopTreeVerified = verified;
+                    if (verified) {
+                        clearAgentRootForCurrentHost();
+                        finish(closeExitCode);
+                        return;
+                    }
+                    this.resolveAfterStopTreeVerified = () => {
+                        if (settled || !stdoutClosed) return;
+                        if (this.stopTreeVerified === true) finish(closeExitCode);
+                    };
+                    this.messageBuffer.addMessage(
+                        'Exit: agent process closed but descendants unverified — press Stop to retry',
+                        'status',
+                    );
+                })();
             });
 
-            const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
+            const rl = createInterface({ input: child.stdout!, crlfDelay: Infinity });
             rl.on('line', (line) => {
                 const event = parseCursorEvent(line);
                 if (event) {
@@ -421,33 +753,296 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
+    /**
+     * While the Windows Cursor root still matches, merge a fresh ancestry
+     * snapshot into the retained tree so late tool children are covered before
+     * ordinary close (#2021 Major).
+     */
+    private refreshWindowsRetainedTreeWhileRootAlive(): void {
+        if (!isWindows()) return;
+        const spawned = this.spawnedRootIdentity;
+        if (!spawned || classifyRetainedIdentity(spawned) !== 'match') return;
+        const snap = snapshotProcessTreeIdentities(spawned.pid);
+        const root = snap?.[snap.length - 1];
+        if (
+            !snap
+            || !root
+            || root.pid !== spawned.pid
+            || root.startMarker !== spawned.startMarker
+        ) {
+            return;
+        }
+        const prior = this.retainedStopTree ?? [];
+        const merged = snap.slice(0, -1);
+        const seen = new Set(snap.map((identity) => `${identity.pid}:${identity.startMarker}`));
+        for (const old of prior) {
+            const key = `${old.pid}:${old.startMarker}`;
+            if (seen.has(key)) continue;
+            if (retainedIdentityStillAlive(old)) {
+                merged.push(old);
+                seen.add(key);
+            }
+        }
+        merged.push(root);
+        this.retainedStopTree = merged;
+        // Only create-time Job Object covers post-scan forks (#2021 Major).
+        if (this.windowsAgentJob?.establishedAtCreate) {
+            this.stopTreeSnapshotIncomplete = false;
+        }
+    }
+
     protected async cleanup(): Promise<void> {
         this.clearAbortHandlers(this.session.client.rpcHandlerManager);
         this.abortController.abort();
     }
 
     private async handleAbort(leavingRemote = false): Promise<void> {
-        // Plain Stop preserves the pending queue for the next drain; only
-        // terminal cleanup (exit / switch-to-local) resets it.
+        // Kill the live agent against activeChild — not only via the abort
+        // signal — so a second Stop can retry when the first tree kill did
+        // not confirm (descendant holding stdio, soft kill refused) (#2021).
+        const child = this.activeChild;
+        let stopped = !child?.pid;
+        if (child?.pid) {
+            // Refresh the retained tree immediately before the first Stop
+            // signal while the root generation still matches — tools spawned
+            // after the spawn-time snapshot must be included (#2021 Major).
+            // When the root has already exited, keep any prior retained tree
+            // or fall through to agent-owned process-group verification.
+            const spawned = this.spawnedRootIdentity;
+            if (spawned && classifyRetainedIdentity(spawned) === 'match') {
+                const snap = snapshotProcessTreeIdentities(child.pid);
+                const root = snap?.[snap.length - 1];
+                if (
+                    snap
+                    && root
+                    && root.pid === spawned.pid
+                    && root.startMarker === spawned.startMarker
+                ) {
+                    // Merge with unresolved prior members — a reparented
+                    // descendant can drop out of a fresh scan while still
+                    // alive. Keep the live root last so POSIX group verify
+                    // binds the original leader (#2021 Major).
+                    const prior = this.retainedStopTree ?? [];
+                    const liveRoot = root;
+                    const merged = snap.slice(0, -1);
+                    const seen = new Set(
+                        snap.map((identity) => `${identity.pid}:${identity.startMarker}`),
+                    );
+                    for (const old of prior) {
+                        const key = `${old.pid}:${old.startMarker}`;
+                        if (seen.has(key)) continue;
+                        if (retainedIdentityStillAlive(old)) {
+                            merged.push(old);
+                            seen.add(key);
+                        }
+                    }
+                    merged.push(liveRoot);
+                    this.retainedStopTree = merged;
+                    // A successful PID snapshot alone does not cover mid-session
+                    // forks on Windows — only CREATE_SUSPENDED Job Object
+                    // membership does. Clearing incomplete without that reopens
+                    // uncontained Stop (#2021 Major).
+                    if (isWindows()) {
+                        this.stopTreeSnapshotIncomplete = !(
+                            this.windowsAgentJob?.establishedAtCreate
+                        );
+                    } else {
+                        this.stopTreeSnapshotIncomplete = false;
+                    }
+                } else if (!this.retainedStopTree && !this.windowsAgentJob) {
+                    this.stopTreeSnapshotIncomplete = true;
+                } else if (isWindows() && !this.windowsAgentJob) {
+                    // Windows refresh failed while a prior snapshot exists —
+                    // keep PIDs for kill attempts but require complete exit
+                    // evidence (mid-session forks may be missing) (#2021 Major).
+                    this.stopTreeSnapshotIncomplete = true;
+                }
+                // POSIX: refresh failed but prior tree exists — keep it for
+                // individual member signaling without sticky-incomplete.
+            }
+            let force = this.stopKillEscalated || leavingRemote;
+            const attempts = leavingRemote ? 2 : 1;
+            for (let i = 0; i < attempts; i += 1) {
+                try {
+                    if (this.windowsAgentJob?.establishedAtCreate) {
+                        // Job membership covers post-root descendants; terminate
+                        // then settle on empty ActiveProcesses (#2021 Approach).
+                        this.windowsAgentJob.terminate(1);
+                        stopped = this.windowsAgentJob.isEmpty();
+                        if (stopped) this.stopTreeSnapshotIncomplete = false;
+                    } else if (this.windowsAgentJob) {
+                        // Post-spawn Assign only — terminate for cleanup but do
+                        // not settle on emptiness (membership race) (#2021).
+                        this.windowsAgentJob.terminate(1);
+                        stopped = false;
+                    } else if (this.retainedStopTree) {
+                        if (isWindows()) {
+                            // Expand from generation-bound members so late tool
+                            // children remain visible after the root exits
+                            // (#2021 Major).
+                            const result = await killAndExpandWindowsRetainedTree(
+                                this.retainedStopTree,
+                                force,
+                                { incomplete: this.stopTreeSnapshotIncomplete },
+                            );
+                            this.retainedStopTree = result.tree;
+                            stopped = result.verified;
+                            if (stopped) this.stopTreeSnapshotIncomplete = false;
+                        } else {
+                            stopped = await killRetainedProcessTree(this.retainedStopTree, force);
+                        }
+                    } else if (
+                        this.spawnedRootIdentity
+                        && isAgentOwnedProcessGroup(this.spawnedRootIdentity)
+                    ) {
+                        // Spawn-time tree missing (or root already exited) but
+                        // we own the agent's process group — cover descendants
+                        // that outlived the root without signaling by a reused
+                        // ChildProcess PID (#2021 Major).
+                        if (classifyRetainedIdentity(this.spawnedRootIdentity) === 'match') {
+                            try {
+                                process.kill(
+                                    this.spawnedRootIdentity.pid,
+                                    force ? 'SIGKILL' : 'SIGTERM',
+                                );
+                            } catch {
+                                // root may have raced out
+                            }
+                        }
+                        stopped = await verifyAgentOwnedProcessGroupExited(
+                            this.spawnedRootIdentity,
+                            true,
+                        );
+                    } else {
+                        // No verified tree and no agent-owned group — do not
+                        // signal by live ChildProcess PID (reuse hazard).
+                        stopped = false;
+                        this.stopTreeSnapshotIncomplete = true;
+                    }
+                } catch (error) {
+                    logger.debug('[cursor-remote] Stop kill failed', error);
+                    stopped = false;
+                }
+                if (stopped) break;
+                force = true;
+                this.stopKillEscalated = true;
+            }
+            // Incomplete snapshots (POSIX / no-tree paths): refuse while any
+            // known identity still lives. Windows expand+kill clears the latch
+            // only on verified empty trees above (#2021 Major).
+            if (stopped && this.stopTreeSnapshotIncomplete) {
+                const prior = this.retainedStopTree;
+                if (prior && prior.some((identity) => retainedIdentityStillAlive(identity))) {
+                    stopped = false;
+                } else if (!prior && this.spawnedRootIdentity) {
+                    // Process-group path with no retained list — group verify
+                    // already covered descendants.
+                    this.stopTreeSnapshotIncomplete = false;
+                } else if (!isWindows()) {
+                    this.stopTreeSnapshotIncomplete = false;
+                } else {
+                    // Windows incomplete without expand verification — keep pending.
+                    stopped = false;
+                }
+            }
+            this.stopTreeVerified = stopped;
+            if (stopped) {
+                clearAgentRootForCurrentHost();
+                this.retainedStopTree = null;
+                this.stopTreeSnapshotIncomplete = false;
+                this.stopDrainArmed = true;
+                this.armActiveChildDrain?.();
+                this.resolveAfterStopTreeVerified?.();
+            } else if (leavingRemote) {
+                // Keep the launcher recoverable: do not reset the queue or mark
+                // the turn aborted until the process tree is confirmed gone (#2021).
+                // Preserve verification gate + activeChild for a later Stop.
+                this.stopDrainArmed = false;
+                this.stopTreeVerified = false;
+                this.abandonStopVerification?.();
+                this.messageBuffer.addMessage(
+                    'Exit: agent process still open after force kill — handoff blocked',
+                    'status'
+                );
+                throw new Error('Cannot switch/exit: agent process still open after force kill');
+            } else {
+                this.stopDrainArmed = false;
+                this.messageBuffer.addMessage(
+                    this.stopKillEscalated
+                        ? 'Stop: agent process still open after force kill — press Stop again to retry'
+                        : 'Stop: agent process still open — press Stop again to retry with force',
+                    'status'
+                );
+            }
+        } else {
+            // No live child — still abort waiters; nothing to drain-bound.
+            this.stopDrainArmed = true;
+            this.stopTreeVerified = true;
+            clearAgentRootForCurrentHost();
+            this.resolveAfterStopTreeVerified?.();
+        }
+        // Terminal cleanup resets the queue only after kill confirms — a rejected
+        // Switch must leave queued work and launcher state recoverable (#2021).
         if (leavingRemote) {
             this.session.queue.reset();
         }
-        this.session.onThinkingChange(false);
+
+        // Keep thinking=true while the subprocess is still open so the web
+        // composer leaves Stop enabled for a retry (#2021). Clear only after
+        // confirmed termination (or when there was no child).
+        if (stopped) {
+            this.session.onThinkingChange(false);
+        }
+
         this.abortController.abort();
         this.abortController = new AbortController();
         this.messageBuffer.addMessage('Turn aborted', 'status');
+        // Settlement waits for subprocess `close` (or the post-kill drain
+        // bound) inside runAgentProcess so late buffered tool_call starts are
+        // included (#2021).
+    }
+
+    protected onTerminalTeardownRejected(): void {
+        // requestExit already set shouldExit/exitReason before the handler ran.
+        // Clear them so a rejected Switch leaves the remote launcher runnable.
+        this.shouldExit = false;
+        this.exitReason = null;
+    }
+
+    /**
+     * Confirm process-tree kill *before* requestExit commits shouldExit /
+     * exitReason. Hold the abort/dequeue barrier so the main loop cannot
+     * acknowledge a queued prompt and spawn a replacement child while kill
+     * verification is still polling (#2021).
+     */
+    private async confirmLeaveThenExit(reason: 'switch' | 'exit'): Promise<void> {
+        // Hold dequeue barrier through kill verification (#2021). Abort the
+        // wait signal first so an idle loop re-enters the barrier instead of
+        // collecting a batch mid-kill — same order as Abort's onAbortEntry.
+        await this.runAbortUnderBarrier(async () => {
+            this.abortController.abort();
+            try {
+                await this.handleAbort(true);
+            } catch (error) {
+                if (this.abortController.signal.aborted) {
+                    this.abortController = new AbortController();
+                }
+                throw error;
+            }
+        });
+        await this.requestExit(reason, async () => {});
     }
 
     private async handleExitFromUi(): Promise<void> {
-        await this.requestExit('exit', () => this.handleAbort(true));
+        await this.confirmLeaveThenExit('exit');
     }
 
     private async handleSwitchFromUi(): Promise<void> {
-        await this.requestExit('switch', () => this.handleAbort(true));
+        await this.confirmLeaveThenExit('switch');
     }
 
     private async handleSwitchRequest(): Promise<void> {
-        await this.requestExit('switch', () => this.handleAbort(true));
+        await this.confirmLeaveThenExit('switch');
     }
 }
 

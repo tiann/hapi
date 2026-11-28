@@ -250,7 +250,7 @@ export async function runPi(opts: {
         ? null
         : await startHappyServer(apiSession, {
             enableChangeTitle: false,
-            enabledTools: ['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer'],
+            enabledTools: ['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer', 'archive_peer'],
         });
     const transportArgs = ['--mode', 'rpc', '--extension', extensionPath];
     if (opts.resumeSessionId) {

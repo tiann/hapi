@@ -5,6 +5,7 @@ import type { AgentMessage, FormElicitationResponse, PermissionRequest } from '@
 import { OpencodePermissionHandler } from '@/opencode/utils/permissionHandler';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { AcpSdkBackend } from './AcpSdkBackend';
+import { ACP_INDETERMINATE_SYMBOL } from './AcpStdioTransport';
 import { ACP_SESSION_UPDATE_TYPES } from './constants';
 import { createFileToolCallLifetimeStore, type ToolCallLifetimeStore } from './toolCallLifetimeStore';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -102,6 +103,20 @@ function childUpdate(childSessionId: string, update: Record<string, unknown>): {
     return {
         method: 'opencode/session/child_update',
         params: { rootSessionId: SESSION, childSessionId, parentSessionId: SESSION, depth: 1, type: 'update', update }
+    };
+}
+
+function childStatus(childSessionId: string, status: string): { method: string; params: unknown } {
+    return {
+        method: 'opencode/session/child_update',
+        params: {
+            rootSessionId: SESSION,
+            childSessionId,
+            parentSessionId: SESSION,
+            depth: 1,
+            type: 'status',
+            status,
+        },
     };
 }
 
@@ -422,6 +437,158 @@ describe('AcpSdkBackend tool call lifetimes', () => {
         const ids = new Set([...toolIds(messages, 'tool_call'), ...toolIds(messages, 'tool_result')]);
         expect(ids.size).toBe(1);
         expect([...ids][0]).toMatch(/^ses_child:shell:0#/);
+    });
+
+    it('publishes settledCallIds when session/prompt rejects without a stopReason (#2021)', async () => {
+        // Isolate from the default file lifetime store (shared session-1 key).
+        const { backend, notify, scriptPrompts } = makeBackend({
+            flavor: 'cursor',
+            toolCallLifetimeStore: memoryStore(),
+        });
+        const messages: AgentMessage[] = [];
+        scriptPrompts(async () => {
+            notify(toolCall('shell:0', { status: 'in_progress' }));
+            await sleep(10);
+            // Cursor Stop: cancelPrompt first, then the in-flight prompt often
+            // rejects instead of returning stopReason=cancelled.
+            await backend.cancelPrompt(SESSION);
+            throw new Error('T: [canceled] Operation aborted');
+        });
+
+        await expect(prompt(backend, messages)).rejects.toThrow(/canceled|aborted/i);
+        await sleep(40);
+
+        const settlement = messages.find(
+            (m): m is Extract<AgentMessage, { type: 'turn_complete' }> =>
+                m.type === 'turn_complete' && Array.isArray(m.settledCallIds) && m.settledCallIds.length > 0
+        );
+        expect(settlement).toMatchObject({
+            type: 'turn_complete',
+            stopReason: 'cancelled',
+            settledCallIds: [expect.stringMatching(/^shell:0#/)],
+        });
+        expect(settlement?.settledCallIds).toHaveLength(1);
+    });
+
+    it('retains open tool work after an indeterminate ACP cancel reject (#2021)', async () => {
+        const { backend, notify, scriptPrompts } = makeBackend({
+            flavor: 'cursor',
+            toolCallLifetimeStore: memoryStore(),
+        });
+        const messages: AgentMessage[] = [];
+        scriptPrompts(async () => {
+            notify(toolCall('shell:0', { status: 'in_progress' }));
+            await sleep(10);
+            await backend.cancelPrompt(SESSION);
+            const error = new Error('ACP transport closed during cancel');
+            Object.defineProperty(error, ACP_INDETERMINATE_SYMBOL, { value: true });
+            throw error;
+        });
+
+        await expect(prompt(backend, messages)).rejects.toThrow(/transport closed/i);
+        await sleep(40);
+
+        const settlement = messages.find(
+            (m): m is Extract<AgentMessage, { type: 'turn_complete' }> =>
+                m.type === 'turn_complete' && Array.isArray(m.settledCallIds) && m.settledCallIds.length > 0
+        );
+        expect(settlement).toBeUndefined();
+    });
+
+    it('publishes turn_complete settlement when a child is interrupted (#2021)', async () => {
+        const { backend, notify, scriptPrompts } = makeBackend({ childSessionUpdates: true });
+        const messages: AgentMessage[] = [];
+        scriptPrompts(async () => {
+            notify(childUpdate('ses_child', {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'ses_child:shell:0',
+                title: 'shell',
+                kind: 'execute',
+                status: 'in_progress',
+                rawInput: { command: 'sleep 5' },
+            }));
+            await sleep(10);
+            notify(childStatus('ses_child', 'interrupted'));
+            await sleep(40);
+            return 'end_turn';
+        });
+
+        await prompt(backend, messages);
+        await sleep(50);
+
+        const settlement = messages.find(
+            (m): m is Extract<AgentMessage, { type: 'turn_complete' }> =>
+                m.type === 'turn_complete' && Array.isArray(m.settledCallIds) && m.settledCallIds.length > 0
+        );
+        expect(settlement).toMatchObject({
+            type: 'turn_complete',
+            stopReason: 'cancelled',
+            childSessionId: 'ses_child',
+            childStatus: 'interrupted',
+            settledCallIds: [expect.stringMatching(/^ses_child:shell:0#/)],
+        });
+    });
+
+    it('publishes child running status so archive stays blocked between tool calls (#2021)', async () => {
+        const { backend, notify, scriptPrompts } = makeBackend({ childSessionUpdates: true });
+        const messages: AgentMessage[] = [];
+        scriptPrompts(async () => {
+            notify(childStatus('ses_child', 'running'));
+            await sleep(20);
+            return 'end_turn';
+        });
+
+        await prompt(backend, messages);
+        await sleep(40);
+
+        expect(messages).toContainEqual(expect.objectContaining({
+            type: 'turn_complete',
+            stopReason: 'running',
+            childSessionId: 'ses_child',
+            childStatus: 'running',
+        }));
+    });
+
+    it('settles outstanding child tools when the child fails (#2021)', async () => {
+        const { backend, notify, scriptPrompts } = makeBackend({ childSessionUpdates: true });
+        const messages: AgentMessage[] = [];
+        scriptPrompts(async () => {
+            notify(childUpdate('ses_child', {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'ses_child:shell:0',
+                title: 'shell',
+                kind: 'execute',
+                status: 'in_progress',
+                rawInput: { command: 'sleep 5' },
+            }));
+            notify(childUpdate('ses_other', {
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+                toolCallId: 'ses_other:shell:0',
+                title: 'shell',
+                kind: 'execute',
+                status: 'in_progress',
+                rawInput: { command: 'sleep 5' },
+            }));
+            await sleep(10);
+            notify(childStatus('ses_child', 'failed'));
+            await sleep(40);
+            return 'end_turn';
+        });
+
+        await prompt(backend, messages);
+        await sleep(50);
+
+        const failedSettlement = messages.find(
+            (m): m is Extract<AgentMessage, { type: 'turn_complete' }> =>
+                m.type === 'turn_complete'
+                && m.childSessionId === 'ses_child'
+                && m.childStatus === 'failed'
+        );
+        expect(failedSettlement?.settledCallIds).toEqual([
+            expect.stringMatching(/^ses_child:shell:0#/),
+        ]);
+        // Other child's open call must not be settled by this terminal.
+        expect(failedSettlement?.settledCallIds?.some((id) => id.startsWith('ses_other:'))).toBeFalsy();
     });
 
     it('asks permission under the lifetime id and answers the agent request it belongs to', async () => {

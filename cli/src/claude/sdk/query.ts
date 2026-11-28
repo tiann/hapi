@@ -26,7 +26,21 @@ import {
 } from './types'
 import { getDefaultClaudeCodePath, logDebug, streamToStdin } from './utils'
 import { withBunRuntimeEnv } from '@/utils/bunRuntime'
-import { killProcessByChildProcess } from '@/utils/process'
+import {
+    getProcessGroupId,
+    getProcessStartMarker,
+    getProcessThreadGroupId,
+    getSystemBootId,
+    isWindows,
+    killProcessByChildProcess,
+    retainedIdentityStillAlive,
+    verifyAgentOwnedProcessGroupExited,
+    type RetainedProcessIdentity,
+} from '@/utils/process'
+import {
+    clearAgentRootForCurrentHost,
+    publishAgentRootFromIdentity,
+} from '@/runner/agentRootRegistry'
 import { stripNewlinesForWindowsShellArg } from '@/utils/shellEscape'
 import type { Writable } from 'node:stream'
 import { logger } from '@/ui/logger'
@@ -475,9 +489,30 @@ export function query(config: {
         // Use shell: false with absolute path from getDefaultClaudeCodePath()
         // This avoids cmd.exe resolution issues on Windows
         shell: false,
+        // Own process group on POSIX so Runner can verify tool descendants
+        // after wrapper exit (#2021 Approach) — same pattern as ACP.
+        detached: process.platform !== 'win32',
         // Hide transient console windows on Windows when spawning Claude Code
         windowsHide: process.platform === 'win32'
     }) as ChildProcessWithoutNullStreams
+
+    // Publish Claude SDK child generation so Runner probe cannot treat wrapper
+    // exit alone as worker exit (#2021 Approach).
+    let claudeRootIdentity: RetainedProcessIdentity | null = null
+    if (typeof child.pid === 'number' && child.pid > 0) {
+        claudeRootIdentity = {
+            pid: child.pid,
+            startMarker: getProcessStartMarker(child.pid),
+            bootId: getSystemBootId(),
+            tgid: getProcessThreadGroupId(child.pid),
+            pgid: getProcessGroupId(child.pid),
+        }
+        publishAgentRootFromIdentity(claudeRootIdentity, {
+            // POSIX detached ⇒ agent-owned group. Windows lacks Job Object on
+            // this path — fail closed until clearAgentRoot after verified exit.
+            containmentEstablished: !isWindows(),
+        })
+    }
 
     // Handle process exit
     let resolveExit: () => void
@@ -513,6 +548,20 @@ export function query(config: {
             child.stdin.destroy()
             child.stdout.destroy()
             child.stderr.destroy()
+            // Retain agent-root until the process group is verified empty so a
+            // reparented tool cannot outlive clearAgentRoot (#2021 Approach).
+            if (claudeRootIdentity && !isWindows()) {
+                if (await verifyAgentOwnedProcessGroupExited(claudeRootIdentity, true)) {
+                    clearAgentRootForCurrentHost()
+                }
+            } else if (claudeRootIdentity && isWindows()) {
+                // No Job Object on this path — only clear when the root PID is gone.
+                if (!retainedIdentityStillAlive(claudeRootIdentity)) {
+                    clearAgentRootForCurrentHost()
+                }
+            } else {
+                clearAgentRootForCurrentHost()
+            }
         })()
         return cleanupPromise
     }
@@ -580,7 +629,8 @@ export function query(config: {
         }
     })
 
-    // Cleanup on exit (catch rejection to avoid unhandled promise warning)
+    // Cleanup on exit (catch rejection to avoid unhandled promise warning).
+    // Do not clearAgentRoot here — cleanup verifies group emptiness first.
     processExitPromise.catch(() => {}).finally(() => {
         void cleanup()
         process.removeListener('exit', handleProcessExit)

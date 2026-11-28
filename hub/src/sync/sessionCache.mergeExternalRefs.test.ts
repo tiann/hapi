@@ -71,4 +71,81 @@ describe('mergeSessionMetadataForSessionMerge externalRefs', () => {
 
         expect(merged.externalRefs).toEqual([])
     })
+
+    it('preserves spawnedBySessionId when the replacement row has no parent', () => {
+        const parentId = 'aaaaaaaa-1111-4111-8111-111111111111'
+        const oldMetadata = {
+            path: '/old',
+            host: 'old-host',
+            spawnedBySessionId: parentId,
+        }
+        const newMetadata = {
+            path: '/new',
+            host: 'new-host',
+            flavor: 'cursor',
+        }
+
+        const merged = mergeSessionMetadataForSessionMerge(oldMetadata, newMetadata) as Record<string, unknown>
+
+        expect(merged.spawnedBySessionId).toBe(parentId)
+        expect(merged.path).toBe('/new')
+    })
+
+    it('lets an explicit spawnedBySessionId on the replacement row win', () => {
+        const oldParent = 'aaaaaaaa-1111-4111-8111-111111111111'
+        const newParent = 'bbbbbbbb-2222-4222-8222-222222222222'
+        const merged = mergeSessionMetadataForSessionMerge(
+            { path: '/old', spawnedBySessionId: oldParent },
+            { path: '/new', spawnedBySessionId: newParent },
+        ) as Record<string, unknown>
+
+        expect(merged.spawnedBySessionId).toBe(newParent)
+    })
+
+    it('carries childToolWork settlement onto a replacement that lacks it (#2021)', () => {
+        const merged = mergeSessionMetadataForSessionMerge(
+            {
+                path: '/old',
+                childToolWork: {
+                    running: [],
+                    settled: ['ses_done'],
+                    settledCallIds: ['call-1'],
+                },
+            },
+            { path: '/new', flavor: 'opencode' },
+        ) as Record<string, unknown>
+
+        expect(merged.childToolWork).toEqual({
+            running: [],
+            settled: ['ses_done'],
+            settledCallIds: ['call-1'],
+        })
+    })
+
+    it('lets the replacement running marker beat a stale source settlement (#2021)', () => {
+        const merged = mergeSessionMetadataForSessionMerge(
+            {
+                path: '/old',
+                childToolWork: {
+                    running: [],
+                    settled: ['ses_child'],
+                    settledCallIds: ['call-a'],
+                },
+            },
+            {
+                path: '/new',
+                childToolWork: {
+                    running: ['ses_child', 'ses_live'],
+                    settled: [],
+                    settledCallIds: [],
+                },
+            },
+        ) as Record<string, unknown>
+
+        expect(merged.childToolWork).toEqual({
+            running: ['ses_child', 'ses_live'],
+            settled: [],
+            settledCallIds: ['call-a'],
+        })
+    })
 })

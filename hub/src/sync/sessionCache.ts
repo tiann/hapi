@@ -23,6 +23,62 @@ const TURN_RECOVERY_WINDOW_MS = 10 * 60_000
 const METADATA_RETRY_ATTEMPTS = 5
 type RuntimeConfigKey = 'permissionMode' | 'model' | 'modelReasoningEffort' | 'effort' | 'serviceTier' | 'collaborationMode' | 'copilotAgentMode'
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function stringIdList(value: unknown): string[] {
+    if (!Array.isArray(value)) return []
+    return value.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+}
+
+/** Prior-generation durable latch vs the session's current worker marker. */
+function isForeignGenerationLatch(
+    latchMarker: unknown,
+    currentMarker: unknown,
+): boolean {
+    return typeof latchMarker === 'string'
+        && latchMarker.length > 0
+        && typeof currentMarker === 'string'
+        && currentMarker.length > 0
+        && latchMarker !== currentMarker
+}
+
+/**
+ * Merge hub-owned OpenCode childToolWork across session-row replacement.
+ * Destination (replacement) running markers win over source settlements for the
+ * same child — a child can restart after a prior settle (#2021). settledCallIds
+ * are unioned. Returns `undefined` when the old row has nothing to contribute.
+ */
+export function mergeChildToolWorkForSessionMerge(oldWork: unknown, newWork: unknown): unknown | null | undefined {
+    if (!isPlainObject(oldWork)) return undefined
+    const oldRunning = stringIdList(oldWork.running)
+    const oldSettled = stringIdList(oldWork.settled)
+    const oldCalls = stringIdList(oldWork.settledCallIds)
+    if (oldRunning.length === 0 && oldSettled.length === 0 && oldCalls.length === 0) {
+        return undefined
+    }
+    if (!isPlainObject(newWork)) {
+        return {
+            running: [...oldRunning].sort(),
+            settled: [...oldSettled].sort(),
+            settledCallIds: [...oldCalls],
+        }
+    }
+    const newRunning = stringIdList(newWork.running)
+    const settled = new Set([...oldSettled, ...stringIdList(newWork.settled)])
+    // Active replacement's live children beat stale settlement from the source.
+    for (const id of newRunning) settled.delete(id)
+    const settledCallIds = [...new Set([...oldCalls, ...stringIdList(newWork.settledCallIds)])]
+    const running = new Set([...oldRunning, ...newRunning])
+    for (const id of settled) running.delete(id)
+    return {
+        running: [...running].sort(),
+        settled: [...settled].sort(),
+        settledCallIds,
+    }
+}
+
 /**
  * Metadata merge used when consolidating an old session row into a replacement
  * (resume/reopen). Carry forward display/contribution fields the new row omitted.
@@ -105,6 +161,25 @@ export function mergeSessionMetadataForSessionMerge(
     // Preserve structured PR links when the replacement row never set them.
     if (Array.isArray(oldObj.externalRefs) && !Object.prototype.hasOwnProperty.call(newObj, 'externalRefs')) {
         merged.externalRefs = oldObj.externalRefs
+        changed = true
+    }
+
+    // Peer spawn parent is telemetry stamped at create time. Resume / dedup
+    // row replacement must keep it when the destination never set a parent,
+    // or the orchestrator session tree loses the edge (#2021).
+    if (typeof oldObj.spawnedBySessionId === 'string'
+        && oldObj.spawnedBySessionId.trim().length > 0
+        && typeof newObj.spawnedBySessionId !== 'string') {
+        merged.spawnedBySessionId = oldObj.spawnedBySessionId
+        changed = true
+    }
+
+    // OpenCode childToolWork is hub-owned settlement evidence. After rewind
+    // drops a completion marker, this ledger is the only record that a child
+    // finished — dedup/resume must carry it onto the surviving row (#2021).
+    const childToolMerged = mergeChildToolWorkForSessionMerge(oldObj.childToolWork, newObj.childToolWork)
+    if (childToolMerged !== undefined) {
+        merged.childToolWork = childToolMerged
         changed = true
     }
 
@@ -472,6 +547,27 @@ export class SessionCache {
             copilotAgentMode: existing?.copilotAgentMode ?? metadata?.preferredCopilotAgentMode
         }
 
+        // Restore hub-owned background snapshot after Hub restart when the
+        // in-memory cache was empty (#2021 Major). Require both markers present
+        // and equal — missing markers are unowned and must not block Archive.
+        if ((session.backgroundTaskCount ?? 0) === 0) {
+            const durable = metadata?.backgroundWork
+            const ownerMarker = metadata?.hostStartMarker
+            if (
+                durable
+                && Array.isArray(durable.tasks)
+                && durable.tasks.length > 0
+                && typeof durable.hostStartMarker === 'string'
+                && durable.hostStartMarker.length > 0
+                && typeof ownerMarker === 'string'
+                && ownerMarker.length > 0
+                && durable.hostStartMarker === ownerMarker
+            ) {
+                session.backgroundTasks = durable.tasks
+                session.backgroundTaskCount = durable.tasks.length
+            }
+        }
+
         this.sessions.set(sessionId, session)
         this.publisher.emit({ type: existing ? 'session-updated' : 'session-added', sessionId, data: session })
         return session
@@ -668,6 +764,12 @@ export class SessionCache {
         if (requestedThinking || pendingThinkingUntil <= hubNow) {
             this.pendingThinkingUntilBySessionId.delete(session.id)
         }
+        // Durable latch tracks real in-flight turns across expiry (#2021 Approach).
+        if (session.thinking) {
+            this.setUnresolvedTurn(session.id, true)
+        } else if (!preserveQueuedThinking) {
+            this.setUnresolvedTurn(session.id, false)
+        }
         // The agent says it's idle: whatever it does next is a new turn.
         if (!requestedThinking) this.forgetInterruptedTurn(session.id)
         this.recordTurn(session, wasThinking, hubNow, 'agent', 'idle')
@@ -785,6 +887,7 @@ export class SessionCache {
         session.thinking = true
         session.thinkingAt = nextTime
         if (!wasThinking) session.activeTurnStartedAt = activeTurnStartedAt
+        this.setUnresolvedTurn(session.id, true)
         this.recordTurn(session, wasThinking, session.activeTurnStartedAt ?? nextTime, 'hub_prompt', 'idle')
         session.updatedAt = Math.max(session.updatedAt, nextTime)
         this.pendingThinkingUntilBySessionId.set(session.id, nextTime + QUEUED_MESSAGE_THINKING_GRACE_MS)
@@ -846,6 +949,27 @@ export class SessionCache {
         }
     }
 
+    /**
+     * Drop in-memory background task UI state without touching durable
+     * `metadata.backgroundWork`. Used on worker replacement so a stale prior
+     * count cannot satisfy the current-gen Archive guard (#2657).
+     */
+    clearInMemoryBackgroundTasks(sessionId: string): void {
+        const session = this.sessions.get(sessionId)
+        if (!session) return
+        if ((session.backgroundTaskCount ?? 0) === 0
+            && (session.backgroundTasks?.length ?? 0) === 0) {
+            return
+        }
+        session.backgroundTasks = []
+        session.backgroundTaskCount = 0
+        this.publisher.emit({
+            type: 'session-updated',
+            sessionId,
+            data: { backgroundTaskCount: 0, backgroundTasks: [] } satisfies SessionPatch
+        })
+    }
+
     setBackgroundTasks(sessionId: string, tasks: BackgroundTask[]): void {
         const session = this.sessions.get(sessionId)
         if (!session) return
@@ -856,12 +980,129 @@ export class SessionCache {
 
         session.backgroundTasks = tasks
         session.backgroundTaskCount = tasks.length
+        // Persist with the owning worker generation so Hub restart + reconnect
+        // without a membership-change emit still blocks Archive (#2021 Major).
+        // Never invent stub {path:'',host:''} — when prior metadata is missing,
+        // mergeSessionMetadata returns the write as-is and a `backgroundWork: null`
+        // (or empty identity) fails MetadataSchema and nulls the whole blob (#2021 Major).
+        if (session.metadata) {
+            const hostStartMarker = session.metadata.hostStartMarker
+            const durable = session.metadata.backgroundWork
+            const durableMarker = durable && typeof durable === 'object'
+                ? durable.hostStartMarker
+                : undefined
+            // Idle clear from a replacement must not erase a prior generation's
+            // durable snapshot. Non-empty reports from the current worker may
+            // overwrite the slot so B can enforce the current-gen Archive
+            // precondition (#2021 / #2657).
+            if (
+                tasks.length === 0
+                && isForeignGenerationLatch(durableMarker, hostStartMarker)
+            ) {
+                this.recordAgentProgress(sessionId)
+                this.publisher.emit({
+                    type: 'session-updated',
+                    sessionId,
+                    data: { backgroundTaskCount: tasks.length, backgroundTasks: tasks } satisfies SessionPatch
+                })
+                return
+            }
+            const metadata = {
+                ...session.metadata,
+                backgroundWork: tasks.length > 0
+                    ? {
+                        tasks,
+                        ...(typeof hostStartMarker === 'string' && hostStartMarker.length > 0
+                            ? { hostStartMarker }
+                            : {}),
+                    }
+                    : null,
+            }
+            const metaResult = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                metadata,
+                session.metadataVersion,
+                session.namespace,
+                { touchUpdatedAt: false },
+            )
+            if (metaResult.result === 'success') {
+                session.metadata = metaResult.value as typeof session.metadata
+                session.metadataVersion = metaResult.version
+            }
+        }
         this.recordAgentProgress(sessionId)
         this.publisher.emit({
             type: 'session-updated',
             sessionId,
             data: { backgroundTaskCount: tasks.length, backgroundTasks: tasks } satisfies SessionPatch
         })
+    }
+
+    /**
+     * Persist / clear the hub-owned in-flight turn latch so Archive still sees
+     * unresolved foreground work after heartbeat expiry clears ephemeral
+     * `thinking` (#2021 Approach).
+     */
+    setUnresolvedTurn(sessionId: string, unresolved: boolean): void {
+        const session = this.sessions.get(sessionId)
+        if (!session?.metadata) return
+        const existing = session.metadata.unresolvedTurn
+        const hostStartMarker = session.metadata.hostStartMarker
+        if (unresolved) {
+            const alreadyLatched = Boolean(existing && typeof existing === 'object')
+            const existingMarker = typeof existing === 'object' ? existing.hostStartMarker : undefined
+            if (alreadyLatched && !isForeignGenerationLatch(existingMarker, hostStartMarker)) {
+                // Same-generation latch already present.
+                return
+            }
+            // Current worker may claim the slot (overwrite foreign) so its
+            // own turn is visible to Archive (#2021 current-gen guarantee).
+            const metadata = {
+                ...session.metadata,
+                unresolvedTurn: {
+                    ...(typeof hostStartMarker === 'string' && hostStartMarker.length > 0
+                        ? { hostStartMarker }
+                        : {}),
+                    since: Date.now(),
+                },
+            }
+            const metaResult = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                metadata,
+                session.metadataVersion,
+                session.namespace,
+                { touchUpdatedAt: false },
+            )
+            if (metaResult.result === 'success') {
+                session.metadata = metaResult.value as typeof session.metadata
+                session.metadataVersion = metaResult.version
+            }
+            return
+        }
+        if (!existing) return
+        // Idle heartbeat from a replacement must not clear the previous
+        // worker's latch when the current worker has not claimed the slot.
+        if (isForeignGenerationLatch(
+            typeof existing === 'object' ? existing.hostStartMarker : undefined,
+            hostStartMarker,
+        )) {
+            return
+        }
+        const metadata = {
+            ...session.metadata,
+            unresolvedTurn: null,
+        }
+        const metaResult = this.store.sessions.updateSessionMetadata(
+            sessionId,
+            metadata,
+            session.metadataVersion,
+            session.namespace,
+            { touchUpdatedAt: false },
+        )
+        if (metaResult.result === 'success') {
+            session.metadata = metaResult.value as typeof session.metadata
+            session.metadataVersion = metaResult.version
+        }
     }
 
     /**
@@ -1147,6 +1388,12 @@ export class SessionCache {
         session.backgroundTaskCount = 0
         session.backgroundTasks = []
         session.derivedToolWork = false
+        // Wrapper / CLI session-end is not agent-containment proof (#2021 Approach).
+        // Keep durable backgroundWork + unresolvedTurn so Archive still probes
+        // before Stop. Latch an in-flight turn when thinking was true at exit
+        // (mirrors expireInactive). Generation replace / probe already_gone
+        // clear these later.
+        if (wasThinking) this.setUnresolvedTurn(session.id, true)
         this.pendingThinkingUntilBySessionId.delete(session.id)
 
         this.publisher.emit({
@@ -1184,15 +1431,19 @@ export class SessionCache {
             // patch carry, not the sweep time: a reloaded cache must keep the
             // same stop time, or stopped rows reorder after a hub restart.
             this.store.sessions.setSessionActive(session.id, false, session.activeAt, session.namespace)
+            // Capture in-flight turn before clearing ephemeral thinking so
+            // Archive still probes the Runner generation (#2021 Approach).
+            if (wasThinking) this.setUnresolvedTurn(session.id, true)
             session.thinking = false
             session.activeTurnStartedAt = null
-            // The keepalive died, not the tasks: reset the transient work
-            // state like handleSessionEnd does, or a session that expired
-            // mid-background-work keeps its stale backgroundTaskCount (and
-            // derived flag) forever — the row would render "waiting" for
-            // hours after the process was gone.
-            session.backgroundTaskCount = 0
-            session.backgroundTasks = []
+            // Heartbeat expiry is not process-death proof. Antigravity (and
+            // Claude) only re-emit background_tasks_changed on membership
+            // change — clearing the snapshot here lets Archive send stop RPCs
+            // into a still-running background command after reconnect (#2021).
+            // Keep the last background snapshot until the worker clears it or
+            // handleSessionEnd confirms exit. derivedToolWork can be refreshed
+            // from the transcript on Archive; drop the ephemeral latch only.
+            // unresolvedTurn is hub-owned durable evidence — do not clear here.
             session.derivedToolWork = false
             // The last keepalive is the last time the agent was known to be working.
             this.recordTurn(session, wasThinking, session.activeAt, 'agent', 'expired')
@@ -1208,8 +1459,7 @@ export class SessionCache {
                     // The last keepalive: when the session stopped, for clients
                     // that only saw an older activeAt.
                     activeAt: session.activeAt,
-                    backgroundTaskCount: 0,
-                    backgroundTasks: [],
+                    // Preserve backgroundTaskCount / backgroundTasks (#2021 Major).
                     derivedToolWork: false
                 } satisfies SessionPatch
             })
@@ -1362,7 +1612,7 @@ export class SessionCache {
                 lifecycleState: 'archived',
                 lifecycleStateSince: Date.now(),
                 archivedBy: 'hub',
-                archiveReason: reason
+                archiveReason: reason,
             }
 
             const result = this.store.sessions.updateSessionMetadata(
@@ -2150,6 +2400,12 @@ export class SessionCache {
         if (!metadataTransferred) throw new Error('Failed to preserve session metadata during merge')
 
         const movedMessages = this.store.messages.mergeSessionMessages(oldSessionId, newSessionId)
+        // Dedup may have written a fresh childToolWork ledger onto a destination
+        // whose in-memory registry was already warm — force rebuild (#2021).
+        this.store.messages.invalidateChildToolWorkState(newSessionId)
+        if (!options.deleteOldSession) {
+            this.store.messages.invalidateChildToolWorkState(oldSessionId)
+        }
         this.syncReadState(newSessionId)
         if (!options.deleteOldSession) this.syncReadState(oldSessionId)
         // mergeSessions deletes the source. mergeSessionHistory keeps it alive

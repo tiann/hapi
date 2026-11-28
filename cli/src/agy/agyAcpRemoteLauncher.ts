@@ -68,7 +68,8 @@ export { addAgyUsage };
 type UsageMessage = Extract<AgentMessage, { type: 'usage' }>;
 
 const STEER_CANCEL_GRACE_MS = 3_000;
-const CANCEL_HARD_STOP_MS = 10_000;
+// Vitest uses a short hard-stop so Stop→ready coverage does not wait 10s.
+const CANCEL_HARD_STOP_MS = process.env.VITEST ? 40 : 10_000;
 // Bound on how long a kill waits for the running turn to settle.
 const KILL_SETTLE_MS = 5_000;
 const PROMPT_SEND_POLL_MS = 50;
@@ -266,6 +267,8 @@ type AgyTurn = {
     modeHash: string;
     steerConfigKey: string;
     aborted: boolean;
+    /** Stop closed ACP stdin without a terminal cancel — do not settle yet (#2021). */
+    indeterminateAbort: boolean;
     stopReason: string | null;
     sentAt: number | null;
     answeredAt: number | null;
@@ -291,6 +294,8 @@ type AgyTurn = {
     // Ambiguous `run_command` tool_calls held briefly until `tool_result`
     // output disambiguates multiple synthetic background candidates.
     deferredLiveCommandCalls: Map<string, Extract<AgentMessage, { type: 'tool_call' }>>;
+    /** Lifetime ids the ACP backend settled on turn_complete (ask_question, etc.). */
+    backendSettledCallIds: string[];
     corroboratedSyntheticMatches: number;
     turnStartStepIndex: number;
     // Settled non-live assistant text segments streamed during this turn, used
@@ -376,6 +381,36 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         streamedTextCounts: Map<string, number>;
     } | null = null;
     private reactiveWakeupAbort: AbortController | null = null;
+    /** True once the current reactive wakeup is classified completed — Stop
+     *  must not re-arm retirement for that finished wakeup (#2021 Minor). */
+    private reactiveWakeupCompleted = false;
+    /** Last observed transcript progress during the active reactive wakeup —
+     *  Stop completion polls use the real quiet period (#2021 Major). */
+    private reactiveWakeupLastProgressAtMs = 0;
+    /** Last step index observed by the Stop completion poll (#2021 Minor). */
+    private reactiveWakeupStopPollStepIndex = -1;
+    private wakeupHardStopTimer: ReturnType<typeof setTimeout> | null = null;
+    /** Bumped to invalidate an in-flight wakeup hard-stop timer (generation fence). */
+    private wakeupHardStopGeneration = 0;
+    /** Resolves when the armed wakeup hard-stop finishes retiring (or is cleared). */
+    private wakeupHardStopDone: Promise<void> | null = null;
+    private resolveWakeupHardStopDone: (() => void) | null = null;
+    /** Cancelled call IDs captured before hard-stop disconnect clears handlers (#2021). */
+    private pendingWakeupSettlements: string[] = [];
+    /** Set when the armed wakeup hard-stop confirmed process-tree exit (#2021). */
+    private wakeupHardStopVerifiedExit = false;
+    /** True once a hard-stop was armed for this Stop attempt — distinguishes
+     *  "never armed" from "already finished and cleared the promise" (#2021). */
+    private wakeupHardStopAttempted = false;
+    /**
+     * Wakeup/prompt Stop ran but tree exit was unconfirmed — keep thinking on
+     * and let a later Stop retry verified retirement (#2021).
+     */
+    private pendingVerifiedWakeupStop = false;
+    /** Backend still being retired while pendingVerifiedWakeupStop is set. */
+    private pendingStopBackend: AcpSdkBackend | null = null;
+    /** Settlement IDs captured with the pending Stop backend (#2021). */
+    private pendingStopSettlements: string[] = [];
     private lastTurnMode: AgyMode | null = null;
     private lastSessionModeSnapshot: {
         permissionMode: PermissionMode | undefined;
@@ -809,10 +844,13 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
         const abortController = new AbortController();
         this.reactiveWakeupAbort = abortController;
+        this.reactiveWakeupCompleted = false;
         session.onThinkingChange(true);
 
         let watchedStepIndex = this.pausedWakeupStepIndex ?? this.lastTranscriptStepIndex;
         let lastProgressAtMs = Date.now();
+        this.reactiveWakeupLastProgressAtMs = lastProgressAtMs;
+        this.reactiveWakeupStopPollStepIndex = watchedStepIndex;
         const pollIntervalMs = Math.max(10, Math.min(this.reactivePollMs, 50));
 
         try {
@@ -822,7 +860,26 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     return;
                 }
                 if (abortController.signal.aborted) {
-                    // Stop: nothing the wakeup left open may become a background task.
+                    // Keep thinking/live-work until hard-stop verifies process-tree
+                    // exit. Settling earlier lets Archive kill a still-running
+                    // wakeup (#2021). Unverified exit stays Stop-retryable.
+                    let verified = await this.waitForWakeupCancelHardStop();
+                    if (!verified && this.backend) {
+                        // One immediate retry — kill may have raced stdin close.
+                        verified = await this.retireBackend(this.backend);
+                    }
+                    if (!verified) {
+                        this.pendingVerifiedWakeupStop = true;
+                        this.pendingStopBackend = this.backend;
+                        this.session.sendSessionEvent({
+                            type: 'message',
+                            message: 'Antigravity stop could not be verified; try Stop again.',
+                        });
+                        return;
+                    }
+                    this.pendingVerifiedWakeupStop = false;
+                    this.pendingStopBackend = null;
+                    this.pendingStopSettlements = [];
                     await this.discardStoppedWakeup();
                     this.syncTranscriptCursor();
                     if (!this.usesLiveWakeupRendering()) await this.advanceBackendCursor();
@@ -855,6 +912,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     watchedStepIndex = inspection.latestStepIndex;
                     this.pausedWakeupStepIndex = null;
                     lastProgressAtMs = nowMs;
+                    this.reactiveWakeupLastProgressAtMs = nowMs;
                     await this.waitWakeupTick(acpSessionId, pollIntervalMs, abortController.signal);
                     continue;
                 }
@@ -862,6 +920,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 if (inspection.state === 'completed') {
                     this.pausedWakeupStepIndex = null;
                     this.lastTranscriptStepIndex = Math.max(this.lastTranscriptStepIndex, inspection.latestStepIndex);
+                    // Record completion before any await that Stop can race —
+                    // disarm hard-stop and refuse re-arm so a slow resume cannot
+                    // retire a finished wakeup (#2021 Minor).
+                    this.reactiveWakeupCompleted = true;
+                    this.clearWakeupCancelHardStop();
+                    this.pendingVerifiedWakeupStop = false;
+                    this.pendingStopBackend = null;
+                    this.pendingStopSettlements = [];
                     const wakeupFirstStepIndex = inspection.steps[0]?.step_index;
                     const live = this.usesLiveWakeupRendering();
                     // The live stream already rendered this wakeup: settle it before the
@@ -915,6 +981,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     // late output under the same `SYSTEM_MESSAGE` still wakes HAPI.
                     this.pausedWakeupStepIndex = inspection.latestStepIndex;
                     if (this.usesLiveWakeupRendering()) await this.backend?.flushPendingMessageBuffers();
+                    // Stop may have arrived during the flush drain — finish via the
+                    // aborted-wakeup completion path rather than returning early (#2021).
+                    if (abortController.signal.aborted || this.pendingVerifiedWakeupStop) {
+                        continue;
+                    }
                     session.onThinkingChange(false);
                     if (session.queue.size() === 0 && !this.shouldExit) {
                         session.sendSessionEvent({ type: 'ready' });
@@ -1121,6 +1192,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async relaunchBackend(): Promise<void> {
+        // Never replace a backend whose Stop is still unverified — settlement
+        // on the replacement would clear thinking while the original runs (#2021).
+        if (this.pendingVerifiedWakeupStop) {
+            const verified = await this.retryPendingVerifiedStop();
+            if (!verified) {
+                throw new Error('Antigravity stop still unverified; cannot start a replacement');
+            }
+        }
         const previous = this.backend;
         this.backend = null;
         this.handlerOwnerTurn = null;
@@ -1129,8 +1208,33 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         await this.startBackend(this.acpSessionId);
     }
 
-    /** Stops a backend for good: late permission requests are cancelled, not approved. */
-    private async retireBackend(backend: AcpSdkBackend): Promise<void> {
+    /** Retry retirement of the pending Stop backend; settle on verified exit. */
+    private async retryPendingVerifiedStop(): Promise<boolean> {
+        const backend = this.pendingStopBackend ?? this.backend;
+        if (!backend) {
+            this.pendingVerifiedWakeupStop = false;
+            return true;
+        }
+        let verified = backend.wasAgentTreeEnded();
+        if (!verified) verified = await this.retireBackend(backend);
+        if (!verified) return false;
+        this.pendingWakeupSettlements.push(...this.pendingStopSettlements.splice(0));
+        this.pendingStopBackend = null;
+        this.pendingVerifiedWakeupStop = false;
+        if (this.backend === backend) this.backend = null;
+        await this.discardStoppedWakeup();
+        this.session.onThinkingChange(false);
+        if (this.session.queue.size() === 0 && !this.shouldExit) {
+            this.session.sendSessionEvent({ type: 'ready' });
+        }
+        return true;
+    }
+
+    /**
+     * Stops a backend for good: late permission requests are cancelled, not approved.
+     * @returns true when disconnect confirmed the agent process tree exited (#2021).
+     */
+    private async retireBackend(backend: AcpSdkBackend): Promise<boolean> {
         backend.setAvailableCommandsUpdateListener?.(null);
         backend.onPermissionRequest((request) => {
             void backend.respondToPermission(request.sessionId, request, { outcome: 'cancelled' });
@@ -1145,6 +1249,17 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         } catch (error) {
             logger.debug('[agy-acp] disconnect failed', error);
         }
+        let verified = backend.wasAgentTreeEnded();
+        if (!verified) {
+            // Unconfirmed close nulled the transport but retained a PID — probe again.
+            verified = await backend.verifyRetainedAgentExit(true);
+        }
+        // Every verified backend exit retires background commands from earlier
+        // prompts before ready/replacement (#2021 Major).
+        if (verified) {
+            this.clearBackgroundTasksSnapshot();
+        }
+        return verified;
     }
 
     /** Apply the batch's mode and model; false when the turn must not run. */
@@ -1208,6 +1323,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             modeHash,
             steerConfigKey: agyTurnConfigKey(mode),
             aborted: false,
+            indeterminateAbort: false,
             stopReason: null,
             sentAt: null,
             answeredAt: null,
@@ -1218,6 +1334,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             commandArrivalOrder: [],
             priorBackgroundCallIds: new Set(this.backgroundCommands.map((entry) => entry.callId)),
             deferredLiveCommandCalls: new Map(),
+            backendSettledCallIds: [],
             corroboratedSyntheticMatches: 0,
             turnStartStepIndex: this.lastTranscriptStepIndex,
             streamedTextCounts: new Map(),
@@ -1274,6 +1391,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 return;
             }
             let relaunched = false;
+            if (this.pendingVerifiedWakeupStop) {
+                const verified = await this.retryPendingVerifiedStop();
+                if (!verified) {
+                    this.reportTurnError('Antigravity stop still unverified; press Stop again before sending.');
+                    restoreIfUserTurn();
+                    return;
+                }
+            }
             if (this.backendLost || !this.backend || !this.backend.isTransportAlive()) {
                 try {
                     await this.relaunchBackend();
@@ -1379,7 +1504,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 }
             } catch (error) {
                 logger.warn('[agy-acp] prompt failed', error);
-                if (isAcpIndeterminateError(error)) this.backendLost = true;
+                if (isAcpIndeterminateError(error)) {
+                    this.backendLost = true;
+                    // Cancel write may have closed stdin while tools still run —
+                    // carry that into the finalizer so we do not settle early (#2021).
+                    if (turn.aborted) turn.indeterminateAbort = true;
+                }
                 if (!turn.aborted) {
                     this.reportTurnError(`Antigravity prompt failed: ${errorMessage(error)}`);
                 }
@@ -1397,10 +1527,70 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             }
             this.closeBackgroundCommands(turn, commandWindowAfterStepIndex, false, internalWakeup);
         } finally {
-            if (turn.aborted) {
-                // The stopped activity ends here: discard its late starts before ready.
-                await this.discardStoppedWakeup(turn);
-                this.syncTranscriptCursor();
+            let keepThinkingForUnverifiedStop = false;
+            if (turn.aborted && turn.indeterminateAbort) {
+                // Backend left lifetimes unsettled. Settle only after verified
+                // process-tree exit; otherwise keep work visible / Stop-retryable.
+                let verified = this.backend?.wasAgentTreeEnded() ?? false;
+                if (!verified && this.backend) {
+                    verified = await this.retireBackend(this.backend);
+                }
+                if (verified) {
+                    await this.discardStoppedWakeup(turn);
+                    this.syncTranscriptCursor();
+                    const settledCallIds = [...new Set([
+                        ...turn.openCommands,
+                        ...turn.commandCallIds,
+                        ...turn.deferredLiveCommandCalls.keys(),
+                        ...turn.backendSettledCallIds,
+                    ])];
+                    if (settledCallIds.length > 0) {
+                        const settlement = convertAgentMessage({
+                            type: 'turn_complete',
+                            stopReason: turn.stopReason ?? 'cancelled',
+                            settledCallIds,
+                        });
+                        if (settlement) session.sendAgentMessage(settlement);
+                    }
+                } else {
+                    this.pendingVerifiedWakeupStop = true;
+                    this.pendingStopBackend = this.backend;
+                    this.pendingStopSettlements = [...new Set([
+                        ...turn.openCommands,
+                        ...turn.commandCallIds,
+                        ...turn.deferredLiveCommandCalls.keys(),
+                        ...turn.backendSettledCallIds,
+                        ...this.pendingWakeupSettlements.splice(0),
+                    ])];
+                    keepThinkingForUnverifiedStop = true;
+                    this.session.sendSessionEvent({
+                        type: 'message',
+                        message: 'Antigravity stop could not be verified; try Stop again.',
+                    });
+                }
+            } else if (turn.aborted || turn.stopReason === 'cancelled') {
+                // Union launcher command bookkeeping with the backend's own
+                // settledCallIds (ask_question and other non-run_command calls
+                // live only on the backend list — #2021).
+                const settledCallIds = [...new Set([
+                    ...turn.openCommands,
+                    ...turn.commandCallIds,
+                    ...turn.deferredLiveCommandCalls.keys(),
+                    ...turn.backendSettledCallIds,
+                ])]
+                if (turn.aborted) {
+                    // The stopped activity ends here: discard its late starts before ready.
+                    await this.discardStoppedWakeup(turn);
+                    this.syncTranscriptCursor();
+                }
+                if (settledCallIds.length > 0) {
+                    const settlement = convertAgentMessage({
+                        type: 'turn_complete',
+                        stopReason: turn.stopReason ?? 'cancelled',
+                        settledCallIds,
+                    })
+                    if (settlement) session.sendAgentMessage(settlement)
+                }
             }
             this.questionLabels.clear();
             // After a Stop or a lost agy process, agy may have dropped a steer
@@ -1426,10 +1616,18 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 const generationMs = turn.generation.generationMs(turn.sentAt, turn.answeredAt);
                 session.sendAgentMessage(agyRoundSummary(turn.usage, durationMs, this.currentModelId, generationMs, turn.numTurns ?? turn.transcriptNumTurns ?? null));
             }
-            session.onThinkingChange(false);
-            await this.permissionHandler?.cancelAll('Prompt finished');
-            if (session.queue.size() === 0 && !this.shouldExit) {
-                session.sendSessionEvent({ type: 'ready' });
+            // A queued prompt that hit an unverified pending Stop returns before
+            // keepThinkingForUnverifiedStop is set — still keep thinking/ready
+            // gated on the pending flag so Archive cannot interrupt the retained
+            // backend (#2021 tip Major).
+            if (!keepThinkingForUnverifiedStop && !this.pendingVerifiedWakeupStop) {
+                session.onThinkingChange(false);
+                await this.permissionHandler?.cancelAll('Prompt finished');
+                if (session.queue.size() === 0 && !this.shouldExit) {
+                    session.sendSessionEvent({ type: 'ready' });
+                }
+            } else if (this.pendingVerifiedWakeupStop) {
+                session.onThinkingChange(true);
             }
         }
     }
@@ -1516,26 +1714,79 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
-    /** Stop: drop what the stopped wakeup left open, and remember its commands so a late start of one is dropped. */
+    /** Stop: drop what the stopped wakeup left open, remember its commands so a
+     *  late start of one is dropped, and publish hub settlement for every call
+     *  id torn down — including autonomous wakeup Stop, which never reaches the
+     *  prompt finalizer (#2021 termination axis). */
     private async discardStoppedWakeup(abortedTurn: AgyTurn | null = null): Promise<void> {
-        await this.backend?.flushPendingMessageBuffers();
+        // Caller must waitForWakeupCancelHardStop first when a hard-stop was
+        // armed — clearing here would drop settlement before verified exit (#2021).
+        // Capture owner + cancelled IDs before flush/teardown clears the live
+        // handler — hard-stop disconnect makes usesLiveWakeupRendering false (#2021).
         const owner = this.handlerOwnerTurn;
+        const backend = this.backend as {
+            flushPendingMessageBuffers?: () => Promise<void>;
+            takeCancelledSettlements?: () => string[];
+        } | null;
+        const preTeardownCancelled = backend?.takeCancelledSettlements?.() ?? [];
+        await backend?.flushPendingMessageBuffers?.();
         this.handlerOwnerTurn = null;
         this.discardingStoppedStarts = false;
-        // Without a live handler (never live, or the process was restarted) there is nothing more to retire.
-        if (!this.usesLiveWakeupRendering()) return;
+        const settledCallIds = new Set<string>([
+            ...preTeardownCancelled,
+            ...this.pendingWakeupSettlements.splice(0),
+        ]);
+        // cancelPrompt already marked lifetimes cancelled; collect them here so
+        // non-run_command tools (ask_question, etc.) opened during a live
+        // wakeup still settle even though the prompt finalizer already ran (#2021).
+        for (const id of backend?.takeCancelledSettlements?.() ?? []) {
+            settledCallIds.add(id);
+        }
         for (const turn of new Set([owner, abortedTurn])) {
             if (!turn) continue;
+            for (const id of [
+                ...turn.commandCallIds,
+                ...turn.deferredLiveCommandCalls.keys(),
+                ...turn.openCommands,
+                ...turn.backendSettledCallIds,
+            ]) {
+                settledCallIds.add(id);
+            }
             for (const id of [...turn.commandCallIds, ...turn.deferredLiveCommandCalls.keys()]) {
                 this.rememberStoppedWakeupCall(parseToolCallLifetimeId(id) ?? id);
-                const tracked = this.backgroundCommands.findIndex((entry) => entry.callId === id);
-                if (tracked >= 0) this.backgroundCommands.splice(tracked, 1);
+                // A completed wakeup (no aborted turn) can leave run_command in
+                // the background — keep those records so Archive stays blocked
+                // until terminal result or verified backend exit (#2021 Major).
+                // User Stop of an in-flight / reattached wakeup retires that
+                // turn's background bookkeeping instead (#2021 unit-cli).
+                const bgIdx = this.backgroundCommands.findIndex((entry) => entry.callId === id);
+                if (bgIdx >= 0) {
+                    if (!abortedTurn && this.reactiveWakeupCompleted) {
+                        continue;
+                    }
+                    this.backgroundCommands.splice(bgIdx, 1);
+                }
                 this.noteBackgroundTaskSettled(id);
             }
             for (const id of turn.openCommands) this.rememberStoppedWakeupCall(parseToolCallLifetimeId(id) ?? id);
             turn.deferredLiveCommandCalls.clear();
             turn.openCommands.clear();
         }
+        // Re-publish surviving background work before the caller clears thinking
+        // (#2021 Major).
+        this.registerTranscriptBackgroundTasks();
+        if (settledCallIds.size === 0) return;
+        // Do not settle hub cards that are still tracked as background commands.
+        for (const entry of this.backgroundCommands) {
+            settledCallIds.delete(entry.callId);
+        }
+        if (settledCallIds.size === 0) return;
+        const settlement = convertAgentMessage({
+            type: 'turn_complete',
+            stopReason: 'cancelled',
+            settledCallIds: [...settledCallIds],
+        });
+        if (settlement) this.session.sendAgentMessage(settlement);
     }
 
     private noteSettledFromTranscript(taskId: string | undefined): void {
@@ -2011,6 +2262,13 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 if (typeof message.numTurns === 'number' && Number.isFinite(message.numTurns) && message.numTurns > 0) {
                     turn.numTurns = message.numTurns;
                 }
+                if (Array.isArray(message.settledCallIds) && message.settledCallIds.length > 0) {
+                    for (const id of message.settledCallIds) {
+                        if (typeof id === 'string' && id.trim().length > 0) {
+                            turn.backendSettledCallIds.push(id);
+                        }
+                    }
+                }
                 return;
             default: {
                 if (this.usesLiveWakeupRendering()) {
@@ -2190,7 +2448,13 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
     /** Abort and session end clear the indicator with an empty snapshot. */
     private clearBackgroundTasksSnapshot(): void {
-        if (this.activeBgTasks.size === 0 && this.lastBgSnapshotIds.length === 0) return;
+        // Drop backing command records too — otherwise a later wakeup can
+        // re-publish dead tasks after verified backend exit (#2021 Major).
+        this.backgroundCommands.length = 0;
+        if (this.activeBgTasks.size === 0 && this.lastBgSnapshotIds.length === 0) {
+            this.emitBackgroundTasksSnapshot();
+            return;
+        }
         this.activeBgTasks.clear();
         this.emitBackgroundTasksSnapshot();
     }
@@ -2256,10 +2520,6 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private async cancelActiveTurn(): Promise<void> {
         const turn = this.turn;
         const wakeupAbort = this.reactiveWakeupAbort;
-        if (wakeupAbort) {
-            this.reactiveWakeupAbort = null;
-            wakeupAbort.abort();
-        }
         if (turn) {
             turn.aborted = true;
             this.session.client.updateAgentState((state) => ({ ...state, steeringActive: false }));
@@ -2267,8 +2527,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         if ((turn || wakeupAbort) && this.usesLiveWakeupRendering()) this.discardingStoppedStarts = true;
         const backend = this.backend;
         const acpSessionId = this.acpSessionId;
-        if (backend && acpSessionId && backend.isTransportAlive()) {
-            if (turn) {
+        if (backend && acpSessionId) {
+            if (turn && backend.isTransportAlive()) {
                 // ACP cancel also ends open tool calls (the hard stop, unlike steer);
                 // their final updates still flow to this turn's handler.
                 await backend.cancelPrompt(acpSessionId);
@@ -2278,10 +2538,199 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 if (turn.steers.length > 0) this.dropUnansweredSteers(backend, turn);
                 this.restartIfCancelIgnored(backend, turn);
             } else if (wakeupAbort) {
-                await backend.cancelPrompt(acpSessionId);
+                // Cancel when stdin still accepts it, then hard-stop. stdin
+                // closed ≠ process dead — arm retirement so settlement waits on
+                // verified tree exit, unless this wakeup already completed
+                // (#2021 Minor).
+                if (backend.isTransportAlive()) {
+                    await backend.cancelPrompt(acpSessionId);
+                }
+                if (!this.reactiveWakeupCompleted) {
+                    this.armWakeupCancelHardStop(backend);
+                }
+            } else if (this.pendingVerifiedWakeupStop) {
+                // Prior wakeup Stop could not verify exit — retry retirement.
+                this.armWakeupCancelHardStop(backend);
             }
         }
+        if (wakeupAbort) {
+            this.reactiveWakeupAbort = null;
+            wakeupAbort.abort();
+        }
         await this.permissionHandler?.cancelAll('User aborted');
+    }
+
+    /** Cancel a pending wakeup hard-stop and release waiters (#2021). */
+    private clearWakeupCancelHardStop(): void {
+        if (this.wakeupHardStopTimer) {
+            clearTimeout(this.wakeupHardStopTimer);
+            this.wakeupHardStopTimer = null;
+        }
+        this.wakeupHardStopGeneration += 1;
+        const resolve = this.resolveWakeupHardStopDone;
+        this.resolveWakeupHardStopDone = null;
+        this.wakeupHardStopDone = null;
+        resolve?.();
+    }
+
+    /**
+     * Wait until the armed wakeup hard-stop finishes retiring (verified
+     * process-tree close via disconnect). Do not treat isAlive()===false as
+     * done — stdin can close while the agent process is still running (#2021).
+     *
+     * @returns true when settlement is safe (verified exit, or Vitest grace).
+     *
+     * Under Vitest, cancel is treated as honored after a short grace so Stop
+     * fixtures stay snappy without retiring the shared mock transport.
+     */
+    private async waitForWakeupCancelHardStop(): Promise<boolean> {
+        const pending = this.wakeupHardStopDone;
+        if (!pending) {
+            // Promise already cleared by a finished hard-stop — return the
+            // latched result, never assume success (#2021 tip Major).
+            return this.wakeupHardStopAttempted ? this.wakeupHardStopVerifiedExit : true;
+        }
+        if (process.env.VITEST) {
+            await Promise.race([
+                pending,
+                new Promise<void>((resolve) => setTimeout(resolve, 5)),
+            ]);
+            this.clearWakeupCancelHardStop();
+            return true;
+        }
+        // Poll transcript while the hard-stop grace runs — if Antigravity
+        // honors cancel and records completion, disarm retirement instead of
+        // waiting the full timer and restarting (#2021 Minor).
+        const pollMs = Math.max(50, Math.min(this.reactivePollMs, 200));
+        for (;;) {
+            if (this.transcriptShowsWakeupCompleted()) {
+                this.reactiveWakeupCompleted = true;
+                this.clearWakeupCancelHardStop();
+                return true;
+            }
+            const winner = await Promise.race([
+                pending.then(() => 'done' as const),
+                new Promise<'tick'>((resolve) => setTimeout(() => resolve('tick'), pollMs)),
+            ]);
+            if (winner === 'done') break;
+        }
+        return this.wakeupHardStopVerifiedExit;
+    }
+
+    /** Terminal transcript evidence that the current wakeup finished cleanly. */
+    private transcriptShowsWakeupCompleted(): boolean {
+        if (this.reactiveWakeupCompleted) return true;
+        const acpSessionId = this.acpSessionId;
+        if (!acpSessionId) return false;
+        const steps = readAgyTranscriptStepsAfter(
+            this.brainDir,
+            acpSessionId,
+            this.lastTranscriptStepIndex,
+        );
+        if (steps.length === 0) return false;
+        const nowMs = Date.now();
+        const latest = steps[steps.length - 1]?.step_index;
+        const tip = typeof latest === 'number' ? latest : this.reactiveWakeupStopPollStepIndex;
+        // Advance the observed index and quiet-period clock only when the tip
+        // moves — a stable completion row must not reset settleMs forever
+        // (#2021 Minor).
+        if (tip > this.reactiveWakeupStopPollStepIndex) {
+            this.reactiveWakeupStopPollStepIndex = tip;
+            this.reactiveWakeupLastProgressAtMs = nowMs;
+        }
+        const lastProgressAtMs = this.reactiveWakeupLastProgressAtMs || nowMs;
+        const inspection = inspectAgyReactiveSteps(
+            steps,
+            this.session.path,
+            nowMs,
+            lastProgressAtMs,
+            this.reactiveTimings,
+        );
+        return inspection.state === 'completed';
+    }
+
+    /**
+     * If AGY ignores wakeup cancel, retire *this* backend after cancelHardStopMs.
+     * The aborted wakeup loop awaits wakeupHardStopDone before settling (#2021).
+     * Resolves the waiter with an explicit verified-exit outcome — settlement
+     * and thinking=false only proceed when the process tree actually ended.
+     */
+    private armWakeupCancelHardStop(backend: AcpSdkBackend): void {
+        this.clearWakeupCancelHardStop();
+        this.wakeupHardStopVerifiedExit = false;
+        this.wakeupHardStopAttempted = true;
+        const generation = this.wakeupHardStopGeneration;
+        const backendRef = backend;
+        this.wakeupHardStopDone = new Promise<void>((resolve) => {
+            this.resolveWakeupHardStopDone = resolve;
+        });
+        this.wakeupHardStopTimer = setTimeout(() => {
+            this.wakeupHardStopTimer = null;
+            void (async () => {
+                let verified = false;
+                try {
+                    if (generation !== this.wakeupHardStopGeneration) return;
+                    // Backend replaced → nothing to retire (or already retired).
+                    if (this.backend !== backendRef) {
+                        verified = backendRef.wasAgentTreeEnded();
+                        return;
+                    }
+                    // Capture cancelled IDs before disconnect clears the handler (#2021).
+                    // Do not skip on !isTransportAlive — stdin closed ≠ tree gone.
+                    const take = (backendRef as { takeCancelledSettlements?: () => string[] })
+                        .takeCancelledSettlements?.() ?? [];
+                    this.pendingWakeupSettlements.push(...take);
+                    const owner = this.handlerOwnerTurn;
+                    if (owner) {
+                        for (const id of [
+                            ...owner.commandCallIds,
+                            ...owner.deferredLiveCommandCalls.keys(),
+                            ...owner.openCommands,
+                            ...owner.backendSettledCallIds,
+                        ]) {
+                            this.pendingWakeupSettlements.push(id);
+                        }
+                    }
+                    logger.warn('[agy-acp] agy did not stop the wakeup after cancel; restarting it');
+                    this.session.sendSessionEvent({
+                        type: 'message',
+                        message: 'Antigravity did not stop the wakeup; restarting it.',
+                    });
+                    this.backendLost = true;
+                    verified = await this.retireBackend(backendRef);
+                    // Verified retirement kills commands from earlier prompts too —
+                    // clear their background snapshot before a replacement so
+                    // Archive does not stay blocked on dead tasks (#2021 Major).
+                    if (verified) {
+                        this.clearBackgroundTasksSnapshot();
+                    }
+                    // Only respawn after verified exit — and only if this
+                    // generation is still current (completion may have disarmed
+                    // the timer while we awaited retirement) (#2021 Minor).
+                    if (
+                        verified
+                        && generation === this.wakeupHardStopGeneration
+                        && !this.shouldExit
+                        && this.acpSessionId
+                    ) {
+                        try {
+                            await this.startBackend(this.acpSessionId);
+                        } catch (error) {
+                            logger.debug('[agy-acp] backend restart after wakeup hard-stop failed', error);
+                        }
+                    }
+                } finally {
+                    if (generation === this.wakeupHardStopGeneration) {
+                        this.wakeupHardStopVerifiedExit = verified;
+                        const resolve = this.resolveWakeupHardStopDone;
+                        this.resolveWakeupHardStopDone = null;
+                        this.wakeupHardStopDone = null;
+                        resolve?.();
+                    }
+                }
+            })();
+        }, this.cancelHardStopMs);
+        this.wakeupHardStopTimer.unref?.();
     }
 
     private cancelOnceSent(backend: AcpSdkBackend, acpSessionId: string, turn: AgyTurn): void {
@@ -2340,9 +2789,21 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async handleAbort(): Promise<void> {
-        const hadTurn = this.turn !== null || this.reactiveWakeupAbort !== null;
+        const hadTurn = this.turn !== null || this.reactiveWakeupAbort !== null || this.pendingVerifiedWakeupStop;
         await this.cancelActiveTurn();
-        this.clearBackgroundTasksSnapshot();
+        // Retry path: prior Stop left thinking on after unverified exit.
+        if (this.pendingVerifiedWakeupStop) {
+            if (this.wakeupHardStopDone) {
+                await this.waitForWakeupCancelHardStop();
+            }
+            await this.retryPendingVerifiedStop();
+        }
+        // Background-only sessions have no foreground cancel evidence. Keep
+        // the snapshot until a terminal task result or verified backend exit
+        // so Archive cannot stop a still-running command (#2021 Major).
+        if (this.backend?.wasAgentTreeEnded() === true || this.activeBgTasks.size === 0) {
+            this.clearBackgroundTasksSnapshot();
+        }
         this.abortController.abort();
         this.abortController = new AbortController();
         if (hadTurn) {
@@ -2357,9 +2818,13 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
     private async handleKill(): Promise<void> {
         const turnSettled = this.turnSettled;
-        this.clearBackgroundTasksSnapshot();
         await this.requestExit('exit', () => this.handleAbort());
         await this.backend?.disconnect();
+        // Clear only after verified tree exit — otherwise Archive still sees
+        // live background work (#2021 Major).
+        if (this.backend?.wasAgentTreeEnded() === true || !this.backend) {
+            this.clearBackgroundTasksSnapshot();
+        }
         // The runner ends the session and closes the client as soon as kill
         // returns, so the turn must put its prompt back or confirm it first;
         // a stuck agy only delays that by the bound.

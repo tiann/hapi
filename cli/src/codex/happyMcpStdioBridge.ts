@@ -1,7 +1,7 @@
 /**
  * HAPI MCP STDIO Bridge
  *
- * Minimal STDIO MCP server exposing HAPI tools such as `change_title`, `display_image`, `display_video`, `display_media`, `list_peers`, `ping_peer`, `inspect_peer`, and `spawn_peer`.
+ * Minimal STDIO MCP server exposing HAPI tools such as `change_title`, `display_image`, `display_video`, `display_media`, `list_peers`, `ping_peer`, `inspect_peer`, `spawn_peer`, and `archive_peer`.
  * On invocation it forwards the tool call to an existing HAPI HTTP MCP server
  * using the StreamableHTTPClientTransport.
  *
@@ -15,11 +15,16 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
+
+/** Auth (10s) + session list (15s) + archive POST (100s) + transport headroom. */
+const ARCHIVE_PEER_BRIDGE_TIMEOUT_MS = 140_000;
 import { PeerDeliveryModeSchema } from '@/modules/pingPeer/deliveryMode';
 import { DISPLAY_IMAGE_TOOL_DESCRIPTION, DISPLAY_MEDIA_TOOL_DESCRIPTION, DISPLAY_VIDEO_TOOL_DESCRIPTION } from '@/modules/common/displayToolDescriptions';
 import { CHANGE_TITLE_TOOL_DESCRIPTION } from '@/modules/common/titleInstruction';
 import {
+  ARCHIVE_PEER_TOOL_DESCRIPTION,
   INSPECT_PEER_TOOL_DESCRIPTION,
   LIST_PEERS_INCLUDE_INACTIVE_PARAM_DESCRIPTION,
   LIST_PEERS_TOOL_DESCRIPTION,
@@ -55,6 +60,7 @@ const DEFAULT_TOOL_NAMES = [
   'ping_peer',
   'inspect_peer',
   'spawn_peer',
+  'archive_peer',
   SESSION_JOB_TOOL_NAME,
   SESSION_WAITING_TOOL_NAME,
 ];
@@ -446,6 +452,78 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
               ],
               isError: true,
             };
+          }
+        }
+      );
+    }
+
+    const archivePeerInputSchema: z.ZodTypeAny = z.object({
+      sessionIdPrefix: z.string().trim().min(1).describe(SESSION_ID_PREFIX_PARAM_DESCRIPTION),
+    });
+
+    if (toolNames.has('archive_peer')) {
+      server.registerTool<any, any>(
+        'archive_peer',
+        {
+          description: ARCHIVE_PEER_TOOL_DESCRIPTION,
+          title: 'Archive Peer Session',
+          inputSchema: archivePeerInputSchema,
+        },
+        async (args: Record<string, unknown>, extra?: {
+          _meta?: { progressToken?: string | number }
+          sendNotification?: (notification: {
+            method: string
+            params: Record<string, unknown>
+          }) => Promise<void>
+        }) => {
+          // OpenCode v1's MCP client defaults to a 60s deadline with
+          // resetTimeoutOnProgress. Keep the stdio caller's clock alive while
+          // the hub waits up to 90s for Runner cleanup.
+          const progressToken = extra?._meta?.progressToken
+          let progress = 0
+          let heartbeat: ReturnType<typeof setInterval> | undefined
+          const sendProgress = async (message: string) => {
+            if (progressToken === undefined || !extra?.sendNotification) return
+            progress += 1
+            try {
+              await extra.sendNotification({
+                method: 'notifications/progress',
+                params: {
+                  progressToken,
+                  progress,
+                  message,
+                },
+              })
+            } catch {
+              // Progress is best-effort; a closed caller must not fail archive.
+            }
+          }
+          try {
+            if (progressToken !== undefined && extra?.sendNotification) {
+              heartbeat = setInterval(() => {
+                void sendProgress('archive still waiting on Runner cleanup')
+              }, 15_000)
+              // Unref so a hung interval cannot keep the bridge process alive.
+              heartbeat.unref?.()
+            }
+            await sendProgress('archive requested')
+            const client = await ensureHttpClient();
+            // MCP SDK defaults to 60s; cover auth+lookup+archive budgets (see ARCHIVE_PEER_BRIDGE_TIMEOUT_MS).
+            const response = await client.callTool(
+              { name: 'archive_peer', arguments: args },
+              CallToolResultSchema,
+              { timeout: ARCHIVE_PEER_BRIDGE_TIMEOUT_MS },
+            );
+            return response as any;
+          } catch (error) {
+            return {
+              content: [
+                { type: 'text' as const, text: `Failed to archive peer: ${error instanceof Error ? error.message : String(error)}` },
+              ],
+              isError: true,
+            };
+          } finally {
+            if (heartbeat) clearInterval(heartbeat)
           }
         }
       );

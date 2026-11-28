@@ -11,11 +11,19 @@ import { usePlatform } from '@/hooks/usePlatform'
 import { useLongPress } from '@/hooks/useLongPress'
 import { useAnchoredMenu } from '@/hooks/useAnchoredMenu'
 import { sessionArchiveMutationKey } from '@/hooks/mutations/useSessionActions'
+import { sessionBlocksHardArchive, sessionHasDurableLiveWork } from '@/lib/sessionHasLiveWork'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { ArchiveIcon, CopyIcon, PlusIcon } from '@/components/icons'
 
-// Same liveness the hub archive route accepts.
+// Same destroy-state gate the hub archive route accepts: skip rows that will
+// 409 (active blocksHardArchive, or disconnected durable work — #2020/#2021).
+// Disconnected rows with only stale permission requests stay eligible.
 function isArchivable(session: SessionSummary): boolean {
+    if (session.active) {
+        if (sessionBlocksHardArchive(session)) return false
+    } else if (sessionHasDurableLiveWork(session)) {
+        return false
+    }
     return session.active || isLiveLifecycleState(session.metadata?.lifecycleState)
 }
 

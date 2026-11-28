@@ -26,7 +26,7 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         tag: string,
         machineId?: string,
         hostPid?: number,
-        opts?: { startedBy?: 'runner' | 'terminal'; startedFromRunner?: boolean; flavor?: 'claude' | 'opencode' }
+        opts?: { startedBy?: 'runner' | 'terminal'; startedFromRunner?: boolean; flavor?: import('@hapi/protocol').AgentFlavor }
     ): string {
         const startedBy = opts?.startedBy ?? 'runner'
         const created = cache().getOrCreateSession(
@@ -308,8 +308,9 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(timeoutMs).toBeLessThanOrEqual(90_000)
     })
 
-    it('does not archive when the runner confirms still_alive after KillSession miss', async () => {
+    it('does not archive when the runner confirms still_alive after KillSession miss for a WORKING peer', async () => {
         const sessionId = insertActiveSession('sess-still-alive', 'machine-x')
+        cache().getSession(sessionId)!.thinking = true
         setKillSessionMissingTarget()
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
             async () => 'still_alive'
@@ -319,6 +320,1043 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         const session = cache().getSession(sessionId)
         expect(session?.active).toBe(true)
         expect(session?.metadata?.lifecycleState).not.toBe('archived')
+    })
+
+    it('refuses archive before stop RPCs when the session has live work (#2020)', async () => {
+        const sessionId = insertActiveSession('sess-live-work-block', 'machine-x')
+        cache().getSession(sessionId)!.thinking = true
+        let killCalls = 0
+        ;(engine as unknown as { rpcGateway: { killSession: unknown } }).rpcGateway.killSession =
+            async () => { killCalls++; return {} }
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => 'already_gone'
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(killCalls).toBe(0)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).not.toBe('archived')
+    })
+
+    it('refuses archive before Kill when idleReconcileExempt (#2020 dogfood)', async () => {
+        // CI-watching / holding-pen peers set exempt so reversible idle
+        // reconcile leaves them alone — hard Archive must honour the same hook.
+        const sessionId = insertActiveSession('sess-exempt-block', 'machine-x')
+        const live = cache().getSession(sessionId)!
+        live.thinking = false
+        live.backgroundTaskCount = 0
+        const current = cache().getSession(sessionId)!
+        const metadata = { ...current.metadata!, idleReconcileExempt: true }
+        const update = store.sessions.updateSessionMetadata(
+            sessionId, metadata, current.metadataVersion, NAMESPACE,
+        )
+        if (update.result !== 'success') throw new Error('metadata update failed')
+        cache().refreshSession(sessionId)
+        let killCalls = 0
+        ;(engine as unknown as { rpcGateway: { killSession: unknown } }).rpcGateway.killSession =
+            async () => { killCalls++; return {} }
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => 'already_gone'
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(killCalls).toBe(0)
+    })
+
+    it('refuses archive before Kill when waiting on external work (#2020 dogfood)', async () => {
+        const sessionId = insertActiveSession('sess-waiting-ci', 'machine-x')
+        const live = cache().getSession(sessionId)!
+        live.thinking = false
+        live.backgroundTaskCount = 0
+        const current = cache().getSession(sessionId)!
+        const metadata = {
+            ...current.metadata!,
+            waiting: { since: Date.now(), reason: 'watch CI on tip' },
+        }
+        const update = store.sessions.updateSessionMetadata(
+            sessionId, metadata, current.metadataVersion, NAMESPACE,
+        )
+        if (update.result !== 'success') throw new Error('metadata update failed')
+        cache().refreshSession(sessionId)
+        let killCalls = 0
+        ;(engine as unknown as { rpcGateway: { killSession: unknown } }).rpcGateway.killSession =
+            async () => { killCalls++; return {} }
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => 'already_gone'
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(killCalls).toBe(0)
+    })
+
+    it('refuses archive before stop RPCs for background-only live work (#2020)', async () => {
+        const sessionId = insertActiveSession('sess-bg-only-block', 'machine-x')
+        const live = cache().getSession(sessionId)!
+        live.thinking = false
+        live.backgroundTaskCount = 2
+        let killCalls = 0
+        let stopCalls = 0
+        ;(engine as unknown as { rpcGateway: { killSession: unknown } }).rpcGateway.killSession =
+            async () => { killCalls++; return {} }
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => { stopCalls++; return 'already_gone' }
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(killCalls).toBe(0)
+        expect(stopCalls).toBe(0)
+    })
+
+    it('clears a stale derivedToolWork flag when the transcript has no open work (#2021)', async () => {
+        // A leftover flag with an idle transcript must not invent live work —
+        // archive refreshes from the transcript before the guard.
+        const sessionId = insertActiveSession('sess-derived-stale-clear', 'machine-x')
+        const live = cache().getSession(sessionId)!
+        live.thinking = false
+        live.backgroundTaskCount = 0
+        live.derivedToolWork = true
+        setKillSessionOk()
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => 'already_gone'
+
+        await engine.archiveSession(sessionId)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).toBe('archived')
+        expect(cache().getSession(sessionId)?.derivedToolWork).toBe(false)
+    })
+
+    it('refuses archive when an open tool call is in the transcript before the derived sweep (#2021)', async () => {
+        const { AGENT_MESSAGE_PAYLOAD_TYPE } = await import('@hapi/protocol')
+        const sessionId = insertActiveSession('sess-derived-race', 'machine-x')
+        const live = cache().getSession(sessionId)!
+        live.thinking = false
+        live.backgroundTaskCount = 0
+        live.derivedToolWork = false
+        store.messages.upsertToolCallMessage(
+            sessionId,
+            {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: { type: 'tool-call', callId: 'race-1', name: 'Bash', input: {}, status: 'in_progress' },
+                },
+            },
+            'race-1',
+        )
+        let killCalls = 0
+        let stopCalls = 0
+        ;(engine as unknown as { rpcGateway: { killSession: unknown } }).rpcGateway.killSession =
+            async () => { killCalls++; return {} }
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => { stopCalls++; return 'already_gone' }
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(killCalls).toBe(0)
+        expect(stopCalls).toBe(0)
+        expect(cache().getSession(sessionId)?.derivedToolWork).toBe(true)
+    })
+
+    it('archives after an ACP turn-complete settles a sticky cancelled tool call (#2021)', async () => {
+        const { AGENT_MESSAGE_PAYLOAD_TYPE } = await import('@hapi/protocol')
+        const sessionId = insertActiveSession('sess-acp-cancel-settle', 'machine-x')
+        const live = cache().getSession(sessionId)!
+        live.thinking = false
+        live.backgroundTaskCount = 0
+        live.derivedToolWork = true
+        store.messages.upsertToolCallMessage(
+            sessionId,
+            {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: { type: 'tool-call', callId: 'cancelled-1', name: 'Bash', input: {}, status: 'in_progress' },
+                },
+            },
+            'cancelled-1',
+        )
+        store.messages.addMessage(sessionId, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'turn-complete',
+                    stopReason: 'cancelled',
+                    settledCallIds: ['cancelled-1'],
+                },
+            },
+        })
+        setKillSessionOk()
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => 'already_gone'
+
+        await engine.archiveSession(sessionId)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).toBe('archived')
+        expect(cache().getSession(sessionId)?.derivedToolWork).toBe(false)
+    })
+
+    it('refuses archive when a child tool call stays open after parent turn-complete (#2021)', async () => {
+        const { AGENT_MESSAGE_PAYLOAD_TYPE } = await import('@hapi/protocol')
+        const sessionId = insertActiveSession('sess-opencode-child-open', 'machine-x')
+        const live = cache().getSession(sessionId)!
+        live.thinking = false
+        live.backgroundTaskCount = 0
+        live.derivedToolWork = false
+        store.messages.upsertToolCallMessage(
+            sessionId,
+            {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: { type: 'tool-call', callId: 'parent-cancelled', name: 'Bash', input: {}, status: 'in_progress' },
+                },
+            },
+            'parent-cancelled',
+        )
+        store.messages.upsertToolCallMessage(
+            sessionId,
+            {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: {
+                        type: 'tool-call',
+                        callId: 'child-still-open',
+                        name: 'Bash',
+                        input: {},
+                        status: 'in_progress',
+                        childSessionId: 'ses_child',
+                    },
+                },
+            },
+            'child-still-open',
+        )
+        store.messages.addMessage(sessionId, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'turn-complete',
+                    stopReason: 'cancelled',
+                    settledCallIds: ['parent-cancelled'],
+                },
+            },
+        })
+        let killCalls = 0
+        ;(engine as unknown as { rpcGateway: { killSession: unknown } }).rpcGateway.killSession =
+            async () => { killCalls++; return {} }
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(killCalls).toBe(0)
+    })
+
+    it('refuses archive when an OpenCode child call outlives a newer parent prompt (#2021)', async () => {
+        const { AGENT_MESSAGE_PAYLOAD_TYPE } = await import('@hapi/protocol')
+        const sessionId = insertActiveSession('sess-opencode-child-across-prompt', 'machine-x')
+        const live = cache().getSession(sessionId)!
+        live.thinking = false
+        live.backgroundTaskCount = 0
+        live.derivedToolWork = false
+        store.messages.upsertToolCallMessage(
+            sessionId,
+            {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: {
+                        type: 'tool-call',
+                        callId: 'child-long',
+                        name: 'Bash',
+                        input: {},
+                        status: 'in_progress',
+                        childSessionId: 'ses_child',
+                    },
+                },
+            },
+            'child-long',
+        )
+        store.messages.addMessage(sessionId, {
+            role: 'user',
+            content: { type: 'text', text: 'parent follow-up after child started' },
+        })
+        let killCalls = 0
+        ;(engine as unknown as { rpcGateway: { killSession: unknown } }).rpcGateway.killSession =
+            async () => { killCalls++; return {} }
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(killCalls).toBe(0)
+    })
+
+    it('refuses archive when an OpenCode child call is older than the lookback window (#2021)', async () => {
+        const { AGENT_MESSAGE_PAYLOAD_TYPE } = await import('@hapi/protocol')
+        const sessionId = insertActiveSession('sess-opencode-child-lookback', 'machine-x')
+        const live = cache().getSession(sessionId)!
+        live.thinking = false
+        live.backgroundTaskCount = 0
+        live.derivedToolWork = false
+        store.messages.upsertToolCallMessage(
+            sessionId,
+            {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: {
+                        type: 'tool-call',
+                        callId: 'child-ancient',
+                        name: 'Bash',
+                        input: {},
+                        status: 'in_progress',
+                        childSessionId: 'ses_child',
+                    },
+                },
+            },
+            'child-ancient',
+        )
+        for (let i = 0; i < 210; i += 1) {
+            store.messages.addMessage(sessionId, {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: { type: 'message', message: `filler-${i}` },
+                },
+            })
+        }
+        let killCalls = 0
+        ;(engine as unknown as { rpcGateway: { killSession: unknown } }).rpcGateway.killSession =
+            async () => { killCalls++; return {} }
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(killCalls).toBe(0)
+    })
+
+    it('archives after turn-complete clears a lookback-evicted OpenCode child call (#2021)', async () => {
+        const { AGENT_MESSAGE_PAYLOAD_TYPE } = await import('@hapi/protocol')
+        const sessionId = insertActiveSession('sess-opencode-child-cleared', 'machine-x')
+        const live = cache().getSession(sessionId)!
+        live.thinking = false
+        live.backgroundTaskCount = 0
+        live.derivedToolWork = true
+        store.messages.upsertToolCallMessage(
+            sessionId,
+            {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: {
+                        type: 'tool-call',
+                        callId: 'child-done',
+                        name: 'Bash',
+                        input: {},
+                        status: 'in_progress',
+                        childSessionId: 'ses_child',
+                    },
+                },
+            },
+            'child-done',
+        )
+        for (let i = 0; i < 210; i += 1) {
+            store.messages.addMessage(sessionId, {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: { type: 'message', message: `filler-${i}` },
+                },
+            })
+        }
+        store.messages.addMessage(sessionId, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'turn-complete',
+                    stopReason: 'cancelled',
+                    settledCallIds: ['child-done'],
+                },
+            },
+        })
+        setKillSessionOk()
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => 'already_gone'
+
+        await engine.archiveSession(sessionId)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).toBe('archived')
+    })
+
+    it('refuses archive when a scheduled prompt sits after an open tool call (#2021)', async () => {
+        const { AGENT_MESSAGE_PAYLOAD_TYPE } = await import('@hapi/protocol')
+        const sessionId = insertActiveSession('sess-scheduled-masks-tool', 'machine-x')
+        const live = cache().getSession(sessionId)!
+        live.thinking = false
+        live.backgroundTaskCount = 0
+        live.derivedToolWork = false
+        store.messages.upsertToolCallMessage(
+            sessionId,
+            {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: { type: 'tool-call', callId: 'call-open', name: 'Bash', input: {}, status: 'in_progress' },
+                },
+            },
+            'call-open',
+        )
+        store.messages.addMessage(
+            sessionId,
+            { role: 'user', content: { type: 'text', text: 'later' } },
+            'sched-1',
+            Date.now() + 60_000,
+        )
+        let killCalls = 0
+        ;(engine as unknown as { rpcGateway: { killSession: unknown } }).rpcGateway.killSession =
+            async () => { killCalls++; return {} }
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(killCalls).toBe(0)
+    })
+
+    it('refuses archive for an active session awaiting permission input (#2020)', async () => {
+        const sessionId = insertActiveSession('sess-pending-req-active', 'machine-x')
+        const live = cache().getSession(sessionId)!
+        live.agentState = {
+            requests: {
+                r1: { tool: 'Bash', arguments: {}, createdAt: Date.now() },
+            },
+        } as never
+        let killCalls = 0
+        ;(engine as unknown as { rpcGateway: { killSession: unknown } }).rpcGateway.killSession =
+            async () => { killCalls++; return {} }
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(killCalls).toBe(0)
+    })
+
+    it('still verifies Runner cleanup for a disconnected session with stale pending requests (#2020)', async () => {
+        const sessionId = insertActiveSession('sess-pending-req-stale', 'machine-x')
+        const live = cache().getSession(sessionId)!
+        live.active = false
+        live.thinking = false
+        live.agentState = {
+            requests: {
+                r1: { tool: 'Bash', arguments: {}, createdAt: Date.now() },
+            },
+        } as never
+        setKillSessionMissingTarget()
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => 'already_gone'
+
+        await engine.archiveSession(sessionId)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).toBe('archived')
+    })
+
+    it('refuses still_alive for idle Peer Done — verified cleanup, no soft stand-down (#2020 reframe)', async () => {
+        const sessionId = insertActiveSession('sess-peer-done-alive', 'machine-x')
+        setKillSessionMissingTarget()
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => 'still_alive'
+
+        await expect(engine.archiveSession(sessionId)).rejects.toThrow(/not yet confirmed/)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).not.toBe('archived')
+    })
+
+    it('still refuses still_alive when the peer is thinking (WORKING) (#2020)', async () => {
+        const sessionId = insertActiveSession('sess-working-alive', 'machine-x')
+        cache().getSession(sessionId)!.thinking = true
+        setKillSessionMissingTarget()
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => 'still_alive'
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(cache().getSession(sessionId)?.active).toBe(true)
+    })
+
+    it('refuses archive while an expired in-flight turn is still alive (#2021 Approach)', async () => {
+        // expireInactive flips active=false and thinking=false, but the durable
+        // unresolvedTurn latch must keep Archive from Kill/Stop while the
+        // Runner still reports the worker generation alive.
+        const sessionId = insertActiveSession('sess-expired-thinking', 'machine-x')
+        const live = cache().getSession(sessionId)!
+        live.thinking = true
+        // Thinking rows use a 5-minute expireInactive grace (sessionCache).
+        live.activeAt = Date.now() - 360_000
+        expect(cache().expireInactive(Date.now())).toContain(sessionId)
+        expect(live.active).toBe(false)
+        expect(live.thinking).toBe(false)
+        expect(live.metadata?.unresolvedTurn).toBeTruthy()
+
+        setKillSessionMissingTarget()
+        let killCalled = false
+        let stopCalled = false
+        const gateway = engine as unknown as {
+            rpcGateway: {
+                killSession: unknown
+                stopRunnerSession: unknown
+                probeRunnerSessionExit: unknown
+            }
+        }
+        gateway.rpcGateway.killSession = async () => {
+            killCalled = true
+            throw new RpcTargetMissingError('KillSession', 'handler-not-registered')
+        }
+        gateway.rpcGateway.stopRunnerSession = async () => {
+            stopCalled = true
+            return 'still_alive'
+        }
+        gateway.rpcGateway.probeRunnerSessionExit = async () => 'still_alive'
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(killCalled).toBe(false)
+        expect(stopCalled).toBe(false)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).not.toBe('archived')
+    })
+
+    it('archives after Runner restart when durable tool work is already_gone (#2021 Approach)', async () => {
+        const { AGENT_MESSAGE_PAYLOAD_TYPE } = await import('@hapi/protocol')
+        const sessionId = insertActiveSession('sess-expired-durable-child', 'machine-x', undefined, {
+            flavor: 'opencode',
+        })
+        // Durable OpenCode child work in the transcript — survives heartbeat expiry.
+        store.messages.upsertToolCallMessage(
+            sessionId,
+            {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: {
+                        type: 'tool-call',
+                        callId: 'child-expired',
+                        name: 'Bash',
+                        input: {},
+                        status: 'in_progress',
+                        childSessionId: 'ses_child_expired',
+                    },
+                },
+            },
+            'child-expired',
+        )
+        const live = cache().getSession(sessionId)!
+        live.activeAt = Date.now() - 360_000
+        expect(cache().expireInactive(Date.now())).toContain(sessionId)
+        expect(live.active).toBe(false)
+
+        setKillSessionMissingTarget()
+        const gateway = engine as unknown as {
+            rpcGateway: { stopRunnerSession: unknown; probeRunnerSessionExit: unknown }
+        }
+        let probed = false
+        gateway.rpcGateway.stopRunnerSession = async () => 'already_gone'
+        gateway.rpcGateway.probeRunnerSessionExit = async () => {
+            probed = true
+            return 'already_gone'
+        }
+
+        await engine.archiveSession(sessionId)
+        expect(probed).toBe(true)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).toBe('archived')
+        expect(store.messages.getLiveToolWork(sessionId)).toBe(false)
+    })
+
+    it('refuses archive when only PID-host fallback reports already_gone (#2021 Approach)', async () => {
+        // Session probe unknown (e.g. Codex registry unreadable) + wrapper PID
+        // already_gone must NOT clear durable work — that skipped Codex (#2021).
+        const { AGENT_MESSAGE_PAYLOAD_TYPE } = await import('@hapi/protocol')
+        const sessionId = insertActiveSession('sess-pid-fallback-only', 'machine-x', 7171, {
+            flavor: 'codex',
+        })
+        store.messages.upsertToolCallMessage(
+            sessionId,
+            {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: {
+                        type: 'tool-call',
+                        callId: 'codex-shell',
+                        name: 'shell',
+                        input: {},
+                        status: 'in_progress',
+                    },
+                },
+            },
+            'codex-shell',
+        )
+        const live = cache().getSession(sessionId)!
+        live.activeAt = Date.now() - 360_000
+        expect(cache().expireInactive(Date.now())).toContain(sessionId)
+
+        setKillSessionMissingTarget()
+        let stopCalled = false
+        const gateway = engine as unknown as {
+            rpcGateway: { stopRunnerSession: unknown; probeRunnerSessionExit: unknown }
+        }
+        gateway.rpcGateway.stopRunnerSession = async () => {
+            stopCalled = true
+            return 'already_gone'
+        }
+        gateway.rpcGateway.probeRunnerSessionExit = async (id: string) => {
+            if (id.startsWith('PID-')) return 'already_gone'
+            return 'unknown'
+        }
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(stopCalled).toBe(false)
+        expect(store.messages.getLiveToolWork(sessionId)).toBe(true)
+    })
+
+    it('refuses archive after active wrapper exit while durable turn survives (#2021 Approach)', async () => {
+        // Child-exit before heartbeat expiry used to clear unresolvedTurn via
+        // sessionCache.handleSessionEnd — Archive then skipped the probe.
+        const sessionId = insertActiveSession('sess-active-exit-turn', 'machine-x', 6161, {
+            flavor: 'cursor',
+        })
+        const live = cache().getSession(sessionId)!
+        const marker = 'Mon Nov 25 12:00:00 2026'
+        const current = store.sessions.getSession(sessionId)!
+        expect(store.sessions.updateSessionMetadata(
+            sessionId,
+            { ...current.metadata as object, hostStartMarker: marker, lifecycleStateSince: Date.now() - 1_000 },
+            current.metadataVersion,
+            NAMESPACE,
+        ).result).toBe('success')
+        cache().refreshSession(sessionId)
+        cache().handleSessionAlive({ sid: sessionId, time: Date.now(), thinking: true })
+        expect(cache().getSession(sessionId)?.thinking).toBe(true)
+
+        engine.handleSessionChildExited({
+            machineId: 'machine-x',
+            namespace: live.namespace,
+            sid: sessionId,
+            pid: 6161,
+            processStartMarker: marker,
+            time: Date.now(),
+        })
+        const after = cache().getSession(sessionId)!
+        expect(after.active).toBe(false)
+        expect(after.thinking).toBe(false)
+        expect(after.metadata?.unresolvedTurn).toBeTruthy()
+
+        setKillSessionMissingTarget()
+        let stopCalled = false
+        const gateway = engine as unknown as {
+            rpcGateway: { stopRunnerSession: unknown; probeRunnerSessionExit: unknown }
+        }
+        gateway.rpcGateway.stopRunnerSession = async () => {
+            stopCalled = true
+            return 'already_gone'
+        }
+        gateway.rpcGateway.probeRunnerSessionExit = async () => 'still_alive'
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(stopCalled).toBe(false)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).not.toBe('archived')
+    })
+
+    it('refuses archive when wrapper tombstone but agent containment still live (#2021 Approach)', async () => {
+        // Runner probe returns still_alive when an ACP process group survives
+        // the HAPI wrapper exit — Archive must 409 with zero Kill/Stop.
+        const { AGENT_MESSAGE_PAYLOAD_TYPE } = await import('@hapi/protocol')
+        const sessionId = insertActiveSession('sess-wrapper-dead-agent-live', 'machine-x', 5151, {
+            flavor: 'cursor',
+        })
+        store.messages.upsertToolCallMessage(
+            sessionId,
+            {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: {
+                        type: 'tool-call',
+                        callId: 'acp-shell',
+                        name: 'Shell',
+                        input: {},
+                        status: 'in_progress',
+                    },
+                },
+            },
+            'acp-shell',
+        )
+        const live = cache().getSession(sessionId)!
+        live.activeAt = Date.now() - 360_000
+        expect(cache().expireInactive(Date.now())).toContain(sessionId)
+        expect(live.active).toBe(false)
+
+        // Late wrapper-exit notice must not clear sticky tools.
+        engine.handleSessionChildExited({
+            machineId: 'machine-x',
+            namespace: live.namespace,
+            sid: sessionId,
+            pid: 5151,
+            time: Date.now(),
+        })
+        expect(store.messages.getLiveToolWork(sessionId)).toBe(true)
+
+        setKillSessionMissingTarget()
+        let stopCalled = false
+        const gateway = engine as unknown as {
+            rpcGateway: { stopRunnerSession: unknown; probeRunnerSessionExit: unknown }
+        }
+        gateway.rpcGateway.stopRunnerSession = async () => {
+            stopCalled = true
+            return 'already_gone'
+        }
+        gateway.rpcGateway.probeRunnerSessionExit = async () => 'still_alive'
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(stopCalled).toBe(false)
+        expect(store.messages.getLiveToolWork(sessionId)).toBe(true)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).not.toBe('archived')
+    })
+
+    it('refuses archive when durable tool work is still live after expiry (#2021 Approach)', async () => {
+        const { AGENT_MESSAGE_PAYLOAD_TYPE } = await import('@hapi/protocol')
+        const sessionId = insertActiveSession('sess-expired-durable-live', 'machine-x', 4242, {
+            flavor: 'opencode',
+        })
+        store.messages.upsertToolCallMessage(
+            sessionId,
+            {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: {
+                        type: 'tool-call',
+                        callId: 'child-live',
+                        name: 'Bash',
+                        input: {},
+                        status: 'in_progress',
+                        childSessionId: 'ses_child_live',
+                    },
+                },
+            },
+            'child-live',
+        )
+        const live = cache().getSession(sessionId)!
+        live.activeAt = Date.now() - 360_000
+        expect(cache().expireInactive(Date.now())).toContain(sessionId)
+
+        setKillSessionMissingTarget()
+        let stopCalled = false
+        const gateway = engine as unknown as {
+            rpcGateway: { stopRunnerSession: unknown; probeRunnerSessionExit: unknown }
+        }
+        gateway.rpcGateway.stopRunnerSession = async () => {
+            stopCalled = true
+            return 'still_alive'
+        }
+        gateway.rpcGateway.probeRunnerSessionExit = async () => 'still_alive'
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        // Generation may still be working — no killing StopSession (#2021 Approach).
+        expect(stopCalled).toBe(false)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).not.toBe('archived')
+    })
+
+    it('archives when only prior-generation durable work remains (#2021 current-marker-only / #2657)', async () => {
+        // Prior-gen backgroundWork is retained for debugging but no longer
+        // blocks Archive once a replacement has registered (#2657 residual:
+        // a still-running prior worker is not detected).
+        const sessionId = insertActiveSession('sess-prior-gen-bg', 'machine-x', 7001, {
+            flavor: 'agy',
+        })
+        const before = cache().getSession(sessionId)!
+        expect(store.sessions.updateSessionMetadata(
+            sessionId,
+            { ...before.metadata!, hostStartMarker: 'worker-A', hostPid: 7001 },
+            before.metadataVersion,
+            NAMESPACE,
+        ).result).toBe('success')
+        cache().refreshSession(sessionId)
+        cache().setBackgroundTasks(sessionId, [
+            { id: 'bg-prior', type: 'local_bash', description: 'sleep 3600' },
+        ])
+        expect(cache().getSession(sessionId)!.metadata?.backgroundWork?.hostStartMarker).toBe('worker-A')
+
+        const current = cache().getSession(sessionId)!
+        const replaced = {
+            ...current.metadata!,
+            hostPid: 7002,
+            hostStartMarker: 'worker-B',
+        }
+        const update = store.sessions.updateSessionMetadata(
+            sessionId,
+            replaced,
+            current.metadataVersion,
+            NAMESPACE,
+        )
+        if (update.result !== 'success') throw new Error('metadata update failed')
+        engine.handleRealtimeEvent({
+            type: 'session-updated',
+            sessionId,
+            data: { metadata: { version: update.version, value: replaced } },
+        })
+        const afterReplace = cache().getSession(sessionId)!
+        expect(afterReplace.metadata?.hostStartMarker).toBe('worker-B')
+        expect(afterReplace.metadata?.backgroundWork?.hostStartMarker).toBe('worker-A')
+        expect(afterReplace.metadata?.backgroundWork?.tasks).toHaveLength(1)
+
+        afterReplace.activeAt = Date.now() - 60_000
+        expect(cache().expireInactive(Date.now())).toContain(sessionId)
+
+        setKillSessionMissingTarget()
+        let stopCalled = false
+        const gateway = engine as unknown as {
+            rpcGateway: { stopRunnerSession: unknown; probeRunnerSessionExit: unknown }
+        }
+        gateway.rpcGateway.stopRunnerSession = async () => {
+            stopCalled = true
+            return 'already_gone'
+        }
+        gateway.rpcGateway.probeRunnerSessionExit = async () => 'already_gone'
+
+        await engine.archiveSession(sessionId)
+        expect(stopCalled).toBe(true)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).toBe('archived')
+        // Probe already_gone for B must not erase A's retained record.
+        expect(cache().getSession(sessionId)?.metadata?.backgroundWork?.tasks).toHaveLength(1)
+        expect(cache().getSession(sessionId)?.metadata?.backgroundWork?.hostStartMarker).toBe('worker-A')
+    })
+
+    it('refuses Archive when the replacement reports its own background work (#2021 current-gen)', async () => {
+        const sessionId = insertActiveSession('sess-replacement-bg', 'machine-x', 7101, {
+            flavor: 'agy',
+        })
+        const before = cache().getSession(sessionId)!
+        expect(store.sessions.updateSessionMetadata(
+            sessionId,
+            { ...before.metadata!, hostStartMarker: 'worker-A', hostPid: 7101 },
+            before.metadataVersion,
+            NAMESPACE,
+        ).result).toBe('success')
+        cache().refreshSession(sessionId)
+        cache().setBackgroundTasks(sessionId, [
+            { id: 'bg-a', type: 'local_bash', description: 'A sleep' },
+        ])
+
+        const current = cache().getSession(sessionId)!
+        const replaced = {
+            ...current.metadata!,
+            hostPid: 7102,
+            hostStartMarker: 'worker-B',
+        }
+        const update = store.sessions.updateSessionMetadata(
+            sessionId,
+            replaced,
+            current.metadataVersion,
+            NAMESPACE,
+        )
+        if (update.result !== 'success') throw new Error('metadata update failed')
+        engine.handleRealtimeEvent({
+            type: 'session-updated',
+            sessionId,
+            data: { metadata: { version: update.version, value: replaced } },
+        })
+
+        // B claims the durable slot with its own work.
+        cache().setBackgroundTasks(sessionId, [
+            { id: 'bg-b', type: 'local_bash', description: 'B sleep' },
+        ])
+        expect(cache().getSession(sessionId)!.metadata?.backgroundWork?.hostStartMarker).toBe('worker-B')
+
+        setKillSessionMissingTarget()
+        let stopCalled = false
+        const gateway = engine as unknown as {
+            rpcGateway: { stopRunnerSession: unknown; probeRunnerSessionExit: unknown }
+        }
+        gateway.rpcGateway.stopRunnerSession = async () => {
+            stopCalled = true
+            return 'already_gone'
+        }
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(stopCalled).toBe(false)
+    })
+
+    it('archives background-only work when Runner reports already_gone after expiry (#2021 Approach)', async () => {
+        // Antigravity settles the tool row when backgrounding, then only
+        // re-emits background_tasks_changed on membership change. Expiry keeps
+        // the snapshot; a verified Runner exit retires it so Archive is not
+        // stranded after host restart (#2021 Approach).
+        const sessionId = insertActiveSession('sess-expired-background-only', 'machine-x', undefined, {
+            flavor: 'agy',
+        })
+        cache().setBackgroundTasks(sessionId, [
+            { id: 'bg-1', type: 'local_bash', description: 'sleep 3600' },
+        ])
+        const live = cache().getSession(sessionId)!
+        live.thinking = false
+        live.derivedToolWork = false
+        live.activeAt = Date.now() - 60_000
+        expect(cache().expireInactive(Date.now())).toContain(sessionId)
+        expect(live.active).toBe(false)
+        expect(live.backgroundTaskCount).toBe(1)
+
+        setKillSessionMissingTarget()
+        const gateway = engine as unknown as {
+            rpcGateway: { stopRunnerSession: unknown; probeRunnerSessionExit: unknown }
+        }
+        let probed = false
+        gateway.rpcGateway.stopRunnerSession = async () => 'already_gone'
+        gateway.rpcGateway.probeRunnerSessionExit = async () => {
+            probed = true
+            return 'already_gone'
+        }
+
+        await engine.archiveSession(sessionId)
+        expect(probed).toBe(true)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).toBe('archived')
+        expect(cache().getSession(sessionId)?.backgroundTaskCount).toBe(0)
+    })
+
+    it('refuses background-only work when Runner exit is unverified (#2021 Approach)', async () => {
+        const sessionId = insertActiveSession('sess-expired-background-unknown', 'machine-x', undefined, {
+            flavor: 'agy',
+        })
+        cache().setBackgroundTasks(sessionId, [
+            { id: 'bg-1', type: 'local_bash', description: 'sleep 3600' },
+        ])
+        const live = cache().getSession(sessionId)!
+        live.thinking = false
+        live.derivedToolWork = false
+        live.activeAt = Date.now() - 60_000
+        expect(cache().expireInactive(Date.now())).toContain(sessionId)
+
+        setKillSessionMissingTarget()
+        let stopCalled = false
+        const gateway = engine as unknown as {
+            rpcGateway: { stopRunnerSession: unknown; probeRunnerSessionExit: unknown }
+        }
+        gateway.rpcGateway.stopRunnerSession = async () => {
+            stopCalled = true
+            return 'already_gone'
+        }
+        gateway.rpcGateway.probeRunnerSessionExit = async () => 'unknown'
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(stopCalled).toBe(false)
+        expect(cache().getSession(sessionId)?.backgroundTaskCount).toBe(1)
+    })
+
+    it('refuses expired durable work on older Runners without ProbeSessionExit (#2021 Approach)', async () => {
+        const { AGENT_MESSAGE_PAYLOAD_TYPE, MACHINE_CAPABILITIES } = await import('@hapi/protocol')
+        const sessionId = insertActiveSession('sess-expired-old-runner', 'machine-old', undefined, {
+            flavor: 'opencode',
+        })
+        store.messages.upsertToolCallMessage(
+            sessionId,
+            {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: {
+                        type: 'tool-call',
+                        callId: 'child-old',
+                        name: 'Bash',
+                        input: {},
+                        status: 'in_progress',
+                        childSessionId: 'ses_child_old',
+                    },
+                },
+            },
+            'child-old',
+        )
+        const live = cache().getSession(sessionId)!
+        live.activeAt = Date.now() - 360_000
+        expect(cache().expireInactive(Date.now())).toContain(sessionId)
+
+        // Connected older Runner advertised caps without the read-only probe.
+        ;(engine as unknown as {
+            getMachine: (id: string) => { metadata: { capabilities: string[] } }
+        }).getMachine = (id: string) => {
+            expect(id).toBe('machine-old')
+            return {
+                metadata: {
+                    capabilities: [
+                        MACHINE_CAPABILITIES.AgentAvailability,
+                        MACHINE_CAPABILITIES.CursorChatStoreStatus,
+                        MACHINE_CAPABILITIES.StopRunner,
+                    ],
+                },
+            }
+        }
+
+        setKillSessionMissingTarget()
+        let stopCalled = false
+        let probeCalled = false
+        const gateway = engine as unknown as {
+            rpcGateway: { stopRunnerSession: unknown; probeRunnerSessionExit: unknown }
+        }
+        gateway.rpcGateway.stopRunnerSession = async () => {
+            stopCalled = true
+            return 'already_gone'
+        }
+        gateway.rpcGateway.probeRunnerSessionExit = async () => {
+            probeCalled = true
+            return 'already_gone'
+        }
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(stopCalled).toBe(false)
+        expect(probeCalled).toBe(false)
+    })
+
+    it('refuses still_alive when lifecycle is idle but transport already expired (#2021 Major)', async () => {
+        const sessionId = insertActiveSession('sess-idle-lifecycle-stale', 'machine-x')
+        const live = cache().getSession(sessionId)!
+        live.active = false
+        live.thinking = false
+        live.metadata = { ...live.metadata!, lifecycleState: 'idle' }
+
+        setKillSessionMissingTarget()
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => 'still_alive'
+
+        await expect(engine.archiveSession(sessionId)).rejects.toThrow(/not yet confirmed/)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).toBe('idle')
+    })
+
+    it('refuses still_alive for still-connected keepalive-idle sessions (#2020 reframe)', async () => {
+        const sessionId = insertActiveSession('sess-idle-lifecycle-connected', 'machine-x')
+        const live = cache().getSession(sessionId)!
+        live.thinking = false
+        live.metadata = { ...live.metadata!, lifecycleState: 'idle' }
+        expect(live.active).toBe(true)
+
+        setKillSessionMissingTarget()
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => 'still_alive'
+
+        await expect(engine.archiveSession(sessionId)).rejects.toThrow(/not yet confirmed/)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).toBe('idle')
     })
 
     it('always calls stopRunnerSession after a successful KillSession', async () => {
@@ -402,7 +1440,7 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(body.metadata.version).toBeGreaterThan(0)
     })
 
-    it('does NOT archive when both KillSession and machine StopSession targets are missing', async () => {
+    it('does NOT archive when both KillSession and machine StopSession targets are missing (idle)', async () => {
         // #1911 bot Major: both RPC targets missing is not proof the detached
         // CLI exited (KillMode=process orphans survive). Keep the row
         // unconfirmed until StopSession can run after the runner reconnects.
@@ -411,54 +1449,104 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
             async () => { throw new RpcTargetMissingError('StopSession', 'handler-not-registered') }
 
-        await expect(engine.archiveSession(sessionId)).rejects.toThrow()
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-cleanup-unavailable')
 
         const session = cache().getSession(sessionId)
         expect(session?.active).toBe(true)
         expect(session?.metadata?.lifecycleState).not.toBe('archived')
     })
 
-    it('does NOT archive when machine StopSession is missing but KillSession was reachable', async () => {
-        // Machine socket alone missing is not proof the detached child is gone
-        // (KillMode=process). KillSession succeeded → refuse without confirm.
+    it('does NOT archive when both KillSession and machine StopSession targets are missing for a WORKING peer', async () => {
+        // #2020: live work refuses before stop RPCs.
+        const sessionId = insertActiveSession('sess-machine-unreachable-working', 'machine-x')
+        cache().getSession(sessionId)!.thinking = true
+        setKillSessionMissingTarget()
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => { throw new RpcTargetMissingError('StopSession', 'handler-not-registered') }
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+
+        const session = cache().getSession(sessionId)
+        expect(session?.active).toBe(true)
+        expect(session?.metadata?.lifecycleState).not.toBe('archived')
+    })
+
+    it('does NOT archive when machine StopSession is missing but KillSession was reachable (idle)', async () => {
         const sessionId = insertActiveSession('sess-machine-only-missing', 'machine-x')
         setKillSessionOk()
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
             async () => { throw new RpcTargetMissingError('StopSession', 'handler-not-registered') }
 
-        await expect(engine.archiveSession(sessionId)).rejects.toThrow()
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-cleanup-unavailable')
 
         const session = cache().getSession(sessionId)
         expect(session?.active).toBe(true)
         expect(session?.metadata?.lifecycleState).not.toBe('archived')
     })
 
-    it('does NOT archive when the runner reports unknown after KillSession miss', async () => {
+    it('does NOT archive when machine StopSession is missing but KillSession was reachable for a WORKING peer', async () => {
+        const sessionId = insertActiveSession('sess-machine-only-missing-working', 'machine-x')
+        cache().getSession(sessionId)!.thinking = true
+        setKillSessionOk()
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => { throw new RpcTargetMissingError('StopSession', 'handler-not-registered') }
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+
+        const session = cache().getSession(sessionId)
+        expect(session?.active).toBe(true)
+        expect(session?.metadata?.lifecycleState).not.toBe('archived')
+    })
+
+    it('does NOT archive when the runner reports unknown after KillSession miss (idle)', async () => {
         const sessionId = insertActiveSession('sess-unknown-to-runner', 'machine-x')
         setKillSessionMissingTarget()
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
             async () => 'unknown'
 
-        await expect(engine.archiveSession(sessionId)).rejects.toThrow()
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-cleanup-unconfirmed')
 
         const session = cache().getSession(sessionId)
         expect(session?.active).toBe(true)
         expect(session?.metadata?.lifecycleState).not.toBe('archived')
     })
 
-    it('does NOT archive when KillSession succeeded but StopSession stays unknown without a confirmable pid', async () => {
-        // KillSession ack alone is not exit proof; without a pid the runner
-        // cannot confirm termination of an untracked CLI (#1910).
+    it('does NOT archive when the runner reports unknown after KillSession miss for a WORKING peer', async () => {
+        const sessionId = insertActiveSession('sess-unknown-to-runner-working', 'machine-x')
+        cache().getSession(sessionId)!.thinking = true
+        setKillSessionMissingTarget()
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => 'unknown'
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+
+        const session = cache().getSession(sessionId)
+        expect(session?.active).toBe(true)
+        expect(session?.metadata?.lifecycleState).not.toBe('archived')
+    })
+
+    it('refuses when KillSession succeeded but StopSession stays unknown without a confirmable pid (#2020 reframe)', async () => {
+        // KillSession ack alone is not exit proof (#1910). Verified cleanup
+        // refuses unknown without a confirmable pid (#2020 reframe).
         const sessionId = insertActiveSession('sess-kill-ok-unknown-no-pid', 'machine-x')
         setKillSessionOk()
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
             async () => 'unknown'
 
-        await expect(engine.archiveSession(sessionId)).rejects.toThrow()
-
-        const session = cache().getSession(sessionId)
-        expect(session?.active).toBe(true)
-        expect(session?.metadata?.lifecycleState).not.toBe('archived')
+        await expect(engine.archiveSession(sessionId)).rejects.toThrow(/not yet confirmed/)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).not.toBe('archived')
     })
 
     it('does NOT archive when KillSession pid confirm lacks a start marker (PID reuse guard)', async () => {
@@ -471,14 +1559,14 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
                 return 'unknown'
             }
 
-        await expect(engine.archiveSession(sessionId)).rejects.toThrow()
+        await expect(engine.archiveSession(sessionId)).rejects.toThrow(/not yet confirmed/)
 
         // Without a marker, do not attempt the raw-PID confirm kill.
         expect(stopCalls).toEqual([{ sid: sessionId, marker: undefined }])
         expect(cache().getSession(sessionId)?.active).toBe(true)
     })
 
-    it('does NOT archive when KillSession pid confirm still reports unknown (socket drop is not exit)', async () => {
+    it('does NOT archive when KillSession pid confirm still reports unknown', async () => {
         const sessionId = insertActiveSession('sess-kill-ok-pid-unknown', 'machine-x')
         setKillSessionOk({ pid: 4242, processStartMarker: 'started-at-1' })
         const stopCalls: Array<{ sid: string; marker?: string }> = []
@@ -488,7 +1576,7 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
                 return 'unknown'
             }
 
-        await expect(engine.archiveSession(sessionId)).rejects.toThrow()
+        await expect(engine.archiveSession(sessionId)).rejects.toThrow(/not yet confirmed/)
 
         expect(stopCalls).toEqual([
             { sid: sessionId, marker: undefined },
@@ -498,7 +1586,6 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(session?.active).toBe(true)
         expect(session?.metadata?.lifecycleState).not.toBe('archived')
     })
-
     it('archives when KillSession pid confirm returns already_gone after session-id unknown', async () => {
         const sessionId = insertActiveSession('sess-kill-ok-pid-gone', 'machine-x')
         setKillSessionOk({ pid: 4242, processStartMarker: 'started-at-1' })
@@ -550,7 +1637,7 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
                 return sid === 'PID-3704400' ? 'still_alive' : 'unknown'
             }
 
-        await expect(engine.archiveSession(sessionId)).rejects.toThrow()
+        await expect(engine.archiveSession(sessionId)).rejects.toThrow(/not yet confirmed/)
 
         expect(stopCalls).toEqual([sessionId, 'PID-3704400'])
         expect(cache().getSession(sessionId)?.active).toBe(true)
@@ -569,7 +1656,6 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(session?.active).toBe(true)
         expect(session?.metadata?.lifecycleState).not.toBe('archived')
     })
-
     it('archives a terminal session when no runner is connected', async () => {
         const sessionId = insertActiveSession('sess-terminal-no-runner', 'machine-x', undefined, {
             startedBy: 'terminal',
@@ -619,13 +1705,13 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(cache().getSession(stubId)?.metadata?.lifecycleState).toBe('archived')
     })
 
-    it('does NOT archive a non-stub runner session on unknown without hostPid', async () => {
+    it('refuses a non-stub runner session on unknown without hostPid', async () => {
         const sessionId = insertActiveSession('sess-live-unknown-no-pid', 'machine-x')
         setKillSessionMissingTarget()
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
             async () => 'unknown'
 
-        await expect(engine.archiveSession(sessionId)).rejects.toThrow()
+        await expect(engine.archiveSession(sessionId)).rejects.toThrow(/not yet confirmed/)
         expect(cache().getSession(sessionId)?.active).toBe(true)
     })
 })

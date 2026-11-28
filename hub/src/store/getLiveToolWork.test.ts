@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'bun:test'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
-import { getToolCallId } from '@hapi/protocol/messages'
 import { Store } from './index'
 
 function makeStore(): Store {
@@ -122,6 +124,67 @@ describe('getLiveToolWork', () => {
         store.close()
     })
 
+    it('clears warm-cache foreground work when a queued prompt is invoked (#2021)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-invoke-foreground')
+
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('fg-queued', { status: 'in_progress' }), 'fg-queued')
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+        // Warm the registry, then insert an uninvoked queued prompt.
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'queued follow-up' } },
+            'queued-follow-up',
+        )
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+        store.messages.markMessagesInvoked(session.id, ['queued-follow-up'], Date.now())
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        store.close()
+    })
+
+    it('preserves newer foreground calls when acknowledging an older queued prompt (#2021)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-invoke-keep-newer')
+
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'first' } },
+            'queued-first',
+        )
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('fg-after', { status: 'in_progress' }), 'fg-after')
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+        store.messages.markMessagesInvoked(session.id, ['queued-first'], Date.now())
+        // Newer open call (higher seq than the ack) must survive.
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+        store.close()
+    })
+
+    it('rebuilds open ACP calls across hub restart for named non-Claude flavors (#2021)', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-live-work-pi-restart-'))
+        const path = join(dir, 'hub.db')
+        try {
+            const store = new Store(path)
+            const session = store.sessions.getOrCreateSession(
+                'pi-restart-fg',
+                { path: '/tmp/pi-restart', flavor: 'pi' },
+                null,
+                'default',
+            )
+            store.messages.upsertToolCallMessage(session.id, toolCallContent('pi-old', { status: 'in_progress' }), 'pi-old')
+            for (let i = 0; i < 210; i += 1) {
+                store.messages.addMessage(session.id, agentMessageContent(`filler-${i}`))
+            }
+            expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+            store.close()
+
+            const restarted = new Store(path)
+            expect(restarted.messages.getLiveToolWork(session.id)).toBe(true)
+            restarted.close()
+        } finally {
+            rmSync(dir, { recursive: true, force: true })
+        }
+    })
+
     it('treats a terminal-status ACP call as settled even without a result row', () => {
         const store = makeStore()
         const session = makeSession(store, 'live-work-acp-terminal')
@@ -129,6 +192,375 @@ describe('getLiveToolWork', () => {
         store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'completed' }), 'call-1')
         expect(store.messages.getLiveToolWork(session.id)).toBe(false)
         store.close()
+    })
+
+    it('closes cancelled ACP calls listed on turn-complete while unlisted child calls stay live', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-acp-turn-complete')
+
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-cancelled', { status: 'in_progress' }), 'call-cancelled')
+        store.messages.upsertToolCallMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'tool-call',
+                    callId: 'call-child',
+                    name: 'Bash',
+                    input: {},
+                    status: 'in_progress',
+                    childSessionId: 'ses_child',
+                },
+            },
+        }, 'call-child')
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+
+        // Parent cancel settles only the ids retired by that prompt — an
+        // OpenCode child call that landed earlier must keep blocking archive.
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'turn-complete',
+                    stopReason: 'cancelled',
+                    settledCallIds: ['call-cancelled'],
+                },
+            },
+        })
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+
+        store.messages.addMessage(session.id, toolCallResultContent('call-child', 'done'))
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        store.close()
+    })
+
+    it('keeps OpenCode child tool work live across a newer parent human turn (#2021)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-child-across-parent')
+
+        store.messages.upsertToolCallMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'tool-call',
+                    callId: 'child-long',
+                    name: 'Bash',
+                    input: {},
+                    status: 'in_progress',
+                    childSessionId: 'ses_child',
+                },
+            },
+        }, 'child-long')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'parent follow-up' } })
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+
+        store.messages.addMessage(session.id, toolCallResultContent('child-long', 'done'))
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        store.close()
+    })
+
+    it('keeps unmatched foreground ACP tool work visible past the transcript lookback (#2021)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-foreground-lookback')
+
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('fg-old', { status: 'in_progress' }), 'fg-old')
+        for (let i = 0; i < 210; i += 1) {
+            store.messages.addMessage(session.id, agentMessageContent(`filler-${i}`))
+        }
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+
+        store.messages.addMessage(session.id, toolCallResultContent('fg-old', 'done'))
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        store.close()
+    })
+
+    it('keeps OpenCode child tool work visible past the transcript lookback (#2021)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-child-past-lookback')
+
+        store.messages.upsertToolCallMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'tool-call',
+                    callId: 'child-ancient',
+                    name: 'Bash',
+                    input: {},
+                    status: 'in_progress',
+                    childSessionId: 'ses_child',
+                },
+            },
+        }, 'child-ancient')
+        // Push the open child row outside the 200-row scan window.
+        for (let i = 0; i < 210; i += 1) {
+            store.messages.addMessage(session.id, agentMessageContent(`filler-${i}`))
+        }
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'turn-complete',
+                    stopReason: 'cancelled',
+                    settledCallIds: ['child-ancient'],
+                },
+            },
+        })
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        store.close()
+    })
+
+    it('rebuilds open child work from durable rows after a hub restart (#2021)', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-live-work-'))
+        const dbPath = join(dir, 'hub.db')
+        try {
+            const store = new Store(dbPath)
+            const session = makeSession(store, 'live-work-child-restart')
+            const sessionId = session.id
+            store.messages.upsertToolCallMessage(sessionId, {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: {
+                        type: 'tool-call',
+                        callId: 'child-restart',
+                        name: 'Bash',
+                        input: {},
+                        status: 'in_progress',
+                        childSessionId: 'ses_child',
+                    },
+                },
+            }, 'child-restart')
+            for (let i = 0; i < 210; i += 1) {
+                store.messages.addMessage(sessionId, agentMessageContent(`filler-${i}`))
+            }
+            store.close()
+
+            // New process / hub restart: cold WeakMap, same durable DB.
+            const restarted = new Store(dbPath)
+            expect(restarted.messages.getLiveToolWork(sessionId)).toBe(true)
+            restarted.close()
+        } finally {
+            rmSync(dir, { recursive: true, force: true })
+        }
+    })
+
+    it('keeps settled child calls closed when a late nonterminal snapshot arrives (#2021)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-child-late-snapshot')
+
+        store.messages.upsertToolCallMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'tool-call',
+                    callId: 'child-late',
+                    name: 'Bash',
+                    input: {},
+                    status: 'in_progress',
+                    childSessionId: 'ses_child',
+                },
+            },
+        }, 'child-late')
+        store.messages.addMessage(session.id, toolCallResultContent('child-late', 'done'))
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+
+        // ACP lifetime mapper can re-emit a start after the result with the
+        // same id. Settled state must stay latched.
+        store.messages.upsertToolCallMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'tool-call',
+                    callId: 'child-late',
+                    name: 'Bash',
+                    input: {},
+                    status: 'in_progress',
+                    childSessionId: 'ses_child',
+                },
+            },
+        }, 'child-late')
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        store.close()
+    })
+
+    it('does not treat an undispatched scheduled prompt as a turn boundary (#2021)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-scheduled-mask')
+
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-open', { status: 'in_progress' }), 'call-open')
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'later' } },
+            'sched-1',
+            Date.now() + 60_000,
+        )
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+
+        store.messages.addMessage(session.id, toolCallResultContent('call-open', 'done'))
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        store.close()
+    })
+
+    it('does not treat an ordinary uninvoked queued prompt as a turn boundary (#2021)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-queued-mask')
+
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-open', { status: 'in_progress' }), 'call-open')
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'queued next' } },
+            'queue-1',
+        )
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+        store.close()
+    })
+
+    it('treats child running-without-open-tool as live work (#2021)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-child-running')
+
+        // Between tools is live work — Runner cleanup only proves death, not
+        // idle. Prefer sticky stranding over archiving a busy child.
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'turn-complete',
+                    stopReason: 'running',
+                    childSessionId: 'ses_child',
+                    childStatus: 'running',
+                },
+            },
+        })
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'parent idle' } })
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+        store.close()
+    })
+
+    it('retires open child work when the worker generation exits (#2021)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-worker-retire')
+
+        store.messages.upsertToolCallMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'tool-call',
+                    callId: 'child-orphan',
+                    name: 'Bash',
+                    input: {},
+                    status: 'in_progress',
+                    childSessionId: 'ses_child',
+                },
+            },
+        }, 'child-orphan')
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+
+        expect(store.messages.retireOpenChildToolWork(session.id)).toBe(true)
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        store.close()
+    })
+
+    it('retires running-without-open-tool when the worker generation exits (#2021)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-retire-running-only')
+
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'turn-complete',
+                    stopReason: 'running',
+                    childSessionId: 'ses_child',
+                    childStatus: 'running',
+                },
+            },
+        })
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+        expect(store.messages.retireOpenChildToolWork(session.id)).toBe(true)
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        store.close()
+    })
+
+    it('retires stale foreground tool calls when the worker generation exits (#2021)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-retire-foreground')
+
+        store.messages.upsertToolCallMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'tool-call',
+                    callId: 'fg-shell',
+                    name: 'Bash',
+                    input: {},
+                    status: 'in_progress',
+                },
+            },
+        }, 'fg-shell')
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+        expect(store.messages.retireOpenChildToolWork(session.id)).toBe(true)
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        store.close()
+    })
+
+    it('retires open Claude tool_use when the worker generation exits (#2021)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-retire-claude')
+
+        store.messages.addMessage(session.id, claudeAssistantContent([
+            { type: 'tool_use', id: 'tu-orphan', name: 'Bash', input: { command: 'sleep 60' } },
+        ]))
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+        expect(store.messages.retireOpenChildToolWork(session.id)).toBe(true)
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        store.close()
+    })
+
+    it('persists open-child retirement across hub restart (#2021)', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-live-work-retire-'))
+        const dbPath = join(dir, 'hub.db')
+        try {
+            const store = new Store(dbPath)
+            const session = makeSession(store, 'live-work-retire-running')
+            const sessionId = session.id
+            store.messages.upsertToolCallMessage(sessionId, {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: {
+                        type: 'tool-call',
+                        callId: 'child-retire',
+                        name: 'Bash',
+                        input: {},
+                        status: 'in_progress',
+                        childSessionId: 'ses_child',
+                    },
+                },
+            }, 'child-retire')
+            expect(store.messages.getLiveToolWork(sessionId)).toBe(true)
+            expect(store.messages.retireOpenChildToolWork(sessionId)).toBe(true)
+            expect(store.messages.getLiveToolWork(sessionId)).toBe(false)
+            store.close()
+
+            const restarted = new Store(dbPath)
+            expect(restarted.messages.getLiveToolWork(sessionId)).toBe(false)
+            restarted.close()
+        } finally {
+            rmSync(dir, { recursive: true, force: true })
+        }
     })
 
     it('reports open claude tool_use pairs until the matching tool_result lands', () => {
@@ -223,6 +655,415 @@ describe('getLiveToolWork', () => {
             [{ type: 'tool_use', id: 'tu-side', name: 'Task', input: {} }],
             { isSidechain: true }
         ))
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        store.close()
+    })
+})
+
+describe('ACP lifetime result-before-start after cold rebuild (#2021)', () => {
+    it('does not treat a later pending row as live when an earlier result settled the same id', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-live-work-acp-order-'))
+        const path = join(dir, 'hub.db')
+        try {
+            const store = new Store(path)
+            const session = store.sessions.getOrCreateSession(
+                'acp-order',
+                { path: '/tmp/acp-order', flavor: 'cursor' },
+                null,
+                'default',
+            )
+            // Durable order: result first, then a nonterminal start with the same lifetime.
+            store.messages.addMessage(session.id, toolCallResultContent('life-1', 'done'))
+            store.messages.upsertToolCallMessage(session.id, {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: {
+                        type: 'tool-call',
+                        callId: 'life-1',
+                        name: 'Shell',
+                        input: {},
+                        status: 'in_progress',
+                    },
+                },
+            }, 'life-1')
+            expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+            store.close()
+
+            const restarted = new Store(path)
+            expect(restarted.messages.getLiveToolWork(session.id)).toBe(false)
+            restarted.close()
+        } finally {
+            rmSync(dir, { recursive: true, force: true })
+        }
+    })
+})
+
+describe('child tool-work cache eviction (#2021)', () => {
+    it('releases tool-work cache entries when a session is deleted', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'evict-child-work')
+        const sessionId = session.id
+        store.messages.upsertToolCallMessage(sessionId, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'tool-call',
+                    callId: 'child-evict',
+                    name: 'Bash',
+                    input: {},
+                    status: 'in_progress',
+                    childSessionId: 'ses_evict',
+                },
+            },
+        }, 'child-evict')
+        expect(store.messages.getLiveToolWork(sessionId)).toBe(true)
+        expect(store.sessions.deleteSession(sessionId, 'default')).toBe(true)
+        // Same id, empty transcript: a leaked WeakMap entry would still report live.
+        const again = store.sessions.getOrCreateSession(
+            'evict-child-work-2',
+            { path: '/tmp/evict-2' },
+            null,
+            'default',
+            undefined,
+            undefined,
+            undefined,
+            sessionId,
+        )
+        expect(again.id).toBe(sessionId)
+        expect(store.messages.getLiveToolWork(sessionId)).toBe(false)
+        store.close()
+    })
+})
+
+describe('periodic derived-work scan cost (#2021)', () => {
+    it('skips durable childToolWork seeding for non-OpenCode cold rebuilds', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-live-work-claude-skip-'))
+        const path = join(dir, 'hub.db')
+        try {
+            const store = new Store(path)
+            const session = store.sessions.getOrCreateSession(
+                'claude-skip-rebuild',
+                { path: '/tmp/claude-skip', flavor: 'claude' },
+                null,
+                'default',
+            )
+            for (let i = 0; i < 50; i += 1) {
+                store.messages.addMessage(session.id, claudeAssistantContent([
+                    { type: 'text', text: `filler-${i}` },
+                ]))
+            }
+            expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+            store.close()
+
+            // Non-OpenCode cold path must not seed childToolWork (that seed is
+            // the OpenCode full-replay side effect). Lookback still answers
+            // Claude live-work without decoding the whole history.
+            const restarted = new Store(path)
+            expect(restarted.messages.getLiveToolWork(session.id)).toBe(false)
+            const meta = restarted.sessions.getSession(session.id)?.metadata as
+                | { childToolWork?: unknown }
+                | undefined
+            expect(meta?.childToolWork).toBeUndefined()
+            restarted.close()
+        } finally {
+            rmSync(dir, { recursive: true, force: true })
+        }
+    })
+})
+
+describe('truncateOpenCodeRewind child settlement (#2021)', () => {
+    it('keeps Archive clear when rewind drops a terminal but durable settlement remembers it', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-rewind-settle')
+
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'turn-complete',
+                    stopReason: 'running',
+                    childSessionId: 'ses_child',
+                    childStatus: 'running',
+                },
+            },
+        })
+        const boundary = store.messages.addMessage(session.id, {
+            role: 'user',
+            content: { type: 'text', text: 'rewind here' },
+        })
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'turn-complete',
+                    stopReason: 'completed',
+                    childSessionId: 'ses_child',
+                    childStatus: 'completed',
+                },
+            },
+        })
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+
+        store.messages.truncateOpenCodeRewind(session.id, boundary.seq, boundary.id)
+        // Durable hub child-work ledger survives the rewindable transcript cut:
+        // verified completion is not forgotten when only the running marker remains.
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        store.close()
+    })
+
+    it('keeps Archive clear when rewind drops a tool result but durable settlement remembers the call', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-rewind-tool-settle')
+
+        store.messages.upsertToolCallMessage(
+            session.id,
+            {
+                role: 'agent',
+                content: {
+                    type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                    data: {
+                        type: 'tool-call',
+                        callId: 'child-tool-1',
+                        name: 'Bash',
+                        input: {},
+                        status: 'in_progress',
+                        childSessionId: 'ses_child',
+                    },
+                },
+            },
+            'child-tool-1',
+        )
+        const boundary = store.messages.addMessage(session.id, {
+            role: 'user',
+            content: { type: 'text', text: 'rewind here' },
+        })
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: { type: 'tool-call-result', callId: 'child-tool-1', output: 'done' },
+            },
+        })
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+
+        store.messages.truncateOpenCodeRewind(session.id, boundary.seq, boundary.id)
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        store.close()
+    })
+
+    it('does not clobber durable settled children when a new status arrives before rebuild', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'live-work-durable-seed',
+            { path: '/tmp/durable-seed', flavor: 'opencode' },
+            null,
+            'default',
+        )
+
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'turn-complete',
+                    stopReason: 'running',
+                    childSessionId: 'ses_a',
+                    childStatus: 'running',
+                },
+            },
+        })
+        const boundary = store.messages.addMessage(session.id, {
+            role: 'user',
+            content: { type: 'text', text: 'rewind here' },
+        })
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'turn-complete',
+                    stopReason: 'completed',
+                    childSessionId: 'ses_a',
+                    childStatus: 'completed',
+                },
+            },
+        })
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        store.messages.truncateOpenCodeRewind(session.id, boundary.seq, boundary.id)
+
+        // Before the next live-work read, a new child status arrives. Writing
+        // must seed durable settled(ses_a) first or it would clobber A.
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'turn-complete',
+                    stopReason: 'running',
+                    childSessionId: 'ses_b',
+                    childStatus: 'running',
+                },
+            },
+        })
+        // ses_b is live; ses_a must stay settled (not resurrected).
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'turn-complete',
+                    stopReason: 'completed',
+                    childSessionId: 'ses_b',
+                    childStatus: 'completed',
+                },
+            },
+        })
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+        store.close()
+    })
+
+    it('lets a previously settled child report running again before the first live-work read (#2021)', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'live-work-resumed-running',
+            { path: '/tmp/resumed-running', flavor: 'opencode' },
+            null,
+            'default',
+        )
+
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'turn-complete',
+                    stopReason: 'running',
+                    childSessionId: 'ses_resume',
+                    childStatus: 'running',
+                },
+            },
+        })
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'turn-complete',
+                    stopReason: 'completed',
+                    childSessionId: 'ses_resume',
+                    childStatus: 'completed',
+                },
+            },
+        })
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+
+        // Clear in-memory registry (rewind) while durable metadata still lists
+        // ses_resume as settled — same cold shape as a hub restart.
+        const keep = store.messages.addMessage(session.id, {
+            role: 'user',
+            content: { type: 'text', text: 'keep all' },
+        })
+        store.messages.truncateOpenCodeRewind(session.id, keep.seq, keep.id)
+
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'turn-complete',
+                    stopReason: 'running',
+                    childSessionId: 'ses_resume',
+                    childStatus: 'running',
+                },
+            },
+        })
+        // Seed-before-apply, then persist without re-seeding the old settled bit.
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+        store.close()
+    })
+
+    it('still blocks Archive when rewind retains a running child that never completed', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-rewind-still-running')
+
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'turn-complete',
+                    stopReason: 'running',
+                    childSessionId: 'ses_live',
+                    childStatus: 'running',
+                },
+            },
+        })
+        const boundary = store.messages.addMessage(session.id, {
+            role: 'user',
+            content: { type: 'text', text: 'rewind before more work' },
+        })
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: { type: 'message', message: 'later text' },
+            },
+        })
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+
+        store.messages.truncateOpenCodeRewind(session.id, boundary.seq, boundary.id)
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+        store.close()
+    })
+
+    it('does not reopen Codex children after a completed agent-run-update (#2021 Major)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'live-work-codex-settled-sticky')
+
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'agent-run-update',
+                    agentId: 'codex-child-1',
+                    status: 'running',
+                },
+            },
+        })
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'agent-run-update',
+                    agentId: 'codex-child-1',
+                    status: 'completed',
+                },
+            },
+        })
+        expect(store.messages.getLiveToolWork(session.id)).toBe(false)
+
+        // Late wait/result traffic must not resurrect the settled child.
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'agent-run-update',
+                    agentId: 'codex-child-1',
+                    status: 'running',
+                },
+            },
+        })
         expect(store.messages.getLiveToolWork(session.id)).toBe(false)
         store.close()
     })

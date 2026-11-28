@@ -74,7 +74,10 @@ describe.each(['opencode', 'claude'] as const)('%s pending delivery ownership', 
         try {
             engine.handleRealtimeEvent({ type: 'session-updated', sessionId: session.id })
             expect(engine.getQueuedState(session.id, ['pending']).dispatchingLocalIds).toEqual(['pending'])
-            clock.mockReturnValue(session.activeAt + 300_001)
+            // Use the live cache row — createEngine's local binding can lag
+            // activeAt after handleSessionAlive refreshes the session object.
+            const live = engine.getSession(session.id)!
+            clock.mockReturnValue(live.activeAt + 300_001)
             engine['expireInactive']()
             expectUnknown(store, engine, session.id)
         } finally { clock.mockRestore(); engine.stop(); store.close() }
@@ -106,6 +109,120 @@ it.each(['codex', 'cursor'] as const)('preserves the separate %s runtime deliver
         if (update.result !== 'success') throw new Error('metadata update failed')
         engine.handleRealtimeEvent({ type: 'session-updated', sessionId: session.id, data: { metadata: { version: update.version, value: metadata } } })
         expect(engine.getQueuedState(session.id, ['pending']).dispatchingLocalIds).toEqual(['pending'])
+        expect(store.messages.lookupQueuedMessage(session.id, 'pending').status).toBe('dispatching')
+    } finally { engine.stop(); store.close() }
+})
+
+it('keeps prior-generation backgroundWork and unresolvedTurn across host replace (#2021 Approach)', () => {
+    const { store, engine, session } = createEngine(new Store(':memory:'), 'cursor')
+    try {
+        const cache = (engine as unknown as {
+            sessionCache: {
+                setBackgroundTasks(id: string, tasks: Array<{ id: string; type: string; description: string }>): void
+                setUnresolvedTurn(id: string, unresolved: boolean): void
+            }
+        }).sessionCache
+        cache.setBackgroundTasks(session.id, [{ id: 'bg-1', type: 'local_bash', description: 'sleep' }])
+        cache.setUnresolvedTurn(session.id, true)
+        const before = engine.getSession(session.id)!
+        expect(before.metadata?.backgroundWork?.tasks).toHaveLength(1)
+        expect(before.metadata?.unresolvedTurn).toBeTruthy()
+        expect(before.metadata?.hostStartMarker).toBe('worker-A')
+        expect(before.metadata?.backgroundWork?.hostStartMarker).toBe('worker-A')
+
+        const metadata = {
+            ...before.metadata!,
+            hostPid: 101,
+            hostStartMarker: 'worker-B',
+            cursorSessionProtocol: 'acp' as const,
+        }
+        const update = store.sessions.updateSessionMetadata(session.id, metadata, before.metadataVersion, 'default')
+        if (update.result !== 'success') throw new Error('metadata update failed')
+        engine.handleRealtimeEvent({
+            type: 'session-updated',
+            sessionId: session.id,
+            data: { metadata: { version: update.version, value: metadata } },
+        })
+
+        const after = engine.getSession(session.id)!
+        expect(after.metadata?.hostStartMarker).toBe('worker-B')
+        expect(after.metadata?.backgroundWork?.tasks).toHaveLength(1)
+        expect(after.metadata?.backgroundWork?.hostStartMarker).toBe('worker-A')
+        expect(after.metadata?.unresolvedTurn).toBeTruthy()
+        expect(store.messages.lookupQueuedMessage(session.id, 'pending').status).toBe('dispatching')
+
+        // Replacement's first idle heartbeat must not erase the prior latch —
+        // that was the Approach kill-direction hole (#2021).
+        engine.handleSessionAlive({ sid: session.id, time: Date.now(), thinking: false })
+        const afterIdle = engine.getSession(session.id)!
+        expect(afterIdle.metadata?.unresolvedTurn).toBeTruthy()
+        expect(
+            typeof afterIdle.metadata?.unresolvedTurn === 'object'
+                ? afterIdle.metadata.unresolvedTurn.hostStartMarker
+                : undefined,
+        ).toBe('worker-A')
+        expect(afterIdle.metadata?.backgroundWork?.hostStartMarker).toBe('worker-A')
+        expect(afterIdle.metadata?.backgroundWork?.tasks).toHaveLength(1)
+
+        // Idle clear from B must not wipe A's durable snapshot.
+        cache.setBackgroundTasks(session.id, [])
+        const afterIdleClear = engine.getSession(session.id)!
+        expect(afterIdleClear.metadata?.backgroundWork?.hostStartMarker).toBe('worker-A')
+        expect(afterIdleClear.metadata?.backgroundWork?.tasks).toHaveLength(1)
+
+        // B claiming its own turn/background may overwrite the durable slot so
+        // the current-gen Archive precondition stays enforceable.
+        cache.setUnresolvedTurn(session.id, true)
+        cache.setBackgroundTasks(session.id, [{ id: 'bg-b', type: 'local_bash', description: 'B work' }])
+        const afterClaim = engine.getSession(session.id)!
+        expect(
+            typeof afterClaim.metadata?.unresolvedTurn === 'object'
+                ? afterClaim.metadata.unresolvedTurn.hostStartMarker
+                : undefined,
+        ).toBe('worker-B')
+        expect(afterClaim.metadata?.backgroundWork?.hostStartMarker).toBe('worker-B')
+        expect(afterClaim.metadata?.backgroundWork?.tasks?.[0]?.id).toBe('bg-b')
+    } finally { engine.stop(); store.close() }
+})
+
+it('keeps Cursor foreground tool work when a replacement worker identifies itself (#2021 Approach)', async () => {
+    const { AGENT_MESSAGE_PAYLOAD_TYPE } = await import('@hapi/protocol')
+    const { store, engine, session } = createEngine(new Store(':memory:'), 'cursor')
+    try {
+        store.messages.upsertToolCallMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: {
+                    type: 'tool-call',
+                    callId: 'cursor-shell',
+                    name: 'Shell',
+                    input: {},
+                    status: 'in_progress',
+                },
+            },
+        }, 'cursor-shell')
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+
+        const current = engine.getSession(session.id)!
+        const metadata = {
+            ...current.metadata!,
+            hostPid: 101,
+            hostStartMarker: 'worker-B',
+            cursorSessionProtocol: 'acp' as const,
+        }
+        const update = store.sessions.updateSessionMetadata(session.id, metadata, current.metadataVersion, 'default')
+        if (update.result !== 'success') throw new Error('metadata update failed')
+        engine.handleRealtimeEvent({
+            type: 'session-updated',
+            sessionId: session.id,
+            data: { metadata: { version: update.version, value: metadata } },
+        })
+
+        // Prior-gen sticky tools stay until Archive probe already_gone —
+        // generation replace alone is not containment proof.
+        expect(store.messages.getLiveToolWork(session.id)).toBe(true)
+        // Delivery ownership for Cursor stays separate from OpenCode/Claude.
         expect(store.messages.lookupQueuedMessage(session.id, 'pending').status).toBe('dispatching')
     } finally { engine.stop(); store.close() }
 })

@@ -1,4 +1,10 @@
 import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptions } from 'node:child_process';
+import { resolveExecutable } from '@/agent/agentLaunchCommand';
+import { canContainWithoutShell, type WindowsAgentJob } from '@/utils/windowsJobObject';
+import {
+    asNodeChild,
+    spawnWindowsContainedProcess,
+} from '@/utils/windowsContainedSpawn';
 import {
     acquireAgentCliSpawnLease,
     releaseAgentCliSpawnLeaseFromAcpRegisterSync
@@ -64,14 +70,41 @@ export type AcpStderrError = {
     raw: string;
 };
 
+/**
+ * Prefer a PE image over PATH's .cmd/.bat shim so shell:false + Job Object
+ * containment stay viable (#2021 Major).
+ */
+function resolveWindowsLaunchCommand(command: string, cwd?: string): string {
+    if (process.platform !== 'win32') return command;
+    const peFirst = resolveExecutable(command, { cwd, pathExt: '.COM;.EXE' });
+    if (peFirst) return peFirst;
+    return resolveExecutable(command, { cwd }) ?? command;
+}
+
+function windowsShimNeedsShell(command: string): boolean {
+    return process.platform === 'win32' && /\.(cmd|bat)$/i.test(command);
+}
+
 /** @internal Exported for regression tests. */
-export function buildAcpStdioSpawnOptions(env?: Record<string, string>, cwd?: string): SpawnOptions {
+export function buildAcpStdioSpawnOptions(
+    env?: Record<string, string>,
+    cwd?: string,
+    command?: string,
+): SpawnOptions {
+    const needsShell = typeof command === 'string' && windowsShimNeedsShell(command);
     return {
         env,
         cwd,
         stdio: ['pipe', 'pipe', 'pipe'],
-        shell: process.platform === 'win32',
-        windowsHide: process.platform === 'win32'
+        // shell:false for PE — Job Object settlement forbids a cmd.exe
+        // intermediary that can start the agent before Assign. .cmd/.bat shims
+        // cannot CreateProcess without a shell; prefer .exe above, else shell
+        // without claiming containment (#2021 Major).
+        shell: needsShell,
+        windowsHide: process.platform === 'win32',
+        // Own process group on POSIX so Stop can cover mid-teardown forks
+        // without signaling HAPI's inherited group (#2021).
+        detached: process.platform !== 'win32',
     };
 }
 
@@ -103,6 +136,8 @@ export class AcpStdioTransport {
     private exitError: Error | null = null;
     /** ACP child PID when known (for lock attribution / exit logs). */
     private childPid: number | null = null;
+    /** Windows Job Object for this agent — null when containment unavailable (#2021). */
+    private windowsAgentJob: WindowsAgentJob | null = null;
 
     /** Rolling join window for stderr before close-time classification. */
     private static readonly RECENT_STDERR_WINDOW = 8_000;
@@ -121,12 +156,7 @@ export class AcpStdioTransport {
             try {
                 registerActiveAcpTransport();
                 try {
-                    const process = spawn(
-                        options.command,
-                        options.args ?? [],
-                        buildAcpStdioSpawnOptions(options.env, options.cwd)
-                    ) as ChildProcessWithoutNullStreams;
-                    return new AcpStdioTransport(process, true, options.command);
+                    return await AcpStdioTransport.spawnTransport(options, true);
                 } catch (error) {
                     unregisterActiveAcpTransport();
                     throw error;
@@ -136,12 +166,36 @@ export class AcpStdioTransport {
             }
         }
 
-        const process = spawn(
-            options.command,
+        return AcpStdioTransport.spawnTransport(options, false);
+    }
+
+    /** Prefer CREATE_SUSPENDED Job Object spawn on Windows PE commands (#2021). */
+    private static async spawnTransport(
+        options: { command: string; args?: string[]; env?: Record<string, string>; cwd?: string },
+        shouldGuardAgentCli: boolean,
+    ): Promise<AcpStdioTransport> {
+        const command = resolveWindowsLaunchCommand(options.command, options.cwd);
+        if (process.platform === 'win32' && canContainWithoutShell(command)) {
+            const contained = await spawnWindowsContainedProcess({
+                file: command,
+                args: options.args ?? [],
+                cwd: options.cwd,
+                env: options.env,
+                stdio: ['pipe', 'pipe', 'pipe'],
+            });
+            if (contained?.stdin && contained.stdout && contained.stderr) {
+                const child = asNodeChild(contained) as ChildProcessWithoutNullStreams;
+                const transport = new AcpStdioTransport(child, shouldGuardAgentCli, command);
+                transport.windowsAgentJob = contained.windowsAgentJob;
+                return transport;
+            }
+        }
+        const child = spawn(
+            command,
             options.args ?? [],
-            buildAcpStdioSpawnOptions(options.env, options.cwd)
+            buildAcpStdioSpawnOptions(options.env, options.cwd, command),
         ) as ChildProcessWithoutNullStreams;
-        return new AcpStdioTransport(process, false, options.command);
+        return new AcpStdioTransport(child, shouldGuardAgentCli, command);
     }
 
     private constructor(process: ChildProcessWithoutNullStreams, shouldGuardAgentCli: boolean, command: string) {
@@ -262,6 +316,11 @@ export class AcpStdioTransport {
     /** PID of the spawned ACP agent process, when known. */
     getProcessPid(): number | null {
         return typeof this.process.pid === 'number' ? this.process.pid : this.childPid;
+    }
+
+    /** Windows Job Object when containment was established at spawn (#2021). */
+    getWindowsAgentJob(): WindowsAgentJob | null {
+        return this.windowsAgentJob;
     }
 
     onStderrError(handler: ((error: AcpStderrError) => void) | null): void {
@@ -424,7 +483,21 @@ export class AcpStdioTransport {
     /** Ends the agent process; resolves true once its whole process tree is confirmed gone. */
     async close(): Promise<boolean> {
         this.process.stdin.end();
-        const treeGone = await killProcessByChildProcess(this.process);
+        let treeGone: boolean;
+        if (this.windowsAgentJob?.establishedAtCreate) {
+            // CREATE_SUSPENDED membership — empty ActiveProcesses is authoritative (#2021).
+            this.windowsAgentJob.terminate(1);
+            treeGone = this.windowsAgentJob.isEmpty();
+            this.windowsAgentJob.release();
+            this.windowsAgentJob = null;
+        } else {
+            if (this.windowsAgentJob) {
+                this.windowsAgentJob.terminate(1);
+                this.windowsAgentJob.release();
+                this.windowsAgentJob = null;
+            }
+            treeGone = await killProcessByChildProcess(this.process);
+        }
         this.releaseAgentCliGuard();
         this.markClosed(new Error('ACP transport closed'));
         return treeGone;

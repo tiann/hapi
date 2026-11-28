@@ -10,6 +10,9 @@ import type { EventPublisher } from './eventPublisher'
 import { SessionCache } from './sessionCache'
 import {
     DEFAULT_SESSION_IDLE_TIMEOUT_MS,
+    blocksHardArchive,
+    hasDurableLiveWork,
+    hasLiveWork,
     resolveSessionIdleTimeoutMs,
     shouldClearKeepaliveIdle,
     shouldMarkKeepaliveIdle,
@@ -45,6 +48,103 @@ function session(overrides: Partial<Session> = {}): Session {
     } as Session
 }
 
+describe('hasDurableLiveWork', () => {
+    it('ignores a prior-generation unresolvedTurn latch (#2021 current-marker-only / #2657)', () => {
+        expect(hasDurableLiveWork(session({
+            metadata: {
+                path: '/tmp/p',
+                host: 'h',
+                hostStartMarker: 'worker-B',
+                unresolvedTurn: { since: NOW - 1000, hostStartMarker: 'worker-A' },
+            },
+        }))).toBe(false)
+    })
+
+    it('counts a current-generation unresolvedTurn latch as live', () => {
+        expect(hasDurableLiveWork(session({
+            metadata: {
+                path: '/tmp/p',
+                host: 'h',
+                hostStartMarker: 'worker-B',
+                unresolvedTurn: { since: NOW - 1000, hostStartMarker: 'worker-B' },
+            },
+        }))).toBe(true)
+    })
+
+    it('ignores prior-generation backgroundWork (#2021 current-marker-only / #2657)', () => {
+        expect(hasDurableLiveWork(session({
+            backgroundTaskCount: 0,
+            metadata: {
+                path: '/tmp/p',
+                host: 'h',
+                hostStartMarker: 'worker-B',
+                backgroundWork: {
+                    tasks: [{ id: 'bg-1', type: 'local_bash', description: 'sleep' }],
+                    hostStartMarker: 'worker-A',
+                },
+            },
+        }))).toBe(false)
+    })
+
+    it('treats in-memory background count as current-worker live work even if durable is prior-gen', () => {
+        // After replace, in-memory count is zeroed; a non-zero count means the
+        // current worker reported tasks and must block Archive.
+        expect(hasDurableLiveWork(session({
+            backgroundTaskCount: 1,
+            backgroundTasks: [{ id: 'bg-1', type: 'local_bash', description: 'sleep' }],
+            metadata: {
+                path: '/tmp/p',
+                host: 'h',
+                hostStartMarker: 'worker-B',
+                backgroundWork: {
+                    tasks: [{ id: 'bg-1', type: 'local_bash', description: 'sleep' }],
+                    hostStartMarker: 'worker-A',
+                },
+            },
+        }))).toBe(true)
+    })
+
+    it('treats metadata.waiting as durable external block (#2020)', () => {
+        expect(hasDurableLiveWork(session({
+            thinking: false,
+            metadata: {
+                path: '/tmp/p',
+                host: 'h',
+                waiting: { since: NOW - 1000, reason: 'watch CI on tip' },
+            },
+        }))).toBe(true)
+    })
+})
+
+describe('blocksHardArchive', () => {
+    it('refuses when idleReconcileExempt even if hasLiveWork is false (#2020)', () => {
+        const s = session({
+            thinking: false,
+            metadata: { path: '/tmp/p', host: 'h', idleReconcileExempt: true },
+        })
+        expect(hasLiveWork(s)).toBe(false)
+        expect(blocksHardArchive(s)).toBe(true)
+    })
+
+    it('refuses when waiting on external work (#2020)', () => {
+        expect(blocksHardArchive(session({
+            thinking: false,
+            metadata: {
+                path: '/tmp/p',
+                host: 'h',
+                waiting: { since: NOW, reason: 'watch CI on tip' },
+            },
+        }))).toBe(true)
+    })
+
+    it('allows a quiet connected session with no exempt/waiting', () => {
+        expect(blocksHardArchive(session({
+            thinking: false,
+            metadata: { path: '/tmp/p', host: 'h', lifecycleState: 'running' },
+        }))).toBe(false)
+    })
+})
+
 describe('resolveSessionIdleTimeoutMs', () => {
     it('defaults when unset or unparseable', () => {
         expect(resolveSessionIdleTimeoutMs({})).toBe(DEFAULT_SESSION_IDLE_TIMEOUT_MS)
@@ -77,6 +177,7 @@ describe('shouldMarkKeepaliveIdle', () => {
     it('never marks work the hub can see', () => {
         const stale = NOW - 87 * HOUR
         expect(shouldMarkKeepaliveIdle(session({ thinking: true }), stale, NOW, window)).toBe(false)
+        expect(shouldMarkKeepaliveIdle(session({ derivedToolWork: true }), stale, NOW, window)).toBe(false)
         expect(shouldMarkKeepaliveIdle(session({ backgroundTaskCount: 1 }), stale, NOW, window)).toBe(false)
         expect(shouldMarkKeepaliveIdle(
             session({ agentState: { requests: { 'req-1': { tool: 'Bash', arguments: {} } } } as Session['agentState'] }),

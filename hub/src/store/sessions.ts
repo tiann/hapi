@@ -8,6 +8,7 @@ import type { StoredSession, VersionedUpdateResult } from './types'
 import { safeJsonParse } from './json'
 import { updateVersionedField } from './versionedUpdates'
 import { removeMessageContentSearchForSession } from './messageContentSearch'
+import { releaseChildToolWorkState } from './messages'
 
 function runInTransaction<T>(db: Database, operation: () => T): T {
     return db.inTransaction ? operation() : db.transaction(operation)()
@@ -94,7 +95,15 @@ const HUB_OWNED_METADATA_FIELDS = [
     'promptTitle',
     'translateInput',
     'forkedFrom',
-    'conversationBranch'
+    'conversationBranch',
+    // Peer-spawn parent UUID — stamped at spawn; CLI must not forge/erase.
+    'spawnedBySessionId',
+    // Durable OpenCode child running/settled ids (#2021).
+    'childToolWork',
+    // Durable background-task snapshot across Hub restart (#2021 Major).
+    'backgroundWork',
+    // Durable in-flight turn latch across expiry / Hub restart (#2021 Approach).
+    'unresolvedTurn',
 ] as const
 
 const CONTRIBUTION_FIELDS = ['externalRefs'] as const
@@ -236,7 +245,12 @@ function preserveModelErrorHubFields(
 }
 
 export function mergeSessionMetadata(prior: unknown, next: unknown): unknown {
-    if (!isPlainObject(prior) || !isPlainObject(next)) {
+    // CLI adopt may send metadata: null. Never wipe a persisted hub blob
+    // (including spawnedBySessionId) for a non-object replacement.
+    if (!isPlainObject(next)) {
+        return isPlainObject(prior) ? prior : next
+    }
+    if (!isPlainObject(prior)) {
         return next
     }
     let merged: Record<string, unknown> | null = null
@@ -246,6 +260,14 @@ export function mergeSessionMetadata(prior: unknown, next: unknown): unknown {
     merged = carryForwardIfMissing(prior, next, merged, CONTRIBUTION_FIELDS)
     merged = carryForwardIfMissing(prior, next, merged, ALERT_STATE_FIELDS)
     merged = carryForwardIfMissing(prior, next, merged, HUB_OWNED_METADATA_FIELDS)
+    // Spawn parent is hub telemetry stamped at allocation — never let CLI adopt/update
+    // forge or erase it (stronger than carry-forward-if-missing).
+    if (typeof prior.spawnedBySessionId === 'string' && prior.spawnedBySessionId.length > 0) {
+        const base = merged ?? { ...next }
+        if (base.spawnedBySessionId !== prior.spawnedBySessionId) {
+            merged = { ...base, spawnedBySessionId: prior.spawnedBySessionId }
+        }
+    }
     merged = preserveForkSummary(prior, next, merged)
     // A stale CLI cache may still contain the pre-launch branch state. Once
     // delivery succeeded, sparse/full CLI updates must not regress its outcome.
@@ -1062,6 +1084,9 @@ export function deleteSession(db: Database, id: string, namespace: string): bool
             // bumping makes their next event re-resolve instead of serving a
             // grant for a row that no longer exists.
             bumpSessionDeletionEpoch()
+            // Drop in-memory OpenCode child-work / live-tail caches for this
+            // session — including deletions during dedup merge (#2021 Minor).
+            releaseChildToolWorkState(db, id)
         }
         return result.changes > 0
     })

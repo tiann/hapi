@@ -249,6 +249,75 @@ describe('machines routes', () => {
         })
     })
 
+    it('forwards spawnedBySessionId parent telemetry when spawning', async () => {
+        const machine = createMachine()
+        const parentId = 'aaaaaaaa-1111-4111-8111-111111111111'
+        let capturedSpawnedBy: string | undefined
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            getSessionByNamespace: (id: string) => id === parentId ? { id: parentId } as never : undefined,
+            spawnSession: async (...args: unknown[]) => {
+                capturedSpawnedBy = args[18] as string | undefined
+                return { type: 'success' as const, sessionId: 'session-1' }
+            }
+        } as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/machines/machine-1/spawn', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                directory: '/tmp/project',
+                agent: 'claude',
+                spawnedBySessionId: parentId,
+            })
+        })
+
+        expect(response.status).toBe(200)
+        expect(capturedSpawnedBy).toBe(parentId)
+    })
+
+    it('omits spawnedBySessionId when the parent is not in the namespace', async () => {
+        const machine = createMachine()
+        let capturedSpawnedBy: string | undefined
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            getSessionByNamespace: () => undefined,
+            spawnSession: async (...args: unknown[]) => {
+                capturedSpawnedBy = args[18] as string | undefined
+                return { type: 'success' as const, sessionId: 'session-1' }
+            }
+        } as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/machines/machine-1/spawn', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                directory: '/tmp/project',
+                agent: 'claude',
+                spawnedBySessionId: 'bbbbbbbb-2222-4222-8222-222222222222',
+            })
+        })
+
+        expect(response.status).toBe(200)
+        expect(capturedSpawnedBy).toBeUndefined()
+    })
+
     it('forwards Grok Auto permission mode when spawning', async () => {
         const machine = createMachine()
         let capturedPermissionMode: string | undefined

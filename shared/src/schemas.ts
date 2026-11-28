@@ -297,7 +297,43 @@ export const MetadataSchema = z.object({
     // reused by another process.
     hostStartMarker: z.string().optional(),
     hapiMcpUrl: z.string().url().optional(),
+    // Session origin (how the row was launched) — NOT the activity/turn
+    // `startedBy` in apiTypes (`hub_prompt` | `agent` | `patch`).
     startedBy: z.enum(['runner', 'terminal']).optional(),
+    // Peer-spawn parent telemetry (#2020): hub session UUID of the orchestrator
+    // that created this session via spawn-peer. Recorded for tree walking only —
+    // archive and lifecycle must NOT branch on this field.
+    spawnedBySessionId: z.string().uuid().optional(),
+    // Hub-owned durable OpenCode child-work ledger (#2021). Survives rewindable
+    // transcript cuts so a verified child completion cannot be forgotten when
+    // only its earlier running marker remains. CLI update-metadata must not
+    // forge or erase (HUB_OWNED_METADATA_KEYS).
+    childToolWork: z.object({
+        running: z.array(z.string().min(1)).default([]),
+        settled: z.array(z.string().min(1)).default([]),
+        // Verified ACP call ids (tool results / scoped turn-complete). Survives
+        // rewind that drops the result while retaining the start (#2021).
+        settledCallIds: z.array(z.string().min(1)).default([]),
+    }).optional(),
+    // Hub-owned durable background-task snapshot (#2021 Major). Survives Hub
+    // restart + worker reconnect when membership is unchanged (Antigravity
+    // only re-emits on change). Bound to hostStartMarker when known.
+    backgroundWork: z.object({
+        tasks: z.array(z.object({
+            id: z.string(),
+            type: z.string(),
+            description: z.string(),
+        })).default([]),
+        hostStartMarker: z.string().optional(),
+    }).optional(),
+    // Hub-owned in-flight turn latch (#2021 Approach). Survives heartbeat
+    // expiry (which clears ephemeral `thinking`) and Hub restart so Archive
+    // cannot StopSession a worker still generating with no open tools.
+    // Bound to hostStartMarker when known.
+    unresolvedTurn: z.object({
+        hostStartMarker: z.string().optional(),
+        since: z.number().optional(),
+    }).optional(),
     // 'running' | 'idle' | 'archived' (see shared/src/sessionLifecycle.ts).
     // 'idle' is written by the hub's keepalive-idle reconciler (tiann/hapi#1820)
     // and reverts to 'running' on the next agent progress.
@@ -305,7 +341,9 @@ export const MetadataSchema = z.object({
     lifecycleStateSince: z.number().optional(),
     // Opt out of keepalive-idle reconciliation for sessions that are meant to
     // sit quiet indefinitely (operator holding pens, sessions owning work the
-    // hub cannot see). Never reconciled to 'idle' while true.
+    // hub cannot see). Never reconciled to 'idle' while true. Also blocks
+    // hard Archive before Kill (#2020 dogfood — irreversible path must honour
+    // at least the safeguards reversible idle reconcile already uses).
     idleReconcileExempt: z.boolean().optional(),
     // Externally blocked work distinct from turn-scoped `thinking` (#2020):
     // waiting on CI, a vendor, or a peer reply. Hub-visible so keepalive-idle

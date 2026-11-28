@@ -74,6 +74,10 @@ export type SessionSummaryMetadata = {
     conversationHistory?: ConversationHistoryCapabilities
     /** Loopback MCP URL when session CLI happy server is running (#956). */
     hapiMcpUrl?: string
+    /** Session launch origin: runner vs terminal (not activity turn startedBy). */
+    startedBy?: 'runner' | 'terminal'
+    /** Orchestrator parent session UUID when spawned via spawn-peer (#2020). */
+    spawnedBySessionId?: string
     lastModelError?: {
         eventId: string
         kind: string
@@ -273,6 +277,8 @@ export function toSessionSummaryMetadata(metadata: Metadata | null | undefined):
         externalRefs: metadata.externalRefs,
         conversationHistory: metadata.capabilities?.conversationHistory,
         hapiMcpUrl: metadata.hapiMcpUrl ?? undefined,
+        startedBy: metadata.startedBy,
+        spawnedBySessionId: metadata.spawnedBySessionId,
         // Omit lastUserMessage — bridge recovery text stays in full session
         // metadata only; list/SSE summaries must not ship up to 32 KB of prompt.
         lastModelError: metadata.lastModelError

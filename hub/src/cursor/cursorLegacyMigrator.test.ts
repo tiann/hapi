@@ -1482,6 +1482,24 @@ describe('CursorLegacyMigrator.migrateOne — force-archive-then-migrate', () =>
         expect(out.reason).toBe('archive_failed')
         expect(out.message).toContain('rpc gateway down')
     })
+
+    it('maps archive-session-working to running_refused (HTTP 409 path)', async () => {
+        const { ArchiveCleanupError } = await import('../sync/archiveCleanupError')
+        const cursorSessionId = 'archive-working-uuid'
+        h.placeLegacyStore(cursorSessionId)
+        const session = h.makeSession({
+            active: true,
+            metadata: { path: '/workspace/x', host: 'h', flavor: 'cursor', cursorSessionId, lifecycleState: 'running' }
+        })
+        const migrator = makeMigrator(h, makeMockProbe(), {
+            archiveSession: async () => { throw new ArchiveCleanupError('working') }
+        })
+        const out = await migrator.migrateOne(session, { forceArchiveRunning: true })
+        expect(out.ok).toBe(false)
+        if (out.ok) return
+        expect(out.reason).toBe('running_refused')
+        expect(out.message).toContain('live work')
+    })
 })
 
 describe('CursorLegacyMigrator.migrateOne — telemetry', () => {

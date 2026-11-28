@@ -165,6 +165,43 @@ describe('SessionList directory action', () => {
         expect(archiveSession).toHaveBeenCalledWith('stale')
     })
 
+    it('skips active thinking sessions from Archive all (#2020)', async () => {
+        const archiveSession = vi.fn(async () => {})
+        const metadata = (name: string, lifecycleState: string) => ({
+            path: '/work/proj', machineId: 'machine-1', name, flavor: 'codex', lifecycleState
+        })
+        renderWithProviders(
+            <SessionList
+                sessions={[
+                    makeSession({
+                        id: 'thinking',
+                        active: true,
+                        thinking: true,
+                        updatedAt: 3,
+                        metadata: metadata('Busy', 'running'),
+                    }),
+                    makeSession({ id: 'idle', active: true, updatedAt: 2, metadata: metadata('Idle', 'running') }),
+                ]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={{ archiveSession } as unknown as ApiClient}
+            />
+        )
+
+        fireEvent.contextMenu(screen.getByTitle('/work/proj'))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Archive all' }))
+        expect(screen.getByText('Archive 1 sessions in "work/proj"?')).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('button', { name: 'Archive' }))
+
+        await waitFor(() => expect(archiveSession).toHaveBeenCalledTimes(1))
+        expect(archiveSession).toHaveBeenCalledWith('idle')
+        expect(archiveSession).not.toHaveBeenCalledWith('thinking')
+    })
+
     it('opens the project menu from the keyboard with Shift+F10', () => {
         renderWithProviders(
             <SessionList

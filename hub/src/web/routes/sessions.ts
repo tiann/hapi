@@ -1157,15 +1157,19 @@ export function createSessionsRoutes(
             return c.json({ error: 'Session is inactive' }, 409)
         }
 
+        // Optional JSON body is ignored — archive has no softStandDown opt-in
+        // after the #2020 reframe (verified cleanup for every caller).
+        await c.req.json().catch(() => null)
+
         try {
             await engine.archiveSession(sessionResult.sessionId)
+            return c.json({ ok: true })
         } catch (error) {
             if (error instanceof ArchiveCleanupError) {
                 return c.json({ error: error.message, code: error.code }, error.status)
             }
             throw error
         }
-        return c.json({ ok: true })
     })
 
     app.post('/sessions/:id/model-error/acknowledge', async (c) => {

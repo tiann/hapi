@@ -39,19 +39,73 @@ export function resolveSessionIdleTimeoutMs(
 }
 
 /**
+ * Durable latch belongs to the session's current worker generation.
+ *
+ * Current-marker-only (#2021 / #2657): when both markers are present and
+ * differ, the latch is prior-generation and does **not** count as live work
+ * for Archive. Missing markers fail closed (still count). Residual hole:
+ * a still-running prior worker is not detected — see tiann/hapi#2657.
+ */
+export function latchIsCurrentGeneration(
+    latchMarker: unknown,
+    currentMarker: unknown,
+): boolean {
+    if (typeof latchMarker !== 'string' || latchMarker.length === 0) return true
+    if (typeof currentMarker !== 'string' || currentMarker.length === 0) return true
+    return latchMarker === currentMarker
+}
+
+/** Durable / progress work that survives heartbeat expiry (excludes stale requests). */
+export function hasDurableLiveWork(session: Session): boolean {
+    if (session.thinking) return true
+    // Hub-derived open tool work in the transcript tail (autonomous rounds
+    // that miss the CLI's turn-scoped thinking flag).
+    if (session.derivedToolWork === true) return true
+    const currentMarker = session.metadata?.hostStartMarker
+    // In-memory count is the current worker's report (zeroed on host replace).
+    if ((session.backgroundTaskCount ?? 0) > 0) return true
+    // Durable background snapshot for the *current* worker only (#2021
+    // current-marker-only / #2657). Prior-gen records may remain in metadata
+    // for debugging but must not strand Archive forever.
+    const background = session.metadata?.backgroundWork
+    if (
+        background
+        && Array.isArray(background.tasks)
+        && background.tasks.length > 0
+        && latchIsCurrentGeneration(background.hostStartMarker, currentMarker)
+    ) {
+        return true
+    }
+    // In-flight turn latch for the current worker. Survives expiry clearing
+    // ephemeral thinking. Foreign-generation latches are ignored here (#2657).
+    const unresolved = session.metadata?.unresolvedTurn
+    if (
+        unresolved
+        && typeof unresolved === 'object'
+        && latchIsCurrentGeneration(unresolved.hostStartMarker, currentMarker)
+    ) {
+        return true
+    }
+    // Externally blocked work (CI / vendor / peer) — not turn-scoped thinking
+    // (#2020 dogfood). Survives between poll ticks so Archive cannot Kill.
+    const waiting = session.metadata?.waiting
+    if (waiting && typeof waiting === 'object') {
+        return true
+    }
+    return false
+}
+
+/**
  * Work the hub can see that must never be reconciled away as a zombie.
  *
- * Reports hub *visibility*, not process liveness. A false result means none of
- * these signals are set — not that the session is safe to reap. A session can
- * be alive while waiting on CI, a vendor, or a peer reply with none of the
- * original three turn signals; callers that destroy state must not promote a
- * false result into a liveness verdict (tiann/hapi#2020). Prefer consulting
- * `metadata.waiting` / `idleReconcileExempt` as well when the action is
- * irreversible.
+ * Scope is hub *visibility*, not process liveness. Callers that destroy state
+ * (hard Archive / KillSession) must not treat a false result as "safe to
+ * reap" — a session can be alive while waiting on CI, a vendor, or a peer
+ * with none of these signals set. Use `blocksHardArchive` for destroy paths
+ * (tiann/hapi#2020).
  */
 export function hasLiveWork(session: Session): boolean {
-    if (session.thinking) return true
-    if ((session.backgroundTaskCount ?? 0) > 0) return true
+    if (hasDurableLiveWork(session)) return true
     // A permission / input request waiting on the operator is real state the
     // agent is blocked on, not an abandoned socket.
     const requests = session.agentState?.requests
@@ -60,6 +114,18 @@ export function hasLiveWork(session: Session): boolean {
     const waiting = session.metadata?.waiting
     if (waiting && typeof waiting === 'object') return true
     return false
+}
+
+/**
+ * Refuse hard Archive / KillSession before stop RPCs (#2020).
+ *
+ * Broader than `hasLiveWork`: honours `idleReconcileExempt` (already used by
+ * reversible keepalive-idle reconcile) and durable `waiting` for externally
+ * blocked work that hub-visible turn signals miss.
+ */
+export function blocksHardArchive(session: Session): boolean {
+    if (session.metadata?.idleReconcileExempt === true) return true
+    return hasLiveWork(session)
 }
 
 /**

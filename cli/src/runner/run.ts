@@ -18,6 +18,10 @@ import { writeRunnerState, RunnerLocallyPersistedState, readRunnerState, acquire
 import { getCliArgs } from '@/utils/cliArgs';
 import { getProcessStartMarker, getSystemBootId, getProcessThreadGroupId, normalizeBootId, isProcessAlive, isWindows, killProcess, killProcessByChildProcess, killProcessTreeByPid } from '@/utils/process';
 import { findStopSessionOrphanTargets, listWindowsProcessesWithCommandLine, reapRunnerSpawnedOrphans } from '@/runner/orphanReap';
+import {
+    findLiveAgentRootForSession,
+    hostAgentContainmentActive,
+} from '@/runner/agentRootRegistry';
 import { decideUntrackedRunnerWebhook } from '@/runner/lateRunnerWebhook';
 import { cleanupFailedStartupAfterExit, sessionStartupTimeout, waitForRecoverableStartup } from './sessionStartup';
 import { buildChildExitNotices, type ChildExitNotice } from './childExitNotice';
@@ -357,6 +361,18 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       verifiedExitTombstones.add(id);
       persistVerifiedExits();
     };
+    // Survives wrapper exit (pid maps are cleared onChildExited) so probe can
+    // still find agent-root publishes for this session (#2021 Approach).
+    const sessionLastHostPids = new Map<string, Set<number>>();
+    const rememberSessionHostPid = (sessionId: string, pid: number) => {
+      if (!sessionId || !Number.isSafeInteger(pid) || pid <= 0) return;
+      let set = sessionLastHostPids.get(sessionId);
+      if (!set) {
+        set = new Set<number>();
+        sessionLastHostPids.set(sessionId, set);
+      }
+      set.add(pid);
+    };
     const hasVerifiedExit = (id: string): boolean => {
       return id.startsWith('PID-')
         ? verifiedPidExitTombstones.has(id)
@@ -487,6 +503,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
       logger.debug(`[RUNNER RUN] Session webhook: ${sessionId}, PID: ${pid}, started by: ${sessionMetadata.startedBy || 'unknown'}`);
       logger.debug(`[RUNNER RUN] Current tracked sessions before webhook: ${Array.from(pidToTrackedSession.keys()).join(', ')}`);
+      rememberSessionHostPid(sessionId, pid);
 
       // Check if we already have this PID (runner-spawned)
       const existingSession = pidToTrackedSession.get(pid);
@@ -1362,6 +1379,40 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           logger.debug(`[RUNNER RUN] Orphan argv sweep left live PIDs for session ${sessionId}`);
           return 'still_alive';
         }
+        // Argv orphan reap misses detached ACP agents. Refuse success while
+        // published agent containment for this session is still active (#2021).
+        const hostPids = new Set<number>(sessionLastHostPids.get(sessionId) ?? []);
+        for (const [pid, session] of pidToTrackedSession) {
+          if (session.happySessionId === sessionId
+            || session.requestedHappySessionId === sessionId
+            || Boolean(session.sharedSessions?.[sessionId])) {
+            hostPids.add(pid);
+          }
+        }
+        for (const [pid, record] of persistedResumeProcesses) {
+          if (record.requestedSessionId === sessionId || record.confirmedSessionId === sessionId) {
+            hostPids.add(pid);
+          }
+        }
+        if (findLiveAgentRootForSession(sessionId, hostPids) !== null) {
+          logger.debug(`[RUNNER RUN] Orphan sweep blocked by live agent containment for ${sessionId}`);
+          return 'still_alive';
+        }
+        try {
+          const { readRuntimes, runtimeAuthHash } = await import('@/codex/shared/registry');
+          const records = (await readRuntimes({ strict: true })).filter((runtime) =>
+            runtime.hub === configuration.apiUrl
+            && runtime.authHash === runtimeAuthHash()
+            && Boolean(runtime.sessions[sessionId]?.active),
+          );
+          if (records.length > 0) {
+            logger.debug(`[RUNNER RUN] Orphan sweep blocked by live Codex runtime for ${sessionId}`);
+            return 'still_alive';
+          }
+        } catch {
+          // Registry unreadable — do not invent verified cleanup (#2021).
+          return 'still_alive';
+        }
         if (orphanStatus === 'stopped') {
           rememberVerifiedExit(sessionId);
           return 'stopped';
@@ -1727,6 +1778,26 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         }
       }
 
+      if (agentContainmentBlocksAlreadyGone(sessionId)) {
+        logger.debug(`[RUNNER RUN] Session ${sessionId} stop blocked by live agent containment`);
+        return 'still_alive';
+      }
+      try {
+        const { readRuntimes, runtimeAuthHash } = await import('@/codex/shared/registry');
+        const records = (await readRuntimes({ strict: true })).filter((runtime) =>
+          runtime.hub === configuration.apiUrl
+          && runtime.authHash === runtimeAuthHash()
+          && Boolean(runtime.sessions[sessionId]?.active),
+        );
+        if (records.length > 0) {
+          logger.debug(`[RUNNER RUN] Session ${sessionId} stop blocked by live Codex runtime`);
+          return 'still_alive';
+        }
+      } catch {
+        logger.debug(`[RUNNER RUN] Session ${sessionId} Codex registry unreadable during stop`);
+        return 'still_alive';
+      }
+
       if (hasVerifiedExit(sessionId)) {
         logger.debug(`[RUNNER RUN] Session ${sessionId} was previously observed exited`);
         return 'already_gone';
@@ -1746,6 +1817,124 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     // own intentional PIDs and releases the ones this attempt did not
     // terminate: a preserved shared wrapper or a child the stop left alive
     // must not suppress its later real unexpected exit.
+    /**
+     * Non-signaling exit probe for archive reconciliation after Runner restart
+     * (#2021 Approach). Never tree-kills; never marks intentional stops.
+     */
+    /**
+     * Host PIDs that once owned this session — used to look up durable agent
+     * roots after the wrapper itself has exited (#2021 Approach).
+     */
+    const hostPidsForSession = (sessionId: string): number[] => {
+      const pids = new Set<number>(sessionLastHostPids.get(sessionId) ?? []);
+      for (const [pid, session] of pidToTrackedSession) {
+        const matches = session.happySessionId === sessionId
+          || session.requestedHappySessionId === sessionId
+          || Boolean(session.sharedSessions?.[sessionId]);
+        if (matches) pids.add(pid);
+      }
+      for (const [pid, record] of persistedResumeProcesses) {
+        if (record.requestedSessionId === sessionId || record.confirmedSessionId === sessionId) {
+          pids.add(pid);
+        }
+      }
+      for (const [pid, requested] of pidToRequestedSessionId) {
+        if (requested === sessionId) pids.add(pid);
+      }
+      for (const [pid, confirmed] of pidToConfirmedSessionId) {
+        if (confirmed === sessionId) pids.add(pid);
+      }
+      return [...pids];
+    };
+
+    /**
+     * Wrapper exit tombstones are not proof that a detached ACP process group
+     * (or Windows Job survivors) have ended. Refuse already_gone while a
+     * published agent root for this session is still alive.
+     */
+    const agentContainmentBlocksAlreadyGone = (sessionId: string): boolean => {
+      return findLiveAgentRootForSession(sessionId, hostPidsForSession(sessionId)) !== null;
+    };
+
+    /**
+     * Codex app-server PIDs live outside the HAPI wrapper tree. Never accept
+     * wrapper-exit already_gone while a shared runtime still lists this session.
+     */
+    const codexRuntimeBlocksAlreadyGone = async (
+      sessionId: string,
+    ): Promise<'block' | 'clear' | 'unknown'> => {
+      try {
+        const { readRuntimes, runtimeAuthHash } = await import('@/codex/shared/registry');
+        const records = (await readRuntimes({ strict: true })).filter((runtime) =>
+          runtime.hub === configuration.apiUrl
+          && runtime.authHash === runtimeAuthHash()
+          && Boolean(runtime.sessions[sessionId]?.active),
+        );
+        return records.length > 0 ? 'block' : 'clear';
+      } catch {
+        return 'unknown';
+      }
+    };
+
+    const probeSessionExit = async (
+      sessionId: string,
+      opts?: { processStartMarker?: string },
+    ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
+      if (sessionId.startsWith('PID-')) {
+        const pid = parseInt(sessionId.slice(4), 10);
+        if (!Number.isFinite(pid) || pid <= 0) return 'unknown';
+        if (!isProcessAlive(pid)) {
+          // Wrapper PID gone — still refuse already_gone while its published
+          // agent process group / containment may have members (#2021 Approach).
+          if (hostAgentContainmentActive(pid)) return 'still_alive';
+          rememberVerifiedExit(sessionId);
+          return 'already_gone';
+        }
+        const expected = opts?.processStartMarker;
+        if (expected) {
+          const current = getProcessStartMarker(pid);
+          if (!current || current !== expected) return 'unknown';
+        }
+        return 'still_alive';
+      }
+
+      for (const [pid, session] of pidToTrackedSession) {
+        const matches = session.happySessionId === sessionId
+          || session.requestedHappySessionId === sessionId
+          || Boolean(session.sharedSessions?.[sessionId]);
+        if (!matches) continue;
+        if (isProcessAlive(pid)) return 'still_alive';
+      }
+
+      for (const [pid, record] of persistedResumeProcesses) {
+        if (record.requestedSessionId !== sessionId && record.confirmedSessionId !== sessionId) continue;
+        if (isProcessAlive(pid)) {
+          const generation = probeRecoveredProcessGeneration(pid, record);
+          if (generation === 'exited') continue;
+          return 'still_alive';
+        }
+      }
+
+      for (const [pid, requested] of pidToRequestedSessionId) {
+        if (requested !== sessionId) continue;
+        if (isProcessAlive(pid)) return 'still_alive';
+      }
+      for (const [pid, confirmed] of pidToConfirmedSessionId) {
+        if (confirmed !== sessionId) continue;
+        if (isProcessAlive(pid)) return 'still_alive';
+      }
+
+      if (agentContainmentBlocksAlreadyGone(sessionId)) return 'still_alive';
+
+      // Codex before wrapper tombstone — app-server outlives the HAPI child (#2021).
+      const codex = await codexRuntimeBlocksAlreadyGone(sessionId);
+      if (codex === 'block') return 'still_alive';
+      if (codex === 'unknown') return 'unknown';
+
+      if (hasVerifiedExit(sessionId)) return 'already_gone';
+      return 'unknown';
+    };
+
     const stopSession = coalesceStopRequests(async (
       sessionId: string,
       opts?: { processStartMarker?: string }
@@ -1920,6 +2109,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     apiMachine.setRPCHandlers({
       spawnSession,
       stopSession,
+      probeSessionExit,
       requestShutdown: () => requestShutdown('hapi-app')
     });
 

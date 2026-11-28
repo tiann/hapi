@@ -29,6 +29,19 @@ describe('OpenCode local HAPI instructions', () => {
         expect(instructions).toContain('hapi job run')
         expect(instructions).toContain(TITLE_INSTRUCTION.trim())
     })
+
+    it('sets an MCP request timeout past the archive Runner cleanup budget', async () => {
+        configDirectory = await mkdtemp(join(tmpdir(), 'hapi-opencode-timeout-'))
+        const { configPath } = ensureOpencodeConfig(
+            configDirectory,
+            { command: 'hapi', args: ['mcp'] },
+            getTitleInstruction({})
+        )
+        const config = JSON.parse(await readFile(configPath, 'utf8')) as {
+            mcp: { hapi: { timeout?: number } }
+        }
+        expect(config.mcp.hapi.timeout).toBe(140_000)
+    })
 })
 
 describe('OpenCode ACP title and peer instructions', () => {

@@ -16,12 +16,19 @@ interface McpServerEntry {
     args: string[];
 }
 
+/** Cover auth + lookup + hub archive Runner cleanup (90s) plus bridge overhead.
+ *  OpenCode v1 defaults MCP tool calls to the SDK's 60s deadline when this is
+ *  omitted; progress heartbeats alone are not enough if the client never
+ *  sends a progressToken. */
+const HAPI_MCP_REQUEST_TIMEOUT_MS = 140_000;
+
 interface OpencodeConfig {
     $schema: string;
     mcp: Record<string, {
         type: string;
         command: string[];
         enabled: boolean;
+        timeout?: number;
     }>;
     instructions: string[];
 }
@@ -52,7 +59,8 @@ export function ensureOpencodeConfig(
             hapi: {
                 type: 'local',
                 command: [mcpServer.command, ...mcpServer.args],
-                enabled: true
+                enabled: true,
+                timeout: HAPI_MCP_REQUEST_TIMEOUT_MS,
             }
         },
         instructions: [instructionsPath]

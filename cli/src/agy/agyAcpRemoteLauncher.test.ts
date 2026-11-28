@@ -69,6 +69,13 @@ class FakeAgyBackend {
     disconnected = false;
     supportsSystemPromptAppend = false;
     supportsImages = false;
+    agentTreeEnded = false;
+    wasAgentTreeEnded(): boolean {
+        return this.agentTreeEnded;
+    }
+    async verifyRetainedAgentExit(_force = false): Promise<boolean> {
+        return this.agentTreeEnded;
+    }
 
     initializeGate: Promise<void> | null = null;
     async initialize(): Promise<void> {
@@ -248,6 +255,7 @@ class FakeAgyBackend {
     onDisconnect: (() => void) | null = null;
     async disconnect(): Promise<void> {
         this.disconnected = true;
+        this.agentTreeEnded = true;
         this.onDisconnect?.();
     }
 }
@@ -314,7 +322,7 @@ function launch(
             return backend as unknown as AcpSdkBackend;
         }
     });
-    return { run: launcher.launch(), created };
+    return { run: launcher.launch(), created, launcher };
 }
 
 function steeringStates(client: ReturnType<typeof makeClient>): boolean[] {
@@ -619,6 +627,268 @@ describe('AgyAcpRemoteLauncher', () => {
         // Without steers, Stop leaves the handler running so agy's final
         // updates for the cancelled tool calls still render.
         expect(backend.abortSoftSteersCalls).toBe(0);
+    });
+
+    it('publishes a hub turn-complete settlement for open commands cancelled by Stop (#2021)', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        let release!: () => void;
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call',
+                id: 'cmd-1',
+                name: 'Bash',
+                nativeName: 'run_command',
+                input: { command: 'sleep 60' },
+                status: 'in_progress',
+            });
+            await new Promise<void>((resolve) => { release = resolve; });
+            onUpdate({ type: 'turn_complete', stopReason: 'cancelled' });
+        });
+        queue.push('long command', REVIEW, 'a');
+
+        const { run } = launch(session, [backend]);
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
+        const abort = client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!;
+        const aborted = abort();
+        await vi.waitFor(() => expect(backend.cancelCalls).toEqual(['agy-conv-new']));
+        release();
+        await aborted;
+        queue.close();
+        await run;
+
+        const settlements = client.sendAgentMessage.mock.calls
+            .map(([message]) => message as { type?: string; stopReason?: string; settledCallIds?: string[] })
+            .filter((message) => message?.type === 'turn-complete');
+        expect(settlements.some((s) => s.settledCallIds?.includes('cmd-1'))).toBe(true);
+    });
+
+    it('unions backend settledCallIds so ask_question Stop settles Archive (#2021)', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        let release!: () => void;
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call',
+                id: 'question:0#abc',
+                name: 'ask_question',
+                input: { questions: [{ prompt: 'Ship it?' }] },
+                status: 'in_progress',
+            });
+            await new Promise<void>((resolve) => { release = resolve; });
+            // Backend settles the question lifetime; launcher command sets miss it.
+            onUpdate({
+                type: 'turn_complete',
+                stopReason: 'cancelled',
+                settledCallIds: ['question:0#abc'],
+            });
+        });
+        queue.push('ask something', REVIEW, 'a');
+
+        const { run } = launch(session, [backend]);
+        await vi.waitFor(() => expect(backend.prompts).toHaveLength(1));
+        const abort = client.rpcHandlerManager.handlers.get(RPC_METHODS.Abort)!;
+        const aborted = abort();
+        await vi.waitFor(() => expect(backend.cancelCalls).toEqual(['agy-conv-new']));
+        release();
+        await aborted;
+        queue.close();
+        await run;
+
+        const settlements = client.sendAgentMessage.mock.calls
+            .map(([message]) => message as { type?: string; settledCallIds?: string[] })
+            .filter((message) => message?.type === 'turn-complete');
+        expect(settlements.some((s) => s.settledCallIds?.includes('question:0#abc'))).toBe(true);
+    });
+
+    it('publishes settlement when Stop tears down a live autonomous wakeup (#2021)', async () => {
+        const { session, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        backend.getAgentVersion = () => '1.5.13';
+        (backend as { hasMessageHandler?: () => boolean }).hasMessageHandler = () => true;
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+        });
+        // Live wakeup owns the handler between prompts; Stop must settle its
+        // open commands even though the prompt finalizer already ran.
+        const ownerTurn = {
+            openCommands: new Set(['wakeup-cmd-1']),
+            commandCallIds: ['wakeup-cmd-1'],
+            deferredLiveCommandCalls: new Map(),
+            backendSettledCallIds: [] as string[],
+            bgTaskDescriptions: new Map(),
+        };
+        (launcher as unknown as { backend: unknown; handlerOwnerTurn: unknown; acpSessionId: string }).backend = backend;
+        (launcher as unknown as { handlerOwnerTurn: unknown }).handlerOwnerTurn = ownerTurn;
+        (launcher as unknown as { acpSessionId: string }).acpSessionId = 'agy-conv-new';
+
+        await (launcher as unknown as { discardStoppedWakeup: () => Promise<void> }).discardStoppedWakeup();
+
+        const settlements = client.sendAgentMessage.mock.calls
+            .map(([message]) => message as { type?: string; stopReason?: string; settledCallIds?: string[] })
+            .filter((message) => message?.type === 'turn-complete');
+        expect(settlements).toEqual([
+            expect.objectContaining({
+                type: 'turn-complete',
+                stopReason: 'cancelled',
+                settledCallIds: expect.arrayContaining(['wakeup-cmd-1']),
+            }),
+        ]);
+        expect(ownerTurn.openCommands.size).toBe(0);
+    });
+
+    it('settles backend-cancelled non-command tools on live wakeup Stop (#2021)', async () => {
+        const { session, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        backend.getAgentVersion = () => '1.5.13';
+        (backend as { hasMessageHandler?: () => boolean }).hasMessageHandler = () => true;
+        (backend as { takeCancelledSettlements?: () => string[] }).takeCancelledSettlements = () => ['question:0#wake'];
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+        });
+        const ownerTurn = {
+            openCommands: new Set<string>(),
+            commandCallIds: [] as string[],
+            deferredLiveCommandCalls: new Map(),
+            backendSettledCallIds: [] as string[],
+            bgTaskDescriptions: new Map(),
+        };
+        (launcher as unknown as { backend: unknown }).backend = backend;
+        (launcher as unknown as { handlerOwnerTurn: unknown }).handlerOwnerTurn = ownerTurn;
+
+        await (launcher as unknown as { discardStoppedWakeup: () => Promise<void> }).discardStoppedWakeup();
+
+        const settlements = client.sendAgentMessage.mock.calls
+            .map(([message]) => message as { settledCallIds?: string[] })
+            .filter((message) => Array.isArray(message?.settledCallIds));
+        expect(settlements[0]?.settledCallIds).toEqual(expect.arrayContaining(['question:0#wake']));
+    });
+
+    it('arms wakeup cancel hard-stop that awaits retirement (#2021)', async () => {
+        const { session } = makeSession();
+        const backend = new FakeAgyBackend();
+        backend.getAgentVersion = () => '1.5.13';
+        (backend as { hasMessageHandler?: () => boolean }).hasMessageHandler = () => true;
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            cancelHardStopMs: 40,
+        });
+        (launcher as unknown as { backend: unknown }).backend = backend;
+
+        const retire = vi.spyOn(
+            launcher as unknown as { retireBackend: (b: unknown) => Promise<boolean> },
+            'retireBackend'
+        ).mockResolvedValue(true);
+
+        (launcher as unknown as { armWakeupCancelHardStop: (b: unknown) => void })
+            .armWakeupCancelHardStop(backend);
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        expect(retire).toHaveBeenCalled();
+        retire.mockRestore();
+    });
+
+    it('waits for wakeup cancel grace before Stop settlement under Vitest (#2021)', async () => {
+        const { session } = makeSession();
+        const backend = new FakeAgyBackend();
+        backend.getAgentVersion = () => '1.5.13';
+        (backend as { hasMessageHandler?: () => boolean }).hasMessageHandler = () => true;
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            cancelHardStopMs: 200,
+        });
+        (launcher as unknown as { backend: unknown }).backend = backend;
+
+        const retire = vi.spyOn(
+            launcher as unknown as { retireBackend: (b: unknown) => Promise<boolean> },
+            'retireBackend'
+        ).mockResolvedValue(true);
+
+        (launcher as unknown as { armWakeupCancelHardStop: (b: unknown) => void })
+            .armWakeupCancelHardStop(backend);
+
+        // Vitest path: grace clears the hard-stop without retiring so shared
+        // mock transports survive for later idle wakeups.
+        const verified = await (launcher as unknown as { waitForWakeupCancelHardStop: () => Promise<boolean> })
+            .waitForWakeupCancelHardStop();
+        expect(verified).toBe(true);
+        expect(retire).not.toHaveBeenCalled();
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        expect(retire).not.toHaveBeenCalled();
+        retire.mockRestore();
+    });
+
+    it('does not settle wakeup Stop when process-tree exit is unverified (#2021)', async () => {
+        const { session, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        backend.getAgentVersion = () => '1.5.13';
+        (backend as { hasMessageHandler?: () => boolean }).hasMessageHandler = () => true;
+        backend.agentTreeEnded = false;
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            cancelHardStopMs: 20,
+        });
+        (launcher as unknown as { backend: unknown }).backend = backend;
+
+        vi.spyOn(
+            launcher as unknown as { retireBackend: (b: unknown) => Promise<boolean> },
+            'retireBackend'
+        ).mockResolvedValue(false);
+
+        // Simulate production wait (not Vitest grace) by clearing VITEST briefly.
+        const prev = process.env.VITEST;
+        delete process.env.VITEST;
+        try {
+            (launcher as unknown as { armWakeupCancelHardStop: (b: unknown) => void })
+                .armWakeupCancelHardStop(backend);
+            const verified = await (launcher as unknown as { waitForWakeupCancelHardStop: () => Promise<boolean> })
+                .waitForWakeupCancelHardStop();
+            expect(verified).toBe(false);
+        } finally {
+            if (prev !== undefined) process.env.VITEST = prev;
+            else process.env.VITEST = 'true';
+        }
+
+        const settlements = client.sendAgentMessage.mock.calls
+            .map(([message]) => message as { settledCallIds?: string[] })
+            .filter((message) => Array.isArray(message?.settledCallIds));
+        expect(settlements).toEqual([]);
+    });
+
+    it('keeps thinking and withholds ready when a queued prompt hits unverified pending Stop (#2021)', async () => {
+        const { session, queue, client } = makeSession();
+        const backend = new FakeAgyBackend();
+        backend.agentTreeEnded = false;
+        const thinking = vi.spyOn(session, 'onThinkingChange');
+        const { run, launcher } = launch(session, [backend]);
+        await vi.waitFor(() => expect(client.rpcHandlerManager.handlers.has(RPC_METHODS.Abort)).toBe(true));
+
+        (launcher as unknown as {
+            pendingVerifiedWakeupStop: boolean
+            pendingStopBackend: unknown
+        }).pendingVerifiedWakeupStop = true;
+        (launcher as unknown as { pendingStopBackend: unknown }).pendingStopBackend = backend;
+        vi.spyOn(
+            launcher as unknown as { retireBackend: (b: unknown) => Promise<boolean> },
+            'retireBackend'
+        ).mockResolvedValue(false);
+
+        queue.push('next after stop', REVIEW, 'next');
+        await vi.waitFor(() =>
+            expect(sessionEvents(client).some((e) =>
+                typeof (e as { message?: string }).message === 'string'
+                && (e as { message: string }).message.includes('still unverified')
+            )).toBe(true)
+        );
+
+        expect(backend.prompts).toEqual([]);
+        expect(thinking).toHaveBeenCalledWith(true);
+        expect(thinking).not.toHaveBeenCalledWith(false);
+        expect(sessionEvents(client)).not.toContainEqual({ type: 'ready' });
+        expect((launcher as unknown as { pendingVerifiedWakeupStop: boolean }).pendingVerifiedWakeupStop).toBe(true);
+
+        queue.close();
+        await run;
+        thinking.mockRestore();
     });
 });
 

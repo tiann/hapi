@@ -42,6 +42,7 @@ export type CodexMessage =
     }
     | { type: 'plan'; entries: PlanItem[] }
     | { type: 'error'; message: string }
+    | { type: 'turn-complete'; stopReason: string; numTurns?: number; settledCallIds?: string[] }
     | {
         type: 'round-summary';
         summary: {
@@ -119,14 +120,16 @@ export function convertAgentMessage(message: AgentMessage, model?: string | null
                 status: message.status,
                 ...(message.title ? { nativeTitle: message.title } : {}),
                 ...(message.kind ? { nativeKind: message.kind } : {}),
-                ...(message.progress !== undefined ? { progress: message.progress } : {})
+                ...(message.progress !== undefined ? { progress: message.progress } : {}),
+                ...(message.childSessionId ? { childSessionId: message.childSessionId } : {}),
             };
         case 'tool_result':
             return {
                 type: 'tool-call-result',
                 callId: message.id,
                 output: message.output,
-                is_error: message.status === 'failed'
+                is_error: message.status === 'failed',
+                ...(message.childSessionId ? { childSessionId: message.childSessionId } : {}),
             };
         case 'plan':
             return {
@@ -163,7 +166,22 @@ export function convertAgentMessage(message: AgentMessage, model?: string | null
         case 'error':
             return { type: 'error', message: message.message };
         case 'turn_complete':
-            return null;
+            // Hub-visible settlement for specific call ids (derivedToolWork /
+            // archive). Chat normalize returns null for this type (no UI row).
+            // Scope by settledCallIds so an OpenCode parent cancel cannot
+            // close a still-running child tool call that landed earlier.
+            // childSessionId/childStatus keep Archive blocked while a child is
+            // running between tool calls (#2021).
+            return {
+                type: 'turn-complete',
+                stopReason: message.stopReason,
+                ...(message.numTurns !== undefined ? { numTurns: message.numTurns } : {}),
+                ...(message.settledCallIds && message.settledCallIds.length > 0
+                    ? { settledCallIds: message.settledCallIds }
+                    : {}),
+                ...(message.childSessionId ? { childSessionId: message.childSessionId } : {}),
+                ...(message.childStatus ? { childStatus: message.childStatus } : {}),
+            };
         default: {
             // Unreachable while every AgentMessage variant is handled above —
             // the `never` binding is what enforces that at compile time. The

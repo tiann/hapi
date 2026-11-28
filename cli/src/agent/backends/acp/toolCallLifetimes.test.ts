@@ -256,16 +256,20 @@ describe('AcpToolCallLifetimes', () => {
         expect(lifetimes.resolve('more_99', 'update')).toMatch(/^more_99#L/);
     });
 
-    it('opens a new lifetime for the same id started right after a cancel, before it settles', () => {
+    it('settles a start that arrives during cancel drain with the cancelled turn (#2021)', () => {
         const lifetimes = new AcpToolCallLifetimes(sequentialIds());
         lifetimes.beginGeneration();
         const aborted = lifetimes.resolve('shell:0', 'start');
         lifetimes.cancel();
-        const next = lifetimes.resolve('shell:0', 'start');
-        expect(next).not.toBe(aborted);
-        lifetimes.settleCancelled();
-        // The new call is not cancelled by the settle of the old one.
-        expect(lifetimes.resolve('shell:0', 'start')).toBe(next);
+        // Buffered tool_call start between session/cancel and prompt completion.
+        const late = lifetimes.resolve('shell:0', 'start');
+        expect(late).not.toBe(aborted);
+        expect(lifetimes.isCancelling()).toBe(true);
+        const settled = lifetimes.settleCancelled();
+        expect(settled).toEqual(expect.arrayContaining([aborted, late]));
+        expect(lifetimes.isCancelling()).toBe(false);
+        // After the cancelled turn settles, a fresh start is a new call.
+        expect(lifetimes.resolve('shell:0', 'start')).not.toBe(late);
     });
 
     it('keeps a cancelled call that may still report in the persisted set', () => {

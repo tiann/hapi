@@ -25,3 +25,4 @@ it('does not share stop evidence across PID generations and releases failed oper
     await request('PID-100', { processStartMarker: 'old' }).catch(String)
     expect(stop).toHaveBeenCalledTimes(3)
 })
+

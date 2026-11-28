@@ -98,7 +98,9 @@ class WakeupTestBackend {
     alive = true;
     sessionIdToCreate = 'agy-conv-wakeup';
 
-    async initialize(): Promise<void> {}
+    async initialize(): Promise<void> {
+        this.alive = true;
+    }
     isTransportAlive(): boolean {
         return this.alive;
     }
@@ -172,6 +174,14 @@ class WakeupTestBackend {
     }
     async disconnect(): Promise<void> {
         this.alive = false;
+        this.agentTreeEnded = true;
+    }
+    agentTreeEnded = false;
+    wasAgentTreeEnded(): boolean {
+        return this.agentTreeEnded;
+    }
+    async verifyRetainedAgentExit(_force = false): Promise<boolean> {
+        return this.agentTreeEnded;
     }
 }
 
@@ -4777,25 +4787,38 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             const notify = (update: Record<string, unknown>) => internal.handleNotification('session/update', { sessionId: acpSessionId, update });
             const requests: string[] = [];
             let prompts = 0;
-            internal.transport = {
-                sendRequest: vi.fn(async (method: string, params: Record<string, unknown>) => {
-                    requests.push(method);
-                    await onMethod(method);
-                    if (method === 'session/new') return { sessionId: acpSessionId, models: { availableModels: [], currentModelId: 'gemini-3.8-flash-low' } };
-                    if (method === 'session/resume') return { sessionId: String(params.sessionId) };
-                    if (method === 'session/list') return { sessions: [] };
-                    if (method === 'session/prompt') {
-                        prompts += 1;
-                        return { stopReason: (await onPrompt(prompts, notify)) ?? 'end_turn' };
-                    }
-                    return {};
-                }),
-                sendNotification: vi.fn(), onNotification: () => {}, onStderrError: () => {}, registerRequestHandler: () => {},
-                isAlive: () => true, getProcessPid: () => 4242, close: async () => true
+            const wireTransport = () => {
+                internal.transport = {
+                    sendRequest: vi.fn(async (method: string, params: Record<string, unknown>) => {
+                        requests.push(method);
+                        await onMethod(method);
+                        if (method === 'session/new') return { sessionId: acpSessionId, models: { availableModels: [], currentModelId: 'gemini-3.8-flash-low' } };
+                        if (method === 'session/resume') return { sessionId: String(params.sessionId) };
+                        if (method === 'session/list') return { sessions: [] };
+                        if (method === 'session/prompt') {
+                            prompts += 1;
+                            return { stopReason: (await onPrompt(prompts, notify)) ?? 'end_turn' };
+                        }
+                        return {};
+                    }),
+                    sendNotification: vi.fn(), onNotification: () => {}, onStderrError: () => {}, registerRequestHandler: () => {},
+                    isAlive: () => true, getProcessPid: () => 4242, close: async () => true
+                };
+                internal.initializeResult = { protocolVersion: 1, agentVersion: '1.5.13', agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } };
             };
-            internal.initializeResult = { protocolVersion: 1, agentVersion: '1.5.13', agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } };
+            wireTransport();
             const { session, queue, client } = makeHarness('always-proceed', resumeSessionId);
-            const launcher = new AgyAcpRemoteLauncher(session, { createBackend: () => backend, brainDir: tempBrainDir, reactivePollMs: 15, reactiveSettleMs: 25, ...launcherOpts });
+            const launcher = new AgyAcpRemoteLauncher(session, {
+                createBackend: () => {
+                    // Hard-stop disconnects then restarts — re-wire the mock transport (#2021).
+                    wireTransport();
+                    return backend;
+                },
+                brainDir: tempBrainDir,
+                reactivePollMs: 15,
+                reactiveSettleMs: 25,
+                ...launcherOpts
+            });
             const run = launcher.launch();
             const append = (rows: Array<Record<string, unknown>>) => appendFileSync(
                 agyTranscriptPaths(tempBrainDir, acpSessionId)!.compactPath, rows.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');

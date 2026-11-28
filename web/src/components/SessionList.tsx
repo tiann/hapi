@@ -15,6 +15,7 @@ import { useLongPress } from '@/hooks/useLongPress'
 import { useLowRateAnimation } from '@/hooks/useLowRateAnimation'
 import { usePlatform } from '@/hooks/usePlatform'
 import { sessionArchiveMutationKey, sessionPinMutationKey, useSessionActions } from '@/hooks/mutations/useSessionActions'
+import { sessionBlocksHardArchive, sessionHasDurableLiveWork } from '@/lib/sessionHasLiveWork'
 import { useIsMutating } from '@tanstack/react-query'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { SessionExportDialog } from '@/components/SessionExportDialog'
@@ -1570,25 +1571,28 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
         }
     }, [s.id, isPinned, quickUnpinPending, quickUnpinFocusRef, panelOpen])
 
-    // Hover archive: an idle session archives in one click with a Reopen toast;
-    // one that is replying, waiting on approval or running background work
-    // still goes through the confirmation, since archiving stops its agent.
+    // Hover archive: idle sessions archive in one click with a Reopen toast.
+    // Live work (thinking / background / pending requests) hides Archive —
+    // stop the turn first (#2020).
     // Read from the shared mutation cache, not row state: the row remounts when
     // an archived session moves between sections (e.g. out of Active), and the
     // spinner must survive that until the request settles.
     const quickArchivePending = useIsMutating({ mutationKey: sessionArchiveMutationKey(s.id), exact: true }) > 0
-    const archiveNeedsConfirmation = s.thinking || s.pendingRequestsCount > 0 || (s.backgroundTaskCount ?? 0) > 0
+    // #2020/#2021: hub refuses archive while active live work OR disconnected
+    // durable tool work is visible — hide the affordance rather than 409.
+    // Disconnected rows may keep stale pending requests after heartbeat
+    // expiry; those alone still take Runner-verified cleanup.
+    const blockedByLiveWork = s.active
+        ? sessionBlocksHardArchive(s)
+        : sessionHasDurableLiveWork(s)
     // The row can turn inactive before the archive request settles (the hub
     // still confirms cleanup); keep the spinner until it does.
-    const canArchive = s.active || isLiveLifecycleState(s.metadata?.lifecycleState)
-    const showQuickArchive = s.active || quickArchivePending
+    const canArchive = !blockedByLiveWork && (s.active || isLiveLifecycleState(s.metadata?.lifecycleState))
+    const showQuickArchive = canArchive || quickArchivePending
     const quickActionCount = (showQuickUnpin ? 1 : 0) + (showQuickArchive ? 1 : 0)
     const hasQuickAction = quickActionCount > 0
     const handleQuickArchive = async () => {
-        if (archiveNeedsConfirmation) {
-            setArchiveOpen(true)
-            return
-        }
+        if (blockedByLiveWork) return
         try {
             await archiveSession()
             addToast({

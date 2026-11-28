@@ -14,6 +14,24 @@ import {
 } from './toolCallLifetimes';
 import { defaultToolCallLifetimeStore, type ToolCallLifetimeStore } from './toolCallLifetimeStore';
 import { createHash, randomUUID } from 'node:crypto';
+import {
+    classifyRetainedIdentity,
+    getProcessGroupId,
+    getProcessStartMarker,
+    getProcessThreadGroupId,
+    getSystemBootId,
+    isWindows,
+    killAndExpandWindowsRetainedTree,
+    killRetainedProcessTree,
+    retainedIdentityStillAlive,
+    snapshotProcessTreeIdentities,
+    verifyAgentOwnedProcessGroupExited,
+    type RetainedProcessIdentity,
+} from '@/utils/process';
+import {
+    clearAgentRootForCurrentHost,
+    publishAgentRootFromIdentity,
+} from '@/runner/agentRootRegistry';
 
 /** Why the backend is bumping/clearing hub thinking — launchers filter chatter here (#1553). */
 export type AgentActivitySource =
@@ -137,6 +155,14 @@ function userMessageChunkText(update: unknown): string | null {
     return null;
 }
 
+/** Tag OpenCode child tool traffic so hub live-work can outlive parent turns. */
+function stampChildSessionId(message: AgentMessage, childSessionId: string): AgentMessage {
+    if (message.type === 'tool_call' || message.type === 'tool_result') {
+        return { ...message, childSessionId };
+    }
+    return message;
+}
+
 export class AcpSdkBackend implements AgentBackend {
     private transport: AcpStdioTransport | null = null;
     private permissionHandler: ((request: PermissionRequest) => void) | null = null;
@@ -204,6 +230,40 @@ export class AcpSdkBackend implements AgentBackend {
         handler: AcpMessageHandler;
         timer: ReturnType<typeof setTimeout> | null;
     }>();
+    /**
+     * Child session ids that reported created/running — including those with no
+     * handler yet (between tool calls). Disconnect must interrupt these too (#2021).
+     */
+    private readonly knownChildSessionIds = new Set<string>();
+    /** Latched once `transport.close()` confirms the agent process tree is gone (#2021). */
+    private agentTreeEnded = false;
+    /**
+     * Generation-bound process-tree snapshot retained after an unconfirmed
+     * close so Stop retry verifies the original members (not a reused PID) (#2021).
+     */
+    private retainedAgentTree: RetainedProcessIdentity[] | null = null;
+    /**
+     * Root identity captured at transport spawn — survives a pre-disconnect
+     * root exit so retries still have group/generation evidence (#2021).
+     */
+    private spawnedRootIdentity: RetainedProcessIdentity | null = null;
+    /**
+     * Child + foreground settlement deferred until process-tree exit is verified.
+     * Cleared only after publish (#2021).
+     */
+    private pendingDisconnectSettle: {
+        childIds: string[];
+        sink: (msg: AgentMessage) => void;
+        /** Also settle root-scope (foreground) cancelled lifetimes after verify. */
+        settleForeground: boolean;
+    } | null = null;
+    /**
+     * Known ACP PID existed but the pre-close tree snapshot failed — never trust
+     * transport.close() alone for settlement (#2021 tip Major).
+     */
+    private retainedTreeSnapshotIncomplete = false;
+    /** True when spawn assigned a Windows Job Object (settlement uses job emptiness) (#2021). */
+    private windowsJobContained = false;
 
     /** Retry configuration for ACP initialization */
     private static readonly INIT_RETRY_OPTIONS = {
@@ -320,6 +380,41 @@ export class AcpSdkBackend implements AgentBackend {
         }
 
         this.transport = transport;
+        // Capture generation + group while the root is still alive — a later
+        // disconnect after root exit cannot recover PGID from a reaped PID (#2021).
+        const spawnPid = typeof this.transport.getProcessPid === 'function'
+            ? this.transport.getProcessPid()
+            : null;
+        const job = typeof this.transport.getWindowsAgentJob === 'function'
+            ? this.transport.getWindowsAgentJob()
+            : null;
+        // Only CREATE_SUSPENDED → Assign → Resume membership is settlement-safe (#2021).
+        this.windowsJobContained = !!job?.establishedAtCreate;
+        if (typeof spawnPid === 'number' && spawnPid > 0) {
+            this.spawnedRootIdentity = {
+                pid: spawnPid,
+                startMarker: getProcessStartMarker(spawnPid),
+                bootId: getSystemBootId(),
+                tgid: getProcessThreadGroupId(spawnPid),
+                pgid: getProcessGroupId(spawnPid),
+            };
+            // Durable for Runner probe after wrapper crash (#2021 Approach).
+            publishAgentRootFromIdentity(this.spawnedRootIdentity, {
+                containmentEstablished: this.windowsJobContained || !isWindows(),
+            });
+            const spawnTree = snapshotProcessTreeIdentities(spawnPid);
+            if (spawnTree && spawnTree.length > 0) {
+                this.retainedAgentTree = spawnTree;
+                this.retainedTreeSnapshotIncomplete = false;
+            } else if (this.windowsJobContained) {
+                // Job membership covers descendants even without a CIM tree (#2021).
+                this.retainedTreeSnapshotIncomplete = false;
+            } else if (isWindows()) {
+                this.retainedTreeSnapshotIncomplete = true;
+            }
+        } else {
+            this.spawnedRootIdentity = null;
+        }
 
         this.transport.onNotification((method, params) => {
             this.handleNotification(method, params);
@@ -914,6 +1009,7 @@ export class AcpSdkBackend implements AgentBackend {
         let stopReason: string | null = null;
         let numTurns: number | undefined = undefined;
         let promptUsage: AcpPromptUsage | null = null;
+        let promptError: unknown = null;
 
         try {
             // No timeout for prompt requests - they can run for extended periods
@@ -939,6 +1035,9 @@ export class AcpSdkBackend implements AgentBackend {
                     options?.timing?.onSent?.();
                     response = await request;
                 }
+            } catch (error) {
+                promptError = error;
+                throw error;
             } finally {
                 this.promptRequestInFlight = false;
                 options?.timing?.onAnswered?.();
@@ -970,9 +1069,15 @@ export class AcpSdkBackend implements AgentBackend {
             // before turn_complete so generated_image precedes turn boundary.
             await this.sessionUpdateQueue;
             this.messageHandler?.drainBuffers();
-            // A call cancelled in this prompt has had its tail; the agent
-            // starting that id again from now on is a new call.
-            this.toolCallLifetimes.settleCancelled();
+            // Transport-indeterminate rejection (cancel write / stdin loss) is
+            // not proof tools stopped — keep cancelled lifetimes unsettled so
+            // Archive stays blocked until a terminal stopReason or verified
+            // tree exit (#2021). Cursor's deterministic `T: [canceled]` reject
+            // is not indeterminate and still settles below.
+            const indeterminateCancel = isAcpIndeterminateError(promptError) && !stopReason;
+            const settledCallIds = indeterminateCancel
+                ? []
+                : this.toolCallLifetimes.settleCancelled();
             try {
                 const latestUsageUpdate = this.readLatestUsageUpdate();
                 if (promptUsage) {
@@ -1006,11 +1111,18 @@ export class AcpSdkBackend implements AgentBackend {
                         contextWindow: latestUsageUpdate.contextWindow
                     });
                 }
-                if (stopReason) {
+                // Cursor often rejects the in-flight session/prompt on Stop
+                // (`Error: T: [canceled]…`), leaving stopReason null while
+                // settleCancelled() still collected open call ids. Publish
+                // those ids with a cancelled reason so Archive can clear —
+                // the original rejection still propagates after this finally
+                // (#2021). Skip when the reject is transport-indeterminate.
+                if (!indeterminateCancel && (stopReason || settledCallIds.length > 0)) {
                     onUpdate({
                         type: 'turn_complete',
-                        stopReason,
-                        ...(numTurns !== undefined ? { numTurns } : {})
+                        stopReason: stopReason ?? 'cancelled',
+                        ...(numTurns !== undefined ? { numTurns } : {}),
+                        ...(settledCallIds.length > 0 ? { settledCallIds } : {}),
                     });
                 }
             } finally {
@@ -1038,6 +1150,16 @@ export class AcpSdkBackend implements AgentBackend {
         // The agent keeps waiting on an unanswered form until its request is
         // answered, so cancelling the prompt must settle the form too.
         this.settlePendingElicitations(sessionId);
+    }
+
+    /**
+     * Collect and close lifetimes cancelled by {@link cancelPrompt} (or a
+     * child-scope cancel). Used by launchers that Stop outside an in-flight
+     * `prompt()` finally — e.g. Antigravity live wakeup — so the hub receives
+     * scoped settlement for non-command tools too (#2021).
+     */
+    takeCancelledSettlements(scope?: import('./toolCallLifetimes').ToolCallScope): string[] {
+        return this.toolCallLifetimes.settleCancelled(scope);
     }
 
     /**
@@ -1318,9 +1440,172 @@ export class AcpSdkBackend implements AgentBackend {
         return this.transport?.isAlive() ?? false;
     }
 
+    /** True once a disconnect confirmed the agent process tree exited (#2021). */
+    wasAgentTreeEnded(): boolean {
+        return this.agentTreeEnded;
+    }
+
     /** PID of the spawned ACP agent process, when known (used by the opencode v2 REST discovery). */
     getProcessPid(): number | null {
-        return this.transport ? this.transport.getProcessPid() : null;
+        if (this.transport) return this.transport.getProcessPid();
+        return this.retainedAgentTree?.[this.retainedAgentTree.length - 1]?.pid ?? null;
+    }
+
+    /**
+     * Re-check / re-kill the generation-bound tree retained after an unconfirmed
+     * close. Root PID absence alone is not enough — descendants may survive (#2021).
+     */
+    async verifyRetainedAgentExit(force = false): Promise<boolean> {
+        if (this.agentTreeEnded) {
+            this.publishPendingDisconnectSettle();
+            return true;
+        }
+        if (this.transport) {
+            await this.disconnect();
+            return this.agentTreeEnded;
+        }
+        const tree = this.retainedAgentTree;
+        // Incomplete Windows evidence: expand from generation-bound members so
+        // verification can recover after the root exits once every owned
+        // descendant is gone (#2021 Major). Keep pending while coverage fails.
+        if (this.retainedTreeSnapshotIncomplete) {
+            if (!tree || tree.length === 0) return false;
+            if (isWindows()) {
+                const result = await killAndExpandWindowsRetainedTree(tree, force, {
+                    incomplete: true,
+                });
+                this.retainedAgentTree = result.tree;
+                // Incomplete snapshots stay pending even when known seeds exit
+                // (#2021 Major) — expand may still clean up observed members.
+                return false;
+            }
+            const anyAlive = tree.some((identity) => retainedIdentityStillAlive(identity));
+            if (anyAlive) {
+                await killRetainedProcessTree(tree, force);
+                return false;
+            }
+            if (!await this.verifyTreeExitBeyondPidSnapshot(tree)) {
+                return false;
+            }
+            this.retainedTreeSnapshotIncomplete = false;
+            this.agentTreeEnded = true;
+            this.retainedAgentTree = null;
+            this.publishPendingDisconnectSettle();
+            return true;
+        }
+        if (!tree || tree.length === 0) return this.agentTreeEnded;
+        if (tree.every((identity) => !retainedIdentityStillAlive(identity))) {
+            if (!await this.verifyTreeExitBeyondPidSnapshot(tree)) {
+                return false;
+            }
+            this.agentTreeEnded = true;
+            this.retainedAgentTree = null;
+            this.publishPendingDisconnectSettle();
+            return true;
+        }
+        if (isWindows()) {
+            const result = await killAndExpandWindowsRetainedTree(tree, force, {
+                incomplete: this.retainedTreeSnapshotIncomplete,
+            });
+            this.retainedAgentTree = result.tree;
+            if (result.verified) {
+                this.retainedTreeSnapshotIncomplete = false;
+                this.agentTreeEnded = true;
+                this.retainedAgentTree = null;
+                this.publishPendingDisconnectSettle();
+            }
+            return result.verified;
+        }
+        const killed = await killRetainedProcessTree(tree, force);
+        if (killed) {
+            this.agentTreeEnded = true;
+            this.retainedAgentTree = null;
+            this.publishPendingDisconnectSettle();
+        }
+        return killed;
+    }
+
+    /**
+     * After retained members look gone: Windows re-scans/kills from a matching
+     * root (spawn snapshot alone can miss later descendants); POSIX requires
+     * agent-owned group emptiness. Prefers spawn-time root identity when the
+     * disconnect snapshot lost PGID (#2021).
+     */
+    private async verifyTreeExitBeyondPidSnapshot(
+        tree: RetainedProcessIdentity[],
+    ): Promise<boolean> {
+        if (isWindows()) {
+            const root = this.spawnedRootIdentity ?? tree[tree.length - 1]!;
+            // Refresh while the original root still matches so mid-close
+            // descendants enter the verified set (#2021 Major).
+            if (classifyRetainedIdentity(root) === 'match') {
+                const fresh = snapshotProcessTreeIdentities(root.pid);
+                if (fresh && fresh.length > 0) {
+                    this.retainedAgentTree = fresh;
+                    const result = await killAndExpandWindowsRetainedTree(fresh, true, {
+                        incomplete: this.retainedTreeSnapshotIncomplete,
+                    });
+                    this.retainedAgentTree = result.tree;
+                    return result.verified;
+                }
+                // Root matches but scan failed — expand from what we have.
+            }
+            // Root gone or refresh failed: expand from generation-bound
+            // retained members that remain queryable after root exit (#2021).
+            const result = await killAndExpandWindowsRetainedTree(tree, true, {
+                incomplete: this.retainedTreeSnapshotIncomplete,
+            });
+            this.retainedAgentTree = result.tree;
+            return result.verified;
+        }
+        const root = this.spawnedRootIdentity ?? tree[tree.length - 1]!;
+        return await verifyAgentOwnedProcessGroupExited(root, true);
+    }
+
+    /** Publish deferred child + foreground settlements once the tree is gone (#2021). */
+    private publishPendingDisconnectSettle(): void {
+        const pending = this.pendingDisconnectSettle;
+        if (!pending) return;
+        this.pendingDisconnectSettle = null;
+        for (const childSessionId of pending.childIds) {
+            const scope = childToolCallScope(childSessionId);
+            this.toolCallLifetimes.cancel(scope);
+            const settledCallIds = this.toolCallLifetimes.settleCancelled(scope);
+            this.toolCallLifetimes.beginGeneration(scope);
+            try {
+                pending.sink({
+                    type: 'turn_complete',
+                    stopReason: 'cancelled',
+                    childSessionId,
+                    childStatus: 'interrupted',
+                    ...(settledCallIds.length > 0 ? { settledCallIds } : {}),
+                });
+            } catch (error) {
+                logger.debug(
+                    '[AcpSdkBackend] deferred child interrupt publish failed:',
+                    error instanceof Error ? error.message : String(error)
+                );
+            }
+        }
+        if (pending.settleForeground) {
+            this.toolCallLifetimes.cancel();
+            const settledCallIds = this.toolCallLifetimes.settleCancelled();
+            this.toolCallLifetimes.beginGeneration();
+            if (settledCallIds.length > 0) {
+                try {
+                    pending.sink({
+                        type: 'turn_complete',
+                        stopReason: 'cancelled',
+                        settledCallIds,
+                    });
+                } catch (error) {
+                    logger.debug(
+                        '[AcpSdkBackend] deferred foreground settle publish failed:',
+                        error instanceof Error ? error.message : String(error)
+                    );
+                }
+            }
+        }
     }
 
     getLastSessionUpdateAt(): number {
@@ -1367,35 +1652,151 @@ export class AcpSdkBackend implements AgentBackend {
                 await this.transportOpening?.catch(() => undefined);
             }
         }
-        if (!this.transport) return;
+        if (!this.transport) {
+            // Prior unconfirmed close retained a tree snapshot — retry (#2021).
+            if (this.retainedAgentTree != null) {
+                await this.verifyRetainedAgentExit(true);
+            }
+            return;
+        }
         for (const timer of this.sessionInfoRefreshTimers.values()) {
             clearTimeout(timer);
         }
         this.sessionInfoRefreshTimers.clear();
         this.clearRunningThinkingTimer();
         await this.sessionUpdateQueue;
+        // Remote→local keeps the same HAPI wrapper PID, so hub worker-exit
+        // retirement never fires. Order matters (#2021 tip Majors):
+        //   1. Drain child buffers while the emit sink is still installed
+        //   2. Close the transport (buffered stdout may still report children)
+        //   3. Drain the post-close session-update queue (image registration /
+        //      late running status) before publishing interruptions
+        //   4. Snapshot known children, then interrupt if verified
+        const sink = this.childEmitSink;
         for (const entry of this.childHandlers.values()) {
             this.clearChildQuietTimer(entry);
             entry.handler.drainBuffers();
         }
         this.childHandlers.clear();
+        await this.sessionUpdateQueue;
+
         const recordSessionId = this.activeSessionId;
-        this.childEmitSink = null;
         this.messageHandler?.drainBuffers();
         this.messageHandler = null;
-        this.activeSessionId = null;
+        // Keep activeSessionId / knownChildSessionIds / sink through close so
+        // late child status notifications during process teardown are tracked.
         this.activePromptRequests = 0;
         this.foregroundPromptRequests = 0;
         this.isProcessingMessage = false;
-        this.sessionModelsMetadata.clear();
-        this.initialAvailableCommands.clear();
-        this.sessionAvailableCommands.clear();
-        this.autoPermissionModeEnabled = null;
         this.notifyResponseComplete();
         this.settlePendingElicitations();
         let agentEnded = false;
+        const closePid = typeof this.transport.getProcessPid === 'function'
+            ? this.transport.getProcessPid()
+            : null;
+        const knownPid = typeof closePid === 'number' && closePid > 0;
+        // Always refresh the tree before closing stdin while the original root
+        // still matches — descendants started after spawn must be retained
+        // (#2021 Major). A reaped root yields a null-pgid tree, so fall back
+        // to spawn-time evidence only when refresh is impossible.
+        let preCloseTree = this.retainedAgentTree;
+        const spawned = this.spawnedRootIdentity;
+        if (knownPid && spawned && classifyRetainedIdentity(spawned) === 'match') {
+            const live = snapshotProcessTreeIdentities(closePid!);
+            const liveRoot = live?.[live.length - 1];
+            if (
+                live
+                && live.length > 0
+                && liveRoot
+                && liveRoot.pid === spawned.pid
+                && liveRoot.startMarker === spawned.startMarker
+            ) {
+                // Merge unresolved prior identities (reparented descendants
+                // omitted from the fresh root scan). Keep liveRoot last so
+                // POSIX group verify binds the original leader (#2021 Major).
+                const prior = this.retainedAgentTree ?? [];
+                const merged = live.slice(0, -1);
+                const seen = new Set(
+                    live.map((identity) => `${identity.pid}:${identity.startMarker}`),
+                );
+                for (const old of prior) {
+                    const key = `${old.pid}:${old.startMarker}`;
+                    if (seen.has(key)) continue;
+                    if (retainedIdentityStillAlive(old)) {
+                        merged.push(old);
+                        seen.add(key);
+                    }
+                }
+                merged.push(liveRoot);
+                preCloseTree = merged;
+                this.retainedAgentTree = merged;
+                this.retainedTreeSnapshotIncomplete = false;
+            } else if (isWindows() && !live && !this.windowsJobContained) {
+                // Windows cannot cover mid-close forks without a fresh tree.
+                this.retainedTreeSnapshotIncomplete = true;
+            } else if (isWindows() && !this.windowsJobContained) {
+                // Root no longer matches — spawn-only evidence is not teardown
+                // coverage for descendants started after spawn (#2021 Major).
+                this.retainedTreeSnapshotIncomplete = true;
+            }
+        } else if (isWindows() && this.retainedAgentTree && !this.windowsJobContained) {
+            this.retainedTreeSnapshotIncomplete = true;
+        }
+        // When live snapshot failed but spawn identity exists, retain a
+        // single-member tree from spawn so POSIX group verify still has evidence.
+        if ((!preCloseTree || preCloseTree.length === 0) && this.spawnedRootIdentity) {
+            preCloseTree = [this.spawnedRootIdentity];
+            if (!isWindows() || this.windowsJobContained) this.retainedTreeSnapshotIncomplete = false;
+            else this.retainedTreeSnapshotIncomplete = true;
+        }
         try {
-            agentEnded = (await this.transport.close()) === true;
+            const closeOk = (await this.transport.close()) === true;
+            // Job Object close already settled on ActiveProcesses === 0 (#2021).
+            if (this.windowsJobContained && closeOk) {
+                agentEnded = true;
+                this.agentTreeEnded = true;
+                this.retainedAgentTree = null;
+                this.retainedTreeSnapshotIncomplete = false;
+            } else if (preCloseTree && preCloseTree.length > 0) {
+                // Never clear a Windows incomplete-refresh latch here — spawn
+                // PID absence alone must not unlock settlement (#2021 Major).
+                const survivors = preCloseTree.some((identity) => retainedIdentityStillAlive(identity));
+                if (survivors || this.retainedTreeSnapshotIncomplete) {
+                    this.retainedAgentTree = preCloseTree;
+                    agentEnded = false;
+                } else if (closeOk) {
+                    if (await this.verifyTreeExitBeyondPidSnapshot(preCloseTree)) {
+                        agentEnded = true;
+                        this.agentTreeEnded = true;
+                        this.retainedAgentTree = null;
+                        this.retainedTreeSnapshotIncomplete = false;
+                    } else {
+                        this.retainedAgentTree = preCloseTree;
+                        agentEnded = false;
+                    }
+                } else {
+                    // Tree members look gone but close itself was incomplete —
+                    // keep the snapshot for a retry rather than claiming exit.
+                    this.retainedAgentTree = preCloseTree;
+                    agentEnded = false;
+                }
+            } else if ((knownPid || this.spawnedRootIdentity) && preCloseTree == null) {
+                // Known PID / spawn identity but no usable tree — never trust
+                // closeOk alone; stdin-EOF can exit the root while a descendant
+                // survives (#2021).
+                this.retainedTreeSnapshotIncomplete = true;
+                this.retainedAgentTree = null;
+                agentEnded = false;
+            } else if (closeOk) {
+                // No known PID — trust close only when it confirmed.
+                this.retainedTreeSnapshotIncomplete = false;
+                agentEnded = true;
+                this.agentTreeEnded = true;
+                this.retainedAgentTree = null;
+            } else {
+                this.retainedAgentTree = preCloseTree;
+                agentEnded = false;
+            }
         } finally {
             this.transport = null;
             // Delete transition: only once the agent process tree is confirmed
@@ -1404,6 +1805,50 @@ export class AcpSdkBackend implements AgentBackend {
             // record stays for a restore.
             this.settleToolCallLifetimeRecord(recordSessionId, agentEnded);
         }
+
+        // Close can enqueue async child updates (e.g. image registration then
+        // running). Drain those — and any handlers they create — *before*
+        // interrupt so a late running publish cannot land after interrupted (#2021).
+        await this.drainChildSessionUpdatesAfterClose();
+
+        // Snapshot after the post-close drain so children first reported during
+        // teardown (and any queued status that ran above) are included.
+        const childIds = [...this.knownChildSessionIds];
+        this.knownChildSessionIds.clear();
+        this.childEmitSink = null;
+        if (sink) {
+            // Retain child + foreground settlement until exit is verified —
+            // indeterminate Stop leaves foreground calls open (#2021).
+            this.pendingDisconnectSettle = {
+                childIds,
+                sink,
+                settleForeground: true,
+            };
+            if (agentEnded) {
+                this.publishPendingDisconnectSettle();
+                // Containment verified — wrapper exit may now mean already_gone (#2021).
+                clearAgentRootForCurrentHost();
+            }
+        }
+        this.activeSessionId = null;
+        this.sessionModelsMetadata.clear();
+        this.initialAvailableCommands.clear();
+        this.sessionAvailableCommands.clear();
+        this.autoPermissionModeEnabled = null;
+    }
+
+    /** Drain session-update work and child handlers created during/after close. */
+    private async drainChildSessionUpdatesAfterClose(): Promise<void> {
+        for (let pass = 0; pass < 3; pass++) {
+            await this.sessionUpdateQueue;
+            if (this.childHandlers.size === 0) break;
+            for (const entry of this.childHandlers.values()) {
+                this.clearChildQuietTimer(entry);
+                entry.handler.drainBuffers();
+            }
+            this.childHandlers.clear();
+        }
+        await this.sessionUpdateQueue;
     }
 
     /**
@@ -1480,6 +1925,13 @@ export class AcpSdkBackend implements AgentBackend {
             this.toolCallLifetimes = this.createToolCallLifetimes();
         }
         this.activeSessionId = sessionId;
+        // Re-publish with HAPI_SESSION_ID from env (never the ACP agent session
+        // id) so Runner probe can find containment after restart (#2021 Approach).
+        if (this.spawnedRootIdentity) {
+            publishAgentRootFromIdentity(this.spawnedRootIdentity, {
+                containmentEstablished: this.windowsJobContained || !isWindows(),
+            });
+        }
         // Calls of this session still open when a previous process stopped
         // keep their ids (an agent that outlives HAPI's restart may report them).
         const stored = this.toolCallLifetimeStore?.load(sessionId) ?? [];
@@ -1549,17 +2001,70 @@ export class AcpSdkBackend implements AgentBackend {
 
         if (params.type === 'status') {
             const status = asString(params.status);
+            if (status === 'created' || status === 'running') {
+                // Child can be alive with no open tool call (between calls or
+                // before the first). Publish so Archive stays blocked (#2021).
+                this.knownChildSessionIds.add(childSessionId);
+                const sink = this.childEmitSink;
+                if (sink) {
+                    this.sessionUpdateQueue = this.sessionUpdateQueue
+                        .then(() => {
+                            sink({
+                                type: 'turn_complete',
+                                stopReason: status,
+                                childSessionId,
+                                childStatus: status,
+                            });
+                        })
+                        .catch((error) => {
+                            logger.debug(
+                                '[AcpSdkBackend] child running status publish failed:',
+                                error instanceof Error ? error.message : String(error)
+                            );
+                        });
+                }
+                return;
+            }
             if (status === 'completed' || status === 'failed' || status === 'interrupted') {
                 const scope = childToolCallScope(childSessionId);
-                if (status === 'interrupted') this.toolCallLifetimes.cancel(scope);
+                // Any terminal child status must retire outstanding calls in
+                // that scope — failed/completed can omit per-call terminals
+                // the same way interrupted does (#2021).
+                this.toolCallLifetimes.cancel(scope);
+                const settledCallIds = this.toolCallLifetimes.settleCancelled(scope);
                 this.toolCallLifetimes.beginGeneration(scope);
+                this.knownChildSessionIds.delete(childSessionId);
                 this.finishChildHandler(childSessionId);
+                // Publish child terminal + scope settlement so Archive can
+                // clear running-child and sticky tool rows (#2021).
+                if (this.childEmitSink) {
+                    const sink = this.childEmitSink;
+                    this.sessionUpdateQueue = this.sessionUpdateQueue
+                        .then(() => {
+                            sink({
+                                type: 'turn_complete',
+                                stopReason: status === 'interrupted' ? 'cancelled' : status,
+                                childSessionId,
+                                childStatus: status,
+                                ...(settledCallIds.length > 0 ? { settledCallIds } : {}),
+                            });
+                        })
+                        .catch((error) => {
+                            logger.debug(
+                                '[AcpSdkBackend] child terminal settlement failed:',
+                                error instanceof Error ? error.message : String(error)
+                            );
+                        });
+                }
             }
-            // created/running have no handler to manage yet.
             return;
         }
         if (params.type !== 'update' || !isObject(params.update)) return;
 
+        // Tool updates can arrive without a preceding created/running status
+        // (see toolCallLifetimes child interrupt coverage). Track the scope so
+        // disconnect's post-close snapshot settles it (#2021).
+        this.knownChildSessionIds.add(childSessionId);
         const entry = this.childHandlers.get(childSessionId) ?? this.createChildHandler(childSessionId);
         if (!entry) return;
         const update = this.withToolCallLifetimeId(params.update, childToolCallScope(childSessionId));
@@ -1582,7 +2087,9 @@ export class AcpSdkBackend implements AgentBackend {
             return null;
         }
         const handler = new AcpMessageHandler((message) => {
-            this.childEmitSink?.(message);
+            // Stamp child scope on tool traffic so the hub's live-work scan can
+            // keep Archive blocked across newer parent prompts (#2021).
+            this.childEmitSink?.(stampChildSessionId(message, childSessionId));
         }, {
             textChunkMode: this.options.textChunkMode,
             flavor: this.options.flavor,

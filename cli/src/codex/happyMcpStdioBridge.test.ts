@@ -1,11 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-type ToolHandler = (args: Record<string, unknown>) => Promise<unknown>
+type ToolHandler = (
+    args: Record<string, unknown>,
+    extra?: {
+        _meta?: { progressToken?: string | number }
+        sendNotification?: (notification: {
+            method: string
+            params: Record<string, unknown>
+        }) => Promise<void>
+    },
+) => Promise<unknown>
 
 const harness = vi.hoisted(() => ({
     tools: new Map<string, ToolHandler>(),
     configs: new Map<string, Record<string, unknown>>(),
-    callTool: vi.fn(async (_request: unknown) => ({
+    callTool: vi.fn(async (_request: unknown, _options?: unknown) => ({
         content: [{ type: 'text', text: 'forwarded' }],
         isError: false
     }))
@@ -30,8 +39,10 @@ vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({
     Client: class {
         async connect(): Promise<void> {}
 
-        async callTool(request: unknown): Promise<unknown> {
-            return harness.callTool(request)
+        async callTool(request: unknown, _schema?: unknown, options?: unknown): Promise<unknown> {
+            return options === undefined
+                ? harness.callTool(request)
+                : harness.callTool(request, options)
         }
     }
 }))
@@ -151,6 +162,7 @@ describe('runHappyMcpStdioBridge tool forwarding', () => {
             'display_image',
             'display_media',
             'display_video',
+            'archive_peer',
             'inspect_peer',
             'list_peers',
             'ping_peer',
@@ -245,6 +257,67 @@ describe('runHappyMcpStdioBridge tool forwarding', () => {
         ])
     })
 
+    it('registers archive_peer when included in --tools', async () => {
+        await runHappyMcpStdioBridge([
+            '--url',
+            'http://127.0.0.1:43006',
+            '--tools',
+            'change_title,display_image,display_video,display_media,archive_peer'
+        ])
+
+        expect([...harness.tools.keys()]).toEqual([
+            'change_title',
+            'display_image',
+            'display_video',
+            'display_media',
+            'archive_peer'
+        ])
+    })
+
+    it('forwards archive_peer with a timeout past the hub Runner cleanup budget', async () => {
+        await runHappyMcpStdioBridge([
+            '--url',
+            'http://127.0.0.1:43006',
+            '--tools',
+            'archive_peer'
+        ])
+
+        const handler = harness.tools.get('archive_peer')
+        expect(handler).toBeTypeOf('function')
+        await handler!({ sessionIdPrefix: '05d9f0f2' })
+
+        expect(harness.callTool).toHaveBeenCalledWith(
+            { name: 'archive_peer', arguments: { sessionIdPrefix: '05d9f0f2' } },
+            { timeout: 140_000 },
+        )
+    })
+
+    it('emits progress notifications while archive_peer waits (OpenCode 60s deadline)', async () => {
+        await runHappyMcpStdioBridge([
+            '--url',
+            'http://127.0.0.1:43006',
+            '--tools',
+            'archive_peer'
+        ])
+
+        const handler = harness.tools.get('archive_peer')
+        expect(handler).toBeTypeOf('function')
+        const sendNotification = vi.fn(async () => {})
+        await handler!(
+            { sessionIdPrefix: '05d9f0f2' },
+            { _meta: { progressToken: 'tok-1' }, sendNotification },
+        )
+
+        expect(sendNotification).toHaveBeenCalledWith({
+            method: 'notifications/progress',
+            params: expect.objectContaining({
+                progressToken: 'tok-1',
+                progress: 1,
+                message: 'archive requested',
+            }),
+        })
+    })
+
     it('registers list_peers when included in --tools', async () => {
         await runHappyMcpStdioBridge([
             '--url',
@@ -272,7 +345,7 @@ describe('runHappyMcpStdioBridge tool forwarding', () => {
                 '--url',
                 'http://127.0.0.1:43006',
                 '--tools',
-                'change_title,list_peers,ping_peer,inspect_peer,spawn_peer'
+                'change_title,list_peers,ping_peer,inspect_peer,spawn_peer,archive_peer'
             ])
 
             expect([...harness.tools.keys()]).toEqual(['change_title'])
@@ -296,6 +369,7 @@ describe('runHappyMcpStdioBridge tool forwarding', () => {
             'session_waiting',
             'ping_peer',
             'spawn_peer',
+            'archive_peer',
             'inspect_peer',
             'list_peers'
         ])

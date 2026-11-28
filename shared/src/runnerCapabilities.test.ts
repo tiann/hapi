@@ -16,6 +16,7 @@ describe('runnerCapabilities', () => {
         expect(CURRENT_MACHINE_CAPABILITIES).toEqual(expect.arrayContaining([
             ...REQUIRED_MACHINE_CAPABILITIES,
             MACHINE_CAPABILITIES.WorkspaceFileAccess,
+            MACHINE_CAPABILITIES.ProbeSessionExit,
         ]))
     })
 

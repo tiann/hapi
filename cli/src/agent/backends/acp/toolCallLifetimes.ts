@@ -109,6 +109,9 @@ export class AcpToolCallLifetimes {
     private readonly lifetimes = new Map<string, Lifetime>();
     private readonly keysById = new Map<string, string>();
     private readonly generations = new Map<ToolCallScope, number>();
+    /** Cancelled lifetimes replaced during drain (same agent id, new start) —
+     *  still need hub settlement even though they left the live map. */
+    private readonly orphanedCancelledIds: Array<{ scope: ToolCallScope; id: string }> = [];
 
     constructor(
         private readonly createId: (agentToolCallId: string) => string = (id) => formatToolCallLifetimeId(id),
@@ -197,11 +200,20 @@ export class AcpToolCallLifetimes {
     }
 
     /**
+     * Scopes whose prompt/child turn is draining after `session/cancel`.
+     * A buffered tool_call start that opens during this window must still be
+     * settled with the cancelled turn (#2021).
+     */
+    private readonly cancellingScopes = new Set<ToolCallScope>();
+
+    /**
      * The scope was cancelled. A start of the same id is a new call from now
      * on; requests stop joining once the cancel settles. The cancelled call's
-     * own updates and results still map to it.
+     * own updates and results still map to it. Stays cancelling through the
+     * prompt drain so late starts are marked cancelled too (#2021).
      */
     cancel(scope: ToolCallScope = MAIN_TOOL_CALL_SCOPE): void {
+        this.cancellingScopes.add(scope);
         for (const lifetime of this.lifetimes.values()) {
             if (lifetime.scope === scope && !lifetime.terminal) {
                 lifetime.cancelled = true;
@@ -210,18 +222,37 @@ export class AcpToolCallLifetimes {
         }
     }
 
-    /** The cancelled prompt or child turn has ended. */
-    settleCancelled(scope: ToolCallScope = MAIN_TOOL_CALL_SCOPE): void {
-        let changed = false;
+    /** Whether this scope is still draining a cancelled prompt/child turn. */
+    isCancelling(scope: ToolCallScope = MAIN_TOOL_CALL_SCOPE): boolean {
+        return this.cancellingScopes.has(scope);
+    }
+
+    /** The cancelled prompt or child turn has ended.
+     *  Returns the HAPI lifetime ids closed by this settle so callers can
+     *  publish a scoped hub settlement (parent cancel must not close child
+     *  scopes that keep running). */
+    settleCancelled(scope: ToolCallScope = MAIN_TOOL_CALL_SCOPE): string[] {
+        const settledIds: string[] = [];
         for (const [key, lifetime] of this.lifetimes) {
             if (lifetime.scope === scope && lifetime.cancelled && !lifetime.closedForRequest) {
                 lifetime.closedForStart = true;
                 lifetime.closedForRequest = true;
                 this.touch(key, lifetime);
-                changed = true;
+                settledIds.push(lifetime.id);
             }
         }
-        if (changed) this.changed('close');
+        if (this.orphanedCancelledIds.length > 0) {
+            const kept: Array<{ scope: ToolCallScope; id: string }> = [];
+            for (const orphan of this.orphanedCancelledIds) {
+                if (orphan.scope === scope) settledIds.push(orphan.id);
+                else kept.push(orphan);
+            }
+            this.orphanedCancelledIds.length = 0;
+            this.orphanedCancelledIds.push(...kept);
+        }
+        this.cancellingScopes.delete(scope);
+        if (settledIds.length > 0) this.changed('close');
+        return settledIds;
     }
 
     /**
@@ -291,6 +322,9 @@ export class AcpToolCallLifetimes {
     }
 
     private open(agentToolCallId: string, kind: ToolCallEventKind, scope: ToolCallScope): Lifetime {
+        // A buffered start during cancel drain belongs to the cancelled turn
+        // and must settle with it (#2021).
+        const cancelling = this.cancellingScopes.has(scope);
         const lifetime: Lifetime = {
             id: this.createId(agentToolCallId),
             agentToolCallId,
@@ -298,9 +332,9 @@ export class AcpToolCallLifetimes {
             generation: this.generationOf(scope),
             startSeen: kind === 'start',
             terminal: false,
-            cancelled: false,
+            cancelled: cancelling,
             requestSettled: false,
-            closedForStart: false,
+            closedForStart: cancelling,
             closedForRequest: false,
             restored: false,
             requests: 0,
@@ -308,7 +342,14 @@ export class AcpToolCallLifetimes {
         };
         const key = lifetimeKey(scope, agentToolCallId);
         const previous = this.lifetimes.get(key);
-        if (previous) this.keysById.delete(previous.id);
+        if (previous) {
+            this.keysById.delete(previous.id);
+            // A cancel-drain replacement must still settle the id the hub saw
+            // for the earlier start (#2021).
+            if (previous.cancelled && !previous.closedForRequest && !previous.terminal) {
+                this.orphanedCancelledIds.push({ scope: previous.scope, id: previous.id });
+            }
+        }
         this.insert(key, lifetime);
         this.prune();
         this.changed('open', { agentToolCallId, scope, id: lifetime.id, openedAt: lifetime.openedAt });

@@ -158,12 +158,11 @@ describe('session row hover archive', () => {
         ['replying', { thinking: true }],
         ['waiting on approval', { pendingRequestsCount: 1 }],
         ['running background work', { backgroundTaskCount: 2 }]
-    ])('asks for confirmation before archiving a session that is %s', (_label, overrides) => {
+    ])('hides Archive while the session is %s (#2020 — stop the turn first)', (_label, overrides) => {
         const archiveSession = vi.fn(async () => {})
         renderList([makeSession({ id: 'busy', ...overrides })], { archiveSession } as Partial<ApiClient>)
 
-        fireEvent.click(screen.getByRole('button', { name: 'Archive' }))
-        expect(screen.getByText('Archive Session')).toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: 'Archive' })).toBeNull()
         expect(archiveSession).not.toHaveBeenCalled()
     })
 

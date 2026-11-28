@@ -21,6 +21,8 @@ export const HAPI_SESSION_ID_ENV = 'HAPI_SESSION_ID';
  * `inspect_peer` / `ping_peer` (or `hapi ping-peer --list` / `inspect-peer` /
  * `ping-peer`). To spawn a new peer with work, prefer MCP `spawn_peer` or
  * `hapi spawn-peer` - do not reinvent JWT+curl or stuff `message` into machine spawn.
+ * To soft-archive a peer (archive only, never delete), prefer MCP `archive_peer` or
+ * `hapi archive-peer`.
  *
  * For lazy Codex sessions the id must only be exported after the hub row is
  * materialized — exporting the provisional id early makes GET /api/sessions/:id

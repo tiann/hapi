@@ -65,7 +65,7 @@ describe('truncateOpenCodeRewind invocation position', () => {
                 const second = input(cutoffFirst ? 'later' : 'boundary', 200, cutoffFirst ? 400 : 300)
                 const boundary = cutoffFirst ? first : second
                 const beforeEpoch = store.messages.getMessageEpoch(session.id)
-                expect(store.messages.truncateOpenCodeRewind(session.id, boundary.seq, boundary.id)).toBe(beforeEpoch + 1)
+                expect(store.messages.truncateOpenCodeRewind(session.id, boundary.seq, boundary.id).epoch).toBe(beforeEpoch + 1)
                 expect(store.messages.getAllMessages(session.id).map(message => message.id)).toEqual([prefix.id])
                 expect(store.messages.searchContentInSession('prefix', 'default', session.id).matches.map(match => match.messageId)).toEqual([prefix.id])
                 expect(store.messages.searchContent('boundary', 'default')).toEqual([])

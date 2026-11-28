@@ -145,12 +145,20 @@ for request/response shapes and error semantics, and `src/web/routes/` for all e
 - `POST /api/sessions/:id/uploads/:uploadId/abort` - Abort chunked upload and delete partial file.
 - `POST /api/sessions/:id/upload/delete` - Delete uploaded file.
 - `POST /api/sessions/:id/archive` - Archive active session.
-  Runner-owned sessions wait for verified cleanup, including retries after an
-  early inactive/archived update. Concurrent requests join the same operation.
-  Cleanup confirmation has a 90-second budget; failure returns a structured
-  `archive-cleanup-unconfirmed` (409), `archive-cleanup-unavailable` (503), or
-  `archive-cleanup-timeout` (503) error. A timeout does not cancel Runner cleanup
-  or prove the process is still alive; retry to verify the final result.
+  Active sessions with hub-visible live work (`thinking`, `backgroundTaskCount`,
+  or pending `agentState.requests`) return 409 `archive-session-working` before
+  any stop RPC (`tiann/hapi#2020`). Recovery depends on the work: stop a
+  foreground turn (e.g. `POST /api/sessions/:id/abort`), wait for or stop
+  background tasks via available controls, and resolve pending permission or
+  input requests, then retry. Disconnected rows keep Runner-verified cleanup
+  (stale requests after heartbeat expiry do not block). Runner-owned sessions
+  wait for verified cleanup, including retries after an early inactive/archived
+  update.
+  Concurrent requests join the same operation. Cleanup confirmation has a
+  90-second budget; failure returns a structured `archive-cleanup-unconfirmed`
+  (409), `archive-cleanup-unavailable` (503), or `archive-cleanup-timeout`
+  (503) error. A timeout does not cancel Runner cleanup or prove the process is
+  still alive; retry to verify the final result.
 - `PATCH /api/sessions/:id` - Rename session.
 - `DELETE /api/sessions/:id` - Delete inactive session.
 - `GET /api/sessions/:id/slash-commands` - List slash commands.

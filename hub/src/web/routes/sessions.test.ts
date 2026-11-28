@@ -1863,6 +1863,19 @@ describe('sessions routes', () => {
             expect(await response.json()).toEqual({ error: error.message, code: error.code })
         })
 
+        it('returns 409 archive-session-working when the engine refuses live work (#2020)', async () => {
+            const error = new ArchiveCleanupError('working')
+            const { app } = createApp(createSession({ active: true }), {
+                archiveSession: async () => { throw error },
+            })
+            const response = await app.request('/api/sessions/session-1/archive', { method: 'POST' })
+            expect(response.status).toBe(409)
+            expect(await response.json()).toEqual({
+                error: error.message,
+                code: 'archive-session-working',
+            })
+        })
+
         it('rechecks Runner cleanup for an already inactive archived row on retry', async () => {
             let calls = 0
             const session = createSession({ active: false, metadata: {
@@ -1990,6 +2003,9 @@ describe('sessions routes', () => {
             const response = await app.request('/api/sessions/session-1/archive', { method: 'POST' })
             expect(response.status).toBe(500)
         })
+
+        // #2020 soft stand-down refuses WORKING peers via ArchiveCleanupError('unconfirmed')
+        // - covered by the structured cleanup unconfirmed case above (409 + code).
 
         it('returns 404 when the session id is unknown', async () => {
             const session = createSession()
