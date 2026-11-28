@@ -1950,9 +1950,14 @@ function SessionChatInner(props: SessionChatProps) {
             props.onRefresh()
         } catch (e) {
             haptic.notification('error')
-            console.error('Failed to set permission mode:', e)
+            addToast?.({
+                title: t('misc.permissionMode'),
+                body: e instanceof Error ? e.message : t('dialog.error.default'),
+                sessionId: props.session.id,
+                url: `/sessions/${props.session.id}`
+            })
         }
-    }, [setPermissionMode, props.onRefresh, haptic])
+    }, [setPermissionMode, props.onRefresh, haptic, addToast, t, props.session.id])
 
     const handleCollaborationModeChange = useCallback(async (mode: CodexCollaborationMode) => {
         try {
@@ -2622,6 +2627,7 @@ function SessionChatInner(props: SessionChatProps) {
                         modelReasoningEffort={agentFlavor === 'codex' || agentFlavor === 'opencode' ? props.session.modelReasoningEffort : undefined}
                         effort={agentFlavor === 'agy' ? agyCurrentEffort : props.session.effort}
                         agentFlavor={agentFlavor}
+                        cursorAcpPermissionModes={props.session.active && !controlledByUser ? props.session.metadata?.cursorAcpPermissionModes : undefined}
                         machineId={sessionMachineId}
                         inputTranslation={inputTranslation.visible ? {
                             enabled: inputTranslation.enabled,

@@ -3,7 +3,6 @@ import type { AcpSdkBackend } from '@/agent/backends/acp';
 import {
     applyCursorAcpModel,
     applyCursorAcpMode,
-    isCursorAutoReviewMode,
     resolveCursorAcpWireId,
     resolveCursorModeAfterPlanApproval,
     toCursorAcpMode,
@@ -21,12 +20,10 @@ describe('toCursorAcpMode', () => {
     it('maps HAPI cursor modes to Cursor ACP modes', () => {
         expect(toCursorAcpMode('default')).toBe('agent');
         expect(toCursorAcpMode('yolo')).toBe('agent');
-        expect(toCursorAcpMode('autoReview')).toBe('agent');
+        expect(toCursorAcpMode('autoReview')).toBe('auto-review');
         expect(toCursorAcpMode('plan')).toBe('plan');
         expect(toCursorAcpMode('ask')).toBe('ask');
         expect(toCursorAcpMode('debug')).toBe('debug');
-        expect(isCursorAutoReviewMode('autoReview')).toBe(true);
-        expect(isCursorAutoReviewMode('yolo')).toBe(false);
         expect(toCursorAcpMode(undefined)).toBe('agent');
     });
 });
@@ -109,13 +106,36 @@ describe('applyCursorAcpMode', () => {
         expect(setMode).toHaveBeenCalledWith('session-1', 'ask');
     });
 
-    it('swallows setMode errors', async () => {
+    it('requires affirmative native readback when entering or leaving Smart Auto', async () => {
+        const backend = {
+            getConfigOptionByCategory: () => ({ id: 'mode-opt', options: [{value: 'auto-review'}, {value: 'agent'}] }),
+            setConfigOption: vi.fn(async () => undefined),
+            setMode: vi.fn()
+        } as unknown as AcpSdkBackend;
+        await expect(applyCursorAcpMode(backend, 's', 'autoReview')).rejects.toThrow('did not confirm');
+        await expect(applyCursorAcpMode(backend, 's', 'default', 'autoReview')).rejects.toThrow('did not confirm');
+        expect(backend.setMode).not.toHaveBeenCalled();
+    });
+
+    it('rejects a fresh config response that confirms a different mode', async () => {
+        const modeOption = { id: 'mode-opt', currentValue: 'agent', options: [{ value: 'ask' }] };
+        const backend = {
+            getConfigOptionByCategory: vi.fn(() => modeOption),
+            setConfigOption: vi.fn(async () => [{ ...modeOption, currentValue: 'plan' }]),
+            setMode: vi.fn()
+        } as unknown as AcpSdkBackend;
+
+        await expect(applyCursorAcpMode(backend, 'session-1', 'ask')).rejects.toThrow('did not confirm ask mode (reported: plan)');
+        expect(backend.setMode).not.toHaveBeenCalled();
+    });
+
+    it('rejects if Cursor did not apply the mode', async () => {
         const setMode = vi.fn(async () => {
             throw new Error('method not found');
         });
         const backend = { setMode } as unknown as AcpSdkBackend;
 
-        await expect(applyCursorAcpMode(backend, 'session-1', 'ask')).resolves.toBeUndefined();
+        await expect(applyCursorAcpMode(backend, 'session-1', 'ask')).rejects.toThrow('method not found');
     });
 });
 

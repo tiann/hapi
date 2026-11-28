@@ -3,13 +3,13 @@ import { cursorCliSkuBaseId, cursorModelBaseId, cursorModelBaseMatches, isCursor
 import type { AcpSdkBackend } from '@/agent/backends/acp';
 import { logger } from '@/ui/logger';
 
-export type CursorAcpMode = 'agent' | 'plan' | 'ask' | 'debug';
+export type CursorAcpMode = 'agent' | 'plan' | 'ask' | 'debug' | 'auto-review';
 
 export function toCursorAcpMode(mode: PermissionModeOf<typeof Flavors.cursor> | undefined): CursorAcpMode {
     if (mode === 'plan') return 'plan';
     if (mode === 'ask') return 'ask';
     if (mode === 'debug') return 'debug';
-    // autoReview / yolo / default map to agent; auto-review is a spawn flag + slash, not ACP mode.
+    if (mode === 'autoReview') return 'auto-review';
     return 'agent';
 }
 
@@ -27,55 +27,43 @@ export function resolveCursorModeAfterPlanApproval(
     return mode;
 }
 
-/** True when HAPI permission mode should spawn/toggle Cursor Auto-review. */
-export function isCursorAutoReviewMode(mode: PermissionModeOf<typeof Flavors.cursor> | undefined): boolean {
-    return mode === 'autoReview';
-}
-
-function resolveAcpModeConfigValue(
-    mode: PermissionModeOf<typeof Flavors.cursor> | undefined,
-    backend: AcpSdkBackend,
-    sessionId: string
-): string {
-    const acpMode = toCursorAcpMode(mode);
-    const modeOption = backend.getConfigOptionByCategory?.(sessionId, 'mode');
-    const optionValues = modeOption?.options.map((entry) => entry.value) ?? [];
-    if (optionValues.includes(acpMode)) {
-        return acpMode;
-    }
-    if (mode === 'yolo' || mode === 'default' || mode === 'autoReview') {
-        if (optionValues.includes('agent')) {
-            return 'agent';
-        }
-    }
-    if (mode === 'debug' && optionValues.includes('debug')) {
-        return 'debug';
-    }
-    return acpMode;
+export function cursorSmartAutoOption(option: ConfigOption | undefined) {
+    return option?.options?.find(({ value }) => value === 'auto-review' || value === 'autoReview');
 }
 
 export async function applyCursorAcpMode(
     backend: AcpSdkBackend,
     sessionId: string,
-    mode: PermissionModeOf<typeof Flavors.cursor> | undefined
+    mode: PermissionModeOf<typeof Flavors.cursor> | undefined,
+    previousMode?: PermissionModeOf<typeof Flavors.cursor>
 ): Promise<void> {
-    const configValue = resolveAcpModeConfigValue(mode, backend, sessionId);
-
-    const modeOption = backend.getConfigOptionByCategory?.(sessionId, 'mode');
-    if (modeOption && backend.setConfigOption) {
+    const option = backend.getConfigOptionByCategory?.(sessionId, 'mode');
+    const smart = cursorSmartAutoOption(option);
+    if (mode === 'autoReview' && !smart) {
+        throw new Error('This Cursor ACP session does not offer Smart Auto. Use a supported mode here or use Smart Auto in the Cursor terminal.');
+    }
+    const value = mode === 'autoReview' && smart ? smart.value : toCursorAcpMode(mode);
+    // On a build that offers Smart Auto, a missing/mismatched receipt may leave
+    // its native policy uncertain. Reconfirm even the operator's prior choice
+    // before allowing the next queued turn to use it.
+    const needsReadback = smart !== undefined || previousMode === 'autoReview';
+    if (option && backend.setConfigOption) {
+        let receipt: Awaited<ReturnType<AcpSdkBackend['setConfigOption']>>;
         try {
-            await backend.setConfigOption(sessionId, modeOption.id, configValue);
-            return;
+            receipt = await backend.setConfigOption(sessionId, option.id, value);
         } catch (error) {
+            if (needsReadback) throw error;
             logger.debug('[cursor-acp] session/set_config_option for mode failed, trying set_mode', error);
+            return await backend.setMode(sessionId, value);
         }
+        const reported = receipt?.find((entry) => entry.id === option.id)?.currentValue;
+        if ((needsReadback || reported != null) && reported !== value) {
+            throw new Error(`Cursor ACP did not confirm ${value} mode (reported: ${reported ?? 'unknown'})`);
+        }
+        return;
     }
-
-    try {
-        await backend.setMode(sessionId, configValue);
-    } catch (error) {
-        logger.warn(`[cursor-acp] Failed to set mode ${configValue}`, error);
-    }
+    if (needsReadback) throw new Error('Cursor ACP cannot confirm a Smart Auto transition');
+    await backend.setMode(sessionId, value);
 }
 
 export type ApplyCursorAcpModelResult = {

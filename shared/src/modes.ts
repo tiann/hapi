@@ -107,8 +107,10 @@ export function getCodexCollaborationModeLabel(mode: CodexCollaborationMode): st
     return CODEX_COLLABORATION_MODE_LABELS[mode]
 }
 
-export function getPermissionModeOptionsForFlavor(flavor?: string | null): PermissionModeOption[] {
-    return getPermissionModesForFlavor(flavor).map((mode) => ({
+export function getPermissionModeOptionsForFlavor(flavor?: string | null, cursorAcpPermissionModes?: readonly string[]): PermissionModeOption[] {
+    const modes = getPermissionModesForFlavor(flavor)
+    const supported = flavor === 'cursor' && cursorAcpPermissionModes ? modes.filter(mode => cursorAcpPermissionModes.includes(mode)) : modes
+    return supported.map((mode) => ({
         mode,
         label: getPermissionModeLabel(mode),
         tone: getPermissionModeTone(mode)

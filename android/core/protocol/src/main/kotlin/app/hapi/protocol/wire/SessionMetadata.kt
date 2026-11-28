@@ -51,6 +51,7 @@ data class SessionMetadata(
      * `PATCH /api/sessions/:id {translateInput}`. Absent ⇒ off.
      */
     val translateInput: Boolean? = null,
+    val cursorAcpPermissionModes: List<String>? = null,
 )
 
 /** `metadata.summary` on the detail session (`{text, updatedAt}`). */

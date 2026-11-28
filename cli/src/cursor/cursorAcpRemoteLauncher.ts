@@ -28,8 +28,8 @@ import { buildCursorModelsSnapshotFromAcp } from './utils/cursorAcpModelsSnapsho
 import { CursorExtensionAdapter } from './utils/cursorExtensionAdapter';
 import {
     applyCursorAcpMode,
+    cursorSmartAutoOption,
     applyCursorAcpModel,
-    isCursorAutoReviewMode,
     resolveCursorModeAfterPlanApproval,
     wireIdForCursorSessionState
 } from './utils/cursorModeConfig';
@@ -113,15 +113,17 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private happyServer: { stop: () => void } | null = null;
     private abortController = new AbortController();
     private displayPermissionMode: PermissionMode | null = null;
+    private backendPermissionMode: PermissionMode | null = null;
     private currentBackendModel: string | null = null;
     private defaultBackendModel: string | null = null;
     private unregisterModelApplyHandler: (() => void) | null = null;
-    private readonly modelApplyLock = new AsyncLock();
+    private unregisterPermissionModeApplyHandler: (() => void) | null = null;
+    private readonly sessionConfigLock = new AsyncLock();
+    private rejectedBatchIds: string[] = [];
+    private permissionModeRecovery: ReturnType<typeof Promise.withResolvers<void>> | null = null;
     private activePromptModeHash: string | null = null;
     /** Concurrent soft-steer session/prompt RPCs still running after kickoff. */
     private softSteerWaiters: Promise<void>[] = [];
-    /** True when ACP process was spawned with `--auto-review`. */
-    private spawnedWithAutoReview = false;
     /** True when this ACP process was spawned with `--model auto`. */
     private spawnedWithCliAuto = false;
     /**
@@ -131,8 +133,6 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
     private acpRelaunchPromise: Promise<void> | null = null;
     /** Set when cleanup begins so a late relaunch cannot publish a live backend. */
     private sessionTeardownStarted = false;
-    /** Avoid re-queueing `/auto-review` on every mid-session mode sync. */
-    private autoReviewSlashQueued = false;
     private cursorMcpOverlay: CursorMcpOverlayHandle | null = null;
     /** Transient workspace `.cursor/rules` overlay when emit status summaries is on. */
     private notifyRuleOverlay: CursorNotifyRuleOverlay | null = null;
@@ -291,8 +291,6 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             }
         }
 
-        const autoReview = isCursorAutoReviewMode(session.getPermissionMode() as PermissionMode);
-        this.spawnedWithAutoReview = autoReview;
 
         // Desired hub/UI model (may be a bracket wire). Spawn may use a remap for
         // `agent --model`, but applyLiveModel must reapply this original so variants
@@ -313,7 +311,6 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             backend = createCursorAcpBackend({
                 cwd: session.path,
                 model: spawnModel,
-                autoReview,
                 worktree: session.cursorWorktree,
                 addDirs: session.cursorAddDirs
             });
@@ -395,7 +392,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         this.permissionAdapter = new PermissionAdapter(
             session.client,
             backend,
-            () => session.getPermissionMode(),
+            () => this.backendPermissionMode ?? 'default',
             (response) => this.handlePermissionResponse(extensionAdapter, response)
         );
 
@@ -432,7 +429,6 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                         backend = createCursorAcpBackend({
                             cwd: session.path,
                             model: spawnModel,
-                            autoReview,
                             worktree: session.cursorWorktree,
                             addDirs: session.cursorAddDirs
                         });
@@ -455,7 +451,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                         this.permissionAdapter = new PermissionAdapter(
                             session.client,
                             backend,
-                            () => session.getPermissionMode(),
+                            () => this.backendPermissionMode ?? 'default',
                             (response) => this.handlePermissionResponse(this.extensionAdapter!, response)
                         );
                         continue;
@@ -494,7 +490,6 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                         backend = createCursorAcpBackend({
                             cwd: session.path,
                             model: spawnModel,
-                            autoReview,
                             worktree: session.cursorWorktree,
                             addDirs: session.cursorAddDirs
                         });
@@ -517,7 +512,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                         this.permissionAdapter = new PermissionAdapter(
                             session.client,
                             backend,
-                            () => session.getPermissionMode(),
+                            () => this.backendPermissionMode ?? 'default',
                             (response) => this.handlePermissionResponse(this.extensionAdapter!, response)
                         );
                         continue;
@@ -554,8 +549,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             }
         }
 
-        session.client.emitSessionReady();
-
+        this.publishPermissionModeCapabilities(backend, acpSessionId);
         syncCursorModelsFromAcp(backend, acpSessionId);
 
         const initialMetadata = backend.getSessionModelsMetadata(acpSessionId);
@@ -564,7 +558,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
         const previousSetModel = session.setModel.bind(session);
 
-        await applyCursorAcpMode(backend, acpSessionId, session.getPermissionMode() as PermissionMode);
+        const initialPermissionMode = session.getPermissionMode() ?? 'default';
+        await applyCursorAcpMode(backend, acpSessionId, initialPermissionMode);
+        this.backendPermissionMode = initialPermissionMode;
         const modelToApply = desiredModel ?? session.model;
         if (modelToApply) {
             // If we remapped --model for spawn, restoring the original variant is
@@ -586,6 +582,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         this.installLiveSessionConfigSync(previousSetModel);
 
         this.applyDisplayMode(session.getPermissionMode() as PermissionMode);
+        session.client.emitSessionReady();
 
         this.setupAbortHandlers(session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbort(),
@@ -822,6 +819,10 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             await this.waitForAbortBarrier();
             if (this.shouldExit) break;
             const waitSignal = this.abortController.signal;
+            if (this.permissionModeRecovery) {
+                await this.waitForPermissionModeRecovery(waitSignal);
+                continue;
+            }
             if (this.acpRelaunchPromise) {
                 await this.acpRelaunchPromise;
             }
@@ -869,6 +870,38 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             // landed during mode/model setup and still dispatch a Bridge.
             this.userAbortRequested = false;
             this.turnHasSteeredInput = false;
+
+            // Handle the native toggle as a confirmed HAPI mode change. Forwarding
+            // it as plain prompt text cannot tell us whether approval policy changed.
+            if (/^\s*\/auto-review(?:\s|$)/.test(batch.message)) {
+                if (waitSignal.aborted || this.userAbortRequested) {
+                    requeueAborted();
+                    continue;
+                }
+                session.queue.commitBatch(batch);
+                batchSettled = true;
+                try {
+                    const argument = batch.message.trim().slice('/auto-review'.length).trim();
+                    const native = this.acpSessionId ? this.backend?.getConfigOptionByCategory(this.acpSessionId, 'mode') : undefined;
+                    const smart = cursorSmartAutoOption(native);
+                    if (argument === 'status') {
+                        const status = smart && native?.currentValue
+                            ? (native.currentValue === smart.value ? 'on' : 'off')
+                            : 'not reported by Cursor ACP';
+                        session.sendSessionEvent({ type: 'message', message: `Smart Auto: ${status}` });
+                    } else {
+                        if (!['', 'on', 'off'].includes(argument)) throw new Error('Use /auto-review [on|off|status]');
+                        if (!smart) throw new Error('This Cursor ACP session does not offer Smart Auto. Use /auto-review in the Cursor terminal.');
+                        const enable = argument === 'on' || (argument === '' && session.getPermissionMode() !== 'autoReview');
+                        if (enable || session.getPermissionMode() === 'autoReview' || native?.currentValue === smart.value) {
+                            await session.applyPermissionModeConfig(enable ? 'autoReview' : 'default');
+                        }
+                    }
+                } catch (error) {
+                    this.surfacePromptFailure(error instanceof Error ? error.message : String(error));
+                }
+                continue;
+            }
 
             // Activate bridge attribution only from queue-owned provenance —
             // never from caller-controlled localId (which can forge `bridge:`).
@@ -960,19 +993,6 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 break;
             }
 
-            // Internal Auto-review toggle already dequeued, then held across an
-            // in-place relaunch that spawned with --auto-review: prompting would
-            // toggle Auto-review off while HAPI still displays it.
-            if (
-                this.spawnedWithAutoReview
-                && batch.items.length > 0
-                && batch.items.every(
-                    (item) => item.internal?.kind === 'control' && item.message.trim() === '/auto-review'
-                )
-            ) {
-                continue;
-            }
-
             // Mode/model RPCs can finish after Abort — and a permission-card
             // abort sets userAbortRequested without touching the signal. A
             // plain Stop preserves the never-ACKed batch for the post-Stop
@@ -1028,9 +1048,6 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             this.pendingTextFailure = null;
             this.pendingStderrFailure = null;
             this.promptInFlight = true;
-            session.client.updateAgentState?.((state) => ({ ...state, steeringActive: true }));
-            this.activePromptModeHash = batch.hash;
-
             let requeueBatch = false;
             try {
                 const settleFailure = (error: unknown) => {
@@ -1044,11 +1061,48 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                         ? this.pendingStderrFailure ?? rpcFailure ?? this.pendingTextFailure
                         : rpcFailure ?? this.pendingStderrFailure ?? this.pendingTextFailure;
                 };
-                if (this.backend !== liveBackend || this.acpSessionId !== liveSessionId) {
+                const appliedMode = await this.sessionConfigLock.inLock(async () => {
+                    if (this.backend !== liveBackend || this.acpSessionId !== liveSessionId) return null;
+                    if (this.shouldExit || waitSignal.aborted || this.userAbortRequested) return null;
+
+                    const requestedMode = batch.mode.permissionMode;
+                    const planContinue = batch.items.length === 1
+                        && batch.items[0]?.internal?.kind === 'control'
+                        && batch.message === CURSOR_PLAN_CONTINUE;
+                    const selectedMode = session.getPermissionMode();
+                    let mode = requestedMode;
+                    if (planContinue) {
+                        mode = selectedMode && selectedMode !== requestedMode
+                            ? selectedMode
+                            : resolveCursorModeAfterPlanApproval(requestedMode);
+                    }
+                    try {
+                        await applyCursorAcpMode(liveBackend, liveSessionId, mode, this.backendPermissionMode ?? undefined);
+                    } catch (error) {
+                        if (this.shouldExit || waitSignal.aborted || this.userAbortRequested) return null;
+                        this.rejectedBatchIds = batch.items.flatMap((item) => item.localId ? [item.localId] : []);
+                        this.permissionModeRecovery ??= Promise.withResolvers<void>();
+                        const detail = error instanceof Error ? error.message : String(error);
+                        this.surfacePromptFailure(
+                            `Cursor could not apply ${mode} mode. Retry the permission mode, or cancel the rejected queued messages to continue. ${detail}`,
+                            { deferFooter: true }
+                        );
+                        return null;
+                    }
+                    this.backendPermissionMode = mode;
+                    if (this.shouldExit || waitSignal.aborted || this.userAbortRequested) return null;
+                    if (planContinue && session.getPermissionMode() === requestedMode && mode !== requestedMode) {
+                        session.setPermissionMode(mode);
+                        session.pushKeepAlive();
+                    }
+                    this.applyDisplayMode(mode);
+                    return mode;
+                });
+                if (appliedMode === null) {
                     requeueBatch = true;
                 } else {
-                    await applyCursorAcpMode(liveBackend, liveSessionId, batch.mode.permissionMode as PermissionMode);
-                    this.applyDisplayMode(batch.mode.permissionMode as PermissionMode);
+                    this.activePromptModeHash = session.queue.modeHasher({ ...batch.mode, permissionMode: appliedMode });
+                    session.client.updateAgentState?.((state) => ({ ...state, steeringActive: true }));
                     if (this.shouldExit) {
                         // Terminal teardown ran while mode-apply awaited: end
                         // without dispatching (the queue was reset and the
@@ -1065,7 +1119,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                         continue;
                     }
                     if (this.userAbortRequested) {
-                        // A permission-card abort landed while mode-apply
+                        // A permission-card abort landed after mode-apply
                         // awaited (it never aborts the dequeue signal): bail
                         // before the hub ACK or any durable Bridge mutation.
                         this.bridgingForEventId = null;
@@ -1115,7 +1169,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                         this.lastRecordedModelError
                         && !this.lastRecordedModelError.supersededByUserTurn
                         // Only a user-authored item supersedes. HAPI-enqueued control
-                        // commands (e.g. the `/auto-review` toggle slash) carry queue-owned
+                        // commands (e.g. plan continuation) carry queue-owned
                         // `internal` provenance and are not a newer task instruction —
                         // treating them as one durably kills Bridge & retry for an error
                         // the operator never replaced. Mirrors hasPendingNonBridgeTurn().
@@ -1408,6 +1462,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 session.onThinkingChange(false);
                 await this.permissionAdapter?.cancelAll('Prompt finished');
                 await this.extensionAdapter?.cancelAll('Prompt finished');
+                if (!this.permissionModeRecovery && !this.shouldExit) {
+                    await this.restoreSelectedPermissionMode();
+                }
                 // Always clear Bridge attribution. Permission-card abort sets
                 // userAbortRequested without handleAbort, so leaving the ID set
                 // would false-RECOVER on the next successful normal turn.
@@ -1426,6 +1483,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 if (
                     bridgedEventId
                     && !requeueBatch
+                    && !this.permissionModeRecovery
                     && !this.userAbortRequested
                     && !this.turnHasModelError
                 ) {
@@ -1437,7 +1495,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 // have NotificationHub announce a normal completion for a turn
                 // that never ran — the false completion this path exists to
                 // prevent — even if the retry then fails.
-                if (!requeueBatch && session.queue.size() === 0 && !this.shouldExit) {
+                if (!requeueBatch && !this.permissionModeRecovery && session.queue.size() === 0 && !this.shouldExit) {
                     sendReady();
                 }
             }
@@ -1505,6 +1563,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             this.softSteerWaiters = [];
             this.unregisterModelApplyHandler?.();
             this.unregisterModelApplyHandler = null;
+            this.unregisterPermissionModeApplyHandler?.();
+            this.unregisterPermissionModeApplyHandler = null;
 
             if (this.acpRelaunchPromise) {
                 await this.acpRelaunchPromise.catch(() => {});
@@ -1603,24 +1663,13 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         }
 
         const session = this.session;
-        const executeMode = resolveCursorModeAfterPlanApproval(
-            session.getPermissionMode() as PermissionMode
-        ) as PermissionMode;
-
-        // Leave plan/ask for an executable mode, then queue a continue prompt so
-        // Yes means "keep going on the user task" (Claude ExitPlanMode parallel).
-        session.setPermissionMode(executeMode);
-        void applyCursorAcpMode(backend, acpSessionId, executeMode).then(() => {
-            this.applyDisplayMode(executeMode);
-        });
-
+        // The approval unblocks the current ACP prompt. Leave Plan on the
+        // queued continuation, only after Cursor confirms its executable mode.
         session.queue.unshiftIsolated(CURSOR_PLAN_CONTINUE, {
-            permissionMode: executeMode,
+            permissionMode: this.backendPermissionMode ?? session.getPermissionMode() ?? 'default',
             model: session.model
-        });
-        logger.debug('[cursor-acp] CreatePlan accepted — queued continue prompt', {
-            executeMode
-        });
+        }, undefined, { internal: { kind: 'control' } });
+        logger.debug('[cursor-acp] CreatePlan accepted — queued continue prompt');
     }
 
     private handlePermissionResponse(
@@ -2271,22 +2320,29 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         previousSetModel: CursorSession['setModel']
     ): void {
         const session = this.session;
-        const previousSetPermissionMode = session.setPermissionMode.bind(session);
-        session.setPermissionMode = (mode: PermissionMode) => {
-            previousSetPermissionMode(mode);
-            const backend = this.backend;
-            const acpSessionId = this.acpSessionId;
-            if (!backend || !acpSessionId) {
-                // Relaunch may have nulled the backend; still record Auto-review so
-                // maybeQueueAutoReviewSlash can fire once the replacement is ready.
-                this.maybeQueueAutoReviewSlash(mode);
-                return;
-            }
-            void applyCursorAcpMode(backend, acpSessionId, mode).then(() => {
+        this.unregisterPermissionModeApplyHandler = session.registerPermissionModeApplyHandler(async (mode) => {
+            return await this.sessionConfigLock.inLock(async () => {
+                const backend = this.backend;
+                const acpSessionId = this.acpSessionId;
+                if (!backend || !acpSessionId || this.shouldExit || this.sessionTeardownStarted) {
+                    throw new Error('Cursor ACP session is not ready to apply permission mode');
+                }
+                if (this.promptInFlight || this.softSteerOutstanding()) {
+                    throw new Error('Wait for the current Cursor turn to finish before changing the permission mode');
+                }
+                await applyCursorAcpMode(backend, acpSessionId, mode, this.backendPermissionMode ?? undefined);
+                if (this.shouldExit || this.sessionTeardownStarted) {
+                    throw new Error('Cursor ACP session ended while applying permission mode');
+                }
+                this.backendPermissionMode = mode;
+                session.setPermissionMode(mode);
                 this.applyDisplayMode(mode);
+                this.rejectedBatchIds = [];
+                this.permissionModeRecovery?.resolve();
+                this.permissionModeRecovery = null;
+                return mode;
             });
-            this.maybeQueueAutoReviewSlash(mode);
-        };
+        });
 
         this.unregisterModelApplyHandler = session.registerModelApplyHandler(async (model) => (
             await this.applyLiveModel(model, previousSetModel, {
@@ -2310,7 +2366,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         previousSetModel: CursorSession['setModel'],
         options: { optimistic: boolean; throwOnFailure: boolean }
     ): Promise<string | null> {
-        return this.modelApplyLock.inLock(() =>
+        return this.sessionConfigLock.inLock(() =>
             this.applyLiveModelLocked(model, previousSetModel, options));
     }
 
@@ -2479,8 +2535,6 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         const rollbackSpawnModel = this.spawnedWithCliAuto
             ? CURSOR_AUTO_MODEL_ID
             : resolveCursorSpawnModel(this.currentBackendModel ?? session.model);
-        const rollbackAutoReview = this.spawnedWithAutoReview;
-        const autoReview = isCursorAutoReviewMode(session.getPermissionMode() as PermissionMode);
 
         const previousBackend = this.backend;
         if (previousBackend) {
@@ -2489,6 +2543,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             });
         }
         this.backend = null;
+        this.backendPermissionMode = null;
         if (this.shouldExit || this.sessionTeardownStarted) {
             throw new Error('Cannot relaunch Cursor ACP while the session is ending');
         }
@@ -2496,10 +2551,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         try {
             await this.bindFreshAcpBackend({
                 spawnModel,
-                autoReview,
                 resumeSessionId
             });
-            this.spawnedWithAutoReview = autoReview;
             this.spawnedWithCliAuto = cursorSpawnModelId(spawnModel) === CURSOR_AUTO_MODEL_ID;
             logger.info(
                 `[cursor-acp] In-place relaunch with --model ${cursorSpawnModelId(spawnModel) ?? spawnModel} (session=${this.acpSessionId})`
@@ -2510,10 +2563,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             try {
                 await this.bindFreshAcpBackend({
                     spawnModel: rollbackSpawnModel,
-                    autoReview: rollbackAutoReview,
                     resumeSessionId
                 });
-                this.spawnedWithAutoReview = rollbackAutoReview;
                 this.spawnedWithCliAuto = cursorSpawnModelId(rollbackSpawnModel) === CURSOR_AUTO_MODEL_ID;
             } catch (restoreError) {
                 logger.warn('[cursor-acp] Prior-spawn restore after failed relaunch also failed', restoreError);
@@ -2524,14 +2575,12 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
     private async bindFreshAcpBackend(args: {
         spawnModel: string | null | undefined;
-        autoReview: boolean;
         resumeSessionId: string;
     }): Promise<void> {
         const session = this.session;
         const backend = createCursorAcpBackend({
             cwd: session.path,
             model: args.spawnModel,
-            autoReview: args.autoReview,
             worktree: session.cursorWorktree,
             addDirs: session.cursorAddDirs
         });
@@ -2545,7 +2594,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
     private async initializeReplacementBackend(
         backend: AcpSdkBackend,
-        { resumeSessionId, autoReview, spawnModel }: { resumeSessionId: string; autoReview: boolean; spawnModel: string | null | undefined }
+        { resumeSessionId, spawnModel }: { resumeSessionId: string; spawnModel: string | null | undefined }
     ): Promise<void> {
         const session = this.session;
         let recentStderrHint: string | null = null;
@@ -2580,7 +2629,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         this.permissionAdapter = new PermissionAdapter(
             session.client,
             backend,
-            () => session.getPermissionMode(),
+            () => this.backendPermissionMode ?? 'default',
             (response) => this.handlePermissionResponse(this.extensionAdapter!, response)
         );
 
@@ -2615,33 +2664,89 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             throw new Error('Session ending; discarding replacement ACP backend');
         }
 
+        const modeAfterLoad = session.getPermissionMode() ?? 'default';
+        try {
+            await applyCursorAcpMode(backend, acpSessionId, modeAfterLoad);
+            if (this.sessionTeardownStarted || this.shouldExit) {
+                throw new Error('Session ending; discarding replacement ACP backend');
+            }
+        } catch (error) {
+            await this.disconnectBackend(backend).catch(() => {});
+            throw error;
+        }
+
+        this.backendPermissionMode = modeAfterLoad;
         this.backend = backend;
         this.acpSessionId = acpSessionId;
 
-        // Fresh ACP process — bookkeeping must reflect THIS spawn's flags, not
-        // the prior process (e.g. started with --auto-review, relaunched without).
-        this.spawnedWithAutoReview = autoReview;
-        if (autoReview) {
-            // `/auto-review` is a toggle; drop any *internal* queued slash that was
-            // meant for the old process so we do not turn Auto-review off on a
-            // spawn that already has --auto-review. Preserve user-sent commands.
-            this.session.queue.removeItemsMatching(
-                (item) => item.internal?.kind === 'control' && item.message.trim() === '/auto-review'
-            );
-            this.autoReviewSlashQueued = true;
-        } else {
-            this.autoReviewSlashQueued = this.session.queue.hasMessageMatching(
-                (message) => message.trim() === '/auto-review'
-            );
-        }
-
-        // Apply current mode after publish so Auto-review changes made while the
-        // backend was null during relaunch still take effect (slash if needed).
-        const modeAfterLoad = session.getPermissionMode() as PermissionMode;
-        await applyCursorAcpMode(backend, acpSessionId, modeAfterLoad);
         syncCursorModelsFromAcp(backend, acpSessionId);
+        this.publishPermissionModeCapabilities(backend, acpSessionId);
         this.applyDisplayMode(modeAfterLoad);
-        this.maybeQueueAutoReviewSlash(modeAfterLoad);
+    }
+
+    private publishPermissionModeCapabilities(backend: AcpSdkBackend, sessionId: string): void {
+        const mode = backend.getConfigOptionByCategory?.(sessionId, 'mode');
+        // Older ACP responses can omit the config catalog entirely.
+        const native = mode?.options?.map(option => option.value);
+        const supported = native && [
+            'default',
+            ...['plan', 'ask', 'debug'].filter(value => native.includes(value)),
+            ...(cursorSmartAutoOption(mode) ? ['autoReview'] : []),
+            'yolo'
+        ];
+        const previous = this.session.client.getMetadata?.()?.cursorAcpPermissionModes;
+        if (previous === supported || (previous && supported && previous.length === supported.length && previous.every((v, i) => v === supported[i]))) return;
+        this.session.client.updateMetadata((metadata) => ({ ...metadata, cursorAcpPermissionModes: supported }));
+    }
+
+    private async restoreSelectedPermissionMode(): Promise<void> {
+        if (this.session.getPermissionMode() === this.backendPermissionMode) return;
+        await this.sessionConfigLock.inLock(async () => {
+            const { backend, acpSessionId } = this;
+            const mode = this.session.getPermissionMode();
+            if (!backend || !acpSessionId || !mode || mode === this.backendPermissionMode || this.shouldExit) return;
+            try {
+                await applyCursorAcpMode(backend, acpSessionId, mode, this.backendPermissionMode ?? undefined);
+                this.backendPermissionMode = mode;
+                this.applyDisplayMode(mode);
+            } catch (error) {
+                const lastConfirmed = this.backendPermissionMode;
+                if (lastConfirmed) {
+                    this.session.setPermissionMode(lastConfirmed);
+                    this.session.pushKeepAlive();
+                }
+                this.permissionModeRecovery ??= Promise.withResolvers<void>();
+                const detail = error instanceof Error ? error.message : String(error);
+                this.surfacePromptFailure(
+                    `Cursor could not restore ${mode} mode. Confirm the permission mode before resuming queued messages. ${detail}`,
+                    { deferFooter: true }
+                );
+            }
+        });
+    }
+
+    private async waitForPermissionModeRecovery(signal: AbortSignal): Promise<void> {
+        const recovery = this.permissionModeRecovery;
+        if (!recovery || signal.aborted) return;
+        const queue = this.session.queue;
+        const check = () => {
+            if (queue.isClosed() || (this.rejectedBatchIds.length > 0 && this.rejectedBatchIds.every((id) => !queue.peekByLocalId(id)))) {
+                recovery.resolve();
+                this.permissionModeRecovery = null;
+                this.rejectedBatchIds = [];
+            }
+        };
+        const aborted = Promise.withResolvers<void>();
+        const onAbort = () => aborted.resolve();
+        queue.onPendingRemoval = check;
+        signal.addEventListener('abort', onAbort, { once: true });
+        try {
+            check();
+            await Promise.race([recovery.promise, aborted.promise]);
+        } finally {
+            queue.onPendingRemoval = null;
+            signal.removeEventListener('abort', onAbort);
+        }
     }
 
     private pushModelStatusLine(model: string | null | undefined): void {
@@ -2658,30 +2763,6 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             this.displayPermissionMode = permissionMode;
             this.messageBuffer.addMessage(`[MODE:${permissionMode}]`, 'system');
         }
-    }
-
-    /**
-     * Mid-session Auto-review: ACP has no config option, so when the process was
-     * not spawned with `--auto-review`, queue an isolated `/auto-review` slash once.
-     */
-    private maybeQueueAutoReviewSlash(mode: PermissionMode): void {
-        if (!isCursorAutoReviewMode(mode)) {
-            return;
-        }
-        if (this.spawnedWithAutoReview || this.autoReviewSlashQueued) {
-            return;
-        }
-        this.autoReviewSlashQueued = true;
-        this.session.queue.pushIsolated(
-            '/auto-review',
-            {
-                permissionMode: mode,
-                model: this.session.model
-            },
-            undefined,
-            { internal: { kind: 'control' } }
-        );
-        this.messageBuffer.addMessage(cursorPassThroughStatusMessage('auto-review'), 'status');
     }
 
     private recordCursorNativeWorktreeMetadata(): void {

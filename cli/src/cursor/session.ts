@@ -11,9 +11,11 @@ type LocalLaunchFailure = {
 };
 
 type CursorModelApplyHandler = (model: string | null | undefined) => Promise<string | null>;
+type CursorPermissionModeApplyHandler = (mode: PermissionMode) => Promise<PermissionMode>;
 type CursorPermissionModeChangedHandler = (mode: PermissionMode) => void;
 
 export class CursorSession extends AgentSessionBase<EnhancedMode> {
+    declare protected permissionMode?: PermissionMode;
     readonly cursorArgs?: string[];
     /** Cursor-native `--worktree` name (`true` = flag without name). */
     readonly cursorWorktree?: boolean | string;
@@ -23,7 +25,9 @@ export class CursorSession extends AgentSessionBase<EnhancedMode> {
     readonly startedBy: 'runner' | 'terminal';
     readonly startingMode: 'local' | 'remote';
     localLaunchFailure: LocalLaunchFailure | null = null;
+    private readonly remoteProtocol: CursorSessionProtocol;
     private modelApplyHandler: CursorModelApplyHandler | null = null;
+    private permissionModeApplyHandler: CursorPermissionModeApplyHandler | null = null;
     private permissionModeChangedHandler: CursorPermissionModeChangedHandler | null = null;
 
     constructor(opts: {
@@ -42,6 +46,7 @@ export class CursorSession extends AgentSessionBase<EnhancedMode> {
         cursorAddDirs?: readonly string[];
         model?: string;
         permissionMode?: PermissionMode;
+        remoteProtocol?: CursorSessionProtocol;
         onPermissionModeChanged?: CursorPermissionModeChangedHandler;
     }) {
         super({
@@ -69,14 +74,43 @@ export class CursorSession extends AgentSessionBase<EnhancedMode> {
         this.model = opts.model;
         this.startedBy = opts.startedBy;
         this.startingMode = opts.startingMode;
+        this.remoteProtocol = opts.remoteProtocol ?? 'acp';
         this.permissionMode = opts.permissionMode;
         this.permissionModeChangedHandler = opts.onPermissionModeChanged ?? null;
+    }
+
+    override getPermissionMode(): PermissionMode | undefined {
+        return this.permissionMode;
     }
 
     setPermissionMode = (mode: PermissionMode): void => {
         this.permissionMode = mode;
         // Keep runCursor's enqueue source of truth in sync (CreatePlan accept, ACP mode sync).
         this.permissionModeChangedHandler?.(mode);
+    };
+
+    registerPermissionModeApplyHandler = (handler: CursorPermissionModeApplyHandler): (() => void) => {
+        this.permissionModeApplyHandler = handler;
+        return () => {
+            if (this.permissionModeApplyHandler === handler) {
+                this.permissionModeApplyHandler = null;
+            }
+        };
+    };
+
+    applyPermissionModeConfig = async (mode: PermissionMode): Promise<PermissionMode> => {
+        if (this.permissionModeApplyHandler) {
+            return await this.permissionModeApplyHandler(mode);
+        }
+        if (this.remoteProtocol !== 'stream-json') {
+            if (this.mode === 'local') {
+                throw new Error('Permission mode can only be changed remotely after handing off the Cursor terminal session');
+            }
+            throw new Error('Cursor ACP session is not ready to apply permission mode changes');
+        }
+        // The legacy launcher chooses CLI flags for each new invocation.
+        this.setPermissionMode(mode);
+        return mode;
     };
 
     setModel = (model: string | null | undefined): void => {
