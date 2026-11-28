@@ -4,6 +4,8 @@ import { z } from 'zod'
 import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
+import { readBoundedChunkBytes } from './sessions'
+import { resolveMaxUploadBytes, UPLOAD_CHUNK_MAX_BYTES } from '@hapi/protocol/apiTypes'
 
 const fileSearchSchema = z.object({
     query: z.string().optional(),
@@ -20,6 +22,26 @@ const filePathSchema = z.object({
 
 const boundedFileReadSchema = filePathSchema.extend({
     maxBytes: z.coerce.number().int().min(1).max(10 * 1024 * 1024).optional()
+})
+
+const workspaceUploadQuerySchema = z.object({
+    dir: z.string().optional().default(''),
+    name: z.string().min(1).max(255),
+    uploadId: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/),
+    offset: z.coerce.number().int().min(0),
+    final: z.enum(['true', 'false']).optional(),
+    overwrite: z.enum(['true', 'false']).optional(),
+})
+
+const workspaceUploadAbortSchema = z.object({
+    dir: z.string().optional().default(''),
+    name: z.string().min(1).max(255),
+    uploadId: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/),
+})
+
+const workspaceDeleteSchema = z.object({
+    path: z.string().min(1),
+    kind: z.enum(['file', 'directory']),
 })
 
 const generatedImageSchema = z.object({
@@ -526,6 +548,112 @@ export function createGitRoutes(getSyncEngine: () => SyncEngine | null): Hono<We
 
         const path = parsed.data.path ?? ''
         const result = await runRpc(() => engine.listDirectory(sessionResult.sessionId, path))
+        return c.json(result)
+    })
+
+    // Mutations act on the workspace the user was looking at. A merged-session
+    // redirect may resolve to a survivor with a different workspace path, where
+    // a same-named entry would pass every check, so refuse to follow it: the
+    // client refreshes onto the survivor and the user acts there afresh.
+    const requireSessionForWorkspaceMutation = (
+        c: Parameters<typeof requireSessionFromParam>[0],
+        engine: SyncEngine,
+    ) => {
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+        if (sessionResult.sessionId !== c.req.param('id')) {
+            return c.json({
+                success: false,
+                code: 'session_moved',
+                error: 'This session was merged into another one. Refresh the files view and try again.',
+            }, 409)
+        }
+        return sessionResult
+    }
+
+    // Files panel: upload into / delete from the session workspace on the
+    // runner's machine. Logical failures come back as `{ success: false }`
+    // (with `code: 'exists'` for a name clash) like the other file routes.
+    app.post('/sessions/:id/workspace/upload', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = requireSessionForWorkspaceMutation(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+        const parsed = workspaceUploadQuerySchema.safeParse(c.req.query())
+        if (!parsed.success) {
+            return c.json({ success: false, error: 'Invalid upload parameters' }, 400)
+        }
+
+        let bytes: Uint8Array = new Uint8Array(0)
+        if (c.req.header('content-length')?.trim() !== '0') {
+            const chunkRead = await readBoundedChunkBytes(c.req.raw, UPLOAD_CHUNK_MAX_BYTES)
+            if (!chunkRead.ok) {
+                return c.json({ success: false, error: chunkRead.error, code: chunkRead.code }, chunkRead.status)
+            }
+            bytes = chunkRead.bytes
+        }
+
+        const { dir, name, uploadId, offset } = parsed.data
+        const maxBytes = resolveMaxUploadBytes(process.env.HAPI_MAX_UPLOAD_BYTES)
+        if (offset + bytes.byteLength > maxBytes) {
+            return c.json({
+                success: false,
+                error: `File exceeds the upload limit of ${maxBytes} bytes`,
+                code: 'upload_too_large',
+            }, 413)
+        }
+        const result = await runRpc(() => engine.writeWorkspaceFile(sessionResult.sessionId, {
+            dir,
+            name,
+            uploadId,
+            offset,
+            content: Buffer.from(bytes).toString('base64'),
+            final: parsed.data.final === 'true',
+            overwrite: parsed.data.overwrite === 'true',
+        }))
+        return c.json(result)
+    })
+
+    app.post('/sessions/:id/workspace/upload/abort', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = requireSessionForWorkspaceMutation(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+        const parsed = workspaceUploadAbortSchema.safeParse(await c.req.json().catch(() => null))
+        if (!parsed.success) {
+            return c.json({ success: false, error: 'Invalid upload parameters' }, 400)
+        }
+        const result = await runRpc(() => engine.writeWorkspaceFile(sessionResult.sessionId, {
+            ...parsed.data,
+            abort: true,
+        }))
+        return c.json(result)
+    })
+
+    app.post('/sessions/:id/workspace/delete', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = requireSessionForWorkspaceMutation(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+        const parsed = workspaceDeleteSchema.safeParse(await c.req.json().catch(() => null))
+        if (!parsed.success) {
+            return c.json({ success: false, error: 'Invalid delete path or entry kind' }, 400)
+        }
+        const result = await runRpc(() => engine.deleteWorkspacePath(sessionResult.sessionId, parsed.data))
         return c.json(result)
     })
 

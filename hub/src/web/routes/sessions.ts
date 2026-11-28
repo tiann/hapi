@@ -100,7 +100,7 @@ function uploadErrorStatus(code?: string): 400 | 404 | 409 | 413 | 500 | 503 {
     }
 }
 
-async function readBoundedChunkBytes(
+export async function readBoundedChunkBytes(
     raw: Request,
     maxBytes: number
 ): Promise<{ ok: true; bytes: Uint8Array } | { ok: false; status: 400 | 413; code: string; error: string }> {

@@ -689,6 +689,7 @@ export default function FilesPage() {
                             rootLabel={rootLabel}
                             onOpenFile={(path) => handleOpenFile(path)}
                             onRequestFileMenu={openFileMenu}
+                            onAddToComposer={handleAddFileToComposer}
                             sort={directorySort}
                         />
                     ) : gitLoading ? (

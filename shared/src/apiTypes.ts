@@ -1286,6 +1286,49 @@ export type WorkspaceGitDiffFileRequest = {
     timeout?: number
 }
 
+export type WorkspaceWriteFileRequest = {
+    cwd: string
+    /** Target directory relative to `cwd` ('' = workspace root). */
+    dir: string
+    /** Plain file name; no path separators. */
+    name: string
+    /** Client-generated id naming the temporary part file. */
+    uploadId: string
+    /** Base64 chunk content (may be empty). */
+    content?: string
+    /** Byte offset of this chunk; 0 starts the upload. */
+    offset?: number
+    /** Move the part file onto the target after this chunk. */
+    final?: boolean
+    /** Replace an existing file. */
+    overwrite?: boolean
+    /** Discard the part file instead of writing. */
+    abort?: boolean
+}
+
+export type WorkspaceWriteFileResponse = {
+    success: boolean
+    error?: string
+    /** `exists`: the target is present and `overwrite` was not set. */
+    code?: string
+    size?: number
+    /** Workspace-relative path of the written file (final chunk only). */
+    path?: string
+}
+
+export type WorkspaceDeletePathRequest = {
+    cwd: string
+    /** Path relative to `cwd`; the workspace root itself cannot be deleted. */
+    path: string
+    kind: 'file' | 'directory'
+}
+
+export type WorkspaceDeletePathResponse = {
+    success: boolean
+    error?: string
+    code?: string
+}
+
 export type WorkspaceRipgrepRequest = {
     cwd: string
     args: string[]
