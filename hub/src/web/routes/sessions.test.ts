@@ -1165,6 +1165,57 @@ describe('sessions routes', () => {
         expect(applySessionConfigCalls).toEqual([])
     })
 
+    // The existing local-mode gate runs before the combined payload check, so a
+    // locally driven Codex session keeps its 409 even when effort is included.
+    it.each([null, 'high'])('rejects a model change with effort %s for a locally driven Codex session', async (effort) => {
+        const session = createSession({
+            agentState: {
+                controlledByUser: true,
+                requests: {},
+                completedRequests: {}
+            }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'gpt-5.5', effort })
+        })
+
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({
+            error: 'Model selection can only be changed for remote Codex sessions'
+        })
+        expect(applySessionConfigCalls).toEqual([])
+    })
+
+    // Claude allows effort with the model, so the local-mode gate is reached
+    // after the combined payload check and still returns the Claude 409.
+    it('rejects a model change with effort for a locally driven Claude session', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
+            agentState: {
+                controlledByUser: true,
+                requests: {},
+                completedRequests: {}
+            }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'haiku', effort: null })
+        })
+
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({
+            error: 'Model selection can only be changed for remote Claude sessions'
+        })
+        expect(applySessionConfigCalls).toEqual([])
+    })
+
     it('applies model changes for OpenCode sessions', async () => {
         const session = createSession({
             metadata: {
@@ -1295,6 +1346,107 @@ describe('sessions routes', () => {
         expect(applySessionConfigCalls).toEqual([])
     })
 
+    // A locally driven session's launcher only receives the model at spawn, so a
+    // later web switch is rejected before it is forwarded. concurrentClients (or
+    // a session that is not locally controlled) keeps the switch valid.
+    it.each([
+        ['claude', 'haiku', 'Model selection can only be changed for remote Claude sessions'],
+        ['kimi', 'kimi-k2', 'Model selection can only be changed for remote Kimi sessions'],
+        ['opencode', 'ollama/exaone:4.5-33b-q8', 'Model selection can only be changed for remote OpenCode sessions'],
+        ['copilot', 'gpt-5.5', 'Model selection can only be changed for remote Copilot sessions'],
+    ] as const)('rejects local model changes for %s sessions and allows shared or remote switches', async (flavor, model, message) => {
+        const metadata = { path: '/tmp/project', host: 'localhost', flavor }
+        const local = createSession({
+            metadata,
+            agentState: { controlledByUser: true, requests: {}, completedRequests: {} }
+        })
+        const localApp = createApp(local)
+        const localResponse = await localApp.app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model })
+        })
+        expect(localResponse.status).toBe(409)
+        expect(await localResponse.json()).toEqual({ error: message })
+        expect(localApp.applySessionConfigCalls).toEqual([])
+
+        const shared = createSession({
+            metadata: { ...metadata, capabilities: { concurrentClients: true } },
+            agentState: { controlledByUser: true, requests: {}, completedRequests: {} }
+        })
+        const sharedApp = createApp(shared)
+        const sharedResponse = await sharedApp.app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model })
+        })
+        expect(sharedResponse.status).toBe(200)
+        expect(sharedApp.applySessionConfigCalls).toEqual([['session-1', { model }]])
+
+        const remoteApp = createApp(createSession({ metadata }))
+        const remoteResponse = await remoteApp.app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model })
+        })
+        expect(remoteResponse.status).toBe(200)
+        expect(remoteApp.applySessionConfigCalls).toEqual([['session-1', { model }]])
+    })
+
+    // The effort flavor restriction is a payload check, so it is reported before
+    // the local-mode gate. An invalid combination keeps the 400 from a remote
+    // session, while a valid model-only switch still reaches the 409.
+    it.each([
+        ['kimi', 'kimi-k2', 'Model selection can only be changed for remote Kimi sessions'],
+        ['opencode', 'ollama/exaone:4.5-33b-q8', 'Model selection can only be changed for remote OpenCode sessions'],
+        ['copilot', 'gpt-5.5', 'Model selection can only be changed for remote Copilot sessions'],
+    ] as const)('validates the model payload before the local-mode gate for %s', async (flavor, model, message) => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor },
+            agentState: { controlledByUser: true, requests: {}, completedRequests: {} }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        for (const effort of [null, 'high']) {
+            const invalid = await app.request('/api/sessions/session-1/model', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ model, effort })
+            })
+            expect(invalid.status).toBe(400)
+            expect(await invalid.json()).toEqual({
+                error: 'Effort can only be sent with a model change for Claude and Antigravity sessions'
+            })
+        }
+
+        const valid = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model })
+        })
+        expect(valid.status).toBe(409)
+        expect(await valid.json()).toEqual({ error: message })
+        expect(applySessionConfigCalls).toEqual([])
+    })
+
+    it('rejects local model changes when the session has no flavor (treated as Claude)', async () => {
+        const local = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: undefined },
+            agentState: { controlledByUser: true, requests: {}, completedRequests: {} }
+        })
+        const { app, applySessionConfigCalls } = createApp(local)
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'haiku' })
+        })
+
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({ error: 'Model selection can only be changed for remote Claude sessions' })
+        expect(applySessionConfigCalls).toEqual([])
+    })
+
     it('rejects effort changes for non-Claude sessions', async () => {
         const { app, applySessionConfigCalls } = createApp(createSession())
 
@@ -1377,6 +1529,69 @@ describe('sessions routes', () => {
         })
         expect(localResponse.status).toBe(409)
         expect(localApp.applySessionConfigCalls).toEqual([])
+    })
+
+    // Effort mirrors model: a locally driven launcher never receives a later
+    // effort change, while shared or remote sessions keep applying it.
+    it.each([
+        ['claude', 'max', 'Effort can only be changed for remote Claude sessions'],
+        ['kimi', 'high', 'Effort can only be changed for remote Kimi sessions'],
+        ['copilot', 'low', 'Effort can only be changed for remote Copilot sessions'],
+    ] as const)('rejects local effort changes for %s sessions and allows shared or remote changes', async (flavor, effort, message) => {
+        const metadata = { path: '/tmp/project', host: 'localhost', flavor }
+        const local = createSession({
+            metadata,
+            agentState: { controlledByUser: true, requests: {}, completedRequests: {} }
+        })
+        const localApp = createApp(local)
+        const localResponse = await localApp.app.request('/api/sessions/session-1/effort', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ effort })
+        })
+        expect(localResponse.status).toBe(409)
+        expect(await localResponse.json()).toEqual({ error: message })
+        expect(localApp.applySessionConfigCalls).toEqual([])
+
+        const shared = createSession({
+            metadata: { ...metadata, capabilities: { concurrentClients: true } },
+            agentState: { controlledByUser: true, requests: {}, completedRequests: {} }
+        })
+        const sharedApp = createApp(shared)
+        const sharedResponse = await sharedApp.app.request('/api/sessions/session-1/effort', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ effort })
+        })
+        expect(sharedResponse.status).toBe(200)
+        expect(sharedApp.applySessionConfigCalls).toEqual([['session-1', { effort }]])
+
+        const remoteApp = createApp(createSession({ metadata }))
+        const remoteResponse = await remoteApp.app.request('/api/sessions/session-1/effort', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ effort })
+        })
+        expect(remoteResponse.status).toBe(200)
+        expect(remoteApp.applySessionConfigCalls).toEqual([['session-1', { effort }]])
+    })
+
+    it('rejects local effort changes when the session has no flavor (treated as Claude)', async () => {
+        const local = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: undefined },
+            agentState: { controlledByUser: true, requests: {}, completedRequests: {} }
+        })
+        const { app, applySessionConfigCalls } = createApp(local)
+
+        const response = await app.request('/api/sessions/session-1/effort', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ effort: 'high' })
+        })
+
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({ error: 'Effort can only be changed for remote Claude sessions' })
+        expect(applySessionConfigCalls).toEqual([])
     })
 
     it('returns OpenCode reasoning effort options for active OpenCode sessions', async () => {

@@ -1266,7 +1266,7 @@ function SessionChatInner(props: SessionChatProps) {
     const opencodeModelsState = useOpencodeModels({
         api: props.api,
         sessionId: props.session.id,
-        enabled: agentFlavor === 'opencode' && props.session.active
+        enabled: agentFlavor === 'opencode' && props.session.active && !controlledByUser
     })
     const opencodeReasoningEffortState = useOpencodeReasoningEffortOptions({
         api: props.api,
@@ -1351,10 +1351,12 @@ function SessionChatInner(props: SessionChatProps) {
     // A running session discovers its models over its own connection (kimi
     // provider list --json), so this works without a background runner;
     // switching itself still goes through the existing ACP setModel path.
+    // A locally driven session cannot apply a later switch, so hide the picker
+    // under the shared controlledByUser condition.
     const kimiModelsState = useKimiModelsForSession({
         api: props.api,
         sessionId: props.session.id,
-        enabled: agentFlavor === 'kimi' && props.session.active
+        enabled: agentFlavor === 'kimi' && props.session.active && !controlledByUser
     })
     const kimiEffortOptions = useKimiReasoningEffortOptions({
         api: props.api,
@@ -1446,10 +1448,13 @@ function SessionChatInner(props: SessionChatProps) {
         value: level,
         name: level === 'xhigh' ? 'XHigh' : level.charAt(0).toUpperCase() + level.slice(1)
     })) ?? []
+    // A locally driven session's launcher passes the model only at spawn and
+    // never forwards a later switch, exactly like codex/grok/copilot above, so
+    // the picker is hidden rather than offered a change the runner drops.
     const claudeModelsState = useClaudeModels({
         api: props.api,
         machineId: sessionMachineId,
-        enabled: agentFlavor === 'claude' && props.session.active && Boolean(sessionMachineId)
+        enabled: agentFlavor === 'claude' && props.session.active && !controlledByUser && Boolean(sessionMachineId)
     })
     // Until the catalog arrives (or on a runner without discovery) this stays
     // undefined and the composer keeps its built-in Claude presets.
@@ -2778,6 +2783,18 @@ function SessionChatInner(props: SessionChatProps) {
                                             ? (props.session.active && !controlledByUser
                                                 ? handleModelChange
                                                 : undefined)
+                                        : agentFlavor === 'claude'
+                                            ? (props.session.active && controlledByUser
+                                                ? undefined
+                                                : handleModelChange)
+                                        : agentFlavor === 'kimi'
+                                            ? (props.session.active && controlledByUser
+                                                ? undefined
+                                                : handleModelChange)
+                                        : agentFlavor === 'opencode'
+                                            ? (props.session.active && controlledByUser
+                                                ? undefined
+                                                : handleModelChange)
                                         : handleModelChange
                         }
                         onModelEffortChange={
@@ -2814,6 +2831,10 @@ function SessionChatInner(props: SessionChatProps) {
                                 ? (props.session.active && !controlledByUser && kimiEffortOptions.length > 0
                                     ? handleEffortChange
                                     : undefined)
+                                : agentFlavor === 'claude'
+                                ? (props.session.active && controlledByUser
+                                    ? undefined
+                                    : handleEffortChange)
                                 : handleEffortChange
                         }
                         serviceTier={effectiveCodexServiceTier}

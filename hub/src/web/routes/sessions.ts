@@ -1521,6 +1521,7 @@ export function createSessionsRoutes(
         if (!supportsModelChange(flavor)) {
             return c.json({ error: 'Model selection is not supported for this session' }, 400)
         }
+
         if (sessionResult.session.agentState?.controlledByUser === true && !sessionResult.session.metadata?.capabilities?.concurrentClients) {
             if (flavor === 'codex') {
                 return c.json({ error: 'Model selection can only be changed for remote Codex sessions' }, 409)
@@ -1538,6 +1539,21 @@ export function createSessionsRoutes(
         const { model, effort } = parsed.data
         if (effort !== undefined && flavor !== 'claude' && flavor !== 'agy') {
             return c.json({ error: 'Effort can only be sent with a model change for Claude and Antigravity sessions' }, 400)
+        }
+
+        if (sessionResult.session.agentState?.controlledByUser === true && !sessionResult.session.metadata?.capabilities?.concurrentClients) {
+            if (flavor === 'claude') {
+                return c.json({ error: 'Model selection can only be changed for remote Claude sessions' }, 409)
+            }
+            if (flavor === 'kimi') {
+                return c.json({ error: 'Model selection can only be changed for remote Kimi sessions' }, 409)
+            }
+            if (flavor === 'opencode') {
+                return c.json({ error: 'Model selection can only be changed for remote OpenCode sessions' }, 409)
+            }
+            if (flavor === 'copilot') {
+                return c.json({ error: 'Model selection can only be changed for remote Copilot sessions' }, 409)
+            }
         }
 
         try {
@@ -1606,8 +1622,19 @@ export function createSessionsRoutes(
         if (!supportsEffort(flavor)) {
             return c.json({ error: 'Effort selection is not supported for this session type' }, 400)
         }
-        if (flavor === 'grok' && sessionResult.session.agentState?.controlledByUser === true && !sessionResult.session.metadata?.capabilities?.concurrentClients) {
-            return c.json({ error: 'Effort can only be changed for remote Grok sessions' }, 409)
+        if (sessionResult.session.agentState?.controlledByUser === true && !sessionResult.session.metadata?.capabilities?.concurrentClients) {
+            if (flavor === 'claude') {
+                return c.json({ error: 'Effort can only be changed for remote Claude sessions' }, 409)
+            }
+            if (flavor === 'kimi') {
+                return c.json({ error: 'Effort can only be changed for remote Kimi sessions' }, 409)
+            }
+            if (flavor === 'copilot') {
+                return c.json({ error: 'Effort can only be changed for remote Copilot sessions' }, 409)
+            }
+            if (flavor === 'grok') {
+                return c.json({ error: 'Effort can only be changed for remote Grok sessions' }, 409)
+            }
         }
 
         try {
