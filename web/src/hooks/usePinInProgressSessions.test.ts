@@ -1,8 +1,11 @@
+import { renderHook } from '@testing-library/react'
+import { vi } from 'vitest'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
     DEFAULT_PIN_IN_PROGRESS_MODE,
     PIN_IN_PROGRESS_STORAGE_KEY,
     getInitialPinInProgressMode,
+    usePinInProgressSessions,
     parsePinInProgressMode
 } from './usePinInProgressSessions'
 
@@ -45,4 +48,15 @@ describe('getInitialPinInProgressMode', () => {
         expect(getInitialPinInProgressMode()).toBe('off')
         expect(localStorage.getItem(PIN_IN_PROGRESS_STORAGE_KEY)).toBe('off')
     })
+})
+
+it('removes both preference listeners on unmount', () => {
+    const add = vi.spyOn(window, 'addEventListener')
+    const remove = vi.spyOn(window, 'removeEventListener')
+    const hook = renderHook(() => usePinInProgressSessions())
+    const registrations = add.mock.calls.filter(([name]) => String(name) === 'storage' || String(name) === 'hapi-pin-in-progress-sessions-changed')
+    hook.unmount()
+    for (const [name, listener] of registrations) expect(remove).toHaveBeenCalledWith(name, listener)
+    add.mockRestore()
+    remove.mockRestore()
 })

@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
+import { useState } from 'react'
 import { ApiError, type ApiClient } from '@/api/client'
 import type { SessionSummary } from '@/types/api'
 import { I18nProvider } from '@/lib/i18n-context'
@@ -18,7 +19,14 @@ afterEach(() => {
     localStorage.removeItem('hapi-session-preview-limit')
     // Explicit off — unset now defaults to `jobs` (session-attached jobs stand).
     localStorage.setItem('hapi-pin-in-progress-sessions', 'off')
+
+    localStorage.removeItem('hapi-pin-in-progress-sessions-mode')
+    localStorage.removeItem('hapi-session-project-sort-mode')
+    localStorage.removeItem('hapi-session-project-order')
+    localStorage.removeItem('hapi-show-active-sessions-only')
+
     localStorage.removeItem('hapi-session-list-machine-filter')
+
 })
 
 function makeSession(overrides: Partial<SessionSummary> & { id: string }): SessionSummary {
@@ -825,7 +833,8 @@ describe('SessionList collapse behavior', () => {
     function renderSessionList(
         sessions: SessionSummary[],
         selectedSessionId: string | null = 'session-running',
-        machineLabelsById: Record<string, string> = {}
+        machineLabelsById: Record<string, string> = {},
+        api: ApiClient | null = null
     ) {
         return (
             <QueryClientProvider client={new QueryClient({
@@ -844,7 +853,7 @@ describe('SessionList collapse behavior', () => {
                             onRefresh={vi.fn()}
                             isLoading={false}
                             renderHeader={false}
-                            api={null}
+                            api={api}
                             machineLabelsById={machineLabelsById}
                         />
                     </I18nProvider>
@@ -1385,6 +1394,403 @@ describe('SessionList collapse behavior', () => {
         expect(screen.getByTitle('/work/hapi')).toBeInTheDocument()
         expect(screen.getByRole('button', { name: /Quiet task/ })).toBeInTheDocument()
         expect(getProjectPanel().getAttribute('data-open')).toBe('true')
+    })
+
+    it('groups active sessions by project above an archived project divider without preview pagination', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
+        localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')
+        localStorage.setItem('hapi-session-preview-limit', '2')
+        const sessions = [
+            makeSession({
+                id: 'session-working',
+                active: true,
+                thinking: true,
+                updatedAt: 300,
+                metadata: { path: '/work/hapi', name: 'Working task', flavor: 'codex' },
+            }),
+            makeSession({
+                id: 'session-pending',
+                active: true,
+                pendingRequestsCount: 1,
+                updatedAt: 200,
+                metadata: { path: '/work/hapi', name: 'Pending task', flavor: 'codex' },
+            }),
+            makeSession({
+                id: 'session-quiet',
+                active: true,
+                updatedAt: 100,
+                metadata: { path: '/work/hapi', name: 'Quiet task', flavor: 'codex' },
+            }),
+            ...Array.from({ length: 3 }, (_, index) => makeSession({
+                id: `session-archived-${index + 1}`,
+                updatedAt: 90 - index,
+                metadata: { path: '/work/hapi', name: `Archived task ${index + 1}`, flavor: 'codex' },
+            })),
+        ]
+
+        render(renderSessionList(sessions, null))
+
+        expect(screen.queryByTitle('Active sessions')).toBeNull()
+        const projectHeaders = screen.getAllByTitle('/work/hapi')
+        if (projectHeaders.length !== 2) {
+            throw new Error(`Expected separate active and archived project groups, got ${projectHeaders.length}`)
+        }
+        const activeHeader = projectHeaders[0]!
+        const archivedHeader = projectHeaders[1]!
+        const activePanel = activeHeader.nextElementSibling
+        if (!activePanel) {
+            throw new Error('Expected active project panel')
+        }
+        const activeContent = within(activePanel as HTMLElement)
+        expect(activeContent.getByRole('button', { name: /Working task/ })).toBeInTheDocument()
+        expect(activeContent.getByRole('button', { name: /Pending task/ })).toBeInTheDocument()
+        expect(activeContent.getByRole('button', { name: /Quiet task/ })).toBeInTheDocument()
+        expect(activeContent.queryByRole('button', { name: /Expand/ })).toBeNull()
+        expect(activeContent.getByRole('button', { name: /Working task/ })).not.toHaveTextContent('/work/hapi')
+
+        const divider = screen.getByRole('separator', { name: 'Archived project sessions' })
+        expect(activeHeader).toAppearBefore(divider)
+        expect(divider).toAppearBefore(archivedHeader)
+
+        const archivedPanel = archivedHeader.nextElementSibling
+        if (!archivedPanel) {
+            throw new Error('Expected archived project panel')
+        }
+        const archivedContent = within(archivedPanel as HTMLElement)
+        expect(archivedContent.getByRole('button', { name: /Archived task 1/ })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Expand 1' })).toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: /Archived task 3/ })).toBeNull()
+    })
+
+    it('keeps combined search results ranked within and across project groups', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
+        localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')
+        localStorage.setItem('hapi-session-preview-limit', '2')
+        const sessions = [
+            makeSession({
+                id: 'home-path-match-1',
+                updatedAt: 300,
+                metadata: { path: '/home/user/project', name: 'Recent path match 1', flavor: 'codex' },
+            }),
+            makeSession({
+                id: 'home-path-match-2',
+                updatedAt: 200,
+                metadata: { path: '/home/user/project', name: 'Recent path match 2', flavor: 'codex' },
+            }),
+            makeSession({
+                id: 'home-title-match',
+                updatedAt: 100,
+                metadata: { path: '/home/user/project', name: 'Home Assistant', flavor: 'codex' },
+            }),
+            makeSession({
+                id: 'home-other-project',
+                updatedAt: 400,
+                metadata: { path: '/home/user/other', name: 'Unrelated project', flavor: 'codex' },
+            }),
+        ]
+
+        render(renderSessionList(sessions, null))
+        fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
+        fireEvent.change(screen.getByPlaceholderText(SEARCH_PLACEHOLDER), {
+            target: { value: 'home' },
+        })
+
+        const projectHeader = screen.getByTitle('/home/user/project')
+        const otherHeader = screen.getByTitle('/home/user/other')
+        expect(projectHeader).toAppearBefore(otherHeader)
+
+        const projectPanel = projectHeader.nextElementSibling
+        if (!projectPanel) {
+            throw new Error('Expected ranked project panel')
+        }
+        const projectContent = within(projectPanel as HTMLElement)
+        expect(projectContent.getByRole('button', { name: /Home Assistant/ })).toBeInTheDocument()
+        expect(projectContent.getByRole('button', { name: /Recent path match 1/ })).toBeInTheDocument()
+        expect(projectContent.queryByRole('button', { name: /Recent path match 2/ })).toBeNull()
+        expect(screen.getByRole('button', { name: 'Expand 1' })).toBeInTheDocument()
+    })
+
+    it('ranks action-only projects by search relevance instead of session count', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+        localStorage.setItem('hapi-session-project-sort-mode', 'count')
+        const sessions = [
+            makeSession({ id: 'strong-title', active: true, thinking: true, updatedAt: 100,
+                metadata: { path: '/work/strong', name: 'home', flavor: 'codex' } }),
+            makeSession({ id: 'weak-path-1', active: true, thinking: true, updatedAt: 200,
+                metadata: { path: '/home/weak', name: 'Task one', flavor: 'codex' } }),
+            makeSession({ id: 'weak-path-2', active: true, thinking: true, updatedAt: 300,
+                metadata: { path: '/home/weak', name: 'Task two', flavor: 'codex' } }),
+        ]
+        render(renderSessionList(sessions, null))
+        fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
+        fireEvent.change(screen.getByPlaceholderText(SEARCH_PLACEHOLDER), { target: { value: 'home' } })
+
+        const headers = screen.getAllByTitle(/^\/(?:work|home)\//)
+        expect(headers.map(header => header.getAttribute('title'))).toEqual(['/work/strong', '/home/weak'])
+        expect(headers.every(header => header.nextElementSibling === null)).toBe(true)
+    })
+
+    it('keeps a Combined export alive when its session disconnects', async () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+        localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')
+        const pending = Promise.withResolvers<unknown>()
+        const getSessionExport = vi.fn(() => pending.promise)
+        const api = { getSessionExport } as unknown as ApiClient
+        const connected = makeSession({ id: 'export-draft', active: true, metadata: { path: '/work/export', name: 'Export session' } })
+        const renderList = (session: SessionSummary) => renderSessionList([session], null, {}, api)
+        const { rerender } = render(renderList(connected))
+        fireEvent.contextMenu(screen.getByRole('button', { name: /Export session/ }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Export conversation' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Download' }))
+        expect(getSessionExport).toHaveBeenCalledOnce()
+
+        rerender(renderList({ ...connected, active: false }))
+        pending.resolve({ type: 'warning', count: 1, limit: 0, estimatedBytes: 100 })
+
+        await screen.findByRole('button', { name: 'Download anyway' })
+    })
+
+    it('keeps a Combined rename draft mounted when its session disconnects', async () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+        localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')
+        const connected = makeSession({ id: 'rename-draft', active: true, metadata: { path: '/work/rename', name: 'Original title' } })
+        const { rerender } = render(renderSessionList([connected], null))
+        fireEvent.contextMenu(screen.getByRole('button', { name: /Original title/ }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Rename' }))
+        fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Unsaved draft title' } })
+
+        rerender(renderSessionList([{ ...connected, active: false }], null))
+
+        await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('Unsaved draft title'))
+        expect(screen.getAllByTitle('/work/rename')).toHaveLength(1)
+    })
+
+    it('keeps an explicitly archived session with a running job below the Combined divider', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+        localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')
+        const active = makeSession({ id: 'active', active: true, metadata: { path: '/work/active', name: 'Active session' } })
+        const archivedJob = makeSession({ id: 'archived-job', active: false,
+            metadata: { path: '/work/archived', name: 'Archived running job', lifecycleState: 'archived' },
+            attachedJob: { key: 'batch', label: 'Batch', status: 'running', startedAt: 1, updatedAt: 1, heartbeatAt: Date.now() } })
+        render(renderSessionList([active, archivedJob], null))
+
+        const separator = screen.getByRole('separator', { name: 'Archived project sessions' })
+        const archivedRow = screen.getByRole('button', { name: /Archived running job/ })
+        expect(separator.compareDocumentPosition(archivedRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    })
+
+    it('keeps the Archive dialog mounted through an inactive update', async () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+        localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')
+        const pending = Promise.withResolvers<void>()
+        const archiveSession = vi.fn(() => pending.promise)
+        const api = { archiveSession } as unknown as ApiClient
+        const connected = makeSession({ id: 'archive-pending', active: true, metadata: { path: '/work/archive', name: 'Archive pending' } })
+        const { rerender } = render(renderSessionList([connected], null, {}, api))
+        fireEvent.contextMenu(screen.getByRole('button', { name: /Archive pending/ }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Archive' }))
+        fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Archive' }))
+        await waitFor(() => expect(archiveSession).toHaveBeenCalledOnce())
+
+        rerender(renderSessionList([{ ...connected, active: false }], null, {}, api))
+
+        expect(screen.getByRole('dialog')).toHaveTextContent('Confirming archive and background cleanup')
+        pending.resolve()
+        await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    })
+
+    it('does not close the current Archive dialog when an earlier archive settles', async () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+        localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')
+        const first = Promise.withResolvers<void>()
+        const second = Promise.withResolvers<void>()
+        const archiveSession = vi.fn((id: string) => id === 'archive-a' ? first.promise : second.promise)
+        const api = { archiveSession } as unknown as ApiClient
+        const sessions = [
+            makeSession({ id: 'archive-a', active: true, metadata: { path: '/work/a', name: 'Archive A' } }),
+            makeSession({ id: 'archive-b', active: true, metadata: { path: '/work/b', name: 'Archive B' } }),
+        ]
+        const { rerender } = render(renderSessionList(sessions, null, {}, api))
+        fireEvent.contextMenu(screen.getByRole('button', { name: /Archive A/ }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Archive' }))
+        fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Archive' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+        fireEvent.contextMenu(screen.getByRole('button', { name: /Archive B/ }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Archive' }))
+
+        first.resolve()
+        await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+        second.resolve()
+    })
+
+    it('keeps a fork preview mounted when its Combined source disconnects', async () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+        localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')
+        const forkPreview = vi.fn(async () => ({
+            mode: 'current' as const,
+            boundary: { v: 1 as const, mode: 'current' as const, epoch: 1, tailSeq: 1 },
+            keptTail: [], excluded: [], counts: { kept: 0, excluded: 0 }
+        }))
+        const api = { forkPreview, forkConversation: vi.fn() } as unknown as ApiClient
+        const connected = makeSession({ id: 'fork-preview', active: true, metadata: {
+            path: '/work/fork', name: 'Fork preview', flavor: 'codex',
+            conversationHistory: { forkCurrent: true, forkAtMessage: true }
+        } })
+        const { rerender } = render(renderSessionList([connected], null, {}, api))
+        fireEvent.contextMenu(screen.getByRole('button', { name: /Fork preview/ }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Fork session' }))
+        await screen.findByRole('dialog')
+
+        rerender(renderSessionList([{ ...connected, active: false }], null, {}, api))
+
+        expect(screen.getByRole('dialog')).toBeInTheDocument()
+    })
+
+    it('partitions Combined sessions with one clock read', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+        localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')
+        const now = vi.fn().mockReturnValueOnce(1_000_000).mockReturnValue(2_000_000)
+        const api = { hubClock: { now } } as unknown as ApiClient
+        const active = makeSession({ id: 'clock-active', active: true, metadata: { path: '/work/active', name: 'Active session' } })
+        const job = makeSession({ id: 'clock-job', active: false, metadata: { path: '/work/job', name: 'Boundary job' },
+            attachedJob: { key: 'batch', label: 'Batch', status: 'running', startedAt: 1, updatedAt: 1, heartbeatAt: 1_000_000 } })
+        render(renderSessionList([active, job], null, {}, api))
+
+        expect(screen.getAllByRole('button', { name: /Boundary job/ })).toHaveLength(1)
+        expect(now).toHaveBeenCalled()
+    })
+
+    it('moves a detached job below the Combined divider when its heartbeat is stale', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+        localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')
+        const active = makeSession({ id: 'active-stale-check', active: true, metadata: { path: '/work/active', name: 'Active session' } })
+        const staleJob = makeSession({ id: 'stale-job', active: false,
+            metadata: { path: '/work/stale', name: 'Stale running job' },
+            attachedJob: { key: 'batch', label: 'Batch', status: 'running', startedAt: 1, updatedAt: 1, heartbeatAt: 1 } })
+        render(renderSessionList([active, staleJob], null))
+
+        const separator = screen.getByRole('separator', { name: 'Archived project sessions' })
+        const staleRow = screen.getByRole('button', { name: /Stale running job/ })
+        expect(separator.compareDocumentPosition(staleRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+        expect(staleRow).toHaveTextContent('running')
+    })
+
+    it('restores only the collapsed Combined section after a fresh mount', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+        localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')
+        const sessions = [
+            makeSession({ id: 'active-fold', active: true, metadata: { path: '/work/shared', name: 'Active fold' } }),
+            makeSession({ id: 'archived-fold', metadata: { path: '/work/shared', name: 'Archived fold' } }),
+        ]
+        const api = { getReadStateScope: () => 'combined-test' } as ApiClient
+        const first = renderWithProviders(<SessionList sessions={sessions} selectedSessionId={null} onSelect={vi.fn()}
+            onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false} api={api} />)
+        fireEvent.click(screen.getAllByTitle('/work/shared')[1]!)
+        first.unmount()
+
+        renderWithProviders(<SessionList sessions={sessions} selectedSessionId={null} onSelect={vi.fn()}
+            onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false} api={api} />)
+        const headers = screen.getAllByTitle('/work/shared')
+        expect(headers[0]?.nextElementSibling).toHaveAttribute('data-open', 'true')
+        expect(headers[1]?.nextElementSibling).not.toHaveAttribute('data-open', 'true')
+    })
+
+    it('keeps count order for action-only projects during an Exclude query', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+        localStorage.setItem('hapi-session-project-sort-mode', 'count')
+        const sessions = [
+            makeSession({ id: 'large-1', active: true, thinking: true, metadata: { path: '/work/large', name: 'Large one' } }),
+            makeSession({ id: 'large-2', active: true, thinking: true, metadata: { path: '/work/large', name: 'Large two' } }),
+            makeSession({ id: 'small-quiet', active: true, metadata: { path: '/work/small', name: 'Small quiet' } }),
+        ]
+        render(renderSessionList(sessions, null))
+        fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
+        fireEvent.click(screen.getByRole('button', { name: 'Search scope' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Exclude' }))
+        fireEvent.change(screen.getByPlaceholderText(SEARCH_PLACEHOLDER), { target: { value: 'no-such-session' } })
+
+        const headers = screen.getAllByTitle(/^\/work\//)
+        expect(headers.map(header => header.getAttribute('title'))).toEqual(['/work/large', '/work/small'])
+        expect(headers[0]?.nextElementSibling).toBeNull()
+    })
+
+    it('preserves combined project collapse state when a temporary search hides it', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
+        localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')
+        const sessions = [
+            makeSession({
+                id: 'collapsed-project-session',
+                updatedAt: 200,
+                metadata: { path: '/work/kept', name: 'Kept project', flavor: 'codex' },
+            }),
+            makeSession({
+                id: 'visible-project-session',
+                updatedAt: 100,
+                metadata: { path: '/work/other', name: 'Other project', flavor: 'codex' },
+            }),
+        ]
+
+        render(renderSessionList(sessions, null))
+
+        const keptHeader = screen.getByTitle('/work/kept')
+        const keptPanel = keptHeader.nextElementSibling
+        if (!keptPanel) {
+            throw new Error('Expected kept project panel')
+        }
+        expect(keptPanel).toHaveAttribute('data-open', 'true')
+        fireEvent.click(keptHeader)
+        expect(keptPanel).not.toHaveAttribute('data-open', 'true')
+
+        fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
+        fireEvent.change(screen.getByPlaceholderText(SEARCH_PLACEHOLDER), {
+            target: { value: 'other' },
+        })
+        expect(screen.queryByTitle('/work/kept')).toBeNull()
+
+        fireEvent.change(screen.getByPlaceholderText(SEARCH_PLACEHOLDER), {
+            target: { value: '' },
+        })
+        expect(screen.getByTitle('/work/kept').nextElementSibling).not.toHaveAttribute('data-open', 'true')
+    })
+
+    it('keeps the session-count tie order when a project moves into an action-only header', async () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
+        localStorage.setItem('hapi-session-project-sort-mode', 'count')
+        localStorage.setItem('hapi-session-project-order', JSON.stringify([
+            '__unknown__::/work/a',
+            '__unknown__::/work/b',
+        ]))
+        const initialSessions = [
+            makeSession({ id: 'a', updatedAt: 200, metadata: { path: '/work/a', name: 'A' } }),
+            makeSession({ id: 'b', updatedAt: 100, metadata: { path: '/work/b', name: 'B' } }),
+        ]
+        function StatefulSessionList() {
+            const [sessions, setSessions] = useState(initialSessions)
+            return (
+                <>
+                    <button type="button" data-testid="activate-a" onClick={() => setSessions((current) => current.map((session) => session.id === 'a' ? { ...session, active: true, thinking: true } : session))}>Activate A</button>
+                    <SessionList
+                        sessions={sessions}
+                        selectedSessionId={null}
+                        onSelect={vi.fn()}
+                        onNewSession={vi.fn()}
+                        onRefresh={vi.fn()}
+                        isLoading={false}
+                        renderHeader={false}
+                        api={null}
+                    />
+                </>
+            )
+        }
+
+        renderWithProviders(<StatefulSessionList />)
+        fireEvent.click(screen.getByTestId('activate-a'))
+        await waitFor(() => {
+            expect(screen.getByTitle('In progress').nextElementSibling).toContainElement(screen.getByRole('button', { name: /^A(?:\s|$)/ }))
+            const headers = screen.getAllByTitle(/^\/work\/[ab]$/)
+            expect(headers[0]).toHaveAttribute('title', '/work/a')
+            expect(headers[1]).toHaveAttribute('title', '/work/b')
+        })
     })
 
     it('keeps new-session-in-directory actions for projects whose rows all floated', () => {
@@ -2810,4 +3216,17 @@ expect(screen.getByRole('button', { name: 'Sort and filter' })).toBeInTheDocumen
         expect(screen.getByRole('button', { name: 'Refresh' })).toBeInTheDocument()
         expect(screen.queryByRole('button', { name: SEARCH_LABEL })).toBeNull()
     })
+})
+
+it('keeps larger fully working projects before smaller quiet projects in count order', () => {
+    localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+    localStorage.setItem('hapi-session-project-sort-mode', 'count')
+    const sessions = [
+        makeSession({ id: 'working-a', active: true, thinking: true, metadata: { path: '/work/a', name: 'Working A' } }),
+        makeSession({ id: 'working-b', active: true, thinking: true, metadata: { path: '/work/a', name: 'Working B' } }),
+        makeSession({ id: 'quiet-b', active: true, metadata: { path: '/work/b', name: 'Quiet B' } }),
+    ]
+    renderWithProviders(<SessionList sessions={sessions} selectedSessionId={null} onSelect={vi.fn()}
+        onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false} api={null} />)
+    expect(screen.getByTitle('/work/a')).toAppearBefore(screen.getByTitle('/work/b'))
 })

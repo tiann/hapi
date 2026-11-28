@@ -14,7 +14,7 @@ import {
 import { useLongPress } from '@/hooks/useLongPress'
 import { useLowRateAnimation } from '@/hooks/useLowRateAnimation'
 import { usePlatform } from '@/hooks/usePlatform'
-import { sessionArchiveMutationKey, sessionPinMutationKey, useSessionActions } from '@/hooks/mutations/useSessionActions'
+import { sessionArchiveMutationKey, sessionExternalRefMutationKey, sessionPinMutationKey, sessionTitleMutationKey, useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { useIsMutating } from '@tanstack/react-query'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { SessionExportDialog } from '@/components/SessionExportDialog'
@@ -23,7 +23,7 @@ import { LinkPrDialog } from '@/components/LinkPrDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { ArchiveSessionDialog } from '@/components/ArchiveSessionDialog'
 import { DeleteSessionDialog } from '@/components/DeleteSessionDialog'
-import { ProjectGroupRow } from '@/components/ProjectGroupRow'
+import { ProjectArchiveDialog, ProjectGroupRow } from '@/components/ProjectGroupRow'
 import { ArchiveIcon, CheckIcon, CopyIcon, InfoIcon, LoaderIcon, MarkAllReadIcon, PinOffIcon } from '@/components/icons'
 import { useFue } from '@/lib/use-fue'
 import { FueCallout, FueDot } from '@/components/Fue'
@@ -114,6 +114,9 @@ import {
     hasInProgressJobSession,
     hasUnarchivedJob,
 } from '@/lib/sessionInProgress'
+import { usePinInProgressSessionsMode } from '@/hooks/usePinInProgressSessionsMode'
+import { useSessionProjectOrder, sortSessionGroupsBySessionCount } from '@/hooks/useSessionProjectOrder'
+import { useSessionProjectSortMode } from '@/hooks/useSessionProjectSortMode'
 import {
     compareDescWithKeyTiebreak,
     compareSessionsByOrderKeyDesc
@@ -553,6 +556,12 @@ export function getPreviousSessionVisibleCount(current: number, step: number): n
     return Math.max(normalizedStep, current - normalizedStep)
 }
 
+function getSessionProjectKey(session: SessionSummary): string {
+    const directory = getSessionProjectPath(session.metadata) ?? 'Other'
+    const machineId = session.metadata?.machineId ?? null
+    return `${machineId ?? UNKNOWN_MACHINE_ID}::${directory}`
+}
+
 // Without a view this is the long-standing order: by the user's last message,
 // so agent output and liveness never reorder the list.
 const LEGACY_LIST_ORDER: Pick<SessionListView, 'sort' | 'activeFirst'> = { sort: 'last-message', activeFirst: false }
@@ -562,12 +571,13 @@ export function groupSessionsByDirectory(
     order: Pick<SessionListView, 'sort' | 'activeFirst'> = LEGACY_LIST_ORDER
 ): SessionGroup[] {
     const compare = createSessionComparator(order)
+
     const groups = new Map<string, { directory: string; machineId: string | null; sessions: SessionSummary[] }>()
 
     sessions.forEach(session => {
         const path = getSessionProjectPath(session.metadata) ?? 'Other'
         const machineId = session.metadata?.machineId ?? null
-        const key = `${machineId ?? UNKNOWN_MACHINE_ID}::${path}`
+        const key = getSessionProjectKey(session)
         if (!groups.has(key)) {
             groups.set(key, {
                 directory: path,
@@ -617,6 +627,12 @@ export function groupSessionsByDirectory(
         })
 }
 
+
+type ProjectSection = 'detailed' | 'active' | 'archived'
+
+function getProjectSectionStateKey(projectKey: string, section: ProjectSection = 'detailed'): string {
+    return JSON.stringify([section, projectKey])
+}
 
 function readClosedProjects(storageKey: string | null): Set<string> {
     if (!storageKey) return new Set()
@@ -1425,6 +1441,16 @@ function CollapsiblePanel(props: { open: boolean; children: ReactNode }) {
 
 type SessionItemProps = {
     onRequestDelete: (session: SessionSummary) => void
+    onRequestRename: (sessionId: string) => void
+    onRequestExport: (sessionId: string) => void
+    onRequestLinkPr: (sessionId: string) => void
+    onRequestArchive: (sessionId: string) => void
+    onRequestFork: (sessionId: string) => void
+    renameOpen: boolean
+    exportOpen: boolean
+    linkPrOpen: boolean
+    archiveOpen: boolean
+    forkFlowOpen: boolean
     session: SessionSummary
     onSelect: (sessionId: string, targetMessageId?: string, targetMessageQuery?: string, pendingRequestId?: string) => void
     showPath?: boolean
@@ -1460,6 +1486,16 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
     const {
         session: s,
         onSelect,
+        onRequestRename,
+        onRequestExport,
+        onRequestLinkPr,
+        onRequestArchive,
+        onRequestFork,
+        renameOpen,
+        exportOpen,
+        linkPrOpen,
+        archiveOpen,
+        forkFlowOpen,
         showPath = true,
         api,
         features,
@@ -1480,18 +1516,8 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
     const { haptic } = usePlatform()
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
-    const [renameOpen, setRenameOpen] = useState(false)
-    const [linkPrOpen, setLinkPrOpen] = useState(false)
-    const [exportOpen, setExportOpen] = useState(false)
-    const [archiveOpen, setArchiveOpen] = useState(false)
     const githubPrAwarenessEnabled = Boolean(features?.githubPrAwareness.enabled)
     const prChipDisplay = features?.prChipDisplay
-    const forkFlow = useForkFlow({
-        session: s,
-        api: api!,
-        onForked: (childSessionId) => onSelect(childSessionId)
-    })
-    const forkFlowOpen = forkFlow.flowOpen
     const pendingRequestPressedRef = useRef(false)
     const rowRef = useRef<HTMLDivElement>(null)
     const rowButtonRef = useRef<HTMLButtonElement>(null)
@@ -1522,7 +1548,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
         ? t('session.action.reopenCursorUnverified')
         : undefined
 
-    const { archiveSession, reopenSession, renameSession, upsertExternalRef, removePrimaryExternalRef, suggestSessionTitle, updateSessionSummary, setPinMode, isPending } = useSessionActions(
+    const { archiveSession, reopenSession, upsertExternalRef, removePrimaryExternalRef, suggestSessionTitle, updateSessionSummary, setPinMode, isPending } = useSessionActions(
         api,
         s.id,
         s.metadata?.flavor ?? null
@@ -1639,7 +1665,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
     const hasQuickAction = quickActionCount > 0
     const handleQuickArchive = async () => {
         if (archiveNeedsConfirmation) {
-            setArchiveOpen(true)
+            onRequestArchive(s.id)
             return
         }
         try {
@@ -1840,68 +1866,22 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                 sessionPinned={Boolean(s.pinned)}
                 sessionGlobalPinned={Boolean(s.globalPinned)}
                 onSetPinMode={(mode) => void handleSetPinMode(mode)}
-                onRename={() => setRenameOpen(true)}
-                onLinkPr={githubPrAwarenessEnabled ? () => setLinkPrOpen(true) : undefined}
+                onRename={() => onRequestRename(s.id)}
+                onLinkPr={githubPrAwarenessEnabled ? () => onRequestLinkPr(s.id) : undefined}
                 linkedPr={linkedPr}
-                onExport={() => setExportOpen(true)}
+                onExport={() => onRequestExport(s.id)}
                 readTarget={s}
                 onForkSession={api && ((supportsCurrentFork && (!s.thinking || supportsCompletedFork)) || supportsArchivedFork)
-                    ? () => forkFlow.openFork()
+                    ? () => onRequestFork(s.id)
                     : undefined}
                 forkDisabledReason={forkDisabledReason}
-                onArchive={() => setArchiveOpen(true)}
+                onArchive={() => onRequestArchive(s.id)}
                 onReopen={cursorReopenDisabledReason ? undefined : () => void handleReopen()}
                 reopenDisabledReason={cursorReopenDisabledReason}
                 reopenHint={cursorReopenUnverifiedHint}
                 onDelete={() => props.onRequestDelete(s)}
                 anchorPoint={menuAnchorPoint}
             />
-
-            {forkFlow.preview ? (
-                <ForkPreviewDialog
-                    isOpen
-                    view={forkFlow.preview.view}
-                    prefixMayHaveMore={forkFlow.preview.view.prefixTruncated}
-                    stale={forkFlow.stale}
-                    loading={forkFlow.loading}
-                    onCancel={forkFlow.closePreview}
-                    onConfirm={forkFlow.confirmPreview}
-                />
-            ) : null}
-
-            {forkFlow.legacyFallback ? (
-                <ConfirmDialog
-                    isOpen={true}
-                    onClose={() => { if (!forkFlow.confirming) forkFlow.closePreview() }}
-                    title={t('dialog.sessionFork.title')}
-                    description={t(s.thinking && supportsCompletedFork ? 'dialog.sessionFork.completedDescription' : 'dialog.sessionFork.description')}
-                    confirmLabel={t('dialog.sessionFork.confirm')}
-                    confirmingLabel={t('dialog.sessionFork.confirming')}
-                    isPending={forkFlow.confirming}
-                    destructive
-                    centerTitle
-                    onConfirm={forkFlow.confirmLegacy}
-                />
-            ) : null}
-
-            {forkFlow.errorMessage && !forkFlow.preview ? (
-                <ConfirmDialog
-                    isOpen={true}
-                    onClose={forkFlow.closePreview}
-                    title={t('dialog.sessionFork.title')}
-                    description={forkFlow.errorMessage}
-                    confirmLabel={forkFlow.errorWasConnectFailure ? t('button.retry') : t('dialog.reopen.dismiss')}
-                    confirmingLabel={forkFlow.errorWasConnectFailure ? t('button.retry') : t('dialog.reopen.dismiss')}
-                    isPending={forkFlow.loading}
-                    hideCancel
-                    keepOpenAfterConfirm={forkFlow.errorWasConnectFailure}
-                    centerTitle
-                    onConfirm={async () => {
-                        if (forkFlow.errorWasConnectFailure) forkFlow.retryPreview()
-                        else forkFlow.closePreview()
-                    }}
-                />
-            ) : null}
 
             {reopenError ? (
                 <ConfirmDialog
@@ -1914,50 +1894,6 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                     onConfirm={async () => setReopenError(null)}
                     isPending={false}
                     centerTitle
-                />
-            ) : null}
-
-            {renameOpen ? (
-                <RenameSessionDialog
-                    isOpen={true}
-                    onClose={() => setRenameOpen(false)}
-                    currentName={sessionName}
-                    currentTitleLocked={s.metadata?.titleLocked === true}
-                    sessionId={s.id}
-                    onRename={renameSession}
-                    onSuggestTitle={api && titleSuggestionAvailable ? suggestSessionTitle : undefined}
-                    onUpdateSummary={api && titleSuggestionAvailable ? updateSessionSummary : undefined}
-                    isPending={isPending}
-                />
-            ) : null}
-
-            <LinkPrDialog
-                isOpen={linkPrOpen}
-                onClose={() => setLinkPrOpen(false)}
-                currentPrimaryLabel={primaryPrRef ? `${primaryPrRef.repo}#${primaryPrRef.number}` : null}
-                onUpsert={upsertExternalRef}
-                onRemovePrimary={primaryPrRef ? removePrimaryExternalRef : undefined}
-                isPending={isPending}
-            />
-
-            {exportOpen ? (
-                <SessionExportDialog
-                    isOpen={true}
-                    onClose={() => setExportOpen(false)}
-                    sessionId={s.id}
-                    api={api}
-                />
-            ) : null}
-
-            {archiveOpen ? (
-                <ArchiveSessionDialog
-                    isOpen={true}
-                    onClose={() => setArchiveOpen(false)}
-                    sessionId={s.id}
-                    sessionName={sessionName}
-                    active={s.active}
-                    onConfirm={archiveSession}
-                    isPending={isPending}
                 />
             ) : null}
 
@@ -2013,6 +1949,137 @@ function PullRefreshIcon(props: { rotation: number }) {
     )
 }
 
+type SessionListPropsOnSelect = (sessionId: string, targetMessageId?: string, targetMessageQuery?: string, pendingRequestId?: string) => void
+
+function StableForkFlow(props: { session: SessionSummary; api: ApiClient | null; onSelect: SessionListPropsOnSelect; onClose: () => void }) {
+    const { session, api, onSelect, onClose } = props
+    const { t } = useTranslation()
+    const forkFlow = useForkFlow({ session, api: api!, onForked: (childId) => {
+        onClose()
+        onSelect(childId)
+    } })
+    const closePreview = () => {
+        forkFlow.closePreview()
+        onClose()
+    }
+    const supportsCompletedFork = session.metadata?.conversationHistory?.forkLatestCompleted === true
+    const openedRef = useRef(false)
+    useEffect(() => {
+        if (openedRef.current) return
+        openedRef.current = true
+        forkFlow.openFork()
+    }, [forkFlow.openFork])
+    return (
+        <>
+            {forkFlow.preview ? (
+                <ForkPreviewDialog
+                    isOpen
+                    view={forkFlow.preview.view}
+                    prefixMayHaveMore={forkFlow.preview.view.prefixTruncated}
+                    stale={forkFlow.stale}
+                    loading={forkFlow.loading}
+                    onCancel={closePreview}
+                    onConfirm={forkFlow.confirmPreview}
+                />
+            ) : null}
+            {forkFlow.legacyFallback ? (
+                <ConfirmDialog
+                    isOpen={true}
+                    onClose={() => { if (!forkFlow.confirming) closePreview() }}
+                    title={t('dialog.sessionFork.title')}
+                    description={t(session.thinking && supportsCompletedFork ? 'dialog.sessionFork.completedDescription' : 'dialog.sessionFork.description')}
+                    confirmLabel={t('dialog.sessionFork.confirm')}
+                    confirmingLabel={t('dialog.sessionFork.confirming')}
+                    isPending={forkFlow.confirming}
+                    destructive
+                    centerTitle
+                    onConfirm={forkFlow.confirmLegacy}
+                />
+            ) : null}
+            {forkFlow.errorMessage && !forkFlow.preview ? (
+                <ConfirmDialog
+                    isOpen={true}
+                    onClose={closePreview}
+                    title={t('dialog.sessionFork.title')}
+                    description={forkFlow.errorMessage}
+                    confirmLabel={forkFlow.errorWasConnectFailure ? t('button.retry') : t('dialog.reopen.dismiss')}
+                    confirmingLabel={forkFlow.errorWasConnectFailure ? t('button.retry') : t('dialog.reopen.dismiss')}
+                    isPending={forkFlow.loading}
+                    hideCancel
+                    keepOpenAfterConfirm={forkFlow.errorWasConnectFailure}
+                    centerTitle
+                    onConfirm={async () => {
+                        if (forkFlow.errorWasConnectFailure) forkFlow.retryPreview()
+                        else closePreview()
+                    }}
+                />
+            ) : null}
+        </>
+    )
+}
+
+function StableArchiveSessionDialog(props: { session: SessionSummary; api: ApiClient | null; onClose: () => void }) {
+    const { session, api, onClose } = props
+    const { archiveSession } = useSessionActions(api, session.id, session.metadata?.flavor ?? null)
+    const isPending = useIsMutating({ mutationKey: sessionArchiveMutationKey(session.id), exact: true }) > 0
+    return (
+        <ArchiveSessionDialog
+            isOpen={true}
+            onClose={onClose}
+            sessionId={session.id}
+            sessionName={getSessionTitle(session)}
+            active={session.active}
+            onConfirm={archiveSession}
+            isPending={isPending}
+        />
+    )
+}
+
+function StableLinkPrDialog(props: { session: SessionSummary; api: ApiClient | null; onClose: () => void }) {
+    const { session, api, onClose } = props
+    const { upsertExternalRef, removePrimaryExternalRef } = useSessionActions(api, session.id, session.metadata?.flavor ?? null)
+    const isPending = useIsMutating({ mutationKey: sessionExternalRefMutationKey(session.id), exact: true }) > 0
+    const primaryPrRef = getPrimaryGithubPrRef(session.metadata?.externalRefs)
+    return (
+        <LinkPrDialog
+            isOpen={true}
+            onClose={onClose}
+            currentPrimaryLabel={primaryPrRef ? `${primaryPrRef.repo}#${primaryPrRef.number}` : null}
+            onUpsert={upsertExternalRef}
+            onRemovePrimary={primaryPrRef ? removePrimaryExternalRef : undefined}
+            isPending={isPending}
+        />
+    )
+}
+
+function StableRenameSessionDialog(props: {
+    session: SessionSummary
+    api: ApiClient | null
+    titleSuggestionAvailable: boolean
+    onClose: () => void
+}) {
+    const { session, api, titleSuggestionAvailable, onClose } = props
+    const { renameSession, suggestSessionTitle, updateSessionSummary, isPending } = useSessionActions(
+        api,
+        session.id,
+        session.metadata?.flavor ?? null
+    )
+    const isSavingTitle = useIsMutating({ mutationKey: sessionTitleMutationKey(session.id), exact: true }) > 0
+    return (
+        <RenameSessionDialog
+            isOpen={true}
+            onClose={onClose}
+            currentName={getSessionTitle(session)}
+            currentTitleLocked={session.metadata?.titleLocked === true}
+            sessionId={session.id}
+            onRename={renameSession}
+            onSuggestTitle={api && titleSuggestionAvailable ? suggestSessionTitle : undefined}
+            onUpdateSummary={api && titleSuggestionAvailable ? updateSessionSummary : undefined}
+            isPending={isPending || isSavingTitle}
+        />
+    )
+}
+
 export function SessionList(props: {
     sessions: SessionSummary[]
     onSelect: (sessionId: string, targetMessageId?: string, targetMessageQuery?: string, pendingRequestId?: string) => void
@@ -2042,6 +2109,19 @@ export function SessionList(props: {
         onNewSessionInDirectory
     } = props
     const [deleteTarget, setDeleteTarget] = useState<SessionSummary | null>(null)
+    const [renameTargetId, setRenameTargetId] = useState<string | null>(null)
+    const [exportTargetId, setExportTargetId] = useState<string | null>(null)
+    // A late request can only close the dialog opening that submitted it.
+    const [linkPrOpening, setLinkPrOpening] = useState<{ sessionId: string } | null>(null)
+    const openLinkPr = useCallback((sessionId: string) => setLinkPrOpening({ sessionId }), [])
+    const linkPrTargetId = linkPrOpening?.sessionId
+    const [archiveTargetId, setArchiveTargetId] = useState<string | null>(null)
+    const [projectArchiveTarget, setProjectArchiveTarget] = useState<{ key: string; displayName: string } | null>(null)
+    const [forkTargetId, setForkTargetId] = useState<string | null>(null)
+    const forkTarget = props.sessions.find(session => session.id === forkTargetId) ?? null
+    const archiveTarget = props.sessions.find(session => session.id === archiveTargetId) ?? null
+    const linkPrTarget = props.sessions.find(session => session.id === linkPrTargetId) ?? null
+    const renameTarget = props.sessions.find(session => session.id === renameTargetId) ?? null
     const { features } = useFeatures(api)
     const githubPrAwarenessEnabled = Boolean(features?.githubPrAwareness.enabled)
     const hasJobs = useMemo(() => props.sessions.some(hasRunningAttachedJob), [props.sessions])
@@ -2085,7 +2165,12 @@ export function SessionList(props: {
     const { pinInProgressMode } = usePinInProgressSessions()
     // List sort/filter lives in SessionListView (#2263); jobs mode is #1404.
     const effectivePinInProgressMode: PinInProgressMode = pinInProgressMode
+    const { pinInProgressSessionsMode } = usePinInProgressSessionsMode()
+    const { sessionProjectSortMode } = useSessionProjectSortMode()
+    const shouldSortProjectsByCount = sessionProjectSortMode === 'count'
     const { machineFilter, setMachineFilter } = useSessionListMachineFilter()
+    const isCombinedPinLayout = effectivePinInProgressMode !== 'off'
+        && pinInProgressSessionsMode === 'combined'
     const showDetailedStatus = sessionListStatusMode === 'detailed'
     const [searchQuery, setSearchQuery] = useState('')
     const [searchMode, setSearchMode] = useState<'metadata' | 'content'>('metadata')
@@ -2356,10 +2441,32 @@ export function SessionList(props: {
         }
         return truncated
     }, [contentSearchResponse])
-    const allGroups = useMemo(
-        () => groupSessionsByDirectory(allSessions),
-        [allSessions]
+    const unfilteredGroups = useMemo(
+        () => groupSessionsByDirectory(sidebarSessions),
+        [sidebarSessions]
     )
+    const projectKeys = useMemo(
+        () => {
+            const seen = new Set<string>()
+            const keys: string[] = []
+            for (const session of sidebarSessions) {
+                const key = getSessionProjectKey(session)
+                if (!seen.has(key)) {
+                    seen.add(key)
+                    keys.push(key)
+                }
+            }
+            return keys
+        },
+        [sidebarSessions]
+    )
+    const projectOrder = useSessionProjectOrder(projectKeys)
+    const allGroups = useMemo(() => {
+        const grouped = groupSessionsByDirectory(allSessions)
+        return shouldSortProjectsByCount
+            ? sortSessionGroupsBySessionCount(grouped, projectOrder)
+            : grouped
+    }, [allSessions, projectOrder, shouldSortProjectsByCount])
     const machineFilters = useMemo(
         () => groupByMachine(allGroups, resolveMachineLabel),
         [allGroups, machineLabelsById] // eslint-disable-line react-hooks/exhaustive-deps
@@ -2553,6 +2660,14 @@ export function SessionList(props: {
         [sessionFilteredSessions, activeMachineFilter]
 
     )
+    const projectSessionCounts = useMemo(() => {
+        const counts = new Map<string, number>()
+        for (const session of machineFilteredSessions) {
+            const key = getSessionProjectKey(session)
+            counts.set(key, (counts.get(key) ?? 0) + 1)
+        }
+        return counts
+    }, [machineFilteredSessions])
     const globalPinnedSessions = useMemo(() => {
         const pinned = machineFilteredSessions.filter((session) => Boolean(session.globalPinned))
         if (searchScoreIndex && hasTextQuery) {
@@ -2588,28 +2703,62 @@ export function SessionList(props: {
             if (searchScoreIndex && hasTextQuery) {
                 return rankSessionGroupsBySearchRelevance(grouped, searchScoreIndex)
             }
-            return grouped
+            return shouldSortProjectsByCount
+                ? sortSessionGroupsBySessionCount(grouped, projectOrder, projectSessionCounts)
+                : grouped
         },
-        [runningSessions, machineFilteredSessions, searchScoreIndex, hasTextQuery, listView]
+        [runningSessions, machineFilteredSessions, projectOrder, projectSessionCounts, searchScoreIndex, hasTextQuery, shouldSortProjectsByCount, listView]
     )
+    const { combinedActiveGroups, combinedArchivedGroups } = useMemo(() => {
+        if (!isCombinedPinLayout) return { combinedActiveGroups: [], combinedArchivedGroups: [] }
+        const now = api?.hubClock?.now()
+        const activeSessions: SessionSummary[] = []
+        const archivedSessions: SessionSummary[] = []
+        for (const session of machineFilteredSessions) {
+            if (session.globalPinned) continue
+            if (session.active || hasInProgressJobSession(session, now)) activeSessions.push(session)
+            else archivedSessions.push(session)
+        }
+        const rank = (sessions: SessionSummary[]) => {
+            const grouped = groupSessionsByDirectory(sessions, hasTextQuery ? undefined : listView)
+            if (searchScoreIndex && hasTextQuery) return rankSessionGroupsBySearchRelevance(grouped, searchScoreIndex)
+            return shouldSortProjectsByCount
+                ? sortSessionGroupsBySessionCount(grouped, projectOrder, projectSessionCounts)
+                : grouped
+        }
+        return { combinedActiveGroups: rank(activeSessions), combinedArchivedGroups: rank(archivedSessions) }
+    }, [api, listClockTick, machineFilteredSessions, isCombinedPinLayout, projectOrder, projectSessionCounts, searchScoreIndex, hasTextQuery, shouldSortProjectsByCount, listView])
+
     // Directory groups whose rows all floated to the pinned sections still
     // render an action-only header so copy-path / new-session-in-directory
     // stay available (no rows to group, but the project itself is live).
-
-    // Based on the same machineFilteredSessions set as `groups` so the machine
-    // filter stays consistent.
-
-    const allDirectoryGroups = useMemo(
-        () => groupSessionsByDirectory(
+    // Based on the same machineFilteredSessions set as `groups` so machine /
+    // unread filters stay consistent.
+    const allDirectoryGroups = useMemo(() => {
+        const grouped = groupSessionsByDirectory(
             machineFilteredSessions.filter((session) => !session.globalPinned),
-            listView
-        ),
-        [machineFilteredSessions, listView]
-    )
+            searchScoreIndex && hasTextQuery ? undefined : listView
+        )
+        if (searchScoreIndex && hasTextQuery) {
+            return rankSessionGroupsBySearchRelevance(grouped, searchScoreIndex)
+        }
+        return shouldSortProjectsByCount
+            ? sortSessionGroupsBySessionCount(grouped, projectOrder, projectSessionCounts)
+            : grouped
+    }, [machineFilteredSessions, projectOrder, projectSessionCounts, shouldSortProjectsByCount, searchScoreIndex, hasTextQuery, listView])
+
     // Unfiltered project membership for group-wide actions (archive all).
     const projectSessionsByKey = useMemo(
         () => new Map(groupSessionsByDirectory(props.sessions).map((group) => [group.key, group.sessions])),
         [props.sessions]
+    )
+    const archivableProjectSessions = (key: string, fallback: SessionSummary[] = []) => (
+        (projectSessionsByKey.get(key) ?? fallback).filter(session => session.active || isLiveLifecycleState(session.metadata?.lifecycleState))
+    )
+    const requestProjectArchive = (group: SessionGroup, displayName: string) => (
+        api && archivableProjectSessions(group.key, group.sessions).length > 0
+            ? () => setProjectArchiveTarget({ key: group.key, displayName })
+            : undefined
     )
     const actionOnlyGroups = useMemo(() => {
         if (effectivePinInProgressMode === 'off') {
@@ -2618,11 +2767,28 @@ export function SessionList(props: {
         const visibleKeys = new Set(groups.map((group) => group.key))
         return allDirectoryGroups.filter((group) => !visibleKeys.has(group.key))
     }, [groups, allDirectoryGroups, effectivePinInProgressMode])
+    const countSortedDirectoryGroups = useMemo(
+        () => shouldSortProjectsByCount && !(searchScoreIndex && hasTextQuery)
+            ? sortSessionGroupsBySessionCount([...groups, ...actionOnlyGroups], projectOrder, projectSessionCounts)
+            : [],
+        [actionOnlyGroups, groups, searchScoreIndex, hasTextQuery, projectOrder, projectSessionCounts, shouldSortProjectsByCount]
+    )
+    const normalDirectoryKeys = useMemo(
+        () => new Set(groups.map((group) => group.key)),
+        [groups]
+    )
     // Save explicit folds only, never temporary search expansion or inferred liveness.
     const identity = api?.getReadStateScope?.()
-    const foldKey = identity ? `hapi.closed-projects.v1:${identity}` : null
+    // Detailed retains its legacy storage key and raw project keys. Combined
+    // stores its two section folds separately from real directory names.
+    const foldKey = identity
+        ? (isCombinedPinLayout ? `hapi.closed-projects.combined.v1:${identity}` : `hapi.closed-projects.v1:${identity}`)
+        : null
     const [foldRevision, setFoldRevision] = useState(0)
-    const savedFolds = useMemo(() => readClosedProjects(foldKey), [foldKey, foldRevision])
+    const savedFolds = useMemo(() => {
+        const persisted = readClosedProjects(foldKey)
+        return isCombinedPinLayout ? persisted : new Set([...persisted].map(key => getProjectSectionStateKey(key)))
+    }, [foldKey, foldRevision, isCombinedPinLayout])
     const [collapseOverrides, setCollapseOverrides] = useState<Map<string, boolean>>(
         () => new Map()
     )
@@ -2634,13 +2800,17 @@ export function SessionList(props: {
     const autoExpandedSelectedSessionKeyRef = useRef<string | null>(null)
     const previousSelection = useRef(selectedSessionId)
     const groupOverrides = ephemeralFilter ? filterCollapseOverrides : collapseOverrides
-    const isGroupCollapsed = (group: SessionGroup): boolean => {
-        const override = groupOverrides.get(group.key)
+    const isGroupCollapsed = (
+        group: SessionGroup,
+        stateKey = getProjectSectionStateKey(group.key),
+        expandedByDefault = false
+    ): boolean => {
+        const override = groupOverrides.get(stateKey)
         if (override !== undefined) return override
         // Keep matching groups open by default while filtering. Explicit
         // header clicks use a temporary override for the active filter.
         if (ephemeralFilter) return false
-        if (savedFolds.has(group.key)) return true
+        if (savedFolds.has(stateKey)) return true
         // Archived-only would otherwise collapse every group (none has an
         // active session), hiding exactly what was asked for.
         if (listView.status === 'archived') return false
@@ -2649,14 +2819,16 @@ export function SessionList(props: {
         const hasSelectedSession = selectedSessionId
             ? group.sessions.some(session => session.id === selectedSessionId)
             : false
-        return !group.hasActiveSession && !group.hasPinnedSession && !hasSelectedSession
+        return !expandedByDefault && !group.hasActiveSession && !group.hasPinnedSession && !hasSelectedSession
     }
 
-    const toggleGroup = (groupKey: string, isCollapsed: boolean) => {
+    const toggleGroup = (groupKey: string, section: ProjectSection, isCollapsed: boolean) => {
+        const stateKey = getProjectSectionStateKey(groupKey, section)
         if (foldKey && !ephemeralFilter) {
+            const persistedKey = section === 'detailed' ? groupKey : stateKey
             const closed = readClosedProjects(foldKey)
-            if (isCollapsed) closed.delete(groupKey)
-            else closed.add(groupKey)
+            if (isCollapsed) closed.delete(persistedKey)
+            else closed.add(persistedKey)
             try {
                 localStorage.setItem(foldKey, JSON.stringify([...closed]))
                 setFoldRevision(n => n + 1)
@@ -2665,7 +2837,7 @@ export function SessionList(props: {
         const setOverrides = ephemeralFilter ? setFilterCollapseOverrides : setCollapseOverrides
         setOverrides(prev => {
             const next = new Map(prev)
-            next.set(groupKey, !isCollapsed)
+            next.set(stateKey, !isCollapsed)
             return next
         })
     }
@@ -2804,6 +2976,16 @@ export function SessionList(props: {
                                     {sessions.map((s) => (
                                         <SessionItem
                                             onRequestDelete={setDeleteTarget}
+                                            onRequestRename={setRenameTargetId}
+                                            onRequestExport={setExportTargetId}
+                                            onRequestLinkPr={openLinkPr}
+                                            onRequestArchive={setArchiveTargetId}
+                                            onRequestFork={setForkTargetId}
+                                            renameOpen={renameTargetId === s.id}
+                                            exportOpen={exportTargetId === s.id}
+                                            linkPrOpen={linkPrTargetId === s.id}
+                                            archiveOpen={archiveTargetId === s.id}
+                                            forkFlowOpen={forkTargetId === s.id}
                                             key={s.id}
                                             session={s}
                                             onSelect={props.onSelect}
@@ -2872,8 +3054,7 @@ export function SessionList(props: {
                     className="group/project sticky top-0 z-10 flex items-center gap-2 bg-[var(--app-bg)] py-1.5 pl-2 pr-2 text-left rounded-lg transition-colors hover:bg-[var(--app-secondary-bg)] min-w-0 w-full select-none"
                     directory={group.directory}
                     displayName={groupTitle}
-                    sessions={projectSessionsByKey.get(group.key) ?? group.sessions}
-                    api={api}
+                    onArchiveAll={requestProjectArchive(group, groupTitle)}
                     onNewSession={getNewSessionInGroup(group)}
                 >
                     <span className="font-medium text-sm truncate flex-1">
@@ -2889,6 +3070,16 @@ export function SessionList(props: {
     const renderGroupSessionItem = (s: SessionSummary) => (
         <SessionItem
             onRequestDelete={setDeleteTarget}
+            onRequestRename={setRenameTargetId}
+            onRequestExport={setExportTargetId}
+            onRequestLinkPr={openLinkPr}
+            onRequestArchive={setArchiveTargetId}
+            onRequestFork={setForkTargetId}
+            renameOpen={renameTargetId === s.id}
+            exportOpen={exportTargetId === s.id}
+            linkPrOpen={linkPrTargetId === s.id}
+            archiveOpen={archiveTargetId === s.id}
+            forkFlowOpen={forkTargetId === s.id}
             session={s}
             onSelect={props.onSelect}
             showPath={false}
@@ -2907,9 +3098,21 @@ export function SessionList(props: {
         />
     )
 
-    const renderDirectoryGroup = (group: SessionGroup) => {
-        const isCollapsed = isGroupCollapsed(group)
-        const visibleGroupSessions = getVisibleGroupSessions(group)
+    const renderDirectoryGroup = (
+        group: SessionGroup,
+        options: { showAllSessions?: boolean; section?: ProjectSection; expandedByDefault?: boolean } = {}
+    ) => {
+        const showAllSessions = options.showAllSessions ?? false
+        const section = options.section ?? 'detailed'
+        const stateKey = getProjectSectionStateKey(group.key, section)
+        const isCollapsed = isGroupCollapsed(group, stateKey, options.expandedByDefault)
+        const visibleGroupSessions = showAllSessions ? group.sessions : getVisibleGroupSessions(group)
+        // A collapsed group still shows its unread rows, so new output in a
+        // quiet project is never folded out of sight. Each row folds on its
+        // own instead of moving to a separate list, so toggling the group
+        // never remounts (and re-animates) the rows that stay visible.
+        const isRowOpen = (s: SessionSummary) => !isCollapsed || (keepUnreadSessionsVisible && isSessionUnread(s))
+        const anyRowOpen = visibleGroupSessions.some(isRowOpen)
         const hiddenSessionCount = group.sessions.length - visibleGroupSessions.length
         const currentLimit = Math.min(
             getGroupVisibleCount(group),
@@ -2930,14 +3133,13 @@ export function SessionList(props: {
             ? `${group.displayName} · ${resolveMachineLabel(group.machineId)}`
             : group.displayName
         return (
-            <div key={group.key} data-session-scroll-anchor>
+            <div key={stateKey} data-session-scroll-anchor>
                 <ProjectGroupRow
                     className="group/project sticky top-0 z-10 flex items-center gap-2 bg-[var(--app-bg)] py-1.5 pl-2 pr-2 text-left rounded-lg transition-colors hover:bg-[var(--app-secondary-bg)] cursor-pointer min-w-0 w-full select-none"
                     directory={group.directory}
                     displayName={groupTitle}
-                    sessions={projectSessionsByKey.get(group.key) ?? group.sessions}
-                    api={api}
-                    onClick={() => toggleGroup(group.key, isCollapsed)}
+                    onArchiveAll={requestProjectArchive(group, groupTitle)}
+                    onClick={() => toggleGroup(group.key, section, isCollapsed)}
                     expanded={!isCollapsed}
                     onNewSession={getNewSessionInGroup(group)}
                 >
@@ -2973,7 +3175,7 @@ export function SessionList(props: {
                             </div>
                         </CollapsiblePanel>
                     ))}
-                    {group.sessions.length > sessionPreviewLimit && (hiddenSessionCount > 0 || canShowFewerSessions) ? (
+                    {!showAllSessions && group.sessions.length > sessionPreviewLimit && (hiddenSessionCount > 0 || canShowFewerSessions) ? (
                         <CollapsiblePanel open={!isCollapsed}>
                             <div className="ml-2.5 mr-2 mt-1 mb-1.5 flex gap-1.5">
                                 {canShowFewerSessions ? (
@@ -3007,10 +3209,20 @@ export function SessionList(props: {
         )
     }
 
-    // Auto-expand group containing the selected session only when
-    // the selected-session/group pair changes. Without this guard, every live
-    // session-list refresh (for example tool-call updates from a running selected
-    // session) reopens a path the user just collapsed.
+    const visibleDirectoryGroups = useMemo(
+        () => isCombinedPinLayout
+            ? [
+                ...combinedActiveGroups.map((group) => ({ group, stateKey: getProjectSectionStateKey(group.key, 'active') })),
+                ...combinedArchivedGroups.map((group) => ({ group, stateKey: getProjectSectionStateKey(group.key, 'archived') })),
+            ]
+            : groups.map((group) => ({ group, stateKey: getProjectSectionStateKey(group.key) })),
+        [combinedActiveGroups, combinedArchivedGroups, groups, isCombinedPinLayout]
+    )
+
+    // Auto-expand the directory containing the selected session only when the
+    // selected-session/group pair changes. Without this guard, every live
+    // session-list refresh (for example tool-call updates from a running
+    // selected session) reopens a path the user just collapsed.
     useEffect(() => {
         if (!selectedSessionId) {
             autoExpandedSelectedSessionKeyRef.current = null
@@ -3018,14 +3230,10 @@ export function SessionList(props: {
             return
         }
 
-        // Pinned "in progress" sessions are not rendered inside directory
-        // groups, so only auto-expand when the selected session actually lives
-        // in a visible group. Using `allGroups` here would expand the group
-        // below whenever a running session is opened.
-        const group = groups.find(g =>
-            g.sessions.some(s => s.id === selectedSessionId)
+        const visibleGroup = visibleDirectoryGroups.find(({ group }) =>
+            group.sessions.some(s => s.id === selectedSessionId)
         )
-        if (!group) {
+        if (!visibleGroup) {
             // Selecting a row in a floating bucket is real navigation now,
             // not a second navigation when the job expires and the row moves.
             if (machineFilteredSessions.some(s => s.id === selectedSessionId)) previousSelection.current = selectedSessionId
@@ -3033,16 +3241,16 @@ export function SessionList(props: {
             return
         }
 
-        const autoExpandKey = `${selectedSessionId}::${group.key}`
+        const autoExpandKey = `${selectedSessionId}::${visibleGroup.stateKey}`
         if (autoExpandedSelectedSessionKeyRef.current === autoExpandKey) return
         autoExpandedSelectedSessionKeyRef.current = autoExpandKey
 
         const movedWithoutNavigation = previousSelection.current === selectedSessionId
         previousSelection.current = selectedSessionId
-        if (movedWithoutNavigation && (groupOverrides.get(group.key) === true || (!ephemeralFilter && savedFolds.has(group.key)))) return
+        if (movedWithoutNavigation && (groupOverrides.get(visibleGroup.stateKey) === true || (!ephemeralFilter && savedFolds.has(visibleGroup.stateKey)))) return
         const setOverrides = ephemeralFilter ? setFilterCollapseOverrides : setCollapseOverrides
-        setOverrides(prev => expandSelectedSessionCollapseOverrides(prev, group))
-    }, [selectedSessionId, groups, machineFilteredSessions, isFiltering, ephemeralFilter, savedFolds, groupOverrides])
+        setOverrides(prev => expandSelectedSessionCollapseOverrides(prev, { key: visibleGroup.stateKey }))
+    }, [selectedSessionId, visibleDirectoryGroups, machineFilteredSessions, isFiltering, ephemeralFilter, savedFolds, groupOverrides])
 
     // Keep a keyboard-unpinned row reachable when it moves into a collapsed or
     // truncated destination section, or fall back to a visible row if removed.
@@ -3066,7 +3274,7 @@ export function SessionList(props: {
 
         const inRunning = [...runningSessions.jobs, ...runningSessions.working, ...runningSessions.pending]
             .some((session) => session.id === target.sessionId)
-        if (inRunning) {
+        if (inRunning && !isCombinedPinLayout) {
             if (runningSectionCollapsed && !isFiltering) {
                 setRunningSectionCollapsed(false)
                 return
@@ -3075,20 +3283,26 @@ export function SessionList(props: {
             return
         }
 
-        const targetGroup = groups.find((group) =>
-            group.sessions.some((session) => session.id === target.sessionId)
-        )
+        const containsTarget = (group: SessionGroup) => group.sessions.some((session) => session.id === target.sessionId)
+        const activeGroup = isCombinedPinLayout ? combinedActiveGroups.find(containsTarget) : undefined
+        const targetGroup = isCombinedPinLayout
+            ? activeGroup ?? combinedArchivedGroups.find(containsTarget)
+            : groups.find(containsTarget)
         if (targetGroup) {
-            const collapsed = isGroupCollapsed(targetGroup)
+            const stateKey = getProjectSectionStateKey(targetGroup.key, isCombinedPinLayout ? (activeGroup ? 'active' : 'archived') : 'detailed')
+            const collapsed = isGroupCollapsed(targetGroup, stateKey, isCombinedPinLayout)
+            const peekingUnread = collapsed
+                && keepUnreadSessionsVisible
+                && targetGroup.sessions.some((session) => session.id === target.sessionId && isSessionUnread(session))
             let expanding = false
             if (collapsed) {
                 expanding = true
                 const setOverrides = ephemeralFilter ? setFilterCollapseOverrides : setCollapseOverrides
-                setOverrides((prev) => expandSelectedSessionCollapseOverrides(prev, targetGroup))
+                setOverrides((prev) => expandSelectedSessionCollapseOverrides(prev, { key: stateKey }))
             }
 
             const targetIndex = targetGroup.sessions.findIndex((session) => session.id === target.sessionId)
-            if (targetIndex >= 0 && !getVisibleGroupSessions(targetGroup).some((session) => session.id === target.sessionId)) {
+            if (!activeGroup && targetIndex >= 0 && !getVisibleGroupSessions(targetGroup).some((session) => session.id === target.sessionId)) {
                 expanding = true
                 let neededLimit = targetIndex + 1
                 for (let i = targetIndex + 1; i < targetGroup.sessions.length; i += 1) {
@@ -3122,6 +3336,7 @@ export function SessionList(props: {
         quickUnpinFocusRef.current = null
     }, [
         globalPinnedSessions, runningSessions, groups, runningSectionCollapsed,
+        isCombinedPinLayout, combinedActiveGroups, combinedArchivedGroups,
         collapseOverrides, filterCollapseOverrides, sessionVisibleCounts,
         isFiltering, ephemeralFilter, selectedSessionId, sessionPreviewLimit, previewIsUnread,
     ])
@@ -3133,8 +3348,14 @@ export function SessionList(props: {
             const next = new Map(prev)
             const knownKeys = new Set<string>()
             for (const g of allGroups) {
-                knownKeys.add(g.key)
-                knownKeys.add(`sessions::${g.key}`)
+                knownKeys.add(getProjectSectionStateKey(g.key))
+            }
+            // Keep both Combined-mode states for projects hidden by search,
+            // machine, unread, or active-only filters. Those filters should not
+            // reset a user's explicit collapse choice.
+            for (const g of unfilteredGroups) {
+                knownKeys.add(getProjectSectionStateKey(g.key, 'active'))
+                knownKeys.add(getProjectSectionStateKey(g.key, 'archived'))
             }
             let changed = false
             for (const key of next.keys()) {
@@ -3145,7 +3366,7 @@ export function SessionList(props: {
             }
             return changed ? next : prev
         })
-    }, [allGroups])
+    }, [allGroups, unfilteredGroups])
 
     // Clean up reveal caps for groups that no longer exist.
     useEffect(() => {
@@ -3771,6 +3992,16 @@ export function SessionList(props: {
                                     {globalPinnedSessions.map((s) => (
                                         <SessionItem
                                             onRequestDelete={setDeleteTarget}
+                                            onRequestRename={setRenameTargetId}
+                                            onRequestExport={setExportTargetId}
+                                            onRequestLinkPr={openLinkPr}
+                                            onRequestArchive={setArchiveTargetId}
+                                            onRequestFork={setForkTargetId}
+                                            renameOpen={renameTargetId === s.id}
+                                            exportOpen={exportTargetId === s.id}
+                                            linkPrOpen={linkPrTargetId === s.id}
+                                            archiveOpen={archiveTargetId === s.id}
+                                            forkFlowOpen={forkTargetId === s.id}
                                             key={s.id}
                                             session={s}
                                             onSelect={props.onSelect}
@@ -3799,6 +4030,27 @@ export function SessionList(props: {
                     </div>
                 ) : null}
 
+                {isCombinedPinLayout ? (
+                    <>
+                        {combinedActiveGroups.map((group) => renderDirectoryGroup(group, {
+                            showAllSessions: true,
+                            expandedByDefault: true,
+                            section: 'active',
+                        }))}
+                        {combinedActiveGroups.length > 0 && combinedArchivedGroups.length > 0 ? (
+                            <div
+                                role="separator"
+                                aria-label={t('sessions.archivedSection')}
+                                className="ml-2.5 mr-2 my-1 border-t border-[var(--app-border)]"
+                            />
+                        ) : null}
+                        {combinedArchivedGroups.map((group) => renderDirectoryGroup(group, {
+                            section: 'archived',
+                            expandedByDefault: true,
+                        }))}
+                    </>
+                ) : (
+                    <>
                 {renderPinnedSection({
                     sectionKey: 'running-section',
                     titleKey: 'sessions.runningSection',
@@ -3808,8 +4060,17 @@ export function SessionList(props: {
                     count: runningSessionTotal,
                     bucketKeys: ['jobs', 'working', 'pending'],
                 })}
-                {groups.map(renderDirectoryGroup)}
-                {actionOnlyGroups.map(renderActionOnlyGroupHeader)}
+                {shouldSortProjectsByCount && !(searchScoreIndex && hasTextQuery)
+                    ? countSortedDirectoryGroups.map((group) => normalDirectoryKeys.has(group.key)
+                        ? renderDirectoryGroup(group)
+                        : renderActionOnlyGroupHeader(group))
+                    : <>
+                        {groups.map((group) => renderDirectoryGroup(group))}
+                        {actionOnlyGroups.map(renderActionOnlyGroupHeader)}
+                    </>}
+
+                    </>
+                )}
             </SessionListScrollAnchor>
             </QuickUnpinFocusContext.Provider>
             </div>
@@ -3822,6 +4083,49 @@ export function SessionList(props: {
                 />
             ) : null}
             </div>
+            {forkTarget ? (
+                <StableForkFlow
+                    key={forkTarget.id}
+                    session={forkTarget}
+                    api={api}
+                    onSelect={props.onSelect}
+                    onClose={() => setForkTargetId(current => current === forkTarget.id ? null : current)}
+                />
+            ) : null}
+            {projectArchiveTarget ? (
+                <ProjectArchiveDialog
+                    key={projectArchiveTarget.key}
+                    projectKey={projectArchiveTarget.key}
+                    api={api}
+                    displayName={projectArchiveTarget.displayName}
+                    sessionIds={archivableProjectSessions(projectArchiveTarget.key).map(session => session.id)}
+                    onClose={() => setProjectArchiveTarget(current => current === projectArchiveTarget ? null : current)}
+                />
+            ) : null}
+            {archiveTarget ? (
+                <StableArchiveSessionDialog key={archiveTarget.id} session={archiveTarget} api={api} onClose={() => setArchiveTargetId(current => current === archiveTarget.id ? null : current)} />
+            ) : null}
+            {linkPrTarget ? (
+                <StableLinkPrDialog key={linkPrTarget.id} session={linkPrTarget} api={api} onClose={() => setLinkPrOpening(current => current === linkPrOpening ? null : current)} />
+            ) : null}
+            {exportTargetId ? (
+                <SessionExportDialog
+                    key={exportTargetId}
+                    isOpen={true}
+                    onClose={() => setExportTargetId(current => current === exportTargetId ? null : current)}
+                    sessionId={exportTargetId}
+                    api={api}
+                />
+            ) : null}
+            {renameTarget ? (
+                <StableRenameSessionDialog
+                    key={renameTarget.id}
+                    session={renameTarget}
+                    api={api}
+                    titleSuggestionAvailable={titleSuggestionAvailable}
+                    onClose={() => setRenameTargetId(current => current === renameTarget.id ? null : current)}
+                />
+            ) : null}
             <ConfirmDialog
                 isOpen={markAllReadOpen}
                 onClose={() => setMarkAllReadOpen(false)}

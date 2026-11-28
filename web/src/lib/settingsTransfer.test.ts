@@ -36,6 +36,7 @@ const NOT_SETTINGS_KEYS = new Set([
     'hapi:message-window:v2:',
     // Transient UI state and filters
     'hapi.closed-projects.v1:',
+    'hapi.closed-projects.combined.v1:',
     'hapi-dir-scroll-',
     'hapi-dir-expanded-',
     'hapi-file-candidate',
@@ -43,6 +44,10 @@ const NOT_SETTINGS_KEYS = new Set([
     'hapi-mention-inactive-collapsed',
     'hapi-session-list-machine-filter',
     'hapi.scratchlist-collapsed.v1.',
+    'hapi-pin-in-progress-sessions-changed',
+    'hapi-pin-in-progress-sessions-mode-changed',
+    'hapi-session-project-order',
+    'hapi-session-project-sort-mode-changed',
     // Onboarding and dismissals
     'hapi.nativeAppPromo.v1',
     'hapi.fue.v1.',

@@ -1,0 +1,198 @@
+import { createRoot } from 'react-dom/client'
+import { useState } from 'react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import type { SessionSummary } from '@/types/api'
+import type { ApiClient } from '@/api/client'
+import { SessionList } from '@/components/SessionList'
+import { I18nProvider } from '@/lib/i18n-context'
+import { ToastProvider } from '@/lib/toast-context'
+import '../src/index.css'
+
+const params = new URLSearchParams(window.location.search)
+const crossTab = params.has('crossTab')
+const actionSearchCreated = params.get('mode') === 'action-search-created'
+const actionSearch = params.get('mode') === 'action-search' || actionSearchCreated
+const foldCollision = params.has('foldCollision')
+if (params.get('mode') === 'count' || crossTab) {
+    window.localStorage.setItem('hapi-session-project-sort-mode', 'count')
+} else {
+    window.localStorage.removeItem('hapi-session-project-sort-mode')
+}
+if (actionSearch) {
+    if (actionSearchCreated) window.localStorage.setItem('hapi-session-list-sort', 'created')
+    else window.localStorage.setItem('hapi-session-project-sort-mode', 'count')
+    window.localStorage.setItem('hapi-pin-in-progress-sessions', 'all')
+    window.localStorage.removeItem('hapi-pin-in-progress-sessions-mode')
+} else if (params.get('mode') === 'combined-count' || foldCollision) {
+    window.localStorage.setItem('hapi-session-project-sort-mode', 'count')
+    window.localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
+    window.localStorage.setItem('hapi-pin-in-progress-sessions-mode', 'combined')
+} else {
+    window.localStorage.removeItem('hapi-pin-in-progress-sessions')
+    window.localStorage.removeItem('hapi-pin-in-progress-sessions-mode')
+}
+if (!crossTab) window.localStorage.removeItem('hapi-session-project-order')
+
+function makeSession(overrides: Partial<SessionSummary> & { id: string }): SessionSummary {
+    return {
+        active: false,
+        thinking: false,
+        activeAt: 0,
+        updatedAt: 0,
+        metadata: null,
+        metadataVersion: 0,
+        agentStateVersion: 0,
+        todosUpdatedAt: 0,
+        todoProgress: null,
+        pendingRequestsCount: 0,
+        pendingRequestKinds: [],
+        pendingRequests: [],
+        backgroundTaskCount: 0,
+        futureScheduledMessageCount: 0,
+        nextScheduledAt: null,
+        model: null,
+        effort: null,
+        ...overrides,
+    }
+}
+
+const now = Date.now()
+const sessions: SessionSummary[] = [
+    makeSession({
+        id: 'hapi-session',
+        active: true,
+        updatedAt: now - 2 * 60_000,
+        createdAt: now - 3 * 60 * 60_000,
+        lastUserMessageAt: now - 2 * 60_000,
+        metadata: { path: '/projects/hapi', name: 'HAPI task', flavor: 'codex' },
+    }),
+    makeSession({
+        id: 'mine-session',
+        active: true,
+        updatedAt: now - 30 * 60_000,
+        createdAt: now - 4 * 60 * 60_000,
+        lastUserMessageAt: now - 30 * 60_000,
+        metadata: { path: '/projects/mine', name: 'Mine task', flavor: 'codex', conversationHistory: { forkCurrent: true, forkAtMessage: true } },
+    }),
+    makeSession({
+        id: 'mine-session-2',
+        updatedAt: now - 45 * 60_000,
+        createdAt: now - 5 * 60 * 60_000,
+        lastUserMessageAt: now - 45 * 60_000,
+        metadata: { path: '/projects/mine', name: 'Mine follow-up', flavor: 'codex' },
+    }),
+]
+
+const actionSearchSessions: SessionSummary[] = [
+    makeSession({ id: 'strong-title', active: true, thinking: true, updatedAt: now, lastUserMessageAt: now, createdAt: now - 10,
+        metadata: { path: '/projects/strong', name: 'home', flavor: 'codex' } }),
+    makeSession({ id: 'weak-path-1', active: true, thinking: true, updatedAt: now + 1, lastUserMessageAt: now + 1, createdAt: now - 50,
+        metadata: { path: '/projects/home-weak', name: 'Task one', flavor: 'codex' } }),
+    makeSession({ id: 'weak-path-2', active: true, thinking: true, updatedAt: now + 2, lastUserMessageAt: now + 2, createdAt: now - 60,
+        metadata: { path: '/projects/home-weak', name: 'Task two', flavor: 'codex' } }),
+]
+
+const collidingProjectSessions: SessionSummary[] = [
+    makeSession({ id: 'plain', active: true, metadata: { path: '/projects/app', name: 'Plain project session', flavor: 'codex' } }),
+    makeSession({ id: 'suffixed', active: true, metadata: { path: '/projects/app::active', name: 'Suffixed project session', flavor: 'codex' } }),
+]
+
+const staleJobSession = makeSession({
+    id: 'stale-job', active: false, updatedAt: now,
+    metadata: { path: '/projects/stale-job', name: 'Stale running job', flavor: 'codex' },
+    attachedJob: { key: 'batch', label: 'Batch', status: 'running', startedAt: 1, updatedAt: 1, heartbeatAt: 1 },
+})
+
+const archivedJobSession = makeSession({
+    id: 'archived-job', active: false, updatedAt: now,
+    metadata: { path: '/projects/archived-job', name: 'Archived running job', flavor: 'codex', lifecycleState: 'archived' },
+    attachedJob: { key: 'batch', label: 'Batch', status: 'running', startedAt: now, updatedAt: now, heartbeatAt: now },
+})
+
+const queryClient = new QueryClient({
+    defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+    },
+})
+
+const forkApi = {
+    forkPreview: async () => ({
+        mode: 'current', boundary: { v: 1, mode: 'current', epoch: 1, tailSeq: 1 },
+        keptTail: [], excluded: [], counts: { kept: 0, excluded: 0 }
+    }),
+    forkConversation: async () => ({ sessionId: 'forked-fixture-child' })
+} as unknown as ApiClient
+
+const archiveApi = {
+    archiveSession: () => new Promise<void>(resolve => { window.finishProjectArchive = resolve })
+} as unknown as ApiClient
+
+const linkPrApi = {
+    getFeatures: async () => ({ githubPrAwareness: { enabled: true, source: 'default' }, prChipDisplay: undefined }),
+    upsertSessionExternalRef: () => new Promise<void>(resolve => { window.finishProjectLink = resolve })
+} as unknown as ApiClient
+
+const exportApi = {
+    getSessionExport: () => new Promise(resolve => {
+        window.finishProjectExport = () => resolve({ type: 'warning', count: 1, limit: 0, estimatedBytes: 100 })
+    })
+} as unknown as ApiClient
+
+const renameApi = {
+    renameSession: () => new Promise<void>(resolve => { window.finishProjectRename = resolve })
+} as unknown as ApiClient
+
+const foldApi = { getReadStateScope: () => 'project-sort-fixture' } as unknown as ApiClient
+
+declare global {
+    interface Window {
+        updateProjectSession: (id: string, patch: Partial<SessionSummary>) => void
+        showProjectSortProjects: (names: string[]) => void
+        finishProjectExport: () => void
+        finishProjectArchive: () => void
+        finishProjectLink: () => void
+        finishProjectRename: () => void
+    }
+}
+
+function ProjectSortFixture() {
+    const [currentSessions, setCurrentSessions] = useState<SessionSummary[]>(crossTab ? [] : foldCollision ? collidingProjectSessions : actionSearch ? actionSearchSessions : params.has('archivedJob') ? [...sessions, archivedJobSession] : params.has('staleJob') ? [...sessions, staleJobSession] : sessions)
+    window.showProjectSortProjects = (names) => {
+        setCurrentSessions(names.map((name, index) => makeSession({
+            id: name,
+            active: true,
+            updatedAt: now + index,
+            lastUserMessageAt: now + index,
+            metadata: { path: `/projects/${name}`, name: `Session ${name}` },
+        })))
+    }
+    window.updateProjectSession = (id, patch) => {
+        setCurrentSessions((previous) => previous.map((session) => session.id === id ? { ...session, ...patch } : session))
+    }
+
+    return (
+        <div className="h-screen w-full bg-[var(--app-bg)] text-[var(--app-fg)]">
+            <SessionList
+                sessions={currentSessions}
+                selectedSessionId={null}
+                onSelect={() => {}}
+                onNewSession={() => {}}
+                onRefresh={async () => {}}
+                isLoading={false}
+                renderHeader={actionSearch}
+                api={foldCollision ? foldApi : params.has('renamePending') ? renameApi : params.has('forkPreview') ? forkApi : params.has('archivePending') ? archiveApi : params.has('linkPr') ? linkPrApi : params.has('exportPending') ? exportApi : null}
+            />
+        </div>
+    )
+}
+
+createRoot(document.getElementById('root')!).render(
+    <QueryClientProvider client={queryClient}>
+        <ToastProvider>
+            <I18nProvider>
+                <ProjectSortFixture />
+            </I18nProvider>
+        </ToastProvider>
+    </QueryClientProvider>,
+)
