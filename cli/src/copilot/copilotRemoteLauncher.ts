@@ -1,6 +1,7 @@
 import React from 'react';
 import { settleAcpLauncherShutdown } from '@/modules/common/remote/settleAcpLauncherShutdown';
 import { createAcpSessionTitleSync, registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
+import { emitReadyIfIdle } from '@/agent/readyPolicy';
 import { logger } from '@/ui/logger';
 import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge';
 import { convertAgentMessage } from '@/agent/messageConverter';
@@ -197,9 +198,7 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
         // A rejected cancel must not leave the loop on the aborted signal.
         () => { if (this.abortController.signal.aborted) this.abortController = new AbortController(); });
 
-        const sendReady = () => {
-            session.sendSessionEvent({ type: 'ready' });
-        };
+        const sendReady = () => emitReadyIfIdle(session, () => session.queue.size() > 0 || this.shouldExit);
 
         while (!this.shouldExit) {
             await this.waitForAbortBarrier();

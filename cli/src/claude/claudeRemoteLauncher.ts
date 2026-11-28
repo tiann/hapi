@@ -1,6 +1,7 @@
 import { Session } from "./session";
 import { claudeRemote, type ClaudeSteerTarget, type CompactSummaryPayload } from "./claudeRemote";
 import { convertAgentMessage } from "@/agent/messageConverter";
+import { emitReadyIfIdle } from '@/agent/readyPolicy';
 import { PermissionHandler } from "./utils/permissionHandler";
 import { Future } from "@/utils/future";
 import { hashObject } from "@/utils/deterministicJson";
@@ -865,7 +866,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 `(hasPending=${Boolean(pending)}, queueSize=${session.queue.size()})`
                             );
                             if (!pending && session.queue.size() === 0) {
-                                session.client.sendSessionEvent({ type: 'ready' });
+                                emitReadyIfIdle(session.client, () => Boolean(pending) || session.queue.size() > 0);
                                 logger.debug('[claudeRemoteLauncher][async-debug] ready event sent to hub');
                             } else {
                                 logger.debug('[claudeRemoteLauncher][async-debug] ready event suppressed (pending input exists)');

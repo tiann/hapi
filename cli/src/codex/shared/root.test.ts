@@ -25,6 +25,7 @@ vi.mock('../codexAppServerClient', () => ({
         abandoned?: () => void;
         serverRequest?: (request: NativeRequest) => void;
         responses: Array<{ id: string | number; result: unknown }> = [];
+        gate?: (method: string) => Promise<void> | undefined;
         setNotificationHandler(handler: typeof this.notify) { this.notify = handler; }
         setTransportAbandonedHandler(handler: (() => void) | null) { this.abandoned = handler ?? undefined; }
         setServerRequestHandler(handler: (request: NativeRequest) => void) { this.serverRequest = handler; }
@@ -34,6 +35,8 @@ vi.mock('../codexAppServerClient', () => ({
         isInitialized() { return this.initialized; }
         async disconnect() { this.initialized = false; }
         async request(method: string, params: Record<string, unknown> = {}) {
+            const gate = this.gate?.(method);
+            if (gate) await gate;
             if (method === 'thread/read' || method === 'thread/resume') return { ...this.settings, thread: structuredClone(this.thread) };
             if (method === 'thread/list') return { data: [] };
             if (method === 'thread/queue/list') return { data: this.queue };
@@ -53,6 +56,7 @@ vi.mock('../codexAppServerClient', () => ({
                 this.queue.push(entry);
                 return { queuedSubmission: entry };
             }
+            if (method === 'thread/goal/get') return { goal: { status: 'active' } };
             throw new Error(`Unexpected request: ${method}`);
         }
     },
@@ -121,6 +125,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
         abandoned(): void;
         serverRequest(request: NativeRequest): void;
         responses: Array<{ id: string | number; result: unknown }>;
+        gate?: (method: string) => Promise<void> | undefined;
     };
     return {
 session, root, native, rpc, send, events, consumed, uncertain, sessionReady,
@@ -134,6 +139,126 @@ session, root, native, rpc, send, events, consumed, uncertain, sessionReady,
         end,
     };
 }
+
+describe('ready events', () => {
+    it('waits for pending native input before announcing the final completed turn', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        f.submit('next turn', 'next-turn');
+        await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
+
+        f.native.notify('turn/completed', { threadId: 'thread', turn: { id: 'first', status: 'completed' } });
+        await f.drain();
+        expect(f.events).not.toHaveBeenCalledWith({ type: 'ready' });
+
+        const queued = f.native.queue.pop()!;
+        f.native.notify('item/completed', { threadId: 'thread', turnId: 'second', item: {
+            id: 'input', type: 'userMessage', clientId: queued.clientUserMessageId, content: queued.input
+        } });
+        f.native.notify('turn/completed', { threadId: 'thread', turn: { id: 'second', status: 'completed' } });
+        await f.drain();
+        expect(f.events).toHaveBeenCalledExactlyOnceWith({ type: 'ready' });
+    });
+
+    it('does not let a failed slash command hold ready', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        f.submit('/agent on', 'cmd-1');
+        await vi.waitFor(async () => expect((await f.ledger()).entries['cmd-1']?.state).toBe('unknown'));
+        f.submit('real turn', 'real-1');
+        await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
+        const queued = f.native.queue[0]!;
+        f.native.notify('item/completed', { threadId: 'thread', turnId: 't1', item: {
+            id: 'input', type: 'userMessage', clientId: queued.clientUserMessageId, content: queued.input
+        } });
+        f.native.notify('turn/completed', { threadId: 'thread', turn: { id: 't1', status: 'completed' } });
+        await f.drain();
+        const readyCalls = f.events.mock.calls.filter(([event]) => (event as { type?: string })?.type === 'ready');
+        expect(readyCalls).toHaveLength(1);
+    });
+
+    it('announces ready while a non-turn command is still in flight', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        f.submit('first', 'first-1');
+        await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
+        const first = f.native.queue[0]!;
+        f.native.notify('item/completed', { threadId: 'thread', turnId: 't1', item: {
+            id: 'input', type: 'userMessage', clientId: first.clientUserMessageId, content: first.input
+        } });
+        let release!: () => void;
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        f.native.gate = method => method === 'thread/goal/get' ? gate : undefined;
+        f.submit('/goal', 'goal-1');
+        await vi.waitFor(async () => expect((await f.ledger()).entries['goal-1']?.state).toBe('unknown'));
+        f.native.notify('turn/completed', { threadId: 'thread', turn: { id: 't1', status: 'completed' } });
+        await f.drain();
+        expect(f.events).toHaveBeenCalledWith({ type: 'ready' });
+        release();
+        await f.drain();
+        const readyCalls = f.events.mock.calls.filter(([event]) => (event as { type?: string })?.type === 'ready');
+        expect(readyCalls).toHaveLength(1);
+    });
+
+    it('announces ready on an interrupted turn although the paused queue holds input', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        f.submit('A', 'a-1');
+        await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
+        f.submit('B', 'b-1');
+        await vi.waitFor(async () => expect((await f.ledger()).entries['b-1']?.state).toBe('queued'));
+        f.native.notify('turn/completed', { threadId: 'thread', turn: { id: 't1', status: 'interrupted' } });
+        await f.drain();
+        expect(f.events).toHaveBeenCalledExactlyOnceWith({ type: 'ready' });
+        expect((await f.ledger()).entries['b-1'].state).toBe('queued');
+    });
+
+    it('announces ready once for a duplicated completion', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        f.submit('only', 'only-1');
+        await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
+        const queued = f.native.queue[0]!;
+        f.native.notify('item/completed', { threadId: 'thread', turnId: 't1', item: {
+            id: 'input', type: 'userMessage', clientId: queued.clientUserMessageId, content: queued.input
+        } });
+        f.native.notify('turn/completed', { threadId: 'thread', turn: { id: 't1', status: 'completed' } });
+        f.native.notify('turn/completed', { threadId: 'thread', turn: { id: 't1', status: 'completed' } });
+        await f.drain();
+        const readyCalls = f.events.mock.calls.filter(([event]) => (event as { type?: string })?.type === 'ready');
+        expect(readyCalls).toHaveLength(1);
+    });
+
+    it('announces ready for a completion superseded by a newer started turn', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        f.submit('only', 'only-1');
+        await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
+        const queued = f.native.queue[0]!;
+        f.native.notify('item/completed', { threadId: 'thread', turnId: 't1', item: {
+            id: 'input', type: 'userMessage', clientId: queued.clientUserMessageId, content: queued.input
+        } });
+        f.native.notify('turn/completed', { threadId: 'thread', turn: { id: 't1', status: 'completed' } });
+        f.native.notify('turn/started', { threadId: 'thread', turn: { id: 't2', status: 'inProgress' } });
+        await f.drain();
+        const readyCalls = f.events.mock.calls.filter(([event]) => (event as { type?: string })?.type === 'ready');
+        expect(readyCalls).toHaveLength(1);
+    });
+
+    it('announces ready when a turn fails although queued input remains', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        f.submit('A', 'a-1');
+        await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
+        f.submit('B', 'b-1');
+        await vi.waitFor(async () => expect((await f.ledger()).entries['b-1']?.state).toBe('queued'));
+        f.native.notify('turn/completed', { threadId: 'thread', turn: { id: 't1', status: 'failed' } });
+        await f.drain();
+        const readyCalls = f.events.mock.calls.filter(([event]) => (event as { type?: string })?.type === 'ready');
+        expect(readyCalls).toHaveLength(1);
+        expect((await f.ledger()).entries['b-1'].state).toBe('queued');
+    });
+});
 
 describe('shared root startup collaboration mode', () => {
     it.each(['default', 'plan'] as const)('keeps the reported %s mode without sending another update', async mode => {

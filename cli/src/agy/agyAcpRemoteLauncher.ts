@@ -5,6 +5,7 @@ import { statSync, watch, type BigIntStats, type FSWatcher } from 'node:fs';
 import { RPC_METHODS, splitAgyModelSelection } from '@hapi/protocol';
 import { getBuiltinSlashCommands, mergeSlashCommands } from '@hapi/protocol/slashCommands';
 import { logger } from '@/ui/logger';
+import { emitReadyIfIdle } from '@/agent/readyPolicy';
 import { RemoteModeDisplay } from '@/ui/ink/RemoteModeDisplay';
 import { convertAgentMessage } from '@/agent/messageConverter';
 import { GenerationClock } from '@/agent/generationClock';
@@ -713,9 +714,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     this.syncTranscriptCursor();
                     if (!this.usesLiveWakeupRendering()) await this.advanceBackendCursor();
                     session.onThinkingChange(false);
-                    if (session.queue.size() === 0 && !this.shouldExit) {
-                        session.sendSessionEvent({ type: 'ready' });
-                    }
+                    emitReadyIfIdle(session, () => session.queue.size() > 0 || this.shouldExit);
                     return;
                 }
                 if (session.queue.size() > 0) {
@@ -790,9 +789,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         );
                     }
                     session.onThinkingChange(false);
-                    if (session.queue.size() === 0 && !this.shouldExit) {
-                        session.sendSessionEvent({ type: 'ready' });
-                    }
+                    emitReadyIfIdle(session, () => session.queue.size() > 0 || this.shouldExit);
                     return;
                 }
 
@@ -802,9 +799,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     this.pausedWakeupStepIndex = inspection.latestStepIndex;
                     if (this.usesLiveWakeupRendering()) await this.backend?.flushPendingMessageBuffers();
                     session.onThinkingChange(false);
-                    if (session.queue.size() === 0 && !this.shouldExit) {
-                        session.sendSessionEvent({ type: 'ready' });
-                    }
+                    emitReadyIfIdle(session, () => session.queue.size() > 0 || this.shouldExit);
                     return;
                 }
 
@@ -1293,9 +1288,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             }
             session.onThinkingChange(false);
             await this.permissionHandler?.cancelAll('Prompt finished');
-            if (session.queue.size() === 0 && !this.shouldExit) {
-                session.sendSessionEvent({ type: 'ready' });
-            }
+            emitReadyIfIdle(session, () => session.queue.size() > 0 || this.shouldExit);
         }
     }
 

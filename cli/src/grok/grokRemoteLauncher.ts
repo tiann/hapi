@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { settleAcpLauncherShutdown } from '@/modules/common/remote/settleAcpLauncherShutdown'
 import React from 'react'
 import { logger } from '@/ui/logger'
+import { emitReadyIfIdle } from '@/agent/readyPolicy'
 import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge'
 import { convertAgentMessage } from '@/agent/messageConverter'
 import type { AgentMessage, McpServerStdio, PromptContent } from '@/agent/types'
@@ -465,9 +466,7 @@ export class GrokRemoteLauncher extends RemoteLauncherBase {
                 this.conversationHistory.setBusy(false)
                 session.onThinkingChange(false)
                 await this.permissionHandler?.cancelAll('Prompt finished')
-                if (session.queue.size() === 0 && !this.shouldExit) {
-                    session.sendSessionEvent({ type: 'ready' })
-                }
+                emitReadyIfIdle(session, () => session.queue.size() > 0 || this.shouldExit)
             }
             } finally {
                 if (!batchSettled) {

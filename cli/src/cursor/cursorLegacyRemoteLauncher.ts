@@ -2,6 +2,7 @@ import React from 'react';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { logger } from '@/ui/logger';
+import { emitReadyIfIdle } from '@/agent/readyPolicy';
 import { killProcessByChildProcess } from '@/utils/process';
 import { convertAgentMessage } from '@/agent/messageConverter';
 import { OpencodeDisplay } from '@/ui/ink/OpencodeDisplay';
@@ -160,9 +161,7 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
             })
         );
 
-        const sendReady = () => {
-            session.sendSessionEvent({ type: 'ready' });
-        };
+        const sendReady = () => emitReadyIfIdle(session, () => session.queue.size() > 0 || this.shouldExit);
 
         let cursorSessionId: string | null = session.sessionId;
         if (cursorSessionId) {

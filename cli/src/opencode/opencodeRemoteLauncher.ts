@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Buffer } from 'node:buffer';
 import { createAcpSessionTitleSync, registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
+import { emitReadyIfIdle } from '@/agent/readyPolicy';
 import { logger } from '@/ui/logger';
 import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge';
 import type { AcpSdkBackend } from '@/agent/backends/acp';
@@ -1185,9 +1186,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             this.options.onSteerCancelHandlerChange?.(localId => this.v2Steers.get(localId)?.cancel('explicit'));
         }
 
-        const sendReady = () => {
-            session.sendSessionEvent({ type: 'ready' });
-        };
+        const sendReady = () => emitReadyIfIdle(session, () => session.queue.size() > 0 || this.shouldExit);
 
         while (!this.shouldExit) {
             const waitSignal = this.abortController.signal;
