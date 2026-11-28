@@ -1,9 +1,9 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildCliArgs, classifyRecoveredProcessGeneration, createSpawnDeduplicator, probeRecoveredProcessGeneration, releaseRecoveredSpawnDedupe } from './run'
+import { buildCliArgs, classifyRecoveredProcessGeneration, createSpawnDeduplicator, probeRecoveredProcessGeneration, reconcileInactiveExistingSession, releaseRecoveredSpawnDedupe } from './run'
 
 describe('buildCliArgs', () => {
     it('adds --permission-mode for valid permission mode', () => {
@@ -601,6 +601,100 @@ describe('createSpawnDeduplicator', () => {
         dedupe.onChildExited('fresh-hapi-session')
         await expect(dedupe(options)).resolves.toEqual({ type: 'success', sessionId: 'fresh-hapi-session' })
         expect(calls).toBe(2)
+    })
+})
+
+describe('reconcileInactiveExistingSession', () => {
+    it('stops and releases a recovered child before reopening an inactive Hub session', async () => {
+        const stopSession = vi.fn(async () => 'stopped' as const)
+        const release = vi.fn()
+
+        await expect(reconcileInactiveExistingSession('session-1', {
+            getSession: async () => ({ active: false }),
+            stopSession,
+            liveChildCount: () => 0,
+            release,
+        })).resolves.toEqual({ type: 'ready' })
+
+        expect(stopSession).toHaveBeenCalledWith('session-1')
+        expect(release).toHaveBeenCalledOnce()
+    })
+
+    it('releases a recovered child synchronously when stop already confirmed it gone', async () => {
+        const stopSession = vi.fn(async () => 'already_gone' as const)
+        const release = vi.fn()
+
+        await expect(reconcileInactiveExistingSession('session-1', {
+            getSession: async () => ({ active: false }),
+            stopSession,
+            liveChildCount: () => 1,
+            release,
+        })).resolves.toEqual({ type: 'ready' })
+
+        expect(release).toHaveBeenCalledOnce()
+    })
+
+    it('keeps an active recovered child and does not stop it', async () => {
+        const stopSession = vi.fn()
+        const release = vi.fn()
+
+        await expect(reconcileInactiveExistingSession('session-1', {
+            getSession: async () => ({ active: true }),
+            stopSession,
+            liveChildCount: () => 1,
+            release,
+        })).resolves.toEqual({ type: 'ready' })
+
+        expect(stopSession).not.toHaveBeenCalled()
+        expect(release).not.toHaveBeenCalled()
+    })
+
+    it('fails closed when the stale child cannot be stopped', async () => {
+        const stopSession = vi.fn(async () => 'still_alive' as const)
+        const release = vi.fn()
+
+        await expect(reconcileInactiveExistingSession('session-1', {
+            getSession: async () => ({ active: false }),
+            stopSession,
+            liveChildCount: () => 1,
+            release,
+        })).resolves.toEqual({
+            type: 'error',
+            message: 'Existing session child is still alive',
+        })
+
+        expect(release).not.toHaveBeenCalled()
+    })
+
+    it('recovers when the stop sweep reports unknown but no child is tracked', async () => {
+        const stopSession = vi.fn(async () => 'unknown' as const)
+        const release = vi.fn()
+
+        await expect(reconcileInactiveExistingSession('session-1', {
+            getSession: async () => ({ active: false }),
+            stopSession,
+            liveChildCount: () => 0,
+            release,
+        })).resolves.toEqual({ type: 'ready' })
+
+        expect(release).toHaveBeenCalledOnce()
+    })
+
+    it('fails closed when the stop sweep reports unknown and a child remains', async () => {
+        const stopSession = vi.fn(async () => 'unknown' as const)
+        const release = vi.fn()
+
+        await expect(reconcileInactiveExistingSession('session-1', {
+            getSession: async () => ({ active: false }),
+            stopSession,
+            liveChildCount: () => 1,
+            release,
+        })).resolves.toEqual({
+            type: 'error',
+            message: 'Existing session child is still alive',
+        })
+
+        expect(release).not.toHaveBeenCalled()
     })
 })
 

@@ -161,6 +161,48 @@ export function releaseRecoveredSpawnDedupe(
   existingSessionIdByChildPid.delete(pid);
 }
 
+export async function reconcileInactiveExistingSession(
+  sessionId: string,
+  deps: {
+    getSession: (sessionId: string) => Promise<{ active: boolean }>,
+    stopSession: (sessionId: string) => Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'>,
+    liveChildCount: () => number,
+    release: () => void,
+  }
+): Promise<{ type: 'ready' } | { type: 'error', message: string }> {
+  let session: { active: boolean }
+  try {
+    session = await deps.getSession(sessionId)
+  } catch {
+    return { type: 'error', message: 'Failed to verify existing session state' }
+  }
+
+  if (session.active) {
+    return { type: 'ready' }
+  }
+
+  let status: Awaited<ReturnType<typeof deps.stopSession>>
+  try {
+    status = await deps.stopSession(sessionId)
+  } catch {
+    return { type: 'error', message: 'Failed to stop inactive session child' }
+  }
+  if (status === 'stopped' || status === 'already_gone') {
+    // stopSession has verified this generation is gone. Release the
+    // recovered dedupe state synchronously because recovered children do not
+    // have a ChildProcess exit listener to perform that cleanup.
+    deps.release()
+    return { type: 'ready' }
+  }
+  // 'unknown' means the stop sweep found no verified generation to kill. It
+  // is safe to reopen only when no tracked child remains.
+  if (status === 'unknown' && deps.liveChildCount() === 0) {
+    deps.release()
+    return { type: 'ready' }
+  }
+  return { type: 'error', message: 'Existing session child is still alive' }
+}
+
 export async function startRunner(options: { workspaceRoots?: string[] } = {}): Promise<void> {
   // We don't have cleanup function at the time of server construction
   // Control flow is:
@@ -1918,7 +1960,40 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
     // Set RPC handlers
     apiMachine.setRPCHandlers({
-      spawnSession,
+      spawnSession: async (spawnOptions) => {
+        if (spawnOptions.existingSessionId) {
+          const release = () => {
+            let released = false
+            for (const [pid, sessionId] of existingSessionIdByChildPid) {
+              if (sessionId === spawnOptions.existingSessionId) {
+                releaseRecoveredSpawnDedupe(pid, existingSessionIdByChildPid, spawnSession)
+                released = true
+              }
+            }
+            if (!released) {
+              spawnSession.onChildExited(spawnOptions.existingSessionId!)
+            }
+          }
+          const reconciliation = await reconcileInactiveExistingSession(
+            spawnOptions.existingSessionId,
+            {
+              getSession: async (sessionId) => await api.getSession(sessionId),
+              stopSession,
+              liveChildCount: () => [...existingSessionIdByChildPid.values()]
+                .filter(sessionId => sessionId === spawnOptions.existingSessionId).length,
+              release,
+            }
+          )
+          if (reconciliation.type === 'error') {
+            return {
+              type: 'error',
+              errorMessage: reconciliation.message,
+              childStarted: false,
+            }
+          }
+        }
+        return await spawnSession(spawnOptions)
+      },
       stopSession,
       requestShutdown: () => requestShutdown('hapi-app')
     });
