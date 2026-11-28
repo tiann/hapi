@@ -25,15 +25,18 @@ struct ToolCallBlockView: View {
     @ViewBuilder
     private var activityCard: some View {
         let presentation = toolSummaryPresentation(block.tool, basePath: basePath)
+        let sections = planProposalSections(block.tool)
+        let overview = planProposalOverview(block.tool)
+        let plan = planProposalMarkdown(block.tool)
         VStack(alignment: .leading, spacing: 0) {
             headerRow(presentation)
-            if let plan = planProposalMarkdown(block.tool) {
-                PlanProposalContent(markdown: plan)
+            if overview != nil || plan != nil || !sections.isEmpty {
+                PlanProposalContent(overview: overview, markdown: plan, sections: sections)
                     .padding(12)
                     .accessibilityIdentifier("plan-proposal-\(block.id)")
-                if let interactions {
-                    CodexPlanActionsView(planId: block.tool.id, interactions: interactions)
-                }
+            }
+            if plan != nil, let interactions {
+                CodexPlanActionsView(planId: block.tool.id, interactions: interactions)
             }
             if let permission = block.tool.permission {
                 if permission.status == .pending, let interactions {

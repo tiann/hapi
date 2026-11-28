@@ -20,7 +20,7 @@ func toolSourceInput(_ input: JSONValue?, keys: [String]) -> String? {
 }
 
 func isPlanProposalTool(_ name: String) -> Bool {
-    name == "ExitPlanMode" || name == "exit_plan_mode"
+    name == "ExitPlanMode" || name == "exit_plan_mode" || name == "CursorCreatePlan"
 }
 
 /// Plans are documents in input.plan, not update_plan's checklist or a tool result.
@@ -29,6 +29,24 @@ func planProposalMarkdown(_ tool: ChatToolCall) -> String? {
           let plan = tool.input?[chatKey: "plan"]?.chatString,
           !plan.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
     return plan
+}
+
+func planProposalSections(_ tool: ChatToolCall) -> [JSONValue] {
+    guard tool.name == "CursorCreatePlan", let input = tool.input else { return [] }
+    let phases = (input[chatKey: "phases"]?.chatArray ?? []).filter {
+        !($0[chatKey: "name"]?.chatString ?? "").isEmpty || !checklistItems($0).isEmpty
+    }
+    if !phases.isEmpty { return phases }
+    guard let todos = input[chatKey: "todos"], !(todos.chatArray ?? []).isEmpty else { return [] }
+    return [.object(["todos": todos])]
+}
+
+func planProposalOverview(_ tool: ChatToolCall) -> String? {
+    guard tool.name == "CursorCreatePlan",
+          let overview = tool.input?[chatKey: "overview"]?.chatString?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !overview.isEmpty,
+          overview != planProposalMarkdown(tool)?.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
+    return overview
 }
 
 /// A synthesized Codex proposal completes with null output. Keep diagnostics,

@@ -61,13 +61,22 @@ import kotlinx.serialization.json.JsonPrimitive
 internal fun ToolCallBody(tool: ChatToolCall, basePath: String?, modifier: Modifier = Modifier) {
     val questionTool = isQuestionDetailsTool(tool.name)
     val plan = planProposalMarkdown(tool)
+    val sections = planProposalSections(tool)
+    val overview = planProposalOverview(tool)
     val answers = if (questionTool) tool.permission?.answers else null
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (questionTool) {
             QuestionToolBody(tool)
-        } else if (plan != null) {
+        } else if (overview != null || plan != null || sections.isNotEmpty()) {
+            overview?.let {
+                Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.hapi.textSecondary)
+            }
             // Plans are reading documents, never paged/truncated tool source.
-            Markdown(text = plan)
+            plan?.let { Markdown(text = it) }
+            sections.forEach { section ->
+                (section["name"] as? JsonPrimitive)?.content?.let { Text(it, style = MaterialTheme.typography.titleSmall) }
+                checklistItems(section).forEach { (glyph, text) -> Text("$glyph $text") }
+            }
             if (planProposalShowsResult(tool)) ToolResultSection(tool)
         } else {
             SectionLabel(stringResource(R.string.settings_usage_input))
@@ -401,7 +410,7 @@ internal fun languageForPath(path: String?): String? {
 private fun JsonPrimitive.contentOrNullIfNotString(): String? = if (isString) content else null
 
 /** `(glyph, text)` rows for TodoWrite `todos` / update_plan `plan` items. */
-private fun checklistItems(input: JsonElement?): List<Pair<String, String>> {
+internal fun checklistItems(input: JsonElement?): List<Pair<String, String>> {
     val obj = input as? JsonObject ?: return emptyList()
     val array = (obj["todos"] as? JsonArray) ?: (obj["plan"] as? JsonArray) ?: return emptyList()
     return array.mapNotNull { entry ->
@@ -412,6 +421,7 @@ private fun checklistItems(input: JsonElement?): List<Pair<String, String>> {
         val status = (item["status"] as? JsonPrimitive)?.contentOrNullIfNotString()
         val glyph = when (status) {
             "completed", "complete", "done" -> "☑"
+            "cancelled" -> "⊘"
             "in_progress" -> "◐"
             else -> "☐"
         }

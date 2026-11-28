@@ -159,6 +159,7 @@ func normalizePlanStatus(_ value: JSONValue?) -> String {
         lowered = lowered.replacingOccurrences(of: "\r", with: "_")
         return lowered
     }()
+    if raw == "cancelled" { return "cancelled" }
     if raw == "completed" || raw == "complete" || raw == "done" { return "completed" }
     if raw == "in_progress" || raw == "inprogress" || raw == "active" || raw == "running" { return "in_progress" }
     return "pending"
@@ -1204,8 +1205,9 @@ func normalizeAgentRecord(
         }
 
         if dataType == "plan" {
-            let plan = normalizePlanEntries(jsCoalesce(data["entries"], data["items"]) ?? .object(data))
-            if plan.isEmpty { return nil }
+            let entries = jsCoalesce(data["entries"], data["items"]) ?? .object(data)
+            let plan = normalizePlanEntries(entries)
+            if plan.isEmpty && entries.arrayValue?.isEmpty != true { return nil }
             let uuid = asString(data["id"]) ?? messageId
             let planPayload: JSONValue = .object(["plan": .array(plan), "source": .string("cursor")])
             return NormalizedMessage(

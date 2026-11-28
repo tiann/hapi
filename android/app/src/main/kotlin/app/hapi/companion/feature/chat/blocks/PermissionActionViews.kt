@@ -35,7 +35,7 @@ import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.companion.ui.theme.HapiTypography
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.chat.ChatToolCall
-import app.hapi.protocol.catalog.Flavors
+import app.hapi.companion.feature.chat.permissions.PermissionVerdicts.isCodexUx
 
 /**
  * Pending-permission footers (B-M3b): the approval buttons for ordinary tool
@@ -45,6 +45,7 @@ import app.hapi.protocol.catalog.Flavors
  * - codex family (incl. cursor and codex-dialect tool names): Allow
  *   (`decision: approved`) / Abort (`decision: abort`) + overflow
  *   Allow-for-session (`decision: approved_for_session`);
+ * - CursorCreatePlan: one-shot Allow or Deny (rejects the proposal);
  * - everyone else: Allow (`{}`) / Deny (`{}`) + overflow Allow-for-session
  *   (claude: `allowTools`) and, for claude edit tools, Allow-all-edits
  *   (`mode: acceptEdits`).
@@ -83,13 +84,6 @@ fun PendingPermissionFooter(
         )
     }
 }
-
-/** `PermissionFooter.isCodexSession` twin (UI button-set selection). */
-private fun isCodexUx(flavor: String?, toolName: String): Boolean =
-    Flavors.isCodexFamily(flavor) || flavor == "cursor" ||
-        toolName.startsWith("Codex") || toolName.startsWith("Gemini") ||
-        toolName.startsWith("OpenCode") || toolName.startsWith("Copilot") ||
-        toolName.startsWith("Cursor")
 
 private val EDIT_TOOLS = setOf("Edit", "MultiEdit", "Write", "NotebookEdit")
 

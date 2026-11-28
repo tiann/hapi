@@ -1,4 +1,5 @@
 import type { ApiSessionClient } from '@/api/apiSession';
+import { cursorTodosBySession } from './cursorTodoSnapshot';
 import type { AgentState } from '@/api/types';
 import type { AcpSdkBackend } from '@/agent/backends/acp';
 import { logger } from '@/ui/logger';
@@ -64,17 +65,17 @@ export class CursorExtensionAdapter {
         this.backend.registerExtensionRequestHandler('cursor/update_todos', async (params) => {
             this.handleTodoUpdate(params);
             return {};
-        });
+        }, { acceptNotification: true });
 
         this.backend.registerExtensionRequestHandler('cursor/task', async (params) => {
             this.handleTaskNotification(params);
             return {};
-        });
+        }, { acceptNotification: true });
 
         this.backend.registerExtensionRequestHandler('cursor/generate_image', async (params) => {
             await this.handleGenerateImage(params);
             return {};
-        });
+        }, { acceptNotification: true });
     }
 
     /**
@@ -180,22 +181,29 @@ export class CursorExtensionAdapter {
 
     private handleTodoUpdate(params: unknown): void {
         if (!isObject(params)) return;
-        const todos = Array.isArray(params.todos) ? params.todos : [];
-        const items: PlanItem[] = [];
-        for (const entry of todos) {
+        if (!Array.isArray(params.todos)) return;
+        const saved = this.session.getAgentStateSnapshot?.();
+        const cached = cursorTodosBySession.get(this.session);
+        const revision = cached ? cached.revision : saved?.cursorTodoRevision;
+        const items = params.merge === true ? [...(cached?.items ?? saved?.cursorTodoSnapshot ?? [])] : [];
+        for (const entry of params.todos) {
             if (!isObject(entry)) continue;
-            const content = asString(entry.content) ?? asString(entry.title) ?? '';
+            const content = asString(entry.content) ?? asString(entry.title);
             if (!content) continue;
-            const status = normalizeTodoStatus(asString(entry.status));
-            items.push({
-                content,
-                priority: 'medium',
-                status
-            });
+            const id = asString(entry.id);
+            const item: PlanItem = {
+                ...(id ? { id } : {}), content, priority: 'medium',
+                status: normalizeTodoStatus(asString(entry.status))
+            };
+            const index = id ? items.findIndex(existing => existing.id === id) : -1;
+            if (index < 0) items.push(item);
+            else items[index] = item;
         }
-        if (items.length > 0) {
-            this.onMessage({ type: 'plan', items });
-        }
+        cursorTodosBySession.set(this.session, { revision, items });
+        this.session.updateAgentState(state => state.cursorTodoRevision === revision
+            ? { ...state, cursorTodoSnapshot: items }
+            : state);
+        this.onMessage({ type: 'plan', items });
     }
 
     private handleTaskNotification(params: unknown): void {
@@ -391,7 +399,7 @@ function formatQuestionAnswers(
 }
 
 function normalizeTodoStatus(status: string | null): PlanItem['status'] {
-    if (status === 'in_progress' || status === 'completed' || status === 'pending') {
+    if (status === 'in_progress' || status === 'completed' || status === 'cancelled' || status === 'pending') {
         return status;
     }
     return 'pending';

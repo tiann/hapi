@@ -235,6 +235,8 @@ Interactive TUI-only commands (`/config`, `/mcp`, `/sandbox`, `/btw`, `/rewind`,
 - **Local mode** - Run `hapi cursor` from terminal. Full interactive experience.
 - **Remote mode** - Spawn from web/phone when no terminal. New Cursor sessions use `agent acp` with HAPI permission approval, plan/question UI, and richer tool updates. Legacy sessions created before the ACP migration may still resume via the old `agent -p` stream-json path temporarily.
 
+Cursor plan cards show the overview when supplied, followed by the Markdown plan and approval controls in the web, iOS, and Android apps. When Cursor supplies named phases, cards group the corresponding tasks under each phase. Incremental todo updates preserve the other tasks, cancelled tasks retain their status in the transcript, and an empty replacement clears the current list. A pending plan or question marks the session as waiting for input.
+
 ### Model errors
 
 Cursor sometimes reports a transient model error inside a turn instead of failing it. HAPI detects these, shows a banner in the chat and an indicator in the session list, and sends a notification. **Bridge & retry** re-sends your last message as a one-shot recovery prompt; a new message from you always takes precedence. The hub owner can opt in to automatic retry (off by default).

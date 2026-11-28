@@ -173,12 +173,12 @@ describe('toSessionSummary', () => {
         expect(summary.metadata?.agentSessionId).toBeUndefined()
     })
 
-    it('includes pending request kinds and background task count', () => {
+    it.each(['ExitPlanMode', 'CursorCreatePlan'])('includes pending request kinds and background task count for %s', (tool) => {
         const summary = toSessionSummary(makeSession({
             backgroundTaskCount: 2,
             agentState: {
                 requests: {
-                    req1: { tool: 'ExitPlanMode', arguments: {} }
+                    req1: { tool, arguments: {} }
                 }
             }
         }))

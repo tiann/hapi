@@ -1431,6 +1431,16 @@ class ChatViewModelInteractionTest {
         harness.api.approveCalls.value.map { (_, body) -> HapiJson.encodeToString(body) }
 
     @Test
+    fun `Cursor plan approval uses the one-shot body`() = runTest {
+        val requests = mapOf("plan" to AgentStateRequest(tool = "CursorCreatePlan"))
+        val harness = InteractionHarness(this, detail(flavor = "cursor", agentState = AgentState(requests = requests)))
+        harness.viewModel.start()
+        harness.viewModel.resolvePermission("plan", PermissionAction.Allow)
+        harness.api.approveCalls.first { it.isNotEmpty() }
+        assertEquals(listOf("{}"), approvedBodies(harness))
+    }
+
+    @Test
     fun `claude approve bodies match the web PermissionFooter exactly`() = runTest {
         val requests = mapOf(
             "r-allow" to bashRequest(),

@@ -123,6 +123,7 @@ private let planToolNames: Set<String> = [
     "update_plan",
     "ExitPlanMode",
     "exit_plan_mode",
+    "CursorCreatePlan",
     "CodexReasoning",
 ]
 
@@ -130,6 +131,7 @@ private let milestoneToolNames: Set<String> = [
     "Task",
     "Agent",
     "CodexAgent",
+    "CursorTask",
     "TeamCreate",
     "TeamDelete",
     "SendMessage",

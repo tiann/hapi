@@ -60,6 +60,7 @@ private val PLAN_TOOL_NAMES = setOf(
     "update_plan",
     "ExitPlanMode",
     "exit_plan_mode",
+    "CursorCreatePlan",
     "CodexReasoning",
 )
 
@@ -67,6 +68,7 @@ private val MILESTONE_TOOL_NAMES = setOf(
     "Task",
     "Agent",
     "CodexAgent",
+    "CursorTask",
     "TeamCreate",
     "TeamDelete",
     "SendMessage",

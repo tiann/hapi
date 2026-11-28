@@ -295,6 +295,7 @@ export function getPermissionReplyStyle(
     flavor: string | null | undefined,
     toolName?: string
 ): PermissionReplyStyle {
+    if (toolName === 'CursorCreatePlan') return 'generic'
     if (toolName && DECISION_TOOL_NAME_PREFIXES.some((prefix) => toolName.startsWith(prefix))) {
         return 'decision'
     }

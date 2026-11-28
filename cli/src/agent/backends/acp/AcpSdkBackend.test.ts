@@ -1751,6 +1751,13 @@ describe('AcpSdkBackend', () => {
         backend.registerExtensionRequestHandler('cursor/ask_question', handler);
 
         expect(registered.get('cursor/ask_question')).toBe(handler);
+        const notify = vi.fn().mockResolvedValue({});
+        backend.registerExtensionRequestHandler('cursor/update_todos', notify, { acceptNotification: true });
+        const incoming = backend as unknown as { handleNotification(method: string, params: unknown): void };
+        incoming.handleNotification('cursor/update_todos', { todos: [], merge: false });
+        incoming.handleNotification('cursor/ask_question', {});
+        expect(notify).toHaveBeenCalledWith({ todos: [], merge: false }, null);
+        expect(handler).not.toHaveBeenCalled();
     });
 
     it('beginSoftSteerPrompt sends concurrent session/prompt without cancel', () => {

@@ -40,6 +40,9 @@ object SummaryPatching {
     private val INPUT_REQUEST_TOOLS = setOf(
         "AskUserQuestion",
         "ask_user_question",
+        "CursorAskQuestion",
+        "cursor_ask_question",
+        "CursorCreatePlan",
         "ExitPlanMode",
         "exit_plan_mode",
         "request_user_input",

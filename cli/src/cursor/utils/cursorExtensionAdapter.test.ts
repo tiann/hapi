@@ -7,16 +7,18 @@ import type { AgentState } from '@/api/types';
 import type { AgentMessage } from '@/agent/types';
 import { AcpSdkBackend } from '@/agent/backends/acp';
 import { clearGeneratedImages, getGeneratedImage } from '@/modules/common/generatedImages';
+import { cursorTodosBySession } from './cursorTodoSnapshot';
 import { CursorExtensionAdapter } from './cursorExtensionAdapter';
 
 type ExtensionHandler = (params: unknown, requestId: string | number | null) => Promise<unknown>;
 
-function createHarness(options?: { onCreatePlanAccepted?: () => void }) {
+function createHarness(options?: { onCreatePlanAccepted?: () => void; state?: AgentState }) {
     const handlers = new Map<string, ExtensionHandler>();
-    let agentState: AgentState = { requests: {}, completedRequests: {} };
+    let agentState: AgentState = options?.state ?? { requests: {}, completedRequests: {} };
     const messages: AgentMessage[] = [];
 
     const session = {
+        getAgentStateSnapshot: () => agentState,
         updateAgentState(handler: (state: AgentState) => AgentState) {
             agentState = handler(agentState);
         }
@@ -43,6 +45,7 @@ function createHarness(options?: { onCreatePlanAccepted?: () => void }) {
     return {
         handlers,
         adapter,
+        session,
         getAgentState: () => agentState,
         getMessages: () => messages
     };
@@ -109,7 +112,7 @@ describe('CursorExtensionAdapter', () => {
         await expect(pending).resolves.toEqual({ outcome: { outcome: 'cancelled' } });
     });
 
-    it('resolves create_plan approval as accepted with nested outcome envelope', async () => {
+    it.each([undefined, 'approved'] as const)('resolves create_plan approval (%s) as accepted with nested outcome envelope', async (decision) => {
         // Regression for the plan-approval bug: operator clicks "Yes" on a Cursor
         // CreatePlan approval, but the agent received `User cancelled` because the
         // response outcome was returned flat instead of nested. Cursor reads
@@ -124,7 +127,7 @@ describe('CursorExtensionAdapter', () => {
         await adapter.handlePermissionResponse({
             id: 'plan-1',
             approved: true,
-            decision: 'approved'
+            decision
         });
 
         await expect(pending).resolves.toEqual({ outcome: { outcome: 'accepted' } });
@@ -188,14 +191,14 @@ describe('CursorExtensionAdapter', () => {
         expect(onCreatePlanAccepted).not.toHaveBeenCalled();
     });
 
-    it('resolves create_plan denial as rejected', async () => {
+    it.each([undefined, 'denied'] as const)('resolves create_plan denial (%s) as rejected', async (decision) => {
         const { handlers, adapter } = createHarness();
         const pending = handlers.get('cursor/create_plan')!({ toolCallId: 'plan-2' }, null);
 
         await adapter.handlePermissionResponse({
             id: 'plan-2',
             approved: false,
-            decision: 'denied'
+            decision
         });
 
         await expect(pending).resolves.toEqual({ outcome: { outcome: 'rejected' } });
@@ -221,6 +224,41 @@ describe('CursorExtensionAdapter', () => {
             approved: true
         });
         expect(handled).toBe(false);
+    });
+
+    it('merges a resumed todo update by ID, preserves cancellation, and clears on an empty replacement', async () => {
+        const first = createHarness();
+        await first.handlers.get('cursor/update_todos')!({ merge: false, todos: [
+            { id: 'x', content: 'X', status: 'pending' }, { id: 'y', content: 'Y', status: 'completed' }
+        ] }, null);
+        const resumed = createHarness({ state: first.getAgentState() });
+        await resumed.handlers.get('cursor/update_todos')!({ merge: true, todos: [
+            { id: 'x', content: 'X', status: 'cancelled' }
+        ] }, null);
+        await resumed.handlers.get('cursor/update_todos')!({ merge: false, todos: [] }, null);
+        expect(resumed.getMessages()).toMatchObject([
+            { type: 'plan', items: [{ id: 'x', status: 'cancelled' }, { id: 'y', status: 'completed' }] },
+            { type: 'plan', items: [] }
+        ]);
+        expect(resumed.getAgentState().cursorTodoSnapshot).toEqual([]);
+    });
+
+    it('merges on the committed rewind baseline instead of discarded cached and persisted todos', async () => {
+        const { handlers, session, getMessages } = createHarness();
+        const update = handlers.get('cursor/update_todos')!;
+        await update({ todos: [{ id: 'discarded', content: 'discarded' }] }, null);
+        cursorTodosBySession.set(session, {
+            revision: 'rewound', items: [{ id: 'keep', content: 'keep', status: 'cancelled', priority: 'medium' }]
+        });
+        const write = vi.spyOn(session, 'updateAgentState');
+        await update({ merge: true, todos: [{ id: 'new', content: 'new' }] }, null);
+        expect(getMessages().at(-1)).toMatchObject({ type: 'plan', items: [
+            { id: 'keep', status: 'cancelled' }, { id: 'new', status: 'pending' }
+        ] });
+        const apply = write.mock.calls[0][0];
+        expect(apply({ cursorTodoRevision: 'rewound' }).cursorTodoSnapshot?.map(item => item.id)).toEqual(['keep', 'new']);
+        const nextRewind = { cursorTodoRevision: 'another', cursorTodoSnapshot: [] };
+        expect(apply(nextRewind)).toBe(nextRewind);
     });
 
     it('maps cursor/update_todos to plan agent messages', async () => {

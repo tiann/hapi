@@ -1131,6 +1131,19 @@ describe('normalizeDecryptedMessage', () => {
         })
     })
 
+    it.each([
+        { entries: [], expected: [] },
+        { entries: [{ content: 'Retired', status: 'cancelled' }], expected: [{ step: 'Retired', status: 'cancelled' }] }
+    ])('keeps ACP clears and cancellations: $entries', ({ entries, expected }) => {
+        const message = makeMessage({ role: 'agent', content: { type: 'codex', data: { type: 'plan', entries } } })
+        expect(normalizeDecryptedMessage(message)).toMatchObject({
+            role: 'agent', content: [
+                { type: 'tool-call', id: 'cursor-plan-state', input: { plan: expected } },
+                { type: 'tool-result', content: { plan: expected } }
+            ]
+        })
+    })
+
     it('normalizes ACP plan messages as completed update_plan snapshots', () => {
         const message = makeMessage({
             role: 'agent',

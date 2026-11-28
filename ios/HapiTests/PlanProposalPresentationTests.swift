@@ -25,11 +25,14 @@ final class PlanProposalPresentationTests: XCTestCase {
     [HAPI documentation](https://hapi.run)
     """
 
-    private func block(_ name: String, plan: String?, result: JSONValue? = .null) -> ToolCallBlock {
-        ToolCallBlock(id: "proposal", localId: nil, createdAt: 0, invokedAt: nil,
+    private func block(_ name: String, plan: String?, overview: String? = nil, result: JSONValue? = .null) -> ToolCallBlock {
+        var input: [String: JSONValue] = [:]
+        if let plan { input["plan"] = .string(plan) }
+        if let overview { input["overview"] = .string(overview) }
+        return ToolCallBlock(id: "proposal", localId: nil, createdAt: 0, invokedAt: nil,
                       durationMs: nil, usage: nil, model: nil,
                       tool: ChatToolCall(id: "proposal", name: name, state: .completed,
-                                        input: plan.map { .object(["plan": .string($0)]) },
+                                        input: input.isEmpty ? nil : .object(input),
                                         createdAt: 0, result: result), children: [], meta: nil)
     }
 
@@ -38,10 +41,10 @@ final class PlanProposalPresentationTests: XCTestCase {
             .sizeThatFits(in: CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)).height
     }
 
-    func testBothAliasesShowTheEntireMarkdownLayoutWithoutOpeningDetails() {
+    func testPlanToolsShowTheEntireMarkdownLayoutWithoutOpeningDetails() {
         let longPlan = plan + "\n\n" + String(repeating: "Complete paragraph 中文 👩🏽‍💻. ", count: 900) + "\n\nLast paragraph."
         XCTAssertGreaterThan(longPlan.count, toolTextPageSize)
-        for name in ["ExitPlanMode", "exit_plan_mode"] {
+        for name in ["ExitPlanMode", "exit_plan_mode", "CursorCreatePlan"] {
             for source in [plan, longPlan] {
                 // Compare with the full production Markdown renderer, not the
                 // plan component itself: truncation/paged source must fail.
@@ -53,6 +56,20 @@ final class PlanProposalPresentationTests: XCTestCase {
                 XCTAssertGreaterThan(details, height(CachedMarkdownView(markdown: source)))
             }
         }
+    }
+
+    func testCursorOverviewAddsContentToTheTranscriptWithOrWithoutMarkdown() {
+        let overview = "Review navigation before beginning."
+        let empty = block("CursorCreatePlan", plan: nil)
+        let onlyOverview = block("CursorCreatePlan", plan: nil, overview: overview)
+        let onlyPlan = block("CursorCreatePlan", plan: plan)
+        let both = block("CursorCreatePlan", plan: plan, overview: overview)
+        let duplicate = block("CursorCreatePlan", plan: plan, overview: plan)
+        XCTAssertGreaterThan(height(ToolCallBlockView(block: onlyOverview, basePath: nil)),
+                             height(ToolCallBlockView(block: empty, basePath: nil)))
+        let planHeight = height(ToolCallBlockView(block: onlyPlan, basePath: nil))
+        XCTAssertGreaterThan(height(ToolCallBlockView(block: both, basePath: nil)), planHeight)
+        XCTAssertEqual(height(ToolCallBlockView(block: duplicate, basePath: nil)), planHeight, accuracy: 1)
     }
 
     func testNullResultDoesNotAddAnOutputPlaceholderAndDynamicTypeStillReflows() {
@@ -80,7 +97,7 @@ final class PlanProposalPresentationTests: XCTestCase {
             await cache.prepare([plan])
             let view = NavigationStack {
                 ScrollView {
-                    ToolCallBlockView(block: block("ExitPlanMode", plan: plan), basePath: nil)
+                    ToolCallBlockView(block: block("CursorCreatePlan", plan: plan), basePath: nil)
                         .hapiReadingColumn().padding(.vertical, 16)
                 }
                 .background(theme.background)

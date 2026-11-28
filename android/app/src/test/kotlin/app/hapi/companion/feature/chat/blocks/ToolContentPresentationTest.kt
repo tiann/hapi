@@ -34,7 +34,7 @@ class ToolContentPresentationTest {
 
     @Test fun planProposalsReadInputAndPreserveTheCompleteDocument() {
         val plan = "\n# 计划 👩🏽‍💻\n\n" + "- Inspect **input.plan**  \n".repeat(1_000) + "last  \n"
-        for (name in listOf("ExitPlanMode", "exit_plan_mode")) {
+        for (name in listOf("ExitPlanMode", "exit_plan_mode", "CursorCreatePlan")) {
             val input = JsonObject(mapOf("plan" to JsonPrimitive(plan), "extra" to JsonPrimitive(true)))
             val call = tool(name, input, JsonNull)
             assertTrue(isPlanProposalTool(name))
@@ -57,6 +57,26 @@ class ToolContentPresentationTest {
         assertNull(planProposalMarkdown(tool("update_plan", input)))
         assertNull(planProposalMarkdown(tool("mcp__server__ExitPlanMode", input)))
         assertNull(planProposalMarkdown(tool("update_plan", json("""{"plan":[{"step":"Inspect","status":"completed"}]}"""))))
+    }
+
+    @Test fun cursorPhaseHierarchyPreservesCancelledTodosWithoutFlatDuplicates() {
+        val input = json("""{"todos":[{"content":"duplicate"}],"phases":[{"name":"Design","todos":[{"content":"Retired","status":"cancelled"}]}]}""")
+        val phase = planProposalSections(tool("CursorCreatePlan", input)).single()
+        assertEquals("Design", (phase["name"] as JsonPrimitive).content)
+        assertEquals(listOf("⊘" to "Retired"), checklistItems(phase))
+        assertTrue(planProposalSections(tool("ExitPlanMode", input)).isEmpty())
+    }
+
+    @Test fun cursorPlanOverviewCanStandAloneAndOmitsDuplicates() {
+        val both = json("""{"overview":" Review the changes. ","plan":"## Steps"}""")
+        assertEquals("Review the changes.", planProposalOverview(tool("CursorCreatePlan", both)))
+        assertEquals("## Steps", planProposalMarkdown(tool("CursorCreatePlan", both)))
+        assertNull(planProposalOverview(tool("ExitPlanMode", both)))
+        val onlyOverview = json("""{"overview":"Review only."}""")
+        assertEquals("Review only.", planProposalOverview(tool("CursorCreatePlan", onlyOverview)))
+        for (input in listOf("""{"overview":" \n "}""", """{"overview":42}""", """{"overview":"Summary","plan":"\nSummary\n"}""")) {
+            assertNull(planProposalOverview(tool("CursorCreatePlan", json(input))))
+        }
     }
 
     @Test fun resultEnvelopesAndWhitespace() {

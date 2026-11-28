@@ -43,6 +43,10 @@ object PermissionVerdicts {
             toolName.startsWith("OpenCode") || toolName.startsWith("Copilot") ||
             toolName.startsWith("Cursor")
 
+    /** Cursor plan proposals use one-shot Allow/Deny, including in Cursor sessions. */
+    fun isCodexUx(flavor: String?, toolName: String?): Boolean =
+        toolName != "CursorCreatePlan" && isCodexSession(flavor, toolName.orEmpty())
+
     /** `isToolAllowedForSession`: plain tool-name hit or the `Bash(command)` qualifier. */
     fun isToolAllowedForSession(toolName: String, toolInput: JsonElement?, allowedTools: List<String>?): Boolean {
         if (allowedTools.isNullOrEmpty()) return false
