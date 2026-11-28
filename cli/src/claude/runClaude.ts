@@ -3,7 +3,8 @@ import { loop } from '@/claude/loop';
 import { AgentState, SessionEffort, SessionModel } from '@/api/types';
 import { claudeBatchModeHash, EnhancedMode, PermissionMode } from './loop';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
-import { classifyClaudeSlashCatalog, extractSDKMetadata } from '@/claude/sdk/metadataExtractor';
+import { hashObject } from '@/utils/deterministicJson';
+import { classifyClaudeSlashCatalog, extractSDKMetadata, type SDKMetadata } from '@/claude/sdk/metadataExtractor';
 import { parseSpecialCommand } from '@/parsers/specialCommands';
 import { getEnvironmentInfo } from '@/ui/doctor';
 import { startHappyServer, toClaudeAllowedHapiMcpTools } from '@/claude/utils/startHappyServer';
@@ -27,6 +28,7 @@ import { getInvokedCwd } from '@/utils/invokedCwd';
 import { getDefaultClaudeCodePath } from './sdk/utils';
 import { claudeConversationHistoryCapabilities, isSessionMaterialized, nativeRewindApplied, planPendingRewindRestart, readNativeTurns, resolveForkAtMessagePlan, resolveNativeTranscriptTarget, resolveRewindPlan, resumeSessionIdFromClaudeArgs, sliceTurnsToForkBoundary, type ClaudeRewindIntent, type ResolvedTranscriptTarget } from './conversationHistory';
 import { listSkills, type SkillSummary } from '@/modules/common/skills';
+import { buildClaudeContextDetails, publishContextDetails } from '@/agent/contextDetails';
 
 export interface StartOptions {
     model?: string
@@ -46,6 +48,22 @@ export interface StartOptions {
     reservedSessionId?: string
     workingDirectory?: string
     resumeSessionId?: string
+}
+
+export function buildClaudeStaticContextDetails(args: {
+    model?: string
+    sdkMetadata: SDKMetadata
+    catalog: { commands: string[]; skills: SkillSummary[] }
+}): ReturnType<typeof buildClaudeContextDetails> {
+    const catalogAvailable = args.sdkMetadata.slashCommands !== undefined;
+    const skills = args.sdkMetadata.skills ?? (catalogAvailable ? args.catalog.skills : undefined);
+    return buildClaudeContextDetails({
+        system: {
+            tools: args.sdkMetadata.tools,
+            skills,
+            ...(catalogAvailable ? { slash_commands: args.catalog.commands } : {})
+        }
+    });
 }
 
 export async function runClaude(options: StartOptions = {}): Promise<void> {
@@ -113,23 +131,23 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             catalogPromise = loadCatalog().then((result) => {
                 const { sdkMetadata, catalog } = result;
                 logger.debug('[start] SDK metadata extracted, updating session:', sdkMetadata);
+                const staticContextDetails = buildClaudeStaticContextDetails({
+                    model: options.model,
+                    sdkMetadata,
+                    catalog
+                });
+                if (staticContextDetails) {
+                    publishContextDetails(session, staticContextDetails, { claudeStartupCatalog: {
+                        tools: sdkMetadata.tools,
+                        slashCommands: sdkMetadata.slashCommands === undefined ? undefined : catalog.commands
+                    } });
+                }
                 if (sdkMetadata.slashCommands === undefined) {
                     catalogPromise = null;
-                    if (sdkMetadata.tools !== undefined) {
-                        session.updateMetadata((currentMetadata) => ({
-                            ...currentMetadata,
-                            tools: sdkMetadata.tools
-                        }));
-                    }
                     return result;
                 }
                 nativeSkills = catalog.skills;
                 currentSessionRef.current?.setNativeSkillNames(catalog.skills.map((skill) => skill.name));
-                session.updateMetadata((currentMetadata) => ({
-                    ...currentMetadata,
-                    tools: sdkMetadata.tools,
-                    slashCommands: catalog.commands
-                }));
                 logger.debug('[start] Session metadata updated with SDK capabilities');
                 return result;
             }).catch((error) => {

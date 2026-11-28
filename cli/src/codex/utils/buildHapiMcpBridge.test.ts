@@ -88,6 +88,10 @@ describe('buildHapiMcpBridge skill lookup config', () => {
             session_job: { approval_mode: 'approve' },
             skill_lookup: { approval_mode: 'approve' }
         })
+        expect(bridge.toolNames).toEqual([
+            'change_title', 'link_pr', 'display_image', 'display_video', 'display_media',
+            'list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer', 'session_job', 'skill_lookup'
+        ])
     })
 
     it('prompts for link_pr so read-only mode still consults the permission handler', async () => {

@@ -120,8 +120,6 @@
   "channels": {
     "0/auth": [
       {
-        "event": "auth",
-        "connection": 1,
         "ackRequested": false,
         "args": [
           {
@@ -129,13 +127,13 @@
             "sessionId": "<uuid:1>",
             "token": "parity-token"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "auth"
       }
     ],
     "0/http": [
       {
-        "event": "POST /cli/machines",
-        "connection": 0,
         "ackRequested": false,
         "args": [
           {
@@ -154,11 +152,11 @@
             },
             "query": {}
           }
-        ]
+        ],
+        "connection": 0,
+        "event": "POST /cli/machines"
       },
       {
-        "event": "POST /cli/sessions",
-        "connection": 0,
         "ackRequested": false,
         "args": [
           {
@@ -192,11 +190,11 @@
             },
             "query": {}
           }
-        ]
+        ],
+        "connection": 0,
+        "event": "POST /cli/sessions"
       },
       {
-        "event": "POST /session-started",
-        "connection": 0,
         "ackRequested": false,
         "args": [
           {
@@ -223,13 +221,13 @@
             },
             "sessionId": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 0,
+        "event": "POST /session-started"
       }
     ],
     "0/update-metadata": [
       {
-        "event": "update-metadata",
-        "connection": 1,
         "ack": [
           {
             "metadata": {
@@ -286,11 +284,11 @@
             },
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "update-metadata"
       },
       {
-        "event": "update-metadata",
-        "connection": 1,
         "ack": [
           {
             "metadata": {
@@ -357,11 +355,11 @@
             },
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "update-metadata"
       },
       {
-        "event": "update-metadata",
-        "connection": 1,
         "ack": [
           {
             "metadata": {
@@ -430,11 +428,11 @@
             },
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "update-metadata"
       },
       {
-        "event": "update-metadata",
-        "connection": 1,
         "ack": [
           {
             "metadata": {
@@ -445,6 +443,21 @@
                   "rewindToMessage": true
                 },
                 "terminal": true
+              },
+              "contextDetails": {
+                "claude": {
+                  "mcpTools": [],
+                  "skills": [],
+                  "slashCommands": [
+                    "compact"
+                  ],
+                  "systemTools": [
+                    "Bash"
+                  ]
+                },
+                "provider": "claude",
+                "updatedAt": "<ts>",
+                "version": 1
               },
               "flavor": "claude",
               "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
@@ -488,6 +501,21 @@
                 },
                 "terminal": true
               },
+              "contextDetails": {
+                "claude": {
+                  "mcpTools": [],
+                  "skills": [],
+                  "slashCommands": [
+                    "compact"
+                  ],
+                  "systemTools": [
+                    "Bash"
+                  ]
+                },
+                "provider": "claude",
+                "updatedAt": "<ts>",
+                "version": 1
+              },
               "flavor": "claude",
               "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
               "happyHomeDir": "<tmp>/hapi",
@@ -515,13 +543,13 @@
             },
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "update-metadata"
       }
     ],
     "0/update-state": [
       {
-        "event": "update-state",
-        "connection": 1,
         "ack": [
           {
             "agentState": {
@@ -542,13 +570,13 @@
             "expectedVersion": 2,
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "update-state"
       }
     ],
     "1/chat": [
       {
-        "event": "messages-consumed",
-        "connection": 1,
         "ackRequested": false,
         "args": [
           {
@@ -557,11 +585,11 @@
             ],
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "messages-consumed"
       },
       {
-        "event": "message",
-        "connection": 1,
         "ackRequested": false,
         "args": [
           {
@@ -599,11 +627,11 @@
             },
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "message"
       },
       {
-        "event": "message",
-        "connection": 1,
         "ackRequested": false,
         "args": [
           {
@@ -637,11 +665,11 @@
             },
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "message"
       },
       {
-        "event": "message",
-        "connection": 1,
         "ackRequested": false,
         "args": [
           {
@@ -657,13 +685,13 @@
             },
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "message"
       }
     ],
     "1/step": [
       {
-        "event": "step",
-        "connection": 1,
         "ackRequested": false,
         "args": [
           {
@@ -710,13 +738,13 @@
               }
             ]
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "step"
       }
     ],
     "1/update-metadata": [
       {
-        "event": "update-metadata",
-        "connection": 1,
         "ack": [
           {
             "metadata": {
@@ -727,6 +755,21 @@
                   "rewindToMessage": true
                 },
                 "terminal": true
+              },
+              "contextDetails": {
+                "claude": {
+                  "mcpTools": [],
+                  "skills": [],
+                  "slashCommands": [
+                    "compact"
+                  ],
+                  "systemTools": [
+                    "Bash"
+                  ]
+                },
+                "provider": "claude",
+                "updatedAt": "<ts>",
+                "version": 1
               },
               "conversationHistoryEntryIds": {
                 "local-1": "<uuid:8>"
@@ -776,6 +819,21 @@
                 },
                 "terminal": true
               },
+              "contextDetails": {
+                "claude": {
+                  "mcpTools": [],
+                  "skills": [],
+                  "slashCommands": [
+                    "compact"
+                  ],
+                  "systemTools": [
+                    "Bash"
+                  ]
+                },
+                "provider": "claude",
+                "updatedAt": "<ts>",
+                "version": 1
+              },
               "conversationHistoryEntryIds": {
                 "local-1": "<uuid:8>"
               },
@@ -809,11 +867,11 @@
             },
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "update-metadata"
       },
       {
-        "event": "update-metadata",
-        "connection": 1,
         "ack": [
           {
             "metadata": {
@@ -826,6 +884,21 @@
                 "terminal": true
               },
               "claudeSessionId": "<uuid:4>",
+              "contextDetails": {
+                "claude": {
+                  "mcpTools": [],
+                  "skills": [],
+                  "slashCommands": [
+                    "compact"
+                  ],
+                  "systemTools": [
+                    "Bash"
+                  ]
+                },
+                "provider": "claude",
+                "updatedAt": "<ts>",
+                "version": 1
+              },
               "conversationHistoryEntryIds": {
                 "local-1": "<uuid:8>"
               },
@@ -875,6 +948,21 @@
                 "terminal": true
               },
               "claudeSessionId": "<uuid:4>",
+              "contextDetails": {
+                "claude": {
+                  "mcpTools": [],
+                  "skills": [],
+                  "slashCommands": [
+                    "compact"
+                  ],
+                  "systemTools": [
+                    "Bash"
+                  ]
+                },
+                "provider": "claude",
+                "updatedAt": "<ts>",
+                "version": 1
+              },
               "conversationHistoryEntryIds": {
                 "local-1": "<uuid:8>"
               },
@@ -908,11 +996,11 @@
             },
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 1,
+        "event": "update-metadata"
       },
       {
-        "event": "update-metadata",
-        "connection": 1,
         "ack": [
           {
             "metadata": {
@@ -925,6 +1013,22 @@
                 "terminal": true
               },
               "claudeSessionId": "<uuid:4>",
+              "contextDetails": {
+                "claude": {
+                  "mcpTools": [],
+                  "skills": [],
+                  "slashCommands": [
+                    "compact"
+                  ],
+                  "systemTools": [
+                    "Bash"
+                  ]
+                },
+                "model": "sonnet",
+                "provider": "claude",
+                "updatedAt": "<ts>",
+                "version": 1
+              },
               "conversationHistoryEntryIds": {
                 "local-1": "<uuid:8>"
               },
@@ -951,10 +1055,6 @@
               "startedBy": "runner",
               "startedFromRunner": true,
               "startingMode": "remote",
-              "summary": {
-                "text": "hello",
-                "updatedAt": "<ts>"
-              },
               "tools": [
                 "Bash"
               ],
@@ -978,6 +1078,22 @@
                 "terminal": true
               },
               "claudeSessionId": "<uuid:4>",
+              "contextDetails": {
+                "claude": {
+                  "mcpTools": [],
+                  "skills": [],
+                  "slashCommands": [
+                    "compact"
+                  ],
+                  "systemTools": [
+                    "Bash"
+                  ]
+                },
+                "model": "sonnet",
+                "provider": "claude",
+                "updatedAt": "<ts>",
+                "version": 1
+              },
               "conversationHistoryEntryIds": {
                 "local-1": "<uuid:8>"
               },
@@ -1004,10 +1120,6 @@
               "startedBy": "runner",
               "startedFromRunner": true,
               "startingMode": "remote",
-              "summary": {
-                "text": "hello",
-                "updatedAt": "<ts>"
-              },
               "tools": [
                 "Bash"
               ],
@@ -1015,275 +1127,11 @@
             },
             "sid": "<uuid:1>"
           }
-        ]
-      }
-    ],
-    "1/update-state": [
-      {
-        "event": "update-state",
-        "connection": 1,
-        "ack": [
-          {
-            "agentState": {
-              "controlledByUser": false,
-              "startingMode": "remote",
-              "steeringActive": true
-            },
-            "result": "success",
-            "version": 4
-          }
         ],
-        "ackRequested": true,
-        "args": [
-          {
-            "agentState": {
-              "controlledByUser": false,
-              "startingMode": "remote",
-              "steeringActive": true
-            },
-            "expectedVersion": 3,
-            "sid": "<uuid:1>"
-          }
-        ]
-      },
-      {
-        "event": "update-state",
         "connection": 1,
-        "ack": [
-          {
-            "agentState": {
-              "controlledByUser": false,
-              "startingMode": "remote",
-              "steeringActive": false
-            },
-            "result": "success",
-            "version": 5
-          }
-        ],
-        "ackRequested": true,
-        "args": [
-          {
-            "agentState": {
-              "controlledByUser": false,
-              "startingMode": "remote",
-              "steeringActive": false
-            },
-            "expectedVersion": 4,
-            "sid": "<uuid:1>"
-          }
-        ]
-      }
-    ],
-    "2/auth": [
-      {
-        "event": "auth",
-        "connection": 2,
-        "ackRequested": false,
-        "args": [
-          {
-            "clientType": "session-scoped",
-            "sessionId": "<uuid:1>",
-            "token": "parity-token"
-          }
-        ]
-      }
-    ],
-    "2/chat": [
-      {
-        "event": "messages-consumed",
-        "connection": 2,
-        "ackRequested": false,
-        "args": [
-          {
-            "localIds": [
-              "local-2"
-            ],
-            "sid": "<uuid:1>"
-          }
-        ]
+        "event": "update-metadata"
       },
       {
-        "event": "message",
-        "connection": 2,
-        "ackRequested": false,
-        "args": [
-          {
-            "createdAt": "<ts>",
-            "message": {
-              "content": {
-                "data": {
-                  "cwd": "<tmp>/project",
-                  "isSidechain": false,
-                  "message": {
-                    "content": [
-                      {
-                        "text": "Recorded answer",
-                        "type": "text"
-                      }
-                    ],
-                    "id": "msg-1",
-                    "model": "sonnet",
-                    "role": "assistant"
-                  },
-                  "parentUuid": "<uuid:5>",
-                  "sessionId": "<uuid:4>",
-                  "timestamp": "<ts>",
-                  "type": "assistant",
-                  "userType": "external",
-                  "uuid": "<uuid:9>",
-                  "version": "0.0.0"
-                },
-                "type": "output"
-              },
-              "meta": {
-                "sentFrom": "cli"
-              },
-              "role": "agent"
-            },
-            "sid": "<uuid:1>"
-          }
-        ]
-      },
-      {
-        "event": "message",
-        "connection": 2,
-        "ackRequested": false,
-        "args": [
-          {
-            "createdAt": "<ts>",
-            "message": {
-              "content": {
-                "data": {
-                  "cwd": "<tmp>/project",
-                  "durationMs": 1,
-                  "isSidechain": false,
-                  "parentUuid": "<uuid:9>",
-                  "resultSummary": {
-                    "duration_ms": 1,
-                    "num_turns": 1,
-                    "total_cost_usd": 0
-                  },
-                  "sessionId": "<uuid:4>",
-                  "subtype": "turn_duration",
-                  "timestamp": "<ts>",
-                  "type": "system",
-                  "userType": "external",
-                  "uuid": "<uuid:10>",
-                  "version": "0.0.0"
-                },
-                "type": "output"
-              },
-              "meta": {
-                "sentFrom": "cli"
-              },
-              "role": "agent"
-            },
-            "sid": "<uuid:1>"
-          }
-        ]
-      },
-      {
-        "event": "message",
-        "connection": 2,
-        "ackRequested": false,
-        "args": [
-          {
-            "message": {
-              "content": {
-                "data": {
-                  "type": "ready"
-                },
-                "id": "<uuid:11>",
-                "type": "event"
-              },
-              "role": "agent"
-            },
-            "sid": "<uuid:1>"
-          }
-        ]
-      }
-    ],
-    "2/http": [
-      {
-        "event": "GET /cli/sessions/<uuid:1>",
-        "connection": 0,
-        "ackRequested": false,
-        "args": [
-          {
-            "authorization": "Bearer parity-token",
-            "body": null,
-            "query": {}
-          }
-        ]
-      },
-      {
-        "event": "GET /cli/sessions/<uuid:1>/messages",
-        "connection": 0,
-        "ackRequested": false,
-        "args": [
-          {
-            "authorization": "Bearer parity-token",
-            "body": null,
-            "query": {
-              "afterSeq": "1",
-              "limit": "200"
-            }
-          }
-        ]
-      }
-    ],
-    "2/step": [
-      {
-        "event": "step",
-        "connection": 1,
-        "ackRequested": false,
-        "args": [
-          {
-            "backfill": {
-              "content": {
-                "content": {
-                  "text": "offline",
-                  "type": "text"
-                },
-                "role": "user"
-              },
-              "createdAt": 2,
-              "id": "message-2",
-              "localId": "local-2",
-              "seq": 2
-            },
-            "dropConnection": true,
-            "settledAlive": {
-              "effort": null,
-              "mode": "remote",
-              "model": null,
-              "permissionMode": "default",
-              "thinking": false
-            },
-            "until": [
-              {
-                "contains": "\"type\":\"ready\"",
-                "event": "message"
-              },
-              {
-                "count": 2,
-                "event": "update-state",
-                "result": "success"
-              },
-              {
-                "contains": "\"steeringActive\":false",
-                "event": "update-state",
-                "result": "success"
-              }
-            ]
-          }
-        ]
-      }
-    ],
-    "2/update-metadata": [
-      {
-        "event": "update-metadata",
-        "connection": 2,
         "ack": [
           {
             "metadata": {
@@ -1296,13 +1144,27 @@
                 "terminal": true
               },
               "claudeSessionId": "<uuid:4>",
+              "contextDetails": {
+                "claude": {
+                  "mcpTools": [],
+                  "skills": [],
+                  "slashCommands": [
+                    "compact"
+                  ],
+                  "systemTools": [
+                    "Bash"
+                  ]
+                },
+                "model": "sonnet",
+                "provider": "claude",
+                "updatedAt": "<ts>",
+                "version": 1
+              },
               "conversationHistoryEntryIds": {
-                "local-1": "<uuid:8>",
-                "local-2": "<uuid:12>"
+                "local-1": "<uuid:8>"
               },
               "conversationHistoryPoints": {
-                "local-1": true,
-                "local-2": true
+                "local-1": true
               },
               "flavor": "claude",
               "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
@@ -1351,6 +1213,427 @@
                 "terminal": true
               },
               "claudeSessionId": "<uuid:4>",
+              "contextDetails": {
+                "claude": {
+                  "mcpTools": [],
+                  "skills": [],
+                  "slashCommands": [
+                    "compact"
+                  ],
+                  "systemTools": [
+                    "Bash"
+                  ]
+                },
+                "model": "sonnet",
+                "provider": "claude",
+                "updatedAt": "<ts>",
+                "version": 1
+              },
+              "conversationHistoryEntryIds": {
+                "local-1": "<uuid:8>"
+              },
+              "conversationHistoryPoints": {
+                "local-1": true
+              },
+              "flavor": "claude",
+              "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
+              "happyHomeDir": "<tmp>/hapi",
+              "happyLibDir": "<lib>",
+              "happyToolsDir": "<tools>",
+              "homeDir": "<tmp>",
+              "host": "parity",
+              "hostPid": "<pid>",
+              "hostStartMarker": "<marker>",
+              "lifecycleState": "running",
+              "lifecycleStateSince": "<ts>",
+              "machineId": "parity-machine",
+              "os": "linux",
+              "path": "<tmp>/project",
+              "slashCommands": [
+                "compact"
+              ],
+              "startedBy": "runner",
+              "startedFromRunner": true,
+              "startingMode": "remote",
+              "summary": {
+                "text": "hello",
+                "updatedAt": "<ts>"
+              },
+              "tools": [
+                "Bash"
+              ],
+              "version": "<version>"
+            },
+            "sid": "<uuid:1>"
+          }
+        ],
+        "connection": 1,
+        "event": "update-metadata"
+      }
+    ],
+    "1/update-state": [
+      {
+        "ack": [
+          {
+            "agentState": {
+              "controlledByUser": false,
+              "startingMode": "remote",
+              "steeringActive": true
+            },
+            "result": "success",
+            "version": 4
+          }
+        ],
+        "ackRequested": true,
+        "args": [
+          {
+            "agentState": {
+              "controlledByUser": false,
+              "startingMode": "remote",
+              "steeringActive": true
+            },
+            "expectedVersion": 3,
+            "sid": "<uuid:1>"
+          }
+        ],
+        "connection": 1,
+        "event": "update-state"
+      },
+      {
+        "ack": [
+          {
+            "agentState": {
+              "controlledByUser": false,
+              "startingMode": "remote",
+              "steeringActive": false
+            },
+            "result": "success",
+            "version": 5
+          }
+        ],
+        "ackRequested": true,
+        "args": [
+          {
+            "agentState": {
+              "controlledByUser": false,
+              "startingMode": "remote",
+              "steeringActive": false
+            },
+            "expectedVersion": 4,
+            "sid": "<uuid:1>"
+          }
+        ],
+        "connection": 1,
+        "event": "update-state"
+      }
+    ],
+    "2/auth": [
+      {
+        "ackRequested": false,
+        "args": [
+          {
+            "clientType": "session-scoped",
+            "sessionId": "<uuid:1>",
+            "token": "parity-token"
+          }
+        ],
+        "connection": 2,
+        "event": "auth"
+      }
+    ],
+    "2/chat": [
+      {
+        "ackRequested": false,
+        "args": [
+          {
+            "localIds": [
+              "local-2"
+            ],
+            "sid": "<uuid:1>"
+          }
+        ],
+        "connection": 2,
+        "event": "messages-consumed"
+      },
+      {
+        "ackRequested": false,
+        "args": [
+          {
+            "createdAt": "<ts>",
+            "message": {
+              "content": {
+                "data": {
+                  "cwd": "<tmp>/project",
+                  "isSidechain": false,
+                  "message": {
+                    "content": [
+                      {
+                        "text": "Recorded answer",
+                        "type": "text"
+                      }
+                    ],
+                    "id": "msg-1",
+                    "model": "sonnet",
+                    "role": "assistant"
+                  },
+                  "parentUuid": "<uuid:5>",
+                  "sessionId": "<uuid:4>",
+                  "timestamp": "<ts>",
+                  "type": "assistant",
+                  "userType": "external",
+                  "uuid": "<uuid:9>",
+                  "version": "0.0.0"
+                },
+                "type": "output"
+              },
+              "meta": {
+                "sentFrom": "cli"
+              },
+              "role": "agent"
+            },
+            "sid": "<uuid:1>"
+          }
+        ],
+        "connection": 2,
+        "event": "message"
+      },
+      {
+        "ackRequested": false,
+        "args": [
+          {
+            "createdAt": "<ts>",
+            "message": {
+              "content": {
+                "data": {
+                  "cwd": "<tmp>/project",
+                  "durationMs": 1,
+                  "isSidechain": false,
+                  "parentUuid": "<uuid:9>",
+                  "resultSummary": {
+                    "duration_ms": 1,
+                    "num_turns": 1,
+                    "total_cost_usd": 0
+                  },
+                  "sessionId": "<uuid:4>",
+                  "subtype": "turn_duration",
+                  "timestamp": "<ts>",
+                  "type": "system",
+                  "userType": "external",
+                  "uuid": "<uuid:10>",
+                  "version": "0.0.0"
+                },
+                "type": "output"
+              },
+              "meta": {
+                "sentFrom": "cli"
+              },
+              "role": "agent"
+            },
+            "sid": "<uuid:1>"
+          }
+        ],
+        "connection": 2,
+        "event": "message"
+      },
+      {
+        "ackRequested": false,
+        "args": [
+          {
+            "message": {
+              "content": {
+                "data": {
+                  "type": "ready"
+                },
+                "id": "<uuid:11>",
+                "type": "event"
+              },
+              "role": "agent"
+            },
+            "sid": "<uuid:1>"
+          }
+        ],
+        "connection": 2,
+        "event": "message"
+      }
+    ],
+    "2/http": [
+      {
+        "ackRequested": false,
+        "args": [
+          {
+            "authorization": "Bearer parity-token",
+            "body": null,
+            "query": {}
+          }
+        ],
+        "connection": 0,
+        "event": "GET /cli/sessions/<uuid:1>"
+      },
+      {
+        "ackRequested": false,
+        "args": [
+          {
+            "authorization": "Bearer parity-token",
+            "body": null,
+            "query": {
+              "afterSeq": "1",
+              "limit": "200"
+            }
+          }
+        ],
+        "connection": 0,
+        "event": "GET /cli/sessions/<uuid:1>/messages"
+      }
+    ],
+    "2/step": [
+      {
+        "ackRequested": false,
+        "args": [
+          {
+            "backfill": {
+              "content": {
+                "content": {
+                  "text": "offline",
+                  "type": "text"
+                },
+                "role": "user"
+              },
+              "createdAt": 2,
+              "id": "message-2",
+              "localId": "local-2",
+              "seq": 2
+            },
+            "dropConnection": true,
+            "settledAlive": {
+              "effort": null,
+              "mode": "remote",
+              "model": null,
+              "permissionMode": "default",
+              "thinking": false
+            },
+            "until": [
+              {
+                "contains": "\"type\":\"ready\"",
+                "event": "message"
+              },
+              {
+                "count": 2,
+                "event": "update-state",
+                "result": "success"
+              },
+              {
+                "contains": "\"steeringActive\":false",
+                "event": "update-state",
+                "result": "success"
+              }
+            ]
+          }
+        ],
+        "connection": 1,
+        "event": "step"
+      }
+    ],
+    "2/update-metadata": [
+      {
+        "ack": [
+          {
+            "metadata": {
+              "capabilities": {
+                "conversationHistory": {
+                  "forkAtMessage": true,
+                  "forkCurrent": true,
+                  "rewindToMessage": true
+                },
+                "terminal": true
+              },
+              "claudeSessionId": "<uuid:4>",
+              "contextDetails": {
+                "claude": {
+                  "mcpTools": [],
+                  "skills": [],
+                  "slashCommands": [
+                    "compact"
+                  ],
+                  "systemTools": [
+                    "Bash"
+                  ]
+                },
+                "model": "sonnet",
+                "provider": "claude",
+                "updatedAt": "<ts>",
+                "version": 1
+              },
+              "conversationHistoryEntryIds": {
+                "local-1": "<uuid:8>",
+                "local-2": "<uuid:12>"
+              },
+              "conversationHistoryPoints": {
+                "local-1": true,
+                "local-2": true
+              },
+              "flavor": "claude",
+              "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
+              "happyHomeDir": "<tmp>/hapi",
+              "happyLibDir": "<lib>",
+              "happyToolsDir": "<tools>",
+              "homeDir": "<tmp>",
+              "host": "parity",
+              "hostPid": "<pid>",
+              "hostStartMarker": "<marker>",
+              "lifecycleState": "running",
+              "lifecycleStateSince": "<ts>",
+              "machineId": "parity-machine",
+              "os": "linux",
+              "path": "<tmp>/project",
+              "slashCommands": [
+                "compact"
+              ],
+              "startedBy": "runner",
+              "startedFromRunner": true,
+              "startingMode": "remote",
+              "summary": {
+                "text": "hello",
+                "updatedAt": "<ts>"
+              },
+              "tools": [
+                "Bash"
+              ],
+              "version": "<version>"
+            },
+            "result": "success",
+            "version": 11
+          }
+        ],
+        "ackRequested": true,
+        "args": [
+          {
+            "expectedVersion": 10,
+            "metadata": {
+              "capabilities": {
+                "conversationHistory": {
+                  "forkAtMessage": true,
+                  "forkCurrent": true,
+                  "rewindToMessage": true
+                },
+                "terminal": true
+              },
+              "claudeSessionId": "<uuid:4>",
+              "contextDetails": {
+                "claude": {
+                  "mcpTools": [],
+                  "skills": [],
+                  "slashCommands": [
+                    "compact"
+                  ],
+                  "systemTools": [
+                    "Bash"
+                  ]
+                },
+                "model": "sonnet",
+                "provider": "claude",
+                "updatedAt": "<ts>",
+                "version": 1
+              },
               "conversationHistoryEntryIds": {
                 "local-1": "<uuid:8>",
                 "local-2": "<uuid:12>"
@@ -1390,13 +1673,13 @@
             },
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 2,
+        "event": "update-metadata"
       }
     ],
     "2/update-state": [
       {
-        "event": "update-state",
-        "connection": 2,
         "ack": [
           {
             "agentState": {
@@ -1419,11 +1702,11 @@
             "expectedVersion": 5,
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 2,
+        "event": "update-state"
       },
       {
-        "event": "update-state",
-        "connection": 2,
         "ack": [
           {
             "agentState": {
@@ -1446,13 +1729,13 @@
             "expectedVersion": 6,
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 2,
+        "event": "update-state"
       }
     ],
     "3/lifecycle": [
       {
-        "event": "session-end",
-        "connection": 2,
         "ackRequested": false,
         "args": [
           {
@@ -1460,16 +1743,18 @@
             "sid": "<uuid:1>",
             "time": "<ts>"
           }
-        ]
+        ],
+        "connection": 2,
+        "event": "session-end"
       }
     ],
     "3/others": [
       {
-        "event": "ping",
-        "connection": 2,
         "ack": [],
         "ackRequested": true,
         "args": [],
+        "connection": 2,
+        "event": "ping",
         "flush": {
           "archived": true,
           "pendingWrites": 0,
@@ -1479,8 +1764,6 @@
     ],
     "3/step": [
       {
-        "event": "step",
-        "connection": 2,
         "ackRequested": false,
         "args": [
           {
@@ -1493,13 +1776,13 @@
             },
             "signal": "SIGTERM"
           }
-        ]
+        ],
+        "connection": 2,
+        "event": "step"
       }
     ],
     "3/update-metadata": [
       {
-        "event": "update-metadata",
-        "connection": 2,
         "ack": [
           {
             "metadata": {
@@ -1514,6 +1797,22 @@
                 "terminal": true
               },
               "claudeSessionId": "<uuid:4>",
+              "contextDetails": {
+                "claude": {
+                  "mcpTools": [],
+                  "skills": [],
+                  "slashCommands": [
+                    "compact"
+                  ],
+                  "systemTools": [
+                    "Bash"
+                  ]
+                },
+                "model": "sonnet",
+                "provider": "claude",
+                "updatedAt": "<ts>",
+                "version": 1
+              },
               "conversationHistoryEntryIds": {
                 "local-1": "<uuid:8>",
                 "local-2": "<uuid:12>"
@@ -1552,13 +1851,13 @@
               "version": "<version>"
             },
             "result": "success",
-            "version": 11
+            "version": 12
           }
         ],
         "ackRequested": true,
         "args": [
           {
-            "expectedVersion": 10,
+            "expectedVersion": 11,
             "metadata": {
               "archiveReason": "Hub restart",
               "archivedBy": "cli",
@@ -1571,6 +1870,22 @@
                 "terminal": true
               },
               "claudeSessionId": "<uuid:4>",
+              "contextDetails": {
+                "claude": {
+                  "mcpTools": [],
+                  "skills": [],
+                  "slashCommands": [
+                    "compact"
+                  ],
+                  "systemTools": [
+                    "Bash"
+                  ]
+                },
+                "model": "sonnet",
+                "provider": "claude",
+                "updatedAt": "<ts>",
+                "version": 1
+              },
               "conversationHistoryEntryIds": {
                 "local-1": "<uuid:8>",
                 "local-2": "<uuid:12>"
@@ -1610,7 +1925,9 @@
             },
             "sid": "<uuid:1>"
           }
-        ]
+        ],
+        "connection": 2,
+        "event": "update-metadata"
       }
     ]
   },

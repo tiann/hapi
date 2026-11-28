@@ -15,6 +15,19 @@ import { buildHapiMcpBridge } from '../utils/buildHapiMcpBridge';
 type NativeTurn = { id: string; status: string; items: unknown[] };
 type NativeRequest = { id: string | number; method: string; params: unknown };
 
+const sharedHarness = vi.hoisted(() => ({
+    skills: [{ name: 'find-docs', description: 'Find docs', path: '/tmp/SKILL.md', scope: 'user', enabled: true }],
+    mcpInventoryArgs: undefined as readonly string[] | undefined,
+    mcpInventoryHome: undefined as string | undefined,
+    mcpStatusRequests: [] as Array<[threadId: string, serverName: string]>,
+    scopedMcpStatus: true,
+    configuredInventory: [] as unknown[],
+    runtimeInventory: null as Promise<unknown> | null,
+    inventoryExecutable: undefined as unknown,
+    slashCommands: ['/compact'],
+    customAgentPrompt: undefined as string | undefined
+}));
+
 vi.mock('../codexAppServerClient', () => ({
     CodexAppServerClient: class {
         initialized = false;
@@ -32,6 +45,14 @@ vi.mock('../codexAppServerClient', () => ({
         async connect() {}
         async initialize() { this.initialized = true; }
         isInitialized() { return this.initialized; }
+        async listSkills() {
+            return { data: [{ cwd: '/tmp', skills: sharedHarness.skills, errors: [] }] };
+        }
+        canReadThreadMcpServerStatus() { return sharedHarness.scopedMcpStatus && this.initialized; }
+        async readThreadMcpServerStatus(threadId: string, serverName: string) {
+            sharedHarness.mcpStatusRequests.push([threadId, serverName]);
+            return sharedHarness.runtimeInventory ?? { data: [] };
+        }
         async disconnect() { this.initialized = false; }
         async request(method: string, params: Record<string, unknown> = {}) {
             if (method === 'thread/read' || method === 'thread/resume') return { ...this.settings, thread: structuredClone(this.thread) };
@@ -59,21 +80,46 @@ vi.mock('../codexAppServerClient', () => ({
     isIndeterminateError: () => false
 }));
 vi.mock('../utils/buildHapiMcpBridge', () => ({ buildHapiMcpBridge: vi.fn(async () => ({
-    mcpServers: {}, server: { stop() {} }
+    mcpServers: { hapi: { command: 'hapi', args: ['mcp'], tools: { change_title: {} } } },
+    toolNames: ['change_title'], server: { stop() {} }
 })) }));
+vi.mock('@/modules/common/slashCommands', () => ({
+    listSlashCommands: async () => sharedHarness.slashCommands.map(name => name === 'agent' && sharedHarness.customAgentPrompt
+        ? { name, source: 'project', content: sharedHarness.customAgentPrompt }
+        : { name, source: 'builtin' })
+}));
+vi.mock('../utils/codexMcpInventory', async (importOriginal) => ({
+    ...await importOriginal<typeof import('../utils/codexMcpInventory')>(),
+    listConfiguredCodexMcpServers: async (resolved: unknown, _cwd: string, args?: readonly string[], codexHome?: string) => {
+        sharedHarness.inventoryExecutable = resolved;
+        sharedHarness.mcpInventoryArgs = args;
+        sharedHarness.mcpInventoryHome = codexHome;
+        return sharedHarness.configuredInventory;
+    },
+}));
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
     try { for (const cleanup of cleanups.splice(0)) await cleanup(); }
-    finally { vi.useRealTimers(); }
+    finally {
+        sharedHarness.configuredInventory = [];
+        sharedHarness.runtimeInventory = null;
+        sharedHarness.mcpStatusRequests = [];
+        sharedHarness.scopedMcpStatus = true;
+        sharedHarness.slashCommands = ['/compact'];
+        sharedHarness.customAgentPrompt = undefined;
+        sharedHarness.inventoryExecutable = undefined;
+        sharedHarness.mcpInventoryHome = undefined;
+        vi.useRealTimers();
+    }
 });
 
 async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; create?: RootHost['create'];
     attached?: boolean; beforeSubscribe?: RootHost['beforeSubscribe']; validateHistory?: RootHost['validateHistory']; initialState?: AgentState;
-    resumeSettings?: Record<string, unknown> }) {
+    beforeBind?: (root: SharedCodexRoot) => void; contextDetails?: Metadata['contextDetails']; resumeSettings?: Record<string, unknown> }) {
     const directory = await mkdtemp(join(tmpdir(), 'hapi-shared-root-'));
     let state: AgentState = opts?.initialState ?? { steeringActive: true };
-    let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex' };
+    let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex', contextDetails: opts?.contextDetails };
     if (opts?.attached) metadata.codexRuntime = { kind: 'attached', bindingId: '11111111-1111-4111-8111-111111111111', state: 'attached' };
     let reconnect: (() => void) | null = null;
     let userMessage: Parameters<ApiSessionClient['onUserMessage']>[0] | undefined;
@@ -106,12 +152,16 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
     const end = opts?.end ?? (async () => { throw new Error('Unexpected root archive'); });
     const root = new SharedCodexRoot({ session, sessionInfo: { agentState: state }, workingDirectory: directory } as SessionBootstrapResult, {
         directory, generation: 'test', endpoint: 'mock', settingsFor: () => undefined,
+        codexInventoryArgs: ['-c', 'mcp_servers.qmd.enabled=false'],
+        codexHome: '/resolved/codex-home',
+        codexCommand: opts?.attached ? undefined : { command: 'resolved-codex', args: ['launcher.js'] },
         create: opts?.create ?? (async () => { throw new Error('Unexpected root creation'); }),
         attached: opts?.attached, beforeSubscribe: opts?.beforeSubscribe, validateHistory: opts?.validateHistory,
         end
     } satisfies RootHost);
     cleanups.push(async () => { await root.close(false); await rm(directory, { recursive: true, force: true }); });
     await root.prepare();
+    opts?.beforeBind?.(root);
     await root.bind('thread', { model: 'mock', thread: { turns: [] }, ...opts?.resumeSettings }, opts?.attached ?? false);
     const native = root.client as unknown as {
         initialized: boolean;
@@ -135,6 +185,119 @@ session, root, native, rpc, send, events, consumed, uncertain, sessionReady,
     };
 }
 
+describe('thread MCP inventory', () => {
+    it.each([{ tools: ['only_runtime_tool'] }, { tools: [] as string[] }])('prefers the bound catalog ($tools) over bridge tool names', async ({ tools }) => {
+        sharedHarness.runtimeInventory = Promise.resolve({ data: [{ name: 'hapi', tools }] });
+        const f = await fixture();
+        await f.root.activate();
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.mcpServers)
+            .toContainEqual({ name: 'hapi', toolNames: tools }));
+        expect(sharedHarness.inventoryExecutable).toEqual({ command: 'resolved-codex', args: ['launcher.js'] });
+        expect(sharedHarness.mcpInventoryHome).toBe('/resolved/codex-home');
+    });
+
+    it.each(['unavailable', 'disabled'])('clears saved %s status after a runtime catalog recovers', async status => {
+        sharedHarness.runtimeInventory = Promise.resolve({ data: [{ name: 'qmd', authStatus: 'unsupported', tools: { current: {} } }] });
+        const f = await fixture({ contextDetails: { version: 1, provider: 'codex', updatedAt: 10,
+            codex: { mcpServers: [{ name: 'qmd', status, toolNames: ['old'] }] },
+        } });
+        await f.root.activate();
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.mcpServers)
+            .toContainEqual({ name: 'qmd', toolNames: ['current'] }));
+    });
+
+    it('does not retry with an unscoped request if the named server rejects discovery', async () => {
+        const f = await fixture({ attached: true });
+        const read = vi.spyOn(f.root.client, 'readThreadMcpServerStatus').mockRejectedValue(new Error('Not supported'));
+        await f.root.activate();
+        f.native.notify('mcpServer/startupStatus/updated', { threadId: 'thread', name: 'docs' });
+        await vi.waitFor(() => expect(read).toHaveBeenCalledExactlyOnceWith('thread', 'docs'));
+        expect(f.metadata().contextDetails?.codex?.mcpServers).toEqual([{ name: 'docs' }]);
+    });
+
+    it('drops a removed configured server after an authoritative empty listing on an older app-server', async () => {
+        sharedHarness.scopedMcpStatus = false;
+        sharedHarness.configuredInventory = [];
+        const f = await fixture({ contextDetails: { version: 1, provider: 'codex', updatedAt: 10,
+            codex: { mcpServers: [{ name: 'removed', toolNames: ['stale'] }] },
+        } });
+        await f.root.activate();
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.mcpServers).toEqual([
+            { name: 'hapi', toolNames: ['change_title'] }
+        ]));
+        expect(sharedHarness.mcpStatusRequests).toEqual([]);
+    });
+
+    it('clears a saved disabled status when current config re-enables the server', async () => {
+        sharedHarness.configuredInventory = [{ name: 'qmd', enabled: true, auth_status: 'unsupported' }];
+        const f = await fixture({ contextDetails: { version: 1, provider: 'codex', updatedAt: 10,
+            codex: { mcpServers: [{ name: 'qmd', status: 'disabled', toolNames: ['last_known'] }] },
+        } });
+        vi.spyOn(f.root.client, 'readThreadMcpServerStatus').mockRejectedValue(new Error('timed out'));
+        await f.root.activate();
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.mcpServers).toContainEqual({
+            name: 'qmd', toolNames: ['last_known']
+        }));
+    })
+
+    it('keeps current disabled config ahead of a saved connected status after a failed scoped read', async () => {
+        sharedHarness.configuredInventory = [{ name: 'qmd', status: 'disabled' }];
+        const f = await fixture({ contextDetails: { version: 1, provider: 'codex', updatedAt: 10,
+            codex: { mcpServers: [{ name: 'qmd', status: 'connected', toolNames: ['last_known'] }] },
+        } });
+        vi.spyOn(f.root.client, 'readThreadMcpServerStatus').mockRejectedValue(new Error('timed out'));
+        await f.root.activate();
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.mcpServers).toContainEqual({
+            name: 'qmd', status: 'disabled', toolNames: ['last_known']
+        }));
+    })
+
+    it.each([{ unexpected: [] }, { data: [{}] }])('retains a saved runtime-only server when the scoped response cannot be parsed: %j', async (response) => {
+        sharedHarness.configuredInventory = [];
+        sharedHarness.runtimeInventory = Promise.resolve(response);
+        const f = await fixture({ contextDetails: { version: 1, provider: 'codex', updatedAt: 10,
+            codex: { mcpServers: [{ name: 'runtime-only', toolNames: ['last_known'] }] },
+        } });
+        await f.root.activate();
+        await vi.waitFor(() => expect(sharedHarness.mcpStatusRequests).toContainEqual(['thread', 'runtime-only']));
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.mcpServers).toEqual(expect.arrayContaining([
+            { name: 'runtime-only', toolNames: ['last_known'] },
+        ])));
+    })
+
+    it('retains a saved runtime-only server when its scoped read rejects after config succeeds', async () => {
+        sharedHarness.configuredInventory = [];
+        const f = await fixture({ contextDetails: { version: 1, provider: 'codex', updatedAt: 10,
+            codex: { mcpServers: [{ name: 'runtime-only', toolNames: ['last_known'] }] },
+        } });
+        const read = vi.spyOn(f.root.client, 'readThreadMcpServerStatus').mockRejectedValue(new Error('timed out'));
+        await f.root.activate();
+        await vi.waitFor(() => expect(read).toHaveBeenCalledWith('thread', 'runtime-only'));
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.mcpServers).toEqual(expect.arrayContaining([
+            { name: 'hapi', toolNames: ['change_title'] },
+            { name: 'runtime-only', toolNames: ['last_known'] },
+        ])));
+    })
+
+    it('keeps the saved runtime catalog while configuration arrives and after discovery fails', async () => {
+        const pending = Promise.withResolvers<unknown>();
+        sharedHarness.runtimeInventory = pending.promise;
+        sharedHarness.configuredInventory = [{ name: 'configured' }];
+        const f = await fixture({ contextDetails: {
+            version: 1, provider: 'codex', updatedAt: 10,
+            codex: { mcpServers: [{ name: 'runtime-only', toolNames: ['last_known'] }] },
+        } });
+        await f.root.activate();
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.mcpServers).toEqual(expect.arrayContaining([
+            { name: 'configured' }, { name: 'runtime-only', toolNames: ['last_known'] },
+        ])));
+        pending.resolve({ data: [{ name: 'runtime-only', tools: {}, toolsError: 'fixture internal error' }] });
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.mcpServers).toContainEqual({
+            name: 'runtime-only', status: 'unavailable', toolNames: ['last_known'],
+        }));
+    });
+});
+
 describe('shared root startup collaboration mode', () => {
     it.each(['default', 'plan'] as const)('keeps the reported %s mode without sending another update', async mode => {
         const f = await fixture({ resumeSettings: { collaborationMode: { mode } } });
@@ -156,6 +319,110 @@ describe('shared root startup collaboration mode', () => {
 });
 
 describe('externally attached root', () => {
+    it('buffers startup notices by native thread ID until binding', async () => {
+        sharedHarness.runtimeInventory = Promise.resolve({ data: [{ name: 'early', tools: ['fresh'] }] });
+        const f = await fixture({ attached: true, beforeBind: root => {
+            const native = root.client as unknown as { notify(method: string, params: unknown): void };
+            native.notify('mcpServer/startupStatus/updated', { threadId: 'thread', name: 'early' });
+            native.notify('mcpServer/startupStatus/updated', { threadId: 'sibling', name: 'other' });
+        } });
+        await f.root.activate();
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.mcpServers).toEqual([
+            { name: 'early', toolNames: ['fresh'] }
+        ]));
+        expect(sharedHarness.mcpStatusRequests).toEqual([['thread', 'early']]);
+    })
+
+    it('reports the runtime disabled status for an attached MCP server', async () => {
+        sharedHarness.runtimeInventory = Promise.resolve({ data: [{
+            name: 'runtime-only', runtimeStatus: 'disabled', authStatus: 'unsupported', tools: {}
+        }] });
+        const f = await fixture({ attached: true });
+        f.native.notify('mcpServer/startupStatus/updated', { threadId: 'thread', name: 'runtime-only' });
+        await f.root.activate();
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.mcpServers).toEqual([
+            { name: 'runtime-only', status: 'disabled', toolNames: [] }
+        ]));
+    });
+
+    it.each([false, true])('publishes only supported built-in commands for attached=%s', async (attached) => {
+        sharedHarness.slashCommands = ['/compact', '/clear', '/new', '/agent'];
+        const f = await fixture({ attached });
+        await f.root.activate();
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.slashCommands)
+            .toEqual(attached ? ['/compact'] : ['/compact', '/clear', '/new']));
+    });
+
+    it('retains a working project prompt that overrides the builtin agent command', async () => {
+        sharedHarness.slashCommands = ['agent', 'clear'];
+        sharedHarness.customAgentPrompt = 'Fixture project prompt';
+        const f = await fixture({ attached: true });
+        await f.root.activate();
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.slashCommands).toEqual(['agent']));
+        expect(JSON.stringify(f.metadata().contextDetails)).not.toContain('Fixture project prompt');
+    });
+
+    it('clears an attached saved server after a confirmed empty scoped response', async () => {
+        sharedHarness.runtimeInventory = Promise.resolve({ data: [] });
+        const f = await fixture({ attached: true, contextDetails: { version: 1, updatedAt: 10, provider: 'codex',
+            codex: { mcpServers: [{ name: 'removed', toolNames: ['stale'] }] } } });
+        await f.root.activate();
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.mcpServers).toEqual([]));
+    });
+
+    it('keeps an attached saved server when its scoped read fails', async () => {
+        const f = await fixture({ attached: true, contextDetails: { version: 1, updatedAt: 10, provider: 'codex',
+            codex: { mcpServers: [{ name: 'saved', toolNames: ['last_known'] }] } } });
+        vi.spyOn(f.root.client, 'readThreadMcpServerStatus').mockRejectedValue(new Error('temporary failure'));
+        await f.root.activate();
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.mcpServers).toEqual([
+            { name: 'saved', toolNames: ['last_known'] }
+        ]));
+    });
+
+    it.each([{ failure: false }, { failure: true }])('queues a refresh notified during an in-flight read (failure=$failure)', async ({ failure }) => {
+        const f = await fixture({ attached: true, contextDetails: { version: 1, updatedAt: 10, provider: 'codex',
+            codex: { mcpServers: [{ name: 'qmd', toolNames: ['saved'] }] } } });
+        const first = Promise.withResolvers<unknown>();
+        const read = vi.spyOn(f.root.client, 'readThreadMcpServerStatus')
+            .mockImplementationOnce(() => first.promise as never)
+            .mockResolvedValue({ data: [{ name: 'qmd', tools: ['fresh'] }] } as never);
+        await f.root.activate();
+        await vi.waitFor(() => expect(read).toHaveBeenCalledExactlyOnceWith('thread', 'qmd'));
+        f.native.notify('mcpServer/startupStatus/updated', { threadId: 'thread', name: 'qmd' });
+        if (failure) first.reject(new Error('timed out'));
+        else first.resolve({ data: [{ name: 'qmd', tools: ['stale'] }] });
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.mcpServers).toEqual([
+            { name: 'qmd', toolNames: ['fresh'] }
+        ]));
+        expect(read).toHaveBeenCalledTimes(2);
+    });
+
+    it('queries only known servers for the bound thread without reading the wrapper config', async () => {
+        sharedHarness.configuredInventory = [{ name: 'foreign-config' }];
+        sharedHarness.runtimeInventory = Promise.resolve({ data: [{ name: 'runtime-only' }] });
+        const f = await fixture({ attached: true });
+        await f.root.activate();
+        f.native.notify('mcpServer/startupStatus/updated', { threadId: 'some-other-thread', name: 'foreign-thread' });
+        f.native.notify('mcpServer/startupStatus/updated', { threadId: null, name: 'unscoped' });
+        f.native.notify('mcpServer/startupStatus/updated', { threadId: 'thread', name: 'runtime-only' });
+        await vi.waitFor(() => expect(sharedHarness.mcpStatusRequests).toEqual([['thread', 'runtime-only']]));
+        expect(f.metadata().contextDetails?.codex?.mcpServers).toEqual([{ name: 'runtime-only' }]);
+        expect(sharedHarness.inventoryExecutable).toBeUndefined();
+    });
+
+    it('retains server names without any discovery request on an older app-server', async () => {
+        sharedHarness.scopedMcpStatus = false;
+        const f = await fixture({ attached: true, contextDetails: { version: 1, updatedAt: 10, provider: 'codex',
+            codex: { mcpServers: [{ name: 'saved', toolNames: ['stale'] }] } } });
+        await f.root.activate();
+        f.native.notify('mcpServer/startupStatus/updated', { threadId: 'thread', name: 'observed' });
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.mcpServers).toEqual([
+            { name: 'observed' }, { name: 'saved' }
+        ]));
+        expect(sharedHarness.mcpStatusRequests).toEqual([]);
+    });
+
     it('skips MCP, instructions and initial settings injection, and disables lifecycle actions', async () => {
         const builds = vi.mocked(buildHapiMcpBridge).mock.calls.length;
         const calls = vi.spyOn(CodexAppServerClient.prototype, 'request');
@@ -876,6 +1143,258 @@ describe('shared steering availability', () => {
         f.native.thread.turns = [{ id: 'busy', status: 'completed', items: [] }];
         f.reconnect();
         await vi.waitFor(() => expect(f.state().steeringActive).toBe(false));
+    });
+
+    it('publishes provider inventories through the active shared root', async () => {
+        const f = await fixture();
+
+        await f.root.activate();
+
+        await vi.waitFor(() => expect(f.metadata().contextDetails).toMatchObject({
+            provider: 'codex',
+            codex: {
+                slashCommands: ['/compact'],
+                skills: [{ name: 'find-docs' }],
+                mcpServers: [{ name: 'hapi', toolNames: ['change_title'] }]
+            }
+        }));
+    });
+
+    it('passes effective launch configuration to shared MCP discovery', async () => {
+        sharedHarness.mcpInventoryArgs = undefined;
+        const f = await fixture();
+
+        await f.root.activate();
+
+        await vi.waitFor(() => expect(sharedHarness.mcpInventoryArgs).toEqual([
+            '-c', 'mcp_servers.qmd.enabled=false'
+        ]));
+    });
+
+    it('preserves a rerouted usage snapshot during resume replay, then accepts attributed updates', async () => {
+        const f = await fixture({ contextDetails: {
+            version: 1, provider: 'codex', updatedAt: 10,
+            model: 'actual-turn-model', contextWindow: 200_000, usage: { contextTokens: 80_000 }
+        } });
+        await f.root.activate();
+        f.native.notify('thread/tokenUsage/updated', { threadId: 'thread', turnId: 'previous-turn',
+            tokenUsage: { last: { inputTokens: 75_000 }, total: { inputTokens: 75_000 } } });
+        await f.drain();
+        expect(f.metadata().contextDetails).toMatchObject({
+            model: 'actual-turn-model', contextWindow: 200_000, usage: { contextTokens: 80_000 }
+        });
+
+        f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'new-turn', status: 'inProgress' } });
+        f.native.notify('thread/tokenUsage/updated', { threadId: 'thread', turnId: 'new-turn',
+            tokenUsage: { modelContextWindow: 128_000, last: { inputTokens: 10_000 }, total: { inputTokens: 85_000 } } });
+        await f.drain();
+        expect(f.metadata().contextDetails).toMatchObject({
+            model: 'mock', contextWindow: 128_000, usage: { contextTokens: 10_000 }
+        });
+    });
+
+    it('updates saved usage when attaching to a turn already in progress', async () => {
+        const f = await fixture({ attached: true, beforeBind: root => {
+            const native = root.client as unknown as { thread: { turns: NativeTurn[] } };
+            native.thread.turns = [{ id: 'active-turn', status: 'inProgress', items: [] }];
+        }, contextDetails: {
+            version: 1, provider: 'codex', updatedAt: 10,
+            model: 'old-turn-model', contextWindow: 200_000, usage: { contextTokens: 80_000 }
+        } });
+        await f.root.activate();
+        f.native.notify('thread/tokenUsage/updated', { threadId: 'thread', turnId: 'active-turn',
+            tokenUsage: { modelContextWindow: 128_000, last: { inputTokens: 12_000 } } });
+        await f.drain();
+        expect(f.metadata().contextDetails).toMatchObject({ contextWindow: 128_000, usage: { contextTokens: 12_000 } });
+    });
+
+    it('publishes active-turn usage received while the initial attach snapshot is pending', async () => {
+        const f = await fixture({ attached: true, beforeBind: root => {
+            const native = root.client as unknown as {
+                thread: { turns: NativeTurn[] };
+                notify(method: string, params: unknown): void;
+                request(method: string, params?: Record<string, unknown>): Promise<unknown>;
+            };
+            native.thread.turns = [
+                { id: 'completed-turn', status: 'completed', items: [] },
+                { id: 'active-turn', status: 'inProgress', items: [] }
+            ];
+            const request = native.request.bind(native);
+            native.request = async (method, params) => {
+                if (method === 'thread/read' && params?.threadId === 'thread' && params.includeTurns) {
+                    native.notify('thread/tokenUsage/updated', { threadId: 'thread', turnId: 'active-turn',
+                        tokenUsage: { modelContextWindow: 128_000, last: { inputTokens: 12_000 } } });
+                    native.notify('thread/tokenUsage/updated', { threadId: 'thread', turnId: 'completed-turn',
+                        tokenUsage: { modelContextWindow: 200_000, last: { inputTokens: 75_000 } } });
+                }
+                return request(method, params);
+            };
+        }, contextDetails: {
+            version: 1, provider: 'codex', updatedAt: 10,
+            model: 'old-turn-model', contextWindow: 200_000, usage: { contextTokens: 80_000 }
+        } });
+        await f.root.activate();
+        await f.drain();
+        expect(f.metadata().contextDetails).toMatchObject({ contextWindow: 128_000, usage: { contextTokens: 12_000 } });
+        expect(f.send.mock.calls.filter(call => call.some(arg => arg?.type === 'token_count'))).toHaveLength(1);
+    });
+
+    it.each([false, true])('seeds generation from idle attach replay without replacing saved usage (%s)', async (hasSavedUsage) => {
+        vi.useFakeTimers();
+        try {
+            vi.setSystemTime(1_000_000);
+            const f = await fixture({ attached: true, beforeBind: root => {
+                const native = root.client as unknown as {
+                    thread: { turns: NativeTurn[] };
+                    notify(method: string, params: unknown): void;
+                    request(method: string, params?: Record<string, unknown>): Promise<unknown>;
+                };
+                native.thread.turns = [{ id: 'prior', status: 'completed', items: [] }];
+                const request = native.request.bind(native);
+                native.request = async (method, params) => {
+                    if (method === 'thread/resume') native.notify('thread/tokenUsage/updated', {
+                        threadId: 'thread', turnId: 'prior', tokenUsage: { modelContextWindow: 200_000,
+                            last: { inputTokens: 25_000 }, total: { outputTokens: 100 } }
+                    });
+                    return request(method, params);
+                };
+            }, ...(hasSavedUsage ? { contextDetails: {
+                version: 1, provider: 'codex', updatedAt: 10,
+                model: 'saved-rerouted-model', contextWindow: 128_000, usage: { contextTokens: 29_000 }
+            } } : {}) });
+            await f.root.activate();
+            await f.drain();
+            expect(f.metadata().contextDetails).toMatchObject(hasSavedUsage
+                ? { model: 'saved-rerouted-model', contextWindow: 128_000, usage: { contextTokens: 29_000 } }
+                : { contextWindow: 200_000, usage: { contextTokens: 25_000 } });
+
+            vi.setSystemTime(1_001_000);
+            const turn = { id: 'next', status: 'inProgress', items: [] };
+            f.native.thread.turns.push(turn);
+            f.native.notify('turn/started', { threadId: 'thread', turn });
+            await f.drain();
+            vi.setSystemTime(1_002_000);
+            f.native.notify('thread/tokenUsage/updated', { threadId: 'thread', turnId: turn.id,
+                tokenUsage: { total: { outputTokens: 160 } } });
+            await f.drain();
+            vi.setSystemTime(1_003_000);
+            turn.status = 'completed';
+            f.native.notify('turn/completed', { threadId: 'thread', turn });
+            await f.drain();
+            expect(f.send.mock.calls.map(([body]) => body).filter(body => body.type === 'turn_duration')).toEqual([
+                expect.objectContaining({ durationMs: 2_000, generationMs: 2_000, generationOutputTokens: 60 })
+            ]);
+            const initial = f.send.mock.calls.find(([body]) => body.type === 'token_count' && body.turn_id === 'prior');
+            expect(Boolean(initial)).toBe(!hasSavedUsage);
+        } finally { vi.useRealTimers(); }
+    });
+
+    it('accepts buffered usage if an already-running turn completes during the initial attach read', async () => {
+        const f = await fixture({ attached: true, beforeBind: root => {
+            const native = root.client as unknown as {
+                thread: { turns: NativeTurn[] };
+                notify(method: string, params: unknown): void;
+                request(method: string, params?: Record<string, unknown>): Promise<unknown>;
+            };
+            const doneTurn = { id: 'finishing', status: 'completed', items: [] };
+            native.thread.turns = [doneTurn];
+            const request = native.request.bind(native);
+            let firstRead = true;
+            native.request = async (method, params) => {
+                if (firstRead && method === 'thread/read' && params?.threadId === 'thread' && params.includeTurns) {
+                    firstRead = false;
+                    native.notify('thread/tokenUsage/updated', { threadId: 'thread', turnId: doneTurn.id,
+                        tokenUsage: { modelContextWindow: 128_000, last: { inputTokens: 12_000 } } });
+                    native.notify('turn/completed', { threadId: 'thread', turn: doneTurn });
+                }
+                return request(method, params);
+            };
+        }, contextDetails: {
+            version: 1, provider: 'codex', updatedAt: 10,
+            model: 'old-turn-model', contextWindow: 200_000, usage: { contextTokens: 80_000 }
+        } });
+        await f.root.activate();
+        await f.drain();
+        expect(f.metadata().contextDetails).toMatchObject({ contextWindow: 128_000, usage: { contextTokens: 12_000 } });
+        expect(f.send.mock.calls.filter(call => call.some(arg => arg?.type === 'token_count'))).toHaveLength(1);
+    });
+
+    it.each(['inProgress', 'completed'])('keeps newer known live usage when a turn is %s before the attach snapshot resolves', async (status) => {
+        const f = await fixture({ attached: true, beforeBind: root => {
+            const native = root.client as unknown as {
+                thread: { turns: NativeTurn[] };
+                notify(method: string, params: unknown): void;
+                request(method: string, params?: Record<string, unknown>): Promise<unknown>;
+            };
+            native.thread.turns = [{ id: 'live', status, items: [] }];
+            const request = native.request.bind(native);
+            let firstRead = true;
+            native.request = async (method, params) => {
+                if (firstRead && method === 'thread/read' && params?.threadId === 'thread' && params.includeTurns) {
+                    firstRead = false;
+                    const sample = (inputTokens: number) => native.notify('thread/tokenUsage/updated', {
+                        threadId: 'thread', turnId: 'live', tokenUsage: { modelContextWindow: 128_000, last: { inputTokens } }
+                    });
+                    sample(6_000); // No live attribution until turn/started.
+                    native.notify('turn/started', { threadId: 'thread', turn: { id: 'live', status: 'inProgress' } });
+                    sample(12_000);
+                    if (status === 'completed') {
+                        native.notify('turn/completed', { threadId: 'thread', turn: { id: 'live', status } });
+                    }
+                }
+                return request(method, params);
+            };
+        }, contextDetails: {
+            version: 1, provider: 'codex', updatedAt: 10,
+            model: 'old-turn-model', contextWindow: 200_000, usage: { contextTokens: 80_000 }
+        } });
+        await f.root.activate();
+        await f.drain();
+        expect(f.metadata().contextDetails).toMatchObject({ contextWindow: 128_000, usage: { contextTokens: 12_000 } });
+        expect(f.send.mock.calls.filter(call => call.some(arg => arg?.type === 'token_count'))).toHaveLength(1);
+    });
+
+    it('keeps the rerouted usage model and window while publishing inventory-only updates', async () => {
+        const f = await fixture({ contextDetails: {
+            version: 1, provider: 'codex', updatedAt: 10,
+            model: 'actual-turn-model', contextWindow: 200_000, usage: { contextTokens: 80_000 }
+        } });
+        await f.root.activate();
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.skills).toEqual([{ name: 'find-docs' }]));
+        expect(f.metadata().contextDetails).toMatchObject({
+            model: 'actual-turn-model', contextWindow: 200_000, usage: { contextTokens: 80_000 }
+        });
+    });
+
+    it('discards older successful skill discovery after a newer response is applied', async () => {
+        const f = await fixture();
+        const first = Promise.withResolvers<Awaited<ReturnType<CodexAppServerClient['listSkills']>>>();
+        const request = vi.spyOn(f.root.client, 'listSkills').mockReturnValueOnce(first.promise)
+            .mockResolvedValueOnce({ data: [{ cwd: '/tmp', skills: [], errors: [] }] });
+        await f.root.activate();
+        f.native.notify('skills/changed', { threadId: 'thread' });
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.skills).toEqual([]));
+        first.resolve({ data: [{ cwd: '/tmp', skills: sharedHarness.skills as never, errors: [] }] });
+        await first.promise;
+        expect(request).toHaveBeenCalledTimes(2);
+        expect(f.metadata().contextDetails?.codex?.skills).toEqual([]);
+    });
+
+    it('refreshes shared skills on skills/changed and preserves them on failure', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.skills).toEqual([{ name: 'find-docs' }]));
+
+        sharedHarness.skills = [];
+        f.native.notify('skills/changed', { threadId: 'thread' });
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.skills).toEqual([]));
+
+        sharedHarness.skills = [{ name: 'replacement', description: 'Replacement', path: '/tmp/SKILL.md', scope: 'user', enabled: true }];
+        const client = f.root.client as unknown as { listSkills: (params: unknown) => Promise<unknown> };
+        client.listSkills = async () => { throw new Error('skills unavailable'); };
+        f.native.notify('skills/changed', { threadId: 'thread' });
+        await new Promise(resolve => setTimeout(resolve, 20));
+        expect(f.metadata().contextDetails?.codex?.skills).toEqual([]);
     });
 
     it('ends the shared root on hub-archived metadata (#1911 C2 / AC6)', async () => {

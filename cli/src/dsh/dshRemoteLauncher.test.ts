@@ -173,7 +173,8 @@ vi.mock('./utils/dshPromptContent', async (importOriginal) => {
 vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({
     buildHapiMcpBridge: vi.fn(async () => ({
         server: { url: 'http://127.0.0.1:0/mcp', stop: vi.fn() },
-        mcpServers: {}
+        mcpServers: {},
+        toolNames: []
     }))
 }))
 
@@ -1499,7 +1500,8 @@ describe('DshRemoteLauncher', () => {
             await bridgeBlocker
             return {
                 server: { url: 'http://127.0.0.1:0/mcp', stop: vi.fn() },
-                mcpServers: {}
+                mcpServers: {},
+                toolNames: []
             }
         })
         const session = createSessionWithMode()

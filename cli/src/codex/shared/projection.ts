@@ -61,7 +61,8 @@ export class SharedCodexProjection {
     constructor(private readonly session: ApiSessionClient, readonly threadId: string,
         private readonly committed: (id: string, content?: unknown) => Promise<void | Array<{ id: string; input: unknown }>>,
         private readonly parentThreadId?: string, private readonly readSummaryThread?: () => Promise<unknown>,
-        private readonly observeItem?: (threadId: string, item: unknown) => void) {
+        private readonly observeItem?: (threadId: string, item: unknown) => void,
+        private readonly onTokenUsage?: (info: unknown, model?: string) => void) {
         this.compactionSummaries = new CodexCompactionSummaryLookup(threadId);
         if (!parentThreadId) for (const [id, turn] of Object.entries(session.getMetadata()?.conversationHistoryTurns ?? {})) this.turns.set(id, turn);
     }
@@ -96,7 +97,7 @@ export class SharedCodexProjection {
         });
     }
 
-    async notification(method: string, params: unknown, modelAtReceipt?: string, receivedAt = Date.now()): Promise<void> {
+    async notification(method: string, params: unknown, modelAtReceipt?: string, receivedAt = Date.now(), liveTurnAtReceipt = false): Promise<void> {
         const p = record(params);
         const item = record(p.item);
         if (!this.parentThreadId && p.threadId === this.threadId && string(item.id)) {
@@ -115,7 +116,7 @@ export class SharedCodexProjection {
                 }
             }
         }
-        await this.project(method, params, modelAtReceipt, false, receivedAt);
+        await this.project(method, params, modelAtReceipt, false, receivedAt, liveTurnAtReceipt);
         if (p.threadId === this.threadId && !this.parentThreadId) {
             const turn = record(p.turn);
             const turnId = string(turn.id);
@@ -132,7 +133,7 @@ export class SharedCodexProjection {
         }
     }
 
-    private async project(method: string, params: unknown, modelAtReceipt?: string, fromHistory = false, receivedAt = Date.now()): Promise<void> {
+    private async project(method: string, params: unknown, modelAtReceipt?: string, fromHistory = false, receivedAt = Date.now(), liveTurnAtReceipt = false): Promise<void> {
         if (method.startsWith('codex/event/')) return;
         const p = record(params);
         const item = record(p.item);
@@ -243,6 +244,14 @@ export class SharedCodexProjection {
                 }
             } else if (event.type === 'token_count' || event.type.startsWith('thread_goal_')) {
                 const model = event.type === 'token_count' && turnId ? this.turnModels.get(turnId) : undefined;
+                if (event.type === 'token_count' && !this.parentThreadId) {
+                    const saved = this.session.getMetadata()?.contextDetails;
+                    // Resume can replay a previous turn without the model that
+                    // produced it. Preserve the attributed snapshot rather than
+                    // relabeling it or showing an unattributed event in the Web.
+                    if (!model && !liveTurnAtReceipt && saved?.provider === 'codex' && saved.usage?.contextTokens !== undefined) return;
+                    this.onTokenUsage?.(event.info, model);
+                }
                 send({ ...event, ...(model ? { model } : {}), flavor: 'codex', scope: { role: 'parent', threadId: this.threadId }, scope_role: 'parent', thread_id: this.threadId }, key);
             } else if (event.type === 'proposed_plan' && turnId && itemId) {
                 const planId = codexPlanProposalId(this.threadId, turnId, itemId);

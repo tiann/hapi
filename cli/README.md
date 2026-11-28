@@ -225,6 +225,15 @@ they are safely stopped and resumed. Inference traffic is unaffected.
 
 ### Codex MCP servers
 
+Agent details reads the MCP catalog for individual known servers on the bound
+Codex thread (supported on stable Codex app-server 0.167.0 and later). Older
+or unrecognized app-server builds list known names without probing for tools.
+An attached thread can use a different config from the local HAPI CLI; its
+inventory uses previously known names and that thread's startup events, not
+local MCP config. HAPI never falls back to an all-server probe that could
+initialize duplicate MCP connections.
+
+
 Codex sessions keep the MCP servers configured in the user's Codex
 `config.toml`. HAPI adds its own `hapi` bridge without replacing other user
 servers. When a runner spawn supplies a Codex auth token, it copies only

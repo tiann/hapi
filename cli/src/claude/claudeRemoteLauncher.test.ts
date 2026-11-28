@@ -11,11 +11,17 @@ import { claudeBatchModeHash, type EnhancedMode } from './loop'
 // remote Claude session has until Claude reports a session id back, so it must
 // survive launch attempts that never reached Claude, and must be dropped both
 // when it has been used and when the user explicitly discards the context.
+type ContextCallbacks = {
+    onContextUsage: (usage: { model: string; maxTokens: number }) => void
+    onMessage: (message: Record<string, unknown>) => void
+}
 const harness = vi.hoisted(() => ({
     callCount: 0,
     claudeArgsPerCall: [] as (string[] | undefined)[],
     bootstrapModePerCall: [] as unknown[],
     initialMessages: [] as string[],
+    messages: [] as Array<Record<string, unknown>>,
+    contextForLaunch: null as ((callbacks: ContextCallbacks, launch: number) => void) | null,
     inputSubmittedCalls: [] as string[],
     metadataWrites: [] as Record<string, any>,
     metadata: {} as Record<string, any>,
@@ -74,6 +80,10 @@ vi.mock('./claudeRemote', () => ({
         const nativePromptUuid = `native-uuid-${harness.callCount}`
         opts.onInputSubmitted?.(nativePromptUuid)
         harness.inputSubmittedCalls.push(nativePromptUuid)
+        harness.contextForLaunch?.(opts, harness.callCount)
+        for (const message of harness.messages) {
+            opts.onMessage(message)
+        }
 
         if (harness.compactSummary !== null) await opts.onReady(undefined, harness.compactSummary)
         if (harness.compactContextTokens !== null) {
@@ -117,6 +127,7 @@ vi.mock('./utils/sdkToLogConverter', () => ({
         convert(): null { return null }
         convertSidechainUserMessage(): null { return null }
         updateSelectedModel(): void {}
+        applyContextUsage(): void {}
         generateInterruptedToolResult(): null { return null }
     }
 }))
@@ -169,7 +180,8 @@ function createClientStub() {
         keepAlive: () => {},
         getMetadata: () => harness.metadata,
         updateMetadata: (mutator: (metadata: any) => any) => {
-            harness.metadataWrites.push(mutator({}))
+            harness.metadata = mutator(harness.metadata)
+            harness.metadataWrites.push(harness.metadata)
         },
         emitMessagesConsumed: () => {},
         sendClaudeSessionMessage: () => {},
@@ -221,6 +233,8 @@ describe('claudeRemoteLauncher resume anchor', () => {
         harness.claudeArgsPerCall = []
         harness.bootstrapModePerCall = []
         harness.initialMessages = []
+        harness.messages = []
+        harness.contextForLaunch = null
         harness.inputSubmittedCalls = []
         harness.metadataWrites = []
         harness.metadata = {}
@@ -783,8 +797,326 @@ describe('claudeRemoteLauncher resume anchor', () => {
             session.stopKeepAlive()
         }
     })
+    it('keeps the effective window when a later assistant snapshot reports a larger raw maximum', async () => {
+        const client = createClientStub()
+        const { session, queue } = createSession(client, undefined)
+        try {
+            const model = 'claude-opus[1m]'
+            harness.contextForLaunch = callbacks => callbacks.onContextUsage({ model, maxTokens: 200_000 })
+            harness.messages = [{ type: 'assistant', context_usage: { raw_max_tokens: 1_000_000, total_tokens: 100 },
+                message: { role: 'assistant', model, content: [{ type: 'text', text: 'Visible answer' }] } }]
+            queue.push('hello', { permissionMode: 'default', model }, 'local-1')
+            harness.switchAfterCall = 1
+            harness.triggerSwitch = () => client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+            await claudeRemoteLauncher(session as any)
+            expect(client.getMetadata().contextDetails).toMatchObject({ contextWindow: 200_000, usage: { contextTokens: 100 } })
+        } finally { session.stopKeepAlive() }
+    })
 
-    it('stamps the resolved context window on the post-compaction usage refresh', async () => {
+    it('uses the result window on a new launch and ignores late context from the old launch', async () => {
+        const client = createClientStub()
+        const { session, queue } = createSession(client, undefined)
+        let previous: ContextCallbacks | undefined
+        try {
+            const model = 'claude-opus'
+            const expanded = `${model}[1m]`
+            harness.contextForLaunch = (callbacks, launch) => {
+                if (launch === 1) {
+                    previous = callbacks
+                    callbacks.onContextUsage({ model, maxTokens: 200_000 })
+                    return
+                }
+                previous?.onContextUsage({ model, maxTokens: 200_000 })
+                callbacks.onMessage({ type: 'result', subtype: 'success', model: expanded,
+                    total_cost_usd: 0, duration_ms: 1, num_turns: 1,
+                    usage: { input_tokens: 5, output_tokens: 1 },
+                    modelUsage: { [expanded]: { contextWindow: 1_000_000 } },
+                })
+            }
+            queue.push('first launch', { permissionMode: 'default', model }, 'local-1')
+            harness.afterFirstCall = () => queue.push('second launch', { permissionMode: 'default', model: expanded }, 'local-2')
+            harness.switchAfterCall = 2
+            harness.triggerSwitch = () => client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+            await claudeRemoteLauncher(session as any)
+            expect(client.getMetadata().contextDetails).toMatchObject({ model: expanded, contextWindow: 1_000_000 })
+        } finally { session.stopKeepAlive() }
+    })
+
+    it('does not replace context details with synthetic API errors or failed empty results', async () => {
+        const client = createClientStub()
+        const { session, queue } = createSession(client, undefined)
+
+        try {
+            harness.messages = [
+                {
+                    type: 'assistant',
+                    model: 'claude-opus',
+                    context_usage: { total_tokens: 100, raw_max_tokens: 1_000 },
+                    message: {
+                        role: 'assistant',
+                        model: 'claude-opus',
+                        content: [{ type: 'text', text: 'valid' }],
+                        usage: { input_tokens: 100, output_tokens: 5 }
+                    }
+                },
+                {
+                    type: 'assistant',
+                    is_api_error_message: true,
+                    error: 'invalid_request',
+                    message: {
+                        role: 'assistant',
+                        model: '<synthetic>',
+                        content: [{ type: 'text', text: 'Prompt is too long' }],
+                        usage: { input_tokens: 0, output_tokens: 0 }
+                    }
+                },
+                {
+                    type: 'result',
+                    subtype: 'error_during_execution',
+                    is_error: true,
+                    model: '<synthetic>',
+                    usage: { input_tokens: 0, output_tokens: 0 }
+                }
+            ]
+            queue.push('hello', { permissionMode: 'default' }, 'local-1')
+            harness.switchAfterCall = 1
+            harness.triggerSwitch = () => {
+                client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+            }
+
+            await claudeRemoteLauncher(session as any)
+
+            expect(client.getMetadata().contextDetails).toMatchObject({
+                model: 'claude-opus',
+                contextWindow: 1_000,
+                usage: { contextTokens: 100 }
+            })
+        } finally {
+            session.stopKeepAlive()
+        }
+    })
+
+    it('does not let Claude sidechain context details replace parent metadata', async () => {
+        const client = createClientStub()
+        const { session, queue } = createSession(client, undefined)
+
+        try {
+            harness.messages = [
+                {
+                    type: 'assistant',
+                    parent_tool_use_id: null,
+                    model: 'claude-opus',
+                    context_usage: {
+                        total_tokens: 100,
+                        raw_max_tokens: 1_000,
+                        mcp_tools: [{ name: 'mcp__parent__tool', server_name: 'parent' }]
+                    },
+                    message: {
+                        role: 'assistant',
+                        content: [{ type: 'text', text: 'parent' }]
+                    }
+                },
+                {
+                    type: 'assistant',
+                    parent_tool_use_id: 'toolu-parent',
+                    model: 'claude-haiku',
+                    context_usage: {
+                        total_tokens: 900,
+                        raw_max_tokens: 9_000,
+                        mcp_tools: [{ name: 'mcp__child__tool', server_name: 'child' }]
+                    },
+                    message: {
+                        role: 'assistant',
+                        content: [{ type: 'text', text: 'child' }]
+                    }
+                }
+            ]
+            queue.push('hello', { permissionMode: 'default' }, 'local-1')
+            harness.switchAfterCall = 1
+            harness.triggerSwitch = () => {
+                client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+            }
+
+            await claudeRemoteLauncher(session as any)
+
+            expect(client.getMetadata().contextDetails).toMatchObject({
+                model: 'claude-opus',
+                contextWindow: 1_000,
+                usage: { contextTokens: 100 },
+                claude: {
+                    mcpTools: [{ name: 'mcp__parent__tool', serverName: 'parent' }]
+                }
+            })
+            expect(JSON.stringify(client.getMetadata().contextDetails)).not.toContain('child')
+        } finally {
+            session.stopKeepAlive()
+        }
+    })
+
+    it('clears a saved 1M sample when the resumed preset is plain', async () => {
+        const client = createClientStub()
+        const { session, queue } = createSession(client, undefined)
+        harness.metadata = { contextDetails: {
+            version: 1, updatedAt: 10, provider: 'claude', model: 'claude-fable-5[1m]', contextWindow: 1_000_000,
+            usage: { contextTokens: 100 }
+        } }
+        harness.messages = [{ type: 'system', subtype: 'init', model: 'claude-fable-5', tools: [] }]
+        try {
+            queue.push('hello', { permissionMode: 'default', model: 'fable' }, 'local-1')
+            harness.switchAfterCall = 1
+            harness.triggerSwitch = () => client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+            await claudeRemoteLauncher(session as any)
+            expect(client.getMetadata().contextDetails?.usage).toBeUndefined()
+            expect(client.getMetadata().contextDetails?.contextWindow).toBeUndefined()
+        } finally { session.stopKeepAlive() }
+    })
+
+    it('preserves the nested fallback model through a late primary probe and model-less result', async () => {
+        const client = createClientStub()
+        const { session, queue } = createSession(client, undefined)
+        harness.metadata = { contextDetails: {
+            version: 1, updatedAt: 10, provider: 'claude', model: 'claude-opus', contextWindow: 200_000,
+            usage: { contextTokens: 90_000 }
+        } }
+        const { SDKToLogConverter } = await import('./utils/sdkToLogConverter')
+        const { OutgoingMessageQueue } = await import('./utils/OutgoingMessageQueue')
+        const stamp = '2026-09-01T13:00:00.000Z'
+        const mirrored = { type: 'assistant' as const, uuid: 'relayed-entry', timestamp: stamp }
+        const convert = vi.spyOn(SDKToLogConverter.prototype, 'convert').mockImplementation(message => message.type === 'assistant' ? mirrored : null)
+        const enqueue = vi.spyOn(OutgoingMessageQueue.prototype, 'enqueue')
+        let probe: ContextCallbacks | undefined
+        harness.contextForLaunch = callbacks => { probe = callbacks }
+        harness.messages = [{ type: 'assistant', message: { role: 'assistant', model: 'claude-fable-5',
+            content: [{ type: 'text', text: 'Fallback answer' }], usage: { input_tokens: 100 } } }]
+        harness.afterFirstCall = () => {
+            probe?.onContextUsage({ model: 'claude-opus', maxTokens: 200_000 })
+            probe?.onMessage({ type: 'result', subtype: 'success',
+                total_cost_usd: 0, duration_ms: 1, num_turns: 1,
+                modelUsage: { 'claude-fable-5': { contextWindow: 1_000_000 } } })
+        }
+        try {
+            queue.push('hello', { permissionMode: 'default', model: 'fallback-model' }, 'local-1')
+            harness.switchAfterCall = 1
+            harness.triggerSwitch = () => client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+            await claudeRemoteLauncher(session as any)
+            expect(enqueue).toHaveBeenCalledWith(mirrored)
+            expect(client.getMetadata().contextDetails).toMatchObject({
+                model: 'claude-fable-5', contextWindow: 1_000_000,
+                usage: { contextTokens: 100, sourceMessageUuid: mirrored.uuid, sampledAt: Date.parse(stamp) }
+            })
+        } finally {
+            convert.mockRestore()
+            enqueue.mockRestore()
+            session.stopKeepAlive()
+        }
+    })
+
+    it('keeps assistant usage when the matching window probe arrives late', async () => {
+        const client = createClientStub()
+        const { session, queue } = createSession(client, undefined)
+        let probe: ContextCallbacks | undefined
+        harness.metadata = { contextDetails: {
+            version: 1, updatedAt: 10, provider: 'claude', model: 'claude-fable-5', contextWindow: 200_000,
+            usage: { contextTokens: 90_000 }
+        } }
+        harness.contextForLaunch = callbacks => { probe = callbacks }
+        harness.messages = [{ type: 'assistant', message: { role: 'assistant', model: 'claude-fable-5',
+            content: [{ type: 'text', text: 'Fresh answer' }], usage: { input_tokens: 100 } } }]
+        harness.afterFirstCall = () => {
+            probe?.onContextUsage({ model: 'claude-fable-5', maxTokens: 1_000_000 })
+            probe?.onMessage({ type: 'result', subtype: 'success', model: 'claude-fable-5',
+                total_cost_usd: 0, duration_ms: 1, num_turns: 1,
+                modelUsage: { 'claude-fable-5': { contextWindow: 1_000_000 } } })
+        }
+        try {
+            queue.push('hello', { permissionMode: 'default', model: 'fable[1m]' }, 'local-1')
+            harness.switchAfterCall = 1
+            harness.triggerSwitch = () => client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+            await claudeRemoteLauncher(session as any)
+            expect(client.getMetadata().contextDetails).toMatchObject({
+                model: 'claude-fable-5', contextWindow: 1_000_000, usage: { contextTokens: 100 }
+            })
+        } finally { session.stopKeepAlive() }
+    })
+
+    it('clears inherited usage when the preset changes before the window probe', async () => {
+        const client = createClientStub()
+        const { session, queue } = createSession(client, undefined)
+        let probe: ContextCallbacks | undefined
+        harness.metadata = { contextDetails: {
+            version: 1, updatedAt: 10, provider: 'claude', model: 'claude-fable-5', contextWindow: 200_000,
+            usage: { contextTokens: 90_000 }
+        } }
+        harness.contextForLaunch = (callbacks, launch) => {
+            probe = callbacks
+            if (launch === 2) callbacks.onContextUsage({ model: 'claude-fable-5', maxTokens: 200_000 })
+        }
+        harness.messages = [{ type: 'assistant', message: { role: 'assistant', model: 'claude-fable-5',
+            content: [{ type: 'text', text: 'Previous preset answer' }], usage: { input_tokens: 100 } } }]
+        harness.afterFirstCall = () => {
+            harness.messages = []
+            queue.push('second prompt', { permissionMode: 'default', model: 'fable' }, 'local-2')
+        }
+        try {
+            queue.push('hello', { permissionMode: 'default', model: 'fable[1m]' }, 'local-1')
+            harness.switchAfterCall = 2
+            harness.triggerSwitch = () => client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+            await claudeRemoteLauncher(session as any)
+            expect(client.getMetadata().contextDetails?.usage).toBeUndefined()
+        } finally { session.stopKeepAlive() }
+    })
+
+    it('does not publish context details from a stale result marked hapi_skip_usage', async () => {
+        const client = createClientStub()
+        const { session, queue } = createSession(client, undefined)
+        harness.metadata = { contextDetails: {
+            version: 1, updatedAt: 10, provider: 'claude', model: 'claude-opus', contextWindow: 200_000,
+            usage: { contextTokens: 100 }
+        } }
+        harness.messages = [{ type: 'result', subtype: 'success', model: 'claude-fable-5', hapi_skip_usage: true,
+            total_cost_usd: 0, duration_ms: 1, num_turns: 1,
+            usage: { input_tokens: 900_000 }, modelUsage: { 'claude-fable-5': { contextWindow: 990_000 } } }]
+        try {
+            queue.push('hello', { permissionMode: 'default' }, 'local-1')
+            harness.switchAfterCall = 1
+            harness.triggerSwitch = () => client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+            await claudeRemoteLauncher(session as any)
+            expect(client.getMetadata().contextDetails).toMatchObject({
+                model: 'claude-opus', contextWindow: 200_000, usage: { contextTokens: 100 }
+            })
+        } finally { session.stopKeepAlive() }
+    })
+
+    it.each([undefined, 400_000])('prefers the probe or matching assistant window over the raw limit (%s)', async (probeWindow) => {
+        const client = createClientStub()
+        const { session, queue } = createSession(client, undefined)
+        const { SDKToLogConverter } = await import('./utils/sdkToLogConverter')
+        const stamp = '2026-09-01T13:00:00.000Z'
+        const convert = vi.spyOn(SDKToLogConverter.prototype, 'convert').mockImplementation(message =>
+            message.type === 'assistant' ? { type: 'assistant', uuid: 'stamped', timestamp: stamp, message: {
+                content: [{ type: 'text', text: 'Answer' }],
+                usage: { input_tokens: 100, output_tokens: 1, context_window: 200_000 }
+            } } : null)
+        const model = 'claude-sonnet-4-6'
+        if (probeWindow) harness.contextForLaunch = callbacks => callbacks.onContextUsage({ model, maxTokens: probeWindow })
+        harness.messages = [{ type: 'assistant', context_usage: { raw_max_tokens: 1_000_000 },
+            message: { role: 'assistant', model, content: [{ type: 'text', text: 'Answer' }], usage: { input_tokens: 100, output_tokens: 1 } } }]
+        try {
+            queue.push('hello', { permissionMode: 'default', model: 'sonnet[1m]' }, 'local-1')
+            harness.switchAfterCall = 1
+            harness.triggerSwitch = () => client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+            await claudeRemoteLauncher(session as any)
+            expect(client.getMetadata().contextDetails).toMatchObject({
+                model, contextWindow: probeWindow ?? 200_000,
+                usage: { contextTokens: 100, sourceMessageUuid: 'stamped', sampledAt: Date.parse(stamp) }
+            })
+        } finally {
+            convert.mockRestore()
+            session.stopKeepAlive()
+        }
+    })
+
+    it.each([13_681, 0])('persists the post-compaction usage snapshot, including zero (%i)', async compactTokens => {
         // The status bar replaces latestUsage wholesale, so a context-only
         // sample without a window would erase a known 1M denominator and
         // fall back to the default heuristic until the next real usage.
@@ -792,7 +1124,11 @@ describe('claudeRemoteLauncher resume anchor', () => {
         const { session, queue } = createSession(client, undefined)
         const { SDKToLogConverter } = await import('./utils/sdkToLogConverter')
         ;(SDKToLogConverter as unknown as { resolvedWindow?: number }).resolvedWindow = 1_000_000
-        harness.compactContextTokens = 13_681
+        harness.compactContextTokens = compactTokens
+        harness.metadata = { contextDetails: {
+            version: 1, updatedAt: 10, provider: 'claude', model: 'claude-opus', contextWindow: 1_000_000,
+            usage: { contextTokens: 90_000, cacheReadTokens: 5_000 }
+        } }
 
         try {
             queue.push('hi', { permissionMode: 'default' }, 'local-1')
@@ -806,10 +1142,18 @@ describe('claudeRemoteLauncher resume anchor', () => {
             expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
                 type: 'token_count',
                 info: expect.objectContaining({
-                    contextTokens: 13_681,
+                    contextTokens: compactTokens,
                     modelContextWindow: 1_000_000
                 })
-            }))
+            }), undefined, expect.objectContaining({ createdAt: expect.any(Number) }))
+            const sample = client.sendAgentMessage.mock.calls[0]?.[0] as { uuid?: string; timestamp?: string } | undefined
+            expect(sample?.uuid).toEqual(expect.any(String))
+            expect(client.sendAgentMessage.mock.calls[0]?.[2]).toEqual({ createdAt: Date.parse(sample?.timestamp ?? '') })
+            expect(client.getMetadata().contextDetails).toMatchObject({
+                contextWindow: 1_000_000,
+                usage: { contextTokens: compactTokens, cacheReadTokens: 0, sourceMessageUuid: sample?.uuid,
+                    sampledAt: Date.parse(sample?.timestamp ?? '') }
+            })
         } finally {
             session.stopKeepAlive()
             ;(SDKToLogConverter as unknown as { resolvedWindow?: number }).resolvedWindow = undefined

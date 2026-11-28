@@ -20,6 +20,7 @@ function stampContextWindow(message: RawJSONLines, contextModel: string | null):
         message.message.usage.context_window ??= 1_000_000;
     }
 }
+import { buildClaudeContextDetails, publishContextDetails, sameClaudeModelID, withClaudeUsageSource } from '@/agent/contextDetails';
 
 function isInterruptMarker(message: RawJSONLines): boolean {
     if (message.type !== 'user' || message.isSidechain) return false;
@@ -30,13 +31,54 @@ function isInterruptMarker(message: RawJSONLines): boolean {
 }
 
 export async function claudeLocalLauncher(session: Session): Promise<'switch' | 'exit'> {
+    let lastSystemModel = session.getModel();
+    let publishedLocalPreset: string | null | undefined;
     const toolResultImages = new ClaudeToolResultImages();
 
     // Create scanner
     const scanner = await createSessionScanner({
         sessionId: session.sessionId,
         workingDirectory: session.path,
-        onMessage: (message) => {
+        onMessage: ({ context_usage: contextUsage, ...message }) => {
+            const rawMessage = message as unknown as Record<string, unknown>;
+            stampContextWindow(message, session.localContextModel)
+            const isSidechain = rawMessage.isSidechain === true;
+            if (!isSidechain) {
+                if (rawMessage.type === 'system' && typeof rawMessage.model === 'string') {
+                    lastSystemModel = rawMessage.model;
+                }
+                const isSyntheticApiError = rawMessage.type === 'assistant' && rawMessage.isApiErrorMessage === true;
+                if (!isSyntheticApiError && (rawMessage.type === 'assistant' || rawMessage.type === 'system' || rawMessage.type === 'result')) {
+                    const nestedMessage = rawMessage.message as Record<string, unknown> | undefined;
+                    const nestedModel = typeof nestedMessage?.model === 'string' ? nestedMessage.model : undefined;
+                    const stampedWindow = message.type === 'assistant' ? message.message?.usage?.context_window : undefined;
+                    const details = buildClaudeContextDetails({
+                        effectiveContextWindow: typeof stampedWindow === 'number' && Number.isSafeInteger(stampedWindow)
+                            && stampedWindow > 0 ? stampedWindow : undefined,
+                        contextUsage,
+                        system: rawMessage.type === 'system' ? rawMessage : undefined,
+                        result: rawMessage.type === 'result' ? rawMessage : undefined,
+                        messageUsage: nestedMessage?.usage ?? rawMessage.usage,
+                        model: nestedModel ?? (typeof rawMessage.model === 'string' ? rawMessage.model : lastSystemModel)
+                    });
+                    if (details) {
+                        if (details.model) {
+                            lastSystemModel = details.model;
+                        }
+                        const preset = session.localContextModel;
+                        const presetChanged = publishedLocalPreset !== undefined && publishedLocalPreset !== preset;
+                        const saved = publishedLocalPreset === undefined ? session.client.getMetadata()?.contextDetails : undefined;
+                        // A resumed local transcript may keep the same bare model ID
+                        // even when the selected preset no longer requests 1M.
+                        const resumedWithoutExpandedPreset = Boolean(!/\[1m\]$/i.test(preset ?? '')
+                            && saved?.provider === 'claude' && saved.contextWindow === 1_000_000
+                            && saved.model && details.model && sameClaudeModelID(saved.model, details.model));
+                        publishedLocalPreset = preset;
+                        publishContextDetails(session.client, withClaudeUsageSource(details, message.type === 'assistant' ? message : undefined), { clearContextSample: presetChanged || resumedWithoutExpandedPreset });
+                    }
+                }
+            }
+
             session.localPermissionBridge.onTranscript(message);
             // Esc-interrupted turns fire no Stop hook; Claude Code only
             // writes this marker to the transcript. The scanner can deliver it
@@ -63,8 +105,9 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
             if (!isImportableClaudeEntry(message)) {
                 return
             }
-            stampContextWindow(message, session.localContextModel)
-            toolResultImages.send(session.client, message)
+            const processed = toolResultImages.process(message)
+            session.client.sendClaudeSessionMessage(processed.message)
+            for (const image of processed.images) session.client.sendAgentMessage(image)
         }
     });
 

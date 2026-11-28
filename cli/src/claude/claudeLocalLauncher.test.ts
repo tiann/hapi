@@ -66,7 +66,7 @@ function createSessionStub() {
         claudeEnvVars: {},
         claudeArgs: [] as string[] | undefined,
         startupResumeSessionAt: undefined as string | undefined,
-        getModel: () => 'claude-opus-4-1',
+        getModel: (): string | null => 'claude-opus-4-1',
         getPermissionMode: () => 'default',
         mcpServers: [],
         allowedTools: [],
@@ -240,6 +240,191 @@ describe('claudeLocalLauncher message filtering', () => {
         expect(sentMessages).toHaveLength(2)
     })
 
+    it('publishes local Claude context details from assistant context_usage', async () => {
+        const { session, sentMessages, getMetadata } = createSessionStub()
+        await claudeLocalLauncher(session as never)
+
+        harness.scannerOnMessage!({
+            type: 'assistant',
+            uuid: 'assistant-context-details',
+            timestamp: '2026-09-01T12:00:00.000Z',
+            context_usage: {
+                total_tokens: 26_697,
+                raw_max_tokens: 262_144,
+                mcp_tools: [{ name: 'mcp__hapi__list_peers', server_name: 'hapi' }]
+            },
+            message: {
+                role: 'assistant',
+                content: [{ type: 'text', text: 'hello' }]
+            }
+        })
+
+        expect(getMetadata().contextDetails).toMatchObject({
+            provider: 'claude',
+            contextWindow: 262_144,
+            usage: { contextTokens: 26_697, sampledAt: Date.parse('2026-09-01T12:00:00.000Z'), sourceMessageUuid: 'assistant-context-details' },
+            claude: {
+                mcpTools: [{ name: 'mcp__hapi__list_peers', serverName: 'hapi' }]
+            }
+        })
+        expect(sentMessages[0]).not.toHaveProperty('context_usage')
+    })
+
+    it.each([
+        { explicitWindow: undefined, expectedWindow: 1_000_000 },
+        { explicitWindow: 456_789, expectedWindow: 456_789 }
+    ])('publishes the local assistant window before sending its message (%s)', async ({ explicitWindow, expectedWindow }) => {
+        const { session, getMetadata } = createSessionStub()
+        session.getModel = () => 'sonnet[1m]'
+        await claudeLocalLauncher(session as never)
+
+        harness.scannerOnMessage!({
+            type: 'assistant', uuid: 'assistant-local-window',
+            timestamp: '2026-09-01T13:00:00.000Z',
+            message: {
+                role: 'assistant', model: 'claude-sonnet-4-5', content: [{ type: 'text', text: 'hello' }],
+                usage: { input_tokens: 100, output_tokens: 1, ...(explicitWindow ? { context_window: explicitWindow } : {}) }
+            }
+        })
+
+        expect(getMetadata().contextDetails).toMatchObject({
+            model: 'claude-sonnet-4-5', contextWindow: expectedWindow,
+            usage: { contextTokens: 100, sampledAt: Date.parse('2026-09-01T13:00:00.000Z'), sourceMessageUuid: 'assistant-local-window' }
+        })
+    })
+
+    it.each([200_000, 0])('prefers a positive resolved assistant window over the raw limit (%s)', async (resolved) => {
+        const { session, getMetadata } = createSessionStub()
+        await claudeLocalLauncher(session as never)
+        harness.scannerOnMessage!({
+            type: 'assistant', uuid: 'assistant-with-raw-limit', timestamp: '2026-09-01T13:00:00.000Z',
+            context_usage: { total_tokens: 100_000, raw_max_tokens: 1_000_000 },
+            message: { role: 'assistant', model: 'claude-sonnet-4-6', content: [{ type: 'text', text: 'Answer' }],
+                usage: { input_tokens: 100_000, output_tokens: 1, context_window: resolved } }
+        })
+        expect(getMetadata().contextDetails).toMatchObject({ contextWindow: resolved || 1_000_000,
+            usage: { contextTokens: 100_000, sourceMessageUuid: 'assistant-with-raw-limit' } })
+    })
+
+    it('does not replace context details with a synthetic API error', async () => {
+        const { session, getMetadata } = createSessionStub()
+        await claudeLocalLauncher(session as never)
+
+        harness.scannerOnMessage!({
+            type: 'assistant',
+            uuid: 'valid-context-details',
+            context_usage: {
+                model: 'claude-sonnet-5-5',
+                total_tokens: 26_697,
+                raw_max_tokens: 1_000_000
+            },
+            message: {
+                role: 'assistant',
+                model: 'claude-sonnet-5-5',
+                content: [{ type: 'text', text: 'hello' }]
+            }
+        })
+        const beforeError = getMetadata().contextDetails
+
+        harness.scannerOnMessage!({
+            type: 'assistant',
+            uuid: 'synthetic-api-error',
+            isApiErrorMessage: true,
+            error: 'invalid_request',
+            message: {
+                role: 'assistant',
+                model: '<synthetic>',
+                content: [{ type: 'text', text: 'Prompt is too long' }],
+                usage: {
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cache_creation_input_tokens: 0,
+                    cache_read_input_tokens: 0
+                }
+            }
+        })
+
+        expect(getMetadata().contextDetails).toEqual(beforeError)
+    })
+
+    it('keeps the resolved assistant model when a launch uses an alias', async () => {
+        const { session, getMetadata } = createSessionStub()
+        session.getModel = () => 'sonnet'
+        await claudeLocalLauncher(session as never)
+
+        harness.scannerOnMessage!({
+            type: 'assistant',
+            uuid: 'resolved-context-details',
+            context_usage: {
+                model: 'claude-sonnet-5-5',
+                total_tokens: 26_697,
+                raw_max_tokens: 1_000_000
+            },
+            message: {
+                role: 'assistant',
+                model: 'claude-sonnet-5-5',
+                content: [{ type: 'text', text: 'hello' }]
+            }
+        })
+        harness.scannerOnMessage!({
+            type: 'assistant',
+            uuid: 'resolved-ordinary-reply',
+            message: {
+                role: 'assistant',
+                model: 'claude-sonnet-5-5',
+                content: [{ type: 'text', text: 'still resolved' }]
+            }
+        })
+        harness.scannerOnMessage!({
+            type: 'system',
+            subtype: 'turn_duration',
+            uuid: 'model-less-system-event'
+        })
+
+        expect(getMetadata().contextDetails).toMatchObject({
+            model: 'claude-sonnet-5-5',
+            contextWindow: 1_000_000,
+            usage: { contextTokens: 26_697 }
+        })
+    })
+
+    it('does not let Claude sidechain context details replace parent metadata', async () => {
+        const { session, getMetadata } = createSessionStub()
+        await claudeLocalLauncher(session as never)
+
+        harness.scannerOnMessage!({
+            type: 'assistant',
+            uuid: 'parent-assistant',
+            context_usage: {
+                total_tokens: 100,
+                raw_max_tokens: 1_000,
+                mcp_tools: [{ name: 'mcp__parent__tool', server_name: 'parent' }]
+            },
+            message: {
+                role: 'assistant',
+                content: [{ type: 'text', text: 'parent' }]
+            }
+        })
+        const parentDetails = getMetadata().contextDetails
+
+        harness.scannerOnMessage!({
+            type: 'assistant',
+            uuid: 'sidechain-assistant',
+            isSidechain: true,
+            context_usage: {
+                total_tokens: 900,
+                raw_max_tokens: 9_000,
+                mcp_tools: [{ name: 'mcp__child__tool', server_name: 'child' }]
+            },
+            message: {
+                role: 'assistant',
+                content: [{ type: 'text', text: 'child' }]
+            }
+        })
+
+        expect(getMetadata().contextDetails).toEqual(parentDetails)
+    })
+
     it('filters out isMeta messages (e.g. skill injections)', async () => {
         const { session, sentMessages } = createSessionStub()
         await claudeLocalLauncher(session as never)
@@ -301,6 +486,43 @@ describe('claudeLocalLauncher context window seed (#1858)', () => {
         harness.scannerOnMessage!(assistant('claude-opus-5'))
 
         expect((sentMessages[0].message as { usage: Record<string, unknown> }).usage.context_window).toBeUndefined()
+    })
+
+    it.each([
+        ['sonnet', undefined], ['sonnet', 350_000], [null, undefined], [null, 350_000]
+    ] as const)('drops a saved 1M window on the first sample with preset %s and window %s', async (preset, explicitWindow) => {
+        const { session, getMetadata, setMetadata } = createSessionStub()
+        session.getModel = () => preset
+        setMetadata({ ...getMetadata(), contextDetails: {
+            version: 1, provider: 'claude', updatedAt: 10,
+            model: 'claude-sonnet-4-6', contextWindow: 1_000_000, usage: { contextTokens: 10 }
+        } })
+        await claudeLocalLauncher(session as never)
+        // Simulate the resolved preset, independent of the test runner's user settings.
+        const local = session as typeof session & { localContextModel: string | null }
+        local.localContextModel = preset
+
+        harness.scannerOnMessage!(assistant('claude-sonnet-4-6', {
+            input_tokens: 20, ...(explicitWindow ? { context_window: explicitWindow } : {})
+        }))
+        expect(getMetadata().contextDetails?.usage?.contextTokens).toBe(20)
+        expect(getMetadata().contextDetails?.contextWindow).toBe(explicitWindow)
+    })
+
+    it.each([undefined, 350_000])('does not inherit a 1M window after switching to the bare preset (%s)', async (explicitWindow) => {
+        const { session, getMetadata } = createSessionStub()
+        const local = session as typeof session & { localContextModel: string | null }
+        session.getModel = () => 'sonnet[1m]'
+        await claudeLocalLauncher(session as never)
+
+        harness.scannerOnMessage!(assistant('claude-sonnet-4-6', { input_tokens: 10 }))
+        expect(getMetadata().contextDetails?.contextWindow).toBe(1_000_000)
+        local.localContextModel = 'claude-sonnet-4-6'
+        harness.scannerOnMessage!(assistant('claude-sonnet-4-6', {
+            input_tokens: 20, ...(explicitWindow ? { context_window: explicitWindow } : {})
+        }))
+        expect(getMetadata().contextDetails?.usage?.contextTokens).toBe(20)
+        expect(getMetadata().contextDetails?.contextWindow).toBe(explicitWindow)
     })
 
     it('follows an in-session model switch (PostModelSwitch to_model) and keeps explicit windows', async () => {

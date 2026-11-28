@@ -77,6 +77,25 @@ describe("RawJSONLinesSchema", () => {
             if (parsed.type !== "assistant") throw new Error("expected assistant record");
             expect((parsed.message as Record<string, unknown> | undefined)?.futureField).toEqual({ nested: "value" });
         });
+
+        it("drops top-level context_usage from the shared transcript schema", () => {
+            const contextUsage = {
+                total_tokens: 26_697,
+                raw_max_tokens: 262_144,
+                mcp_tools: [{ name: "mcp__hapi__list_peers", server_name: "hapi" }]
+            };
+            const parsed = RawJSONLinesSchema.parse({
+                type: "assistant",
+                uuid: "msg-3",
+                context_usage: contextUsage,
+                message: {
+                    role: "assistant",
+                    content: [{ type: "text", text: "hi" }]
+                }
+            });
+            if (parsed.type !== "assistant") throw new Error("expected assistant record");
+            expect(parsed).not.toHaveProperty("context_usage");
+        });
     });
 
     describe("passthrough on system records", () => {

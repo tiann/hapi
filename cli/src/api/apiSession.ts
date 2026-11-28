@@ -1208,7 +1208,7 @@ if (isReconnect) {
         void this.materialize()
     }
 
-    sendAgentMessage(body: unknown, localId?: string): void {
+    sendAgentMessage(body: unknown, localId?: string, options?: { createdAt?: number }): void {
         const content = {
             role: 'agent',
             content: {
@@ -1223,7 +1223,8 @@ if (isReconnect) {
             this.socket.emit('message', {
                 sid: this.sessionId,
                 message: content,
-                localId
+                localId,
+                ...(options?.createdAt !== undefined ? { createdAt: options.createdAt } : {})
             })
             if (localId) this.socket.emit('messages-consumed', { sid: this.sessionId, localIds: [localId] })
         })
@@ -1453,7 +1454,7 @@ if (isReconnect) {
         })
     }
 
-    updateMetadata(handler: (metadata: Metadata) => Metadata, options?: { signal?: AbortSignal }): void {
+    updateMetadata(handler: (metadata: Metadata) => Metadata, options?: { signal?: AbortSignal; skipUnchanged?: boolean }): void {
         const signal = options?.signal
         if (signal?.aborted) return
         if (this.state !== 'active') {
@@ -1477,6 +1478,7 @@ if (isReconnect) {
 
                 const current = this.metadata ?? ({} as Metadata)
                 const updated = handler(current)
+                if (options?.skipUnchanged && updated === current) return
                 if (!this.socket.connected) {
                     throw new Error('Socket not connected')
                 }

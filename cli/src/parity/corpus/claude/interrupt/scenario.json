@@ -42,6 +42,11 @@
           "event": "update-state",
           "contains": "\"steeringActive\":true",
           "result": "success"
+        },
+        {
+          "event": "update-metadata",
+          "contains": "\"model\":\"sonnet\"",
+          "result": "success"
         }
       ]
     },

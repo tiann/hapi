@@ -24,11 +24,22 @@ import { getCodexSystemPrompt } from '../utils/systemPrompt';
 import { record, string } from './gateway';
 import { initializeSharedClient, type SharedLaunchOptions } from './launch';
 import { inheritedSandbox, settingsMatch } from './settings';
+import { buildCodexContextDetails, publishContextDetails, type CodexMcpServerInventory } from '@/agent/contextDetails';
+import {
+    listConfiguredCodexMcpServers,
+    mergeCodexMcpInventories,
+    parseCodexMcpStatusResponse
+} from '../utils/codexMcpInventory';
+import type { SkillMetadata } from '../appServerTypes';
+import type { CodexCommand } from '../utils/codexExecutable';
 import { planImplementationMessageId, planProposalForItem, planProposalForTurn } from './plan';
 
 type RuntimeSettings = NonNullable<Parameters<ApiSessionClient['keepAlive']>[2]>;
 export type RootHost = {
     directory: string; generation: string; endpoint: string; token?: string;
+    codexInventoryArgs?: readonly string[];
+    codexCommand?: CodexCommand;
+    codexHome?: string;
     attached?: boolean;
     beforeSubscribe?(threadId: string): Promise<void>;
     validateHistory?(threadId: string, thread: unknown): Promise<void>;
@@ -59,6 +70,7 @@ export class SharedCodexRoot {
     private heartbeat?: ReturnType<typeof setInterval>;
     private work: Promise<unknown> = Promise.resolve();
     private notifications = Promise.resolve();
+    private pendingAttachUsage?: Map<string, { params: unknown; receivedAt: number }> = new Map();
     private currentTurn: string | undefined;
     // Ephemeral observations only: dequeue/compaction never prove acceptance.
     private readonly dequeuedInputs = new Set<string>();
@@ -82,6 +94,20 @@ export class SharedCodexRoot {
     private settingsNative: Record<string, unknown> = {};
     private settingsNotification?: Record<string, unknown>;
     private readonly settingsListeners = new Set<() => void>();
+    private availableSlashCommands?: string[];
+    private availableSkills?: SkillMetadata[];
+    private skillRequestSequence = 0;
+    private appliedSkillSequence = 0;
+    private configuredMcpServerInventory?: CodexMcpServerInventory[];
+    private readonly statusMcpServerInventory = new Map<string, CodexMcpServerInventory>();
+    private readonly confirmedAbsentMcpServers = new Set<string>();
+    private readonly notifiedMcpServers = new Set<string>();
+    private readonly earlyMcpServerNotices = new Map<string, Set<string>>();
+    private readonly pendingMcpStatuses = new Set<string>();
+    private mcpInventoryStarted = false;
+    private readingMcpStatuses = false;
+    private inFlightMcpStatus?: string;
+    private readonly failedMcpStatuses = new Set<string>();
     private ready!: () => void;
     private readonly bound = new Promise<void>(resolve => { this.ready = resolve; });
 
@@ -89,6 +115,28 @@ export class SharedCodexRoot {
         this.session = bootstrap.session;
         this.client = new CodexAppServerClient({ endpoint: host.endpoint, token: host.token, cwd: bootstrap.workingDirectory });
         this.client.setNotificationHandler((method, params) => {
+            if (method === 'mcpServer/startupStatus/updated') {
+                const notice = record(params);
+                const name = string(notice.name);
+                if (this.closed || this.stopping || !name?.trim()) return;
+                const noticeThreadId = string(notice.threadId);
+                if (!noticeThreadId) return;
+                if (!this.threadId) {
+                    const names = this.earlyMcpServerNotices.get(noticeThreadId) ?? new Set<string>();
+                    names.add(name);
+                    this.earlyMcpServerNotices.set(noticeThreadId, names);
+                    return;
+                }
+                if (noticeThreadId === this.threadId) {
+                    const first = !this.notifiedMcpServers.has(name);
+                    this.notifiedMcpServers.add(name);
+                    if (this.mcpInventoryStarted) {
+                        if (first) this.publishRootContextDetails();
+                        this.queueMcpStatuses([name]);
+                    }
+                }
+                return;
+            }
             if (this.host.attached && ['thread/reverted', 'thread/rolledBack'].includes(method)
                 && (record(params).threadId === this.threadId || this.children.has(String(record(params).threadId)))) {
                 this.invalidateHistory(); return;
@@ -126,11 +174,35 @@ export class SharedCodexRoot {
                 this.publishPlan();
             }
             const receivedAt = Date.now();
-            const modelAtReceipt = record(params).threadId === this.threadId ? this.settings.model ?? undefined : undefined;
-            this.notifications = this.notifications.then(() => this.notification(method, params, modelAtReceipt, receivedAt)).catch(error => {
-                logger.debug('[Codex shared] projection', error);
-                this.failAttached();
-            });
+            const paramsRecord = record(params);
+            const isRoot = this.threadId !== '' && paramsRecord.threadId === this.threadId;
+            const turnId = string(paramsRecord.turnId);
+            const liveTurnAtReceipt = Boolean(isRoot && turnId && turnId === this.currentTurn);
+            if (this.host.attached && isRoot && method === 'thread/tokenUsage/updated' && turnId && this.pendingAttachUsage) {
+                if (!liveTurnAtReceipt) {
+                    // Subscribe can precede the first snapshot. Keep unclassified
+                    // samples until that snapshot identifies the active turn.
+                    this.pendingAttachUsage.set(turnId, { params, receivedAt });
+                    return;
+                }
+                // Do not replay an older unclassified sample over this live one.
+                this.pendingAttachUsage.delete(turnId);
+            }
+            if (this.host.attached && isRoot && method === 'turn/completed' && this.pendingAttachUsage) {
+                const completedTurn = string(record(paramsRecord.turn).id);
+                if (completedTurn) {
+                    const usage = this.pendingAttachUsage.get(completedTurn);
+                    this.pendingAttachUsage.delete(completedTurn);
+                    // A live completion also identifies a turn that was already
+                    // running before we subscribed. Project its usage before
+                    // the completion and any subsequent turn notifications.
+                    if (usage && !this.currentTurn) {
+                        this.enqueueNotification('thread/tokenUsage/updated', usage.params, undefined, usage.receivedAt, true);
+                    }
+                }
+            }
+            const modelAtReceipt = isRoot ? this.settings.model ?? undefined : undefined;
+            this.enqueueNotification(method, params, modelAtReceipt, receivedAt, liveTurnAtReceipt);
         });
         this.client.setTransportAbandonedHandler(() => {
             if (this.host.attached) {
@@ -281,6 +353,9 @@ export class SharedCodexRoot {
     async bind(threadId: string, response: Record<string, unknown>, subscribe: boolean): Promise<void> {
         if (this.threadId && this.threadId !== threadId) throw new Error('Cannot retarget a shared HAPI session');
         this.threadId = threadId;
+        const earlyNotices = this.earlyMcpServerNotices.get(threadId);
+        this.earlyMcpServerNotices.clear();
+        for (const name of earlyNotices ?? []) this.notifiedMcpServers.add(name);
         this.queue = new SharedCodexQueue(this.client, threadId, join(this.host.directory, `${this.session.sessionId}.queue.json`),
             (ids, steered) => {
                 this.session.emitMessagesConsumed(ids, { steered });
@@ -292,7 +367,8 @@ export class SharedCodexRoot {
         await this.queue.load();
         this.projection = new SharedCodexProjection(this.session, threadId, (id, content) => this.queue.committed(id, content),
             undefined, async () => record(await this.client.request('thread/read', { threadId, includeTurns: false })).thread,
-            (threadId, item) => this.asyncQuestions.observeItem(threadId, item));
+            (threadId, item) => this.asyncQuestions.observeItem(threadId, item),
+            (info, model) => this.publishRootContextDetails(info, model));
         this.session.updateMetadata(metadata => ({ ...metadata, codexSessionId: threadId, capabilities: {
             ...metadata.capabilities, concurrentClients: true, terminal: !this.host.attached,
             // In-place rewind needs a native + hub commit barrier. Do not
@@ -310,14 +386,169 @@ export class SharedCodexRoot {
         }
         this.acceptSettings(response); this.acceptSettings(this.host.settingsFor(threadId) ?? {});
         if (!this.host.attached) await this.projectHistory(this.projection, response.thread);
-        await this.refresh(); await this.refreshChildren(true);
+        await this.refresh();
+        // An idle thread can replay its latest completed sample before the
+        // first snapshot. Seed generation from that replay without counting
+        // it as a live sample that could replace already-saved context.
+        const usageTurn = this.currentTurn ?? (this.latestTurn?.status === 'completed' ? this.latestTurn.id : undefined);
+        const usage = usageTurn ? this.pendingAttachUsage?.get(usageTurn) : undefined;
+        this.pendingAttachUsage = undefined;
+        if (usage) this.enqueueNotification('thread/tokenUsage/updated', usage.params, undefined, usage.receivedAt, usageTurn === this.currentTurn);
+        await this.refreshChildren(true);
     }
     async activate(options: SharedLaunchOptions = {}): Promise<void> {
         // Restored input cannot run before the cold-resume settings are applied.
         if (!this.host.attached) await this.initialSettings(options);
         if (this.stopping) throw new Error('Codex execution is stopping');
         this.registerControls(); this.ready();
+        this.startContextInventory();
         this.heartbeat = setInterval(() => this.alive(), SESSION_KEEP_ALIVE_INTERVAL_MS); this.alive(); this.session.emitSessionReady();
+    }
+
+    private getMcpContextArgs(): {
+        mcpServers?: Record<string, unknown>;
+        mcpServerInventory?: readonly CodexMcpServerInventory[];
+    } {
+        const bridgeServers = this.bridge?.mcpServers ?? {};
+        const bridgeInventory = Object.keys(bridgeServers).length > 0 && Array.isArray(this.bridge?.toolNames)
+            ? [{ name: 'hapi', toolNames: [...this.bridge.toolNames] }]
+            : [];
+        const savedMcpServers = this.session.getMetadata()?.contextDetails?.codex?.mcpServers ?? [];
+        if (!this.mcpInventoryStarted) return {};
+        const supported = this.client.canReadThreadMcpServerStatus();
+        const runtime = [...this.statusMcpServerInventory.values()];
+        const recovered = new Set(runtime.filter(entry => entry.toolNames !== undefined && entry.status !== 'unavailable')
+            .map(entry => entry.name));
+        const normalizedSaved = supported ? savedMcpServers.map(entry =>
+            recovered.has(entry.name) && (entry.status === 'unavailable' || entry.status === 'disabled')
+                ? { ...entry, status: undefined } : entry) : savedMcpServers.map(entry => ({ name: entry.name }));
+        const currentRuntimeNames = new Set([
+            ...this.pendingMcpStatuses,
+            ...(this.inFlightMcpStatus ? [this.inFlightMcpStatus] : []),
+            ...this.failedMcpStatuses,
+            ...this.notifiedMcpServers,
+            ...this.statusMcpServerInventory.keys()
+        ]);
+        const savedRuntime = normalizedSaved.filter(entry => currentRuntimeNames.has(entry.name) && !this.confirmedAbsentMcpServers.has(entry.name));
+        // A successful config listing replaces the configured portion, including
+        // an empty list. Saved entries remain only for current-thread runtime
+        // discoveries; a failed/attached discovery retains the saved fallback.
+        const savedFallback = this.configuredMcpServerInventory === undefined
+            ? normalizedSaved.filter(entry => !this.confirmedAbsentMcpServers.has(entry.name))
+            : [];
+        const inventory = mergeCodexMcpInventories(bridgeInventory, savedFallback, savedRuntime,
+            this.configuredMcpServerInventory ?? [],
+            [...this.notifiedMcpServers].filter(name => !this.confirmedAbsentMcpServers.has(name)).map(name => ({ name })), runtime);
+        return inventory.length > 0 || this.configuredMcpServerInventory !== undefined || this.confirmedAbsentMcpServers.size > 0
+            ? { mcpServerInventory: inventory }
+            : {};
+    }
+
+    private publishRootContextDetails(info?: unknown, model?: string): void {
+        publishContextDetails(this.session, buildCodexContextDetails({
+            info,
+            // Inventory-only updates must not replace the model paired with saved usage.
+            model: info == null ? undefined : model ?? this.settings.model,
+            threadId: this.threadId,
+            slashCommands: this.availableSlashCommands,
+            skills: this.availableSkills,
+            ...this.getMcpContextArgs()
+        }));
+    }
+
+    private queueMcpStatuses(names: Iterable<string>): void {
+        if (!this.client.canReadThreadMcpServerStatus()) return;
+        for (const name of names) if (name.trim()) {
+            this.confirmedAbsentMcpServers.delete(name);
+            this.pendingMcpStatuses.add(name);
+        }
+        if (!this.readingMcpStatuses) void this.readPendingMcpStatuses();
+    }
+
+    private async readPendingMcpStatuses(): Promise<void> {
+        this.readingMcpStatuses = true;
+        try {
+            while (!this.closed && !this.stopping && this.client.canReadThreadMcpServerStatus()) {
+                const name = this.pendingMcpStatuses.values().next().value;
+                if (name === undefined) break;
+                this.pendingMcpStatuses.delete(name);
+                this.inFlightMcpStatus = name;
+                try {
+                    const result = await this.client.readThreadMcpServerStatus(this.threadId, name);
+                    if (this.closed || this.stopping || !this.client.canReadThreadMcpServerStatus()) break;
+                    const inventory = parseCodexMcpStatusResponse(result);
+                    const server = inventory?.find(entry => entry.name === name);
+                    if (server) {
+                        this.failedMcpStatuses.delete(name);
+                        this.confirmedAbsentMcpServers.delete(name);
+                        this.statusMcpServerInventory.set(name, server);
+                    } else if (inventory) {
+                        this.failedMcpStatuses.delete(name);
+                        // A valid named response with no entry confirms absence;
+                        // malformed/failed reads retain the saved fallback.
+                        this.confirmedAbsentMcpServers.add(name);
+                        this.statusMcpServerInventory.delete(name);
+                    } else {
+                        this.failedMcpStatuses.add(name);
+                    }
+                    if (inventory) this.publishRootContextDetails();
+                } catch (error) {
+                    this.failedMcpStatuses.add(name);
+                    logger.debug('[Codex shared] thread-scoped MCP inventory unavailable', error);
+                    // Never fall back to the unscoped list: it can open a second connection.
+                } finally {
+                    this.inFlightMcpStatus = undefined;
+                    if (!this.closed && !this.stopping) this.publishRootContextDetails();
+                }
+            }
+        } finally {
+            this.readingMcpStatuses = false;
+        }
+    }
+
+    private startContextInventory(): void {
+        const cwd = this.bootstrap.workingDirectory;
+        void listSlashCommands('codex', cwd)
+            .then(commands => {
+                if (this.closed || this.stopping) return;
+                this.availableSlashCommands = commands.filter(entry => {
+                    const name = entry.name.replace(/^\//, '').toLowerCase();
+                    if (this.host.attached && (name === 'clear' || name === 'new')) return false;
+                    return name !== 'agent' || (entry.source !== 'builtin' && Boolean(entry.content));
+                }).map(command => command.name);
+                this.publishRootContextDetails();
+            })
+            .catch(error => logger.debug('[Codex shared] slash command inventory', error));
+        void this.refreshContextSkills().catch(error => logger.debug('[Codex shared] skill inventory', error));
+        this.mcpInventoryStarted = true;
+        this.queueMcpStatuses([
+            ...Object.keys(this.bridge?.mcpServers ?? {}),
+            ...(this.session.getMetadata()?.contextDetails?.codex?.mcpServers ?? []).map(server => server.name),
+            ...this.notifiedMcpServers
+        ]);
+        // An attached server's configuration may differ from this CLI's.
+        if (!this.host.attached && this.host.codexCommand) {
+            void listConfiguredCodexMcpServers(this.host.codexCommand, cwd, this.host.codexInventoryArgs, this.host.codexHome)
+                .then(inventory => {
+                    if (this.closed || this.stopping || inventory === undefined) return;
+                    this.configuredMcpServerInventory = inventory;
+                    this.publishRootContextDetails();
+                    this.queueMcpStatuses(inventory.map(server => server.name));
+                })
+                .catch(error => logger.debug('[Codex shared] configured MCP inventory', error));
+        }
+    }
+
+    private async refreshContextSkills(forceReload = false): Promise<void> {
+        const cwd = this.bootstrap.workingDirectory;
+        const sequence = ++this.skillRequestSequence;
+        const response = await this.client.listSkills({ cwds: [cwd], forceReload });
+        if (this.closed || this.stopping || sequence < this.appliedSkillSequence) return;
+        const entry = response.data?.find(item => item.cwd === cwd) ?? response.data?.[0];
+        if (!entry || (!entry.skills.length && (entry.errors?.length ?? 0) > 0)) return;
+        this.appliedSkillSequence = sequence;
+        this.availableSkills = entry.skills.filter(skill => skill.enabled);
+        this.publishRootContextDetails();
     }
     private publishSteering(): void {
         this.publishCompaction();
@@ -369,7 +600,13 @@ export class SharedCodexRoot {
         for (const listener of this.settingsListeners) listener();
         this.publishPlan();
     }
-    private async notification(method: string, params: unknown, modelAtReceipt?: string, receivedAt = Date.now()): Promise<void> {
+    private enqueueNotification(method: string, params: unknown, modelAtReceipt: string | undefined, receivedAt: number, liveTurnAtReceipt: boolean): void {
+        this.notifications = this.notifications.then(() => this.notification(method, params, modelAtReceipt, receivedAt, liveTurnAtReceipt)).catch(error => {
+            logger.debug('[Codex shared] projection', error);
+            this.failAttached();
+        });
+    }
+    private async notification(method: string, params: unknown, modelAtReceipt?: string, receivedAt = Date.now(), liveTurnAtReceipt = false): Promise<void> {
         // Native broadcasts can arrive while bind() is loading the local
         // ledger, before a projection exists. bind's full read reconciles them.
         if (!this.threadId || !this.projection || this.closed || this.host.attached && this.stopping) return;
@@ -403,6 +640,9 @@ export class SharedCodexRoot {
         if (this.host.attached && ['thread/closed', 'thread/deleted'].includes(method)) {
             this.stopAccepting(); await this.host.end(this, false, 'unavailable'); return;
         }
+        if (method === 'skills/changed') {
+            void this.refreshContextSkills(true).catch(error => logger.debug('[Codex shared] skill inventory', error));
+        }
         // Process these in notification order: queue removal can precede turn/started.
         // Older unknown input must not acquire a later turn's compaction status.
         if (method === 'turn/started') {
@@ -422,7 +662,7 @@ export class SharedCodexRoot {
             for (const id of await this.queue.reconcile()) this.dequeuedInputs.add(id);
         }
         if (this.host.attached && method === 'turn/started' && !this.stopping) await this.refresh();
-        await this.projection.notification(method, params, modelAtReceipt, receivedAt);
+        await this.projection.notification(method, params, modelAtReceipt, receivedAt, liveTurnAtReceipt);
         if (this.host.attached && method === 'turn/completed' && !this.stopping) await this.refresh();
         this.publishCompaction(); this.alive();
     }

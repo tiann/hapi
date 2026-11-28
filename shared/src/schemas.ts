@@ -3,6 +3,7 @@ import { SessionReadStateSchema } from './sessionReadState'
 import { COPILOT_AGENT_MODES, type CopilotAgentMode } from './copilotModes'
 import { CODEX_COLLABORATION_MODES, PERMISSION_MODES } from './modes'
 import { AgentConfigDescriptorSchema } from './agentConfig'
+import { ContextDetailsSchema } from './contextDetails'
 import { githubPrIdentityKey, isValidGitHubHost } from './projectRegistry'
 
 export const PermissionModeSchema = z.enum(PERMISSION_MODES)
@@ -412,6 +413,7 @@ export const MetadataSchema = z.object({
     // the provider so web can resolve the exact model when two providers
     // share a modelId.
     piSelectedModel: z.object({ provider: z.string(), modelId: z.string() }).nullable().optional(),
+    contextDetails: ContextDetailsSchema.optional(),
     // Structured session↔contribution links (e.g. GitHub PRs). tiann/hapi#1160.
     externalRefs: ExternalRefsSchema.optional(),
     lastModelError: z.object({

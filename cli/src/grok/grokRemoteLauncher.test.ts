@@ -199,7 +199,7 @@ describe('grokRemoteLauncher runtime config', () => {
         const stop = vi.fn()
         try {
             const killing = (session.setKillHandler.mock.calls[0][0] as () => Promise<void>)()
-            bridge.resolve({ server: { stop, url: 'http://localhost' }, mcpServers: {} })
+            bridge.resolve({ server: { stop, url: 'http://localhost' }, mcpServers: {}, toolNames: [] })
             await killing
             expect(createGrokBackend).toHaveBeenCalledTimes(before)
             expect(stop).toHaveBeenCalledOnce()

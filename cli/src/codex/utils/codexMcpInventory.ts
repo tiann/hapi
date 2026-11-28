@@ -1,0 +1,185 @@
+import spawn from 'cross-spawn'
+import { withBunRuntimeEnv } from '@/utils/bunRuntime'
+import type { CodexCommand } from './codexExecutable'
+import type { CodexMcpServerInventory } from '@/agent/contextDetails'
+
+export const CODEX_MCP_LIST_TIMEOUT_MS = 5_000
+
+const CODEX_INVENTORY_VALUE_FLAGS = new Set([
+    '-c',
+    '--config',
+    '-p',
+    '--profile',
+    '--enable',
+    '--disable'
+])
+
+export function filterCodexInventoryArgs(args?: readonly string[]): string[] {
+    if (!args || args.length === 0) return []
+    const filtered: string[] = []
+    for (let index = 0; index < args.length; index += 1) {
+        const arg = args[index]
+        if (arg === '--') break
+        const equalsIndex = arg.indexOf('=')
+        if (equalsIndex > 0 && CODEX_INVENTORY_VALUE_FLAGS.has(arg.slice(0, equalsIndex))) {
+            filtered.push(arg)
+            continue
+        }
+        if (!CODEX_INVENTORY_VALUE_FLAGS.has(arg)) continue
+        const value = args[index + 1]
+        if (value === undefined || value === '--') continue
+        filtered.push(arg, value)
+        index += 1
+    }
+    return filtered
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+    return value && typeof value === 'object' && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : null
+}
+
+function asString(value: unknown): string | undefined {
+    return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined
+}
+
+function asToolNames(value: unknown): string[] | undefined {
+    const items = Array.isArray(value)
+        ? value
+        : asRecord(value)
+            ? Object.entries(asRecord(value)!).map(([name]) => name)
+            : []
+    if (items.length === 0) {
+        return Array.isArray(value) || asRecord(value) ? [] : undefined
+    }
+    const names = items.flatMap((item) => {
+        const name = typeof item === 'string' ? asString(item) : asString(asRecord(item)?.name)
+        return name ? [name] : []
+    })
+    return names.length > 0 ? Array.from(new Set(names)) : undefined
+}
+
+const RUNTIME_CONNECTION_STATUSES = new Set(['notStarted', 'starting', 'connected', 'authenticationRequired', 'failed', 'cancelled', 'disabled'])
+
+function parseInventoryEntries(value: unknown, strict = false): CodexMcpServerInventory[] | undefined {
+    const record = asRecord(value)
+    const entries = Array.isArray(value)
+        ? value
+        : Array.isArray(record?.data)
+            ? record.data
+            : null
+    if (!entries) return undefined
+
+    const inventory: CodexMcpServerInventory[] = []
+    for (const entry of entries) {
+        const item = asRecord(entry)
+        const name = asString(item?.name ?? item?.serverName ?? item?.server_name)
+        if (!name) {
+            if (strict) return undefined
+            continue
+        }
+        const enabled = item?.enabled
+        const runtimeStatus = asString(item?.runtimeStatus ?? item?.runtime_status)
+        const status = enabled === false
+            ? 'disabled'
+            : runtimeStatus && RUNTIME_CONNECTION_STATUSES.has(runtimeStatus) ? runtimeStatus : asString(
+                item?.status
+                ?? item?.state
+                ?? item?.authStatus
+                ?? item?.auth_status
+            )
+        // The server can send an empty tools object alongside an error.
+        // Omit toolNames in that case so callers can retain the last known list.
+        const toolsUnavailable = Boolean(item?.toolsError ?? item?.tools_error)
+        const toolNames = toolsUnavailable ? undefined : asToolNames(item?.toolNames ?? item?.tool_names ?? item?.tools)
+        const inventoryStatus = toolsUnavailable && status !== 'disabled' ? 'unavailable' : status
+        inventory.push({
+            name,
+            ...(enabled === true ? { enabled: true } : {}),
+            ...(toolNames ? { toolNames } : {}),
+            ...(inventoryStatus && inventoryStatus !== 'unsupported' ? { status: inventoryStatus } : {})
+        })
+    }
+    return inventory
+}
+
+export function parseCodexMcpInventoryOutput(output: string): CodexMcpServerInventory[] | undefined {
+    try {
+        return parseInventoryEntries(JSON.parse(output))
+    } catch {
+        return undefined
+    }
+}
+
+export function parseCodexMcpStatusResponse(value: unknown): CodexMcpServerInventory[] | undefined {
+    // A scoped response is used as evidence that a server is absent. A
+    // malformed entry cannot provide that evidence, unlike an empty array.
+    return parseInventoryEntries(value, true)
+}
+
+export function mergeCodexMcpInventories(
+    ...inventories: readonly CodexMcpServerInventory[][]
+): CodexMcpServerInventory[] {
+    const byName = new Map<string, CodexMcpServerInventory>()
+    for (const inventory of inventories) {
+        for (const server of inventory) {
+            const previous = byName.get(server.name)
+            byName.set(server.name, {
+                ...previous,
+                ...server,
+                ...(server.toolNames === undefined && previous?.toolNames
+                    ? { toolNames: previous.toolNames }
+                    : {}),
+                ...(server.enabled === true && previous?.status === 'disabled' && server.status === undefined
+                    ? { status: undefined }
+                    : {}),
+                ...(server.status === undefined && previous?.status && server.enabled !== true && previous?.enabled !== true
+                    ? { status: previous.status }
+                    : {})
+            })
+        }
+    }
+    return Array.from(byName.values()).sort((left, right) => left.name.localeCompare(right.name))
+}
+
+export function listConfiguredCodexMcpServers(
+    resolved: CodexCommand,
+    cwd?: string,
+    args?: readonly string[],
+    codexHome?: string
+): Promise<CodexMcpServerInventory[] | undefined> {
+    return new Promise((resolveInventory) => {
+        let stdout = ''
+        let settled = false
+        const child = spawn(resolved.command, [
+            ...resolved.args,
+            ...filterCodexInventoryArgs(args),
+            'mcp',
+            'list',
+            '--json'
+        ], {
+            env: withBunRuntimeEnv(codexHome ? { ...process.env, CODEX_HOME: codexHome } : process.env),
+            ...(cwd ? { cwd } : {}),
+            windowsHide: process.platform === 'win32'
+        })
+        const finish = (inventory: CodexMcpServerInventory[] | undefined): void => {
+            if (settled) return
+            settled = true
+            clearTimeout(timeout)
+            resolveInventory(inventory)
+        }
+        const timeout = setTimeout(() => {
+            child.kill()
+            finish(undefined)
+        }, CODEX_MCP_LIST_TIMEOUT_MS)
+        child.stdout?.setEncoding('utf8')
+        child.stdout?.on('data', (chunk: string) => {
+            stdout += chunk
+        })
+        child.on('error', () => finish(undefined))
+        child.on('close', (code) => {
+            finish(code === 0 ? parseCodexMcpInventoryOutput(stdout) : undefined)
+        })
+    })
+}

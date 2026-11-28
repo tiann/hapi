@@ -123,6 +123,17 @@ describe('sendClaudeSessionMessage createdAt propagation', () => {
         }))
     })
 
+    it('keeps a supplied usage-event time even when the socket sends later', () => {
+        const { client, fakeSocket } = makeClient()
+        const createdAt = now - 30_000
+        const body = { type: 'token_count', flavor: 'claude', timestamp: new Date(createdAt).toISOString() }
+        client.sendAgentMessage(body, undefined, { createdAt })
+        expect(fakeSocket.emit).toHaveBeenCalledWith('message', expect.objectContaining({
+            sid: 'session-1', createdAt,
+            message: expect.objectContaining({ content: expect.objectContaining({ data: body }) })
+        }))
+    })
+
     it('local Claude prompt: preserves original time without stamping isTranscriptEcho', () => {
         const { client, fakeSocket } = makeClient()
         const body = {
