@@ -43,7 +43,7 @@ Steer, effort and history controls apply to sessions under remote control. The w
 | GitHub Copilot | — | ✓ | — | — | — |
 | Kimi | — | ✓ | — | — | — |
 | OpenCode | ✓ | ✓ (reasoning effort) | Probed (OpenCode v2) | — | ✓ |
-| DeepSeek Harness | — | — | — | — | — |
+| DeepSeek Harness | — | ✓ (reasoning effort) | — | — | ✓ |
 | Antigravity | ✓ (ACP sessions) | ✓ | — | — | — |
 | Pi | ✓ | ✓ | Probed | — | ✓ |
 
@@ -387,14 +387,23 @@ export HAPI_DSH_ACP_ARGS_JSON='["--dir", "/path/to/deepseek-harness", "run", "de
 hapi dsh
 ```
 
+Existing DSH sessions can be imported from `~/.dsh/sessions/` (see
+[Import local sessions](./import-local-sessions.md)).
+
 DSH sessions are remote-only. With a persistent DSH ACP profile, HAPI stores the
 native DSH session id and restores model context with `session/resume` after a
 restart or archive. The resume call does not replay the transcript; HAPI's Hub
 message history remains the source for the chat UI. HAPI does not inject MCP
 servers. Model selection is available: the DSH composition's model catalog is
 exposed through the session RPC `ListDshModels` and applied per turn with ACP
-`session/set_config_option`. Effort pickers are not exposed because the
-official ACP contract leaves that surface to the DSH composition. Pending
+`session/set_config_option`. Reasoning effort is switched the same way, through
+DSH's `reasoning_effort` config option (category `thought_level`). The levels
+come from the model catalog (`GET /api/sessions/:id/dsh-models` → `effortOptions`;
+each entry of the machine catalog carries `reasoningEfforts`): `off`, `low`,
+`high` and `max` on the stock DeepSeek adapter, which always declares a default
+effort, so there is no "Default" level to pick. A session that was never given
+a level shows the one DSH actually runs with, and the level is re-asserted
+after a model switch (DSH itself resets it to the new model's default). Pending
 one-shot permission requests remain answerable in the standard HAPI UI, but
 the ACP composition owns the overall permission policy. A legacy or
 fresh-session-only server falls back to a new session and surfaces that outcome

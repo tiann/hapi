@@ -31,13 +31,21 @@ describe('agent config descriptors', () => {
         }))
     })
 
-    test('reports DSH permission as managed by its ACP composition', () => {
+    test('reports DSH effort as a model-sourced select and permission as managed by its ACP composition', () => {
         const descriptor = getAgentConfigDescriptor('dsh')
-        expect(descriptor.fields).toEqual([expect.objectContaining({
-            id: 'permission',
-            kind: 'status',
-            availability: 'managed'
-        })])
+        expect(descriptor.fields).toEqual([
+            expect.objectContaining({
+                id: 'effort',
+                kind: 'select',
+                optionSource: 'model',
+                availability: 'both'
+            }),
+            expect.objectContaining({
+                id: 'permission',
+                kind: 'status',
+                availability: 'managed'
+            })
+        ])
     })
 
     test('reports Pi permission as managed rather than pretending YOLO applies', () => {

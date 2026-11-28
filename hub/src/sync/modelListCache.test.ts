@@ -164,6 +164,25 @@ describe('SyncEngine model-list cache', () => {
         expect(rpcCalls.length).toBe(2)
     })
 
+    it('drops the cached dsh session catalog when the session model changes', async () => {
+        const { engine, rpcCalls } = makeEngine()
+
+        await engine.listDshModelsForSession('session-1')
+        await engine.listDshModelsForSession('session-1')
+        expect(rpcCalls.length).toBe(1)
+
+        // dsh's session catalog describes the CURRENT model (its effort
+        // options), so a model switch must invalidate the cached answer.
+        await engine.applySessionConfig('session-1', { model: '["deepseek-official","deepseek-v4-pro"]' })
+        await engine.listDshModelsForSession('session-1')
+        expect(rpcCalls.length).toBe(2)
+
+        // An effort-only change does not move the model: the catalog stays cached.
+        await engine.applySessionConfig('session-1', { modelReasoningEffort: 'low' })
+        await engine.listDshModelsForSession('session-1')
+        expect(rpcCalls.length).toBe(2)
+    })
+
     it('caches session-scope pi model lists independently of machines', async () => {
         const { engine, rpcCalls } = makeEngine()
 

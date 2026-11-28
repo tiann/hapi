@@ -35,7 +35,7 @@ import { createGitRoutes } from './routes/git'
 import { createCliRoutes } from './routes/cli'
 import { createCodexDesktopRoutes } from './routes/codexDesktop'
 import { createLocalSessionRoutes } from './routes/localSessions/createLocalSessionRoutes'
-import { PI_LOCAL_SESSION_SOURCE, OPENCODE_LOCAL_SESSION_SOURCE, CLAUDE_LOCAL_SESSION_SOURCE } from './routes/localSessions/sources'
+import { PI_LOCAL_SESSION_SOURCE, OPENCODE_LOCAL_SESSION_SOURCE, CLAUDE_LOCAL_SESSION_SOURCE, DSH_LOCAL_SESSION_SOURCE } from './routes/localSessions/sources'
 import { createCursorLocalSessionRoutes } from './routes/cursorLocalSessions'
 import { createPushRoutes } from './routes/push'
 import { createDevicesRoutes } from './routes/devices'
@@ -417,7 +417,7 @@ export function createWebApp(options: {
     app.route('/api', createLocalSessionRoutes({
         store: options.store,
         getSyncEngine: options.getSyncEngine,
-        sources: [PI_LOCAL_SESSION_SOURCE, OPENCODE_LOCAL_SESSION_SOURCE, CLAUDE_LOCAL_SESSION_SOURCE]
+        sources: [PI_LOCAL_SESSION_SOURCE, OPENCODE_LOCAL_SESSION_SOURCE, CLAUDE_LOCAL_SESSION_SOURCE, DSH_LOCAL_SESSION_SOURCE]
     }))
     // Cursor: same REST pair as the registry flavors, but import runs ACP
     // prepare/verify then attaches an empty-message HAPI row (resume owns scrollback).

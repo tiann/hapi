@@ -5,6 +5,8 @@ import {
     CodexLocalSessionWithMessagesSchema,
     type ClaudeLocalSessionSummary,
     type ClaudeLocalSessionWithMessages,
+    type DshLocalSessionSummary,
+    type DshLocalSessionWithMessages,
     type OpencodeLocalSessionSummary,
     type OpencodeLocalSessionWithMessages,
     type PiLocalSessionSummary,
@@ -22,7 +24,7 @@ import {
  * array here); scrollback comes from ACP resume after prepare/verify.
  */
 
-export const LOCAL_SESSION_FLAVORS = ['codex', 'pi', 'opencode', 'claude', 'cursor'] as const
+export const LOCAL_SESSION_FLAVORS = ['codex', 'pi', 'opencode', 'claude', 'cursor', 'dsh'] as const
 
 export type LocalSessionFlavor = typeof LOCAL_SESSION_FLAVORS[number]
 
@@ -70,7 +72,10 @@ export const LocalTranscriptSummarySchema = z.object({
         effort: z.string().nullable().optional()
     }).optional(),
     /** Flavor-only display fields, flattened into list responses unchanged. */
-    extra: z.record(z.string(), z.union([z.string(), z.number(), z.null()])).optional()
+    extra: z.record(z.string(), z.union([z.string(), z.number(), z.null()])).optional(),
+    /** The source could list this session but cannot hand over its
+     * transcript (too large for one transport frame, log unreadable). */
+    importError: z.object({ code: z.string().min(1), message: z.string() }).optional()
 })
 
 export type LocalTranscriptSummary = z.infer<typeof LocalTranscriptSummarySchema>
@@ -121,6 +126,7 @@ function transcriptSummaryBase(parts: {
     messageCount?: number
     launch?: LocalTranscriptSummary['launch']
     extra?: LocalTranscriptSummary['extra']
+    importError?: LocalTranscriptSummary['importError']
 }): LocalTranscriptSummary {
     return {
         flavor: parts.flavor,
@@ -132,7 +138,8 @@ function transcriptSummaryBase(parts: {
         modifiedAt: parts.modifiedAt,
         ...(parts.messageCount !== undefined ? { messageCount: parts.messageCount } : {}),
         ...(parts.launch ? { launch: parts.launch } : {}),
-        ...(parts.extra ? { extra: parts.extra } : {})
+        ...(parts.extra ? { extra: parts.extra } : {}),
+        ...(parts.importError ? { importError: parts.importError } : {})
     }
 }
 
@@ -257,6 +264,35 @@ export function opencodeToTranscriptSummary(session: OpencodeLocalSessionSummary
 export function opencodeToTranscript(session: OpencodeLocalSessionWithMessages): LocalTranscript {
     return {
         ...opencodeToTranscriptSummary(session),
+        messages: session.messages.map((message) => ({
+            id: message.localId,
+            createdAt: message.createdAt,
+            content: message.content
+        }))
+    }
+}
+
+// -- DSH ---------------------------------------------------------------------
+
+export function dshToTranscriptSummary(session: DshLocalSessionSummary): LocalTranscriptSummary {
+    return transcriptSummaryBase({
+        flavor: 'dsh',
+        id: session.id,
+        title: session.title,
+        lastUserMessage: session.lastUserMessage ?? null,
+        cwd: session.cwd ?? null,
+        file: session.file,
+        modifiedAt: session.modifiedAt,
+        // Only a real value becomes a launch hint, like OpenCode's v2 model.
+        ...(session.model ? { launch: { model: session.model } } : {}),
+        extra: session.extra ?? {},
+        ...(session.importError ? { importError: session.importError } : {})
+    })
+}
+
+export function dshToTranscript(session: DshLocalSessionWithMessages): LocalTranscript {
+    return {
+        ...dshToTranscriptSummary(session),
         messages: session.messages.map((message) => ({
             id: message.localId,
             createdAt: message.createdAt,

@@ -200,8 +200,16 @@ export function createLocalSessionRoutes(options: {
             if (!fetched.success) {
                 return c.json({ success: false, error: fetched.error, results: [], machineId: machine.id }, 503)
             }
+            // A session the runner listed but cannot hand over (too large for
+            // one frame, log unreadable) carries its own reason. `importError`
+            // decides, not the presence of a `messages` key: a stand-in that
+            // still carries an empty array must never be filed as an empty
+            // transcript.
+            const rejections = new Map(fetched.sessions
+                .filter((session) => session.importError !== undefined)
+                .map((session) => [session.id, session.importError!]))
             const transcripts = new Map(fetched.sessions
-                .filter((session): session is LocalTranscript => 'messages' in session)
+                .filter((session): session is LocalTranscript => 'messages' in session && session.importError === undefined)
                 .map((session) => [session.id, session]))
             const resultIdKey = source.legacy?.resultIdKey ?? `${source.flavor}SessionId`
             const requestMetadata = source.requestMetadata?.(body)
@@ -212,7 +220,8 @@ export function createLocalSessionRoutes(options: {
                     results.push({
                         sessionId,
                         [resultIdKey]: sessionId,
-                        error: { code: 'not_found', message: `${source.displayName} session transcript not found` }
+                        error: rejections.get(sessionId)
+                            ?? { code: 'not_found', message: `${source.displayName} session transcript not found` }
                     })
                     if (source.batch === 'stopOnFirstError') break
                     continue

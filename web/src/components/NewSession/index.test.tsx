@@ -40,6 +40,7 @@ const mocks = vi.hoisted(() => ({
     opencodeVariantsEnabled: false,
     piDialogSelection: ['pi-native-1'] as string[],
     claudeDialogSelection: ['claude-native-1'] as string[],
+    dshDialogSelection: ['dsh-native-1'] as string[],
     piModels: [] as PiModelSummary[],
     piModelsLoading: false,
     piModelsError: null as string | null,
@@ -232,6 +233,13 @@ vi.mock('@/components/ClaudeSessionImportDialog', () => ({
         </button>
     ) : null
 }))
+vi.mock('@/components/DshSessionImportDialog', () => ({
+    DshSessionImportDialog: (props: { isOpen: boolean; sessions: Array<{ id: string }>; onConfirm: (ids: string[]) => Promise<void> }) => props.isOpen ? (
+        <button type="button" data-testid="select-dsh-history" disabled={props.sessions.length === 0} onClick={() => void props.onConfirm(mocks.dshDialogSelection)}>
+            select dsh history
+        </button>
+    ) : null
+}))
 vi.mock('./DirectorySection', () => ({ DirectorySection: () => null }))
 vi.mock('./MachineSelector', () => ({
     MachineSelector: (props: { machines: Machine[]; machineId: string | null; isDisabled: boolean; onChange: (machineId: string) => void }) => (
@@ -324,9 +332,9 @@ vi.mock('./ModelSelector', () => ({
     )
 }))
 vi.mock('./ActionButtons', () => ({
-    ActionButtons: (props: { onCreate: () => void; onCancel: () => void; onChooseFolder?: () => void; canCreate: boolean }) => (
+    ActionButtons: (props: { onCreate: () => void; onCancel: () => void; onChooseFolder?: () => void; canCreate: boolean; isPending?: boolean }) => (
         <>
-            <button type="button" data-testid="create" disabled={!props.canCreate} onClick={props.onCreate}>create</button>
+            <button type="button" data-testid="create" disabled={!props.canCreate} aria-busy={props.isPending ? 'true' : 'false'} onClick={props.onCreate}>create</button>
             <button type="button" data-testid="cancel" onClick={props.onCancel}>cancel</button>
             {props.onChooseFolder ? <button type="button" data-testid="browse" onClick={props.onChooseFolder}>browse</button> : null}
         </>
@@ -406,6 +414,7 @@ describe('NewSession launch preferences', () => {
         mocks.opencodeVariantsLoading = false
         mocks.opencodeVariantsEnabled = false
         mocks.piDialogSelection = ['pi-native-1']
+        mocks.dshDialogSelection = ['dsh-native-1']
         mocks.piModels = []
         mocks.piModelsLoading = false
         mocks.piModelsError = null
@@ -1410,6 +1419,149 @@ describe('NewSession launch preferences', () => {
         })
         expect(piApi.reopenSession).toHaveBeenCalledWith('hapi-imported-1')
         expect(mocks.spawnSession).not.toHaveBeenCalled()
+    })
+
+    const dshHistory = (ids: string[]) => ({
+        success: true,
+        machineId: 'machine-1',
+        sessions: ids.map((id, index) => ({
+            id,
+            title: `DSH ${id}`,
+            lastUserMessage: '帮我修一下登录页',
+            cwd: 'C:\\repo',
+            file: `C:\\Users\\u\\.dsh\\sessions\\x\\${id}\\session.v4.jsonl.zstd`,
+            modifiedAt: index,
+            turns: 2,
+            model: 'glm-5.4'
+        }))
+    })
+
+    it('continues a chosen DSH history: import, reopen, land in the session', async () => {
+        savePreferredAgent('dsh')
+        const dshApi = {
+            getDshSessions: vi.fn().mockResolvedValue(dshHistory(['dsh-native-1'])),
+            importDshSessions: vi.fn().mockResolvedValue({
+                success: true,
+                machineId: 'machine-1',
+                results: [{ dshSessionId: 'dsh-native-1', hapiSessionId: 'hapi-imported-dsh', action: 'created', appended: 40 }]
+            }),
+            reopenSession: vi.fn().mockResolvedValue({ ok: true, sessionId: 'hapi-imported-dsh', resumed: true })
+        } as unknown as ApiClient
+
+        renderWithQuery(
+            <NewSession
+                api={dshApi}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory={'C:\\repo'}
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        fireEvent.click(screen.getByRole('button', { name: 'dshSync.inline.choose' }))
+        await waitFor(() => expect(screen.getByTestId('select-dsh-history')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('select-dsh-history'))
+        fireEvent.click(screen.getByTestId('create'))
+
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('hapi-imported-dsh'))
+        const request = (dshApi.importDshSessions as ReturnType<typeof vi.fn>).mock.calls[0]![0] as Record<string, unknown>
+        expect(request).toMatchObject({ sessionIds: ['dsh-native-1'], cwd: 'C:\\repo', machineId: 'machine-1' })
+        // No effort was picked: the key stays absent so the level the native
+        // session ran with survives the import.
+        expect(request).not.toHaveProperty('modelReasoningEffort')
+        expect(dshApi.reopenSession).toHaveBeenCalledWith('hapi-imported-dsh')
+        expect(mocks.spawnSession).not.toHaveBeenCalled()
+    })
+
+    it('keeps the form pending during a DSH import, then shows a per-session error and allows a retry', async () => {
+        savePreferredAgent('dsh')
+        let releaseFirst!: (value: unknown) => void
+        const dshApi = {
+            getDshSessions: vi.fn().mockResolvedValue(dshHistory(['dsh-native-1'])),
+            importDshSessions: vi.fn()
+                .mockImplementationOnce(() => new Promise((resolve) => { releaseFirst = resolve }))
+                .mockResolvedValue({
+                    success: true,
+                    machineId: 'machine-1',
+                    results: [{ dshSessionId: 'dsh-native-1', hapiSessionId: 'hapi-imported-dsh', action: 'created', appended: 40 }]
+                }),
+            reopenSession: vi.fn().mockResolvedValue({ ok: true, sessionId: 'hapi-imported-dsh', resumed: true })
+        } as unknown as ApiClient
+
+        renderWithQuery(
+            <NewSession
+                api={dshApi}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory={'C:\\repo'}
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        fireEvent.click(screen.getByRole('button', { name: 'dshSync.inline.choose' }))
+        await waitFor(() => expect(screen.getByTestId('select-dsh-history')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('select-dsh-history'))
+        fireEvent.click(screen.getByTestId('create'))
+
+        // Import + reopen in flight: the form reads as busy.
+        await waitFor(() => expect(dshApi.importDshSessions).toHaveBeenCalledTimes(1))
+        expect(screen.getByTestId('create')).toHaveAttribute('aria-busy', 'true')
+
+        // The runner refused this one session (too large for one frame).
+        releaseFirst({
+            success: false,
+            results: [{ dshSessionId: 'dsh-native-1', error: { code: 'transcript_too_large', message: 'DSH session is too large to import (83.4MB compressed log).' } }]
+        })
+        await waitFor(() => expect(screen.getByText(/dshSync\.error\.tooLarge/)).toBeTruthy())
+        expect(screen.getByTestId('create')).toHaveAttribute('aria-busy', 'false')
+
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('hapi-imported-dsh'))
+    })
+
+    it('bulk-imports the chosen DSH sessions in the background', async () => {
+        savePreferredAgent('dsh')
+        mocks.dshDialogSelection = ['dsh-native-1', 'dsh-native-2']
+        const dshApi = {
+            getDshSessions: vi.fn().mockResolvedValue(dshHistory(['dsh-native-1', 'dsh-native-2'])),
+            importDshSessions: vi.fn().mockResolvedValue({
+                success: true,
+                machineId: 'machine-1',
+                results: [
+                    { dshSessionId: 'dsh-native-1', hapiSessionId: 'hapi-1', action: 'created', appended: 3 },
+                    { dshSessionId: 'dsh-native-2', hapiSessionId: 'hapi-2', action: 'created', appended: 4 }
+                ]
+            })
+        } as unknown as ApiClient
+
+        renderWithQuery(
+            <NewSession
+                api={dshApi}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory={'C:\\repo'}
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        fireEvent.click(screen.getByRole('button', { name: 'dshSync.inline.choose' }))
+        await waitFor(() => expect(screen.getByTestId('select-dsh-history')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('select-dsh-history'))
+
+        await waitFor(() => expect(mocks.refetchSessions).toHaveBeenCalled())
+        expect(dshApi.importDshSessions).toHaveBeenCalledWith({
+            sessionIds: ['dsh-native-1', 'dsh-native-2'],
+            cwd: 'C:\\repo',
+            machineId: 'machine-1'
+        })
+        expect(mocks.addToast).toHaveBeenCalledWith(expect.objectContaining({
+            title: 'dshSync.success.title',
+            body: 'dshSync.success.body'
+        }))
+        expect(mocks.onSuccess).not.toHaveBeenCalled()
     })
 
     it('imports the selected Claude history with the chosen launch settings before reopening it', async () => {

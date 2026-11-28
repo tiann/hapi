@@ -22,6 +22,12 @@ export async function runDsh(opts: {
     reservedSessionId?: string
     /** Spawn-time model override (opaque ACP config-option value). */
     model?: string
+    /** Spawn-time reasoning-effort preference (off/low/high/max; dsh's
+     *  `reasoning_effort` ACP config option, category thought_level). Seeded
+     *  as the live preference so the first queued turn applies it through
+     *  session/set_config_option; the "Default" reset maps null → '' like
+     *  the in-chat picker. */
+    modelReasoningEffort?: string
     /** Spawn-time permission mode — pinned into the child env as
      * DSH_PERMISSION_MODE (read-only / danger-full-access); dsh reads it only
      * at spawn and has no runtime mode RPC. */
@@ -49,7 +55,8 @@ export async function runDsh(opts: {
             workingDirectory,
             agentState: initialState,
             reservedSessionId: opts.reservedSessionId,
-            model: opts.model
+            model: opts.model,
+            modelReasoningEffort: opts.modelReasoningEffort
         })
     const { api, session, sessionInfo } = bootstrap
     setControlledByUser(session, startingMode)
@@ -62,8 +69,10 @@ export async function runDsh(opts: {
     // reset, string = a concrete model. Only the config RPC ever sets null.
     let currentModel: string | null | undefined = opts.model
     // Reasoning-effort preference (undefined until the picker is used; null =
-    // the "Default" reset, mapped to DSH's '' = Provider default).
-    let currentReasoningEffort: string | null | undefined = undefined
+    // the "Default" reset, mapped to DSH's '' = Provider default). A spawn-time
+    // --model-reasoning-effort seeds it so the first queued turn applies it
+    // through session/set_config_option.
+    let currentReasoningEffort: string | null | undefined = opts.modelReasoningEffort
 
     const syncSessionMode = () => {
         const active = sessionRef.current
@@ -140,16 +149,24 @@ export async function runDsh(opts: {
             syncSessionMode()
         },
         onEffortRollback: (effort) => {
-            // A failed effort switch never took on the dsh side: reset the
-            // tracking to the launcher's live value and re-sync so the hub
-            // picker drops the failed pick and later turns stop carrying it
-            // (mirror of the model rollback path above). A dropped
-            // preference arrives as undefined; normalize it to null — the
-            // explicit "Default" spelling — so the keepalive overwrite
-            // clears the picker instead of leaving the last value in place
-            // (undefined is skipped by the merge), and later turns carry an
-            // explicit '' reset rather than no opinion.
-            currentReasoningEffort = effort ?? null
+            // A failed effort switch never took on the dsh side: track what
+            // the launcher really runs with (mirror of the model rollback
+            // path above). undefined = nothing tracked, and it must STAY
+            // undefined: normalizing it to null would put an explicit
+            // "Default" on every later turn and re-fail the switch each time.
+            // The picker's failed pick is cleared once, right here — this
+            // keepalive writes null (which overwrites the hub value) while
+            // later keepalives carry no effort opinion at all.
+            currentReasoningEffort = effort
+            const active = sessionRef.current
+            if (!active) return
+            active.setModelReasoningEffort(effort ?? null)
+            active.pushKeepAlive()
+        },
+        onEffortDiscovered: (effort) => {
+            // The session came up on a level nobody picked (dsh always runs on
+            // some level): show it instead of a "Default" dsh does not have.
+            currentReasoningEffort = effort
             syncSessionMode()
         },
         onConfigDiscovered: (model) => {

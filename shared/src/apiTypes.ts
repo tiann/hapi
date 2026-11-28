@@ -1343,9 +1343,21 @@ export type GrokModelSummary = {
     reasoningEfforts?: GrokReasoningEffortOption[]
 }
 
+export type DshReasoningEffortOption = {
+    value: string
+    name?: string
+    description?: string
+}
+
 export type DshModelSummary = {
     modelId: string
     name?: string
+    /** This model's reasoning-effort levels, captured at probe time by
+     * switching the throwaway probe session onto the model and reading its
+     * `reasoning_effort` config option (category thought_level). Absent when
+     * the model exposes no thought_level option, or when the probe used up
+     * its time budget before reaching the model. */
+    reasoningEfforts?: DshReasoningEffortOption[]
 }
 
 /**
@@ -1357,9 +1369,63 @@ export type DshModelsResponse = {
     success: boolean
     availableModels?: DshModelSummary[]
     currentModelId?: string | null
+    /** The live `reasoning_effort` config option of the session's CURRENT
+     * model — session-scoped queries only (the machine probe attaches
+     * per-model reasoningEfforts instead). Undefined until the session
+     * answered; `[]` once it says the current model has no thought levels. */
+    effortOptions?: DshReasoningEffortOption[]
+    /** The level the session currently runs with (session-scoped queries). */
+    currentEffortId?: string | null
     error?: string
 }
 export type ListDshModelsResponse = DshModelsResponse
+
+/**
+ * One importable DSH session as read from its durable on-disk log
+ * (`~/.dsh/sessions/<projectKey>/<id>/session.v4.jsonl.zstd` first frame)
+ * plus the projection cache (`storages/session_projcache/sessions/<id>.json`).
+ * ACP session/list only exposes {sessionId, cwd} — the disk side is where
+ * title/timestamps/tokens/turns live.
+ */
+export const DshLocalSessionSummarySchema = z.object({
+    id: z.string().min(1),
+    title: z.string(),
+    lastUserMessage: z.string().nullable().optional(),
+    cwd: z.string().nullable().optional(),
+    file: z.string().min(1),
+    modifiedAt: z.number(),
+    /** Opaque ACP model value (`JSON.stringify([provider, model])`) the
+     * session last ran with; a launch hint like OpenCode's v2 model. */
+    model: z.string().nullable().optional(),
+    /** Display extras (turns, readable model id), flattened into list
+     * responses unchanged. */
+    extra: z.record(z.string(), z.union([z.string(), z.number(), z.null()])).optional(),
+    /** Set when this session was requested as a transcript but cannot be
+     * imported (too large for one transport frame, log unreadable). The item
+     * then carries no messages and the hub reports it per session. */
+    importError: z.object({ code: z.string().min(1), message: z.string() }).optional()
+})
+
+export type DshLocalSessionSummary = z.infer<typeof DshLocalSessionSummarySchema>
+
+/** DSH folded transcript rows reuse the Codex imported-message union: user
+ * text plus agent payloads in the CodexMessage shapes the web renders for
+ * every flavor (message / reasoning / tool-call / tool-call-result / error). */
+export const DshImportedMessageContentSchema = CodexImportedMessageSchema
+
+export const DshImportedMessageSchema = z.object({
+    localId: z.string().min(1),
+    /** The log event time; absent only on a foreign log (the importer then
+     * stamps the import time, like Codex rows). */
+    createdAt: z.number().optional(),
+    content: DshImportedMessageContentSchema
+})
+
+export const DshLocalSessionWithMessagesSchema = DshLocalSessionSummarySchema.extend({
+    messages: z.array(DshImportedMessageSchema)
+})
+
+export type DshLocalSessionWithMessages = z.infer<typeof DshLocalSessionWithMessagesSchema>
 
 export type GrokReasoningEffortOption = {
     value: string

@@ -43,6 +43,36 @@ describe('EffortField', () => {
         expect(Array.from(select.options).map((option) => option.value)).toEqual(['auto', 'high'])
     })
 
+    it('renders a dsh Default row so an unset pick does not read as Off', () => {
+        // A native select with no matching option shows its FIRST option: the
+        // form used to read "Off" while dsh started on its own default level.
+        const onChange = vi.fn()
+        const { container } = render(
+            <EffortField
+                {...baseProps}
+                agent="dsh"
+                onReasoningEffortChange={onChange}
+                dshOptions={[{ value: 'off', label: 'Off' }, { value: 'max', label: 'Max' }]}
+            />
+        )
+        const select = container.querySelector('select') as HTMLSelectElement
+        expect(Array.from(select.options).map((option) => option.value)).toEqual(['default', 'off', 'max'])
+        expect(select.value).toBe('default')
+        expect(select.selectedOptions[0]?.textContent).toBe('newSession.model.default')
+        fireEvent.change(select, { target: { value: 'max' } })
+        expect(onChange).toHaveBeenCalledWith('max')
+        // …and the pick can go back to unset.
+        fireEvent.change(select, { target: { value: 'default' } })
+        expect(onChange).toHaveBeenLastCalledWith('default')
+    })
+
+    it('hides the dsh effort select until the selected model lists its levels', () => {
+        const missing = render(<EffortField {...baseProps} agent="dsh" />)
+        expect(missing.container.querySelector('select')).toBeNull()
+        const empty = render(<EffortField {...baseProps} agent="dsh" dshOptions={[]} />)
+        expect(empty.container.querySelector('select')).toBeNull()
+    })
+
     it('renders Claude static effort levels', () => {
         const { container } = render(
             <EffortField {...baseProps} agent="claude" />

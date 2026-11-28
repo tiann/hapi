@@ -57,7 +57,7 @@ to the agent; the other agents ignore them.
 | `--permission-mode <mode>` | Initial permission mode. Allowed values depend on the agent (for example Claude `default`, `acceptEdits`, `auto`, `bypassPermissions`, `plan`). Pi has none. |
 | `--yolo` | Shortcut for the agent's auto-approve mode (`bypassPermissions`, `yolo` or `always-proceed`). Ignored when `--permission-mode` is given. |
 | `--model <id>` | Model to start with. |
-| `--effort <level>` | Reasoning effort, where the agent supports it. Codex uses `--model-reasoning-effort`; `hapi dsh` rejects it. |
+| `--effort <level>` | Reasoning effort, where the agent supports it. Codex and `hapi dsh` use `--model-reasoning-effort` (dsh levels: `off` / `low` / `high` / `max`, as listed by its model catalog); `hapi dsh` rejects `--effort`. |
 | `--resume <id>` | Resume a native agent conversation. Codex uses `hapi codex resume` instead. |
 
 ### Per-agent flags
