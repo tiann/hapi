@@ -93,7 +93,8 @@ export const ReasoningGroup: FC<HappyReasoningGroupProps> = ({
     startIndex = 0,
     endIndex,
 }) => {
-    const [isOpen, setIsOpen] = useState(false)
+    const { reasoningCollapsed } = useReasoningCollapse()
+    const [isOpen, setIsOpen] = useState(() => !reasoningCollapsed)
     const scrollRef = useRef<HTMLDivElement | null>(null)
     const followLatestRef = useRef(true)
     const pointerActiveRef = useRef(false)
@@ -104,17 +105,15 @@ export const ReasoningGroup: FC<HappyReasoningGroupProps> = ({
         const parts = state.message.parts.slice(startIndex, endIndex === undefined ? undefined : endIndex + 1)
         return parts.some((part) => part.type === 'reasoning' && part.status.type === 'running')
     })
-    const { reasoningCollapsed } = useReasoningCollapse()
     const chatContext = useOptionalHappyChatContext()
 
     useEffect(() => {
-        if (!isStreaming) return
         const nextOpen = !reasoningCollapsed
         if (nextOpen) {
             followLatestRef.current = true
         }
         setIsOpen(nextOpen)
-    }, [isStreaming, reasoningCollapsed])
+    }, [reasoningCollapsed])
 
     useEffect(() => {
         if (isOpen || followLatestRef.current) return
