@@ -37,6 +37,7 @@ import { sendVoiceMessage } from '@/lib/dictationSend'
 import { inactiveSessionBannerKey, inactiveSessionCanResume } from '@/lib/sessionResume'
 import {
     getCodexModelReasoningEfforts,
+    resolveCodexModel,
     supportsCodexReasoningEffort
 } from '@/lib/codexModelCapabilities'
 import { createSerialAsyncQueue } from '@/lib/serialAsyncQueue'
@@ -54,6 +55,8 @@ import { AsyncQuestionsPanel } from '@/components/AssistantChat/AsyncQuestionsPa
 import { isAsyncRequestUserInput } from '@/components/ToolCard/requestUserInput'
 import { getPendingRequestNavigationTarget } from '@/lib/pendingRequests'
 import { ScratchlistDrawer } from '@/components/AssistantChat/ScratchlistPanel'
+import { useChatShortcuts } from '@/hooks/useChatShortcuts'
+import { DEFAULT_CHAT_SHORTCUTS, isChatShortcutEvent, isGlobalChatShortcutInScope, matchesChatShortcut } from '@/lib/chatShortcuts'
 import { useHubScratchlist } from '@/lib/use-hub-scratchlist'
 import { useSessions } from '@/hooks/queries/useSessions'
 import { getSessionTitle } from '@/lib/sessionTitle'
@@ -275,12 +278,7 @@ export function shouldAutoClearPendingSchedule(pending: PendingSchedule | null):
 }
 
 /**
- * True if the keystroke matches the scratchlist-mode toggle shortcut
- * (Ctrl/Cmd + Shift + S, no Alt). Pure / exported for unit tests.
- *
- * Convention: matches the v1 always-visible panel's shortcut so muscle
- * memory carries over. Sibling globals follow the same modifier shape
- * (Ctrl/Cmd-m cycles agent model in HappyComposer).
+ * Match the scratchlist-mode binding. The default is Ctrl/Cmd + Shift + S.
  */
 export function isScratchlistToggleHotkey(e: {
     metaKey: boolean
@@ -288,11 +286,8 @@ export function isScratchlistToggleHotkey(e: {
     shiftKey: boolean
     altKey: boolean
     key: string
-}): boolean {
-    if (!(e.metaKey || e.ctrlKey)) return false
-    if (!e.shiftKey) return false
-    if (e.altKey) return false
-    return e.key === 'S' || e.key === 's'
+}, shortcut: string | null = DEFAULT_CHAT_SHORTCUTS.scratchlist): boolean {
+    return matchesChatShortcut(e, shortcut)
 }
 
 /**
@@ -307,7 +302,7 @@ export function isScratchlistToggleHotkey(e: {
  *     role="dialog", as do FueCallout / ScheduleTimePicker / ImagePreview)
  *   - HTMLInputElement (single-line inputs)
  *   - HTMLSelectElement
- *   - any contentEditable host
+ *   - contentEditable hosts outside the chat composer
  *
  * NOT blocked:
  *   - HTMLTextAreaElement (the composer textarea is the normal focus
@@ -322,6 +317,7 @@ export function isScratchlistHotkeyBlockedTarget(target: EventTarget | null): bo
     if (target.closest('[role="dialog"]') !== null) return true
     if (target instanceof HTMLInputElement) return true
     if (target instanceof HTMLSelectElement) return true
+    if (target.closest('[data-composer-shortcut-input]')) return false
     // isContentEditable is the authoritative check in real browsers but
     // jsdom doesn't implement it; the attribute fallback covers both.
     if (target.isContentEditable === true) return true
@@ -1002,41 +998,22 @@ function SessionChatInner(props: SessionChatProps) {
         setScratchlistMode((m) => !m)
     }, [isScratchlistParking])
     const dictateHotkeyRef = useRef<(() => void) | null>(null)
-    /**
-     * Global keyboard shortcut: Ctrl/Cmd + Shift + S toggles scratchlist
-     * mode (open/close drawer + flip composer routing).
-     *
-     * Convention matches the v1 always-visible panel's shortcut so muscle
-     * memory carries over. Other composer-adjacent globals in the app use
-     * the same modifier shape: Ctrl/Cmd-m cycles agent model in
-     * HappyComposer. Ctrl/Cmd-Shift-S is unreserved by Chrome / Firefox /
-     * Safari at the app level (browser Save As is Ctrl-S / Cmd-S, no
-     * Shift), so requiring Shift keeps the user's save-page muscle memory
-     * working. Bound at SessionChat scope (not the drawer) because the
-     * drawer is unmounted while mode is off — a drawer-scoped listener
-     * couldn't reopen it.
-     *
-     * Skipped when focus is inside an open dialog or single-line input
-     * (see isScratchlistHotkeyBlockedTarget). Otherwise fires for any
-     * focus target - composer textarea is the expected case so it's
-     * deliberately allowed. Window-level shortcut without target
-     * filtering would silently toggle mode "behind" modal dialogs
-     * (rename, schedule picker, FUE callout); the bot caught this on
-     * PR #798.
-     */
+    const { scratchlist: scratchlistShortcut, dictation: dictationShortcut } = useChatShortcuts()
+    // Keep the binding active when the drawer is closed and unmounted.
     useEffect(() => {
         const onKeyDown = (e: globalThis.KeyboardEvent) => {
             if (isScratchlistParking) return
-            if (!isScratchlistToggleHotkey(e)) return
+            if (!isChatShortcutEvent(e) || !isScratchlistToggleHotkey(e, scratchlistShortcut)) return
+            if (!isGlobalChatShortcutInScope(e)) return
             if (isScratchlistHotkeyBlockedTarget(e.target)) return
             e.preventDefault()
             setScratchlistMode((m) => !m)
         }
         window.addEventListener('keydown', onKeyDown)
         return () => window.removeEventListener('keydown', onKeyDown)
-    }, [isScratchlistParking])
+    }, [isScratchlistParking, scratchlistShortcut])
     /**
-     * Global keyboard shortcut: Ctrl/Cmd + Shift + D toggles composer
+     * The voice shortcut toggles composer
      * dictation (Settings → Voice mode: dictation) or voice assistant,
      * using the same effective toggle as the mic / dictate buttons in
      * HappyComposer. Skipped for dialog / single-line input targets;
@@ -1044,8 +1021,8 @@ function SessionChatInner(props: SessionChatProps) {
      */
     useEffect(() => {
         const onKeyDown = (e: globalThis.KeyboardEvent) => {
-            if (e.repeat) return
-            if (!isDictateToggleHotkey(e)) return
+            if (!isChatShortcutEvent(e) || !isDictateToggleHotkey(e, dictationShortcut)) return
+            if (!isGlobalChatShortcutInScope(e)) return
             if (isDictateHotkeyBlockedTarget(e.target)) return
             const invoke = dictateHotkeyRef.current
             if (!invoke) return
@@ -1054,7 +1031,7 @@ function SessionChatInner(props: SessionChatProps) {
         }
         window.addEventListener('keydown', onKeyDown)
         return () => window.removeEventListener('keydown', onKeyDown)
-    }, [])
+    }, [dictationShortcut])
     /**
      * Global select-all takeover: see applyGlobalSelectAll. Bound at
      * window scope because the broken case is focus on the page body /
@@ -1207,6 +1184,7 @@ function SessionChatInner(props: SessionChatProps) {
         [props.onSend, props.api, props.session.id, props.session.metadata?.capabilities?.concurrentClients, navigate, scratchlist, scratchlistMode],
     )
     const agentFlavor = props.session.metadata?.flavor ?? null
+    const supportsModelReasoningEffort = agentFlavor === 'codex' || agentFlavor === 'opencode' || agentFlavor === 'dsh'
     // The effort-options query is keyed by session only, so a stale option
     // list from the previous model would survive a switch. Reset when the
     // session model changes. `session.model` is updated by the hub at REST-ack
@@ -2641,7 +2619,10 @@ function SessionChatInner(props: SessionChatProps) {
                         collaborationMode={codexCollaborationModeSupported ? props.session.collaborationMode : undefined}
                         copilotAgentMode={agentFlavor === 'copilot' ? props.session.copilotAgentMode : undefined}
                         model={agentFlavor === 'agy' ? agyCurrentModel : props.session.model}
-                        modelReasoningEffort={agentFlavor === 'codex' || agentFlavor === 'opencode' ? props.session.modelReasoningEffort : undefined}
+                        modelReasoningEffort={supportsModelReasoningEffort ? props.session.modelReasoningEffort : undefined}
+                        defaultModelReasoningEffort={agentFlavor === 'codex'
+                            ? resolveCodexModel(codexModelsState.models, props.session.model)?.defaultReasoningEffort
+                            : undefined}
                         effort={agentFlavor === 'agy' ? agyCurrentEffort : props.session.effort}
                         agentFlavor={agentFlavor}
                         machineId={sessionMachineId}
@@ -2790,7 +2771,7 @@ function SessionChatInner(props: SessionChatProps) {
                                 : undefined
                         }
                         onModelReasoningEffortChange={
-                            (agentFlavor === 'codex' || agentFlavor === 'opencode' || agentFlavor === 'dsh')
+                            supportsModelReasoningEffort
                                 && props.session.active
                                 && !controlledByUser
                                 && (agentFlavor !== 'opencode' || opencodeReasoningEffortState.options.length > 0)
