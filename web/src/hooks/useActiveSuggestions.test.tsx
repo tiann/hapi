@@ -207,6 +207,40 @@ describe('useActiveSuggestions', () => {
         expect(result.current[1]).toBe(0)
     })
 
+    it('highlights the best match when a better one arrives and the user has not navigated', async () => {
+        // "/close" typed before the custom commands have loaded: only "/cost" fuzzy-matches.
+        const builtinsOnly = async () => [suggestion('/cost')]
+        const loaded = async () => [suggestion('/close'), suggestion('/cost')]
+        const { result, rerender } = renderHook(
+            ({ handler }) => useActiveSuggestions('/close', handler),
+            { initialProps: { handler: builtinsOnly } }
+        )
+        await waitFor(() => expect(result.current[0]).toHaveLength(1))
+
+        rerender({ handler: loaded })
+
+        await waitFor(() => expect(result.current[0]).toHaveLength(2))
+        expect(result.current[1]).toBe(0)
+    })
+
+    it('highlights the first result again when the query changes, even after navigating', async () => {
+        const handler = async (query: string) => query === '/c'
+            ? [suggestion('/clear'), suggestion('/cost')]
+            : [suggestion('/close'), suggestion('/cost')]
+        const { result, rerender } = renderHook(
+            ({ query }) => useActiveSuggestions(query, handler),
+            { initialProps: { query: '/c' } }
+        )
+        await waitFor(() => expect(result.current[0]).toHaveLength(2))
+        act(() => result.current[3]())
+        expect(result.current[1]).toBe(1)
+
+        rerender({ query: '/close' })
+
+        await waitFor(() => expect(result.current[0][0]?.key).toBe('/close'))
+        expect(result.current[1]).toBe(0)
+    })
+
     it('preserves the selected suggestion by key when a refreshed list is reordered', async () => {
         const initialHandler = vi.fn(async () => [suggestion('one'), suggestion('two'), suggestion('three')])
         const reorderedHandler = vi.fn(async () => [suggestion('two'), suggestion('three'), suggestion('one')])

@@ -21,6 +21,7 @@ import {
 } from "@/modules/common/generatedImages";
 import type { InlineMediaSource } from "@/modules/common/inlineMediaSource";
 import { DISPLAY_IMAGE_TOOL_DESCRIPTION, DISPLAY_MEDIA_TOOL_DESCRIPTION, DISPLAY_VIDEO_TOOL_DESCRIPTION } from "@/modules/common/displayToolDescriptions";
+import { CHANGE_TITLE_TOOL_DESCRIPTION } from "@/modules/common/titleInstruction";
 import { resolveSkill } from "@/modules/common/skills";
 import { SESSION_NAME_MAX_LENGTH, toSessionSummaryMetadata } from '@hapi/protocol'
 import { isPeerToolsDisabled } from "@/modules/common/peerTools";
@@ -357,7 +358,7 @@ function createHapiMcpServer(
     }
     if (enableChangeTitle) {
         registerTool('change_title', {
-            description: 'Change the title of the current HAPI chat session. Call once when the user\'s primary objective is clear; use a concise task title.',
+            description: CHANGE_TITLE_TOOL_DESCRIPTION,
             title: 'Change Chat Title',
             inputSchema: changeTitleInputSchema,
         }, async (args: { title: string }) => {

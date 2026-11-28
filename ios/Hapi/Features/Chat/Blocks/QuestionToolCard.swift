@@ -252,7 +252,10 @@ struct QuestionAnswerFormView: View {
                 .accessibilityLabel("Previous question")
                 .accessibilityIdentifier("question-previous")
             }
-            if !form.fields[index].options.isEmpty {
+            if form.cursorQuestion {
+                Button("Skip") { submit(.deny) }
+                    .accessibilityIdentifier("question-skip")
+            } else if !form.fields[index].options.isEmpty {
                 let expanded = draft.showsText(at: index, in: form)
                 Button {
                     draft.toggleText(at: index, in: form)

@@ -19,6 +19,9 @@ final class SettingsModel {
     /// True when the active hub's JWT namespace is `OwnerGate.ownerNamespace`.
     /// Starts false (fail closed) until the gate resolves.
     private(set) var isOwner = false
+    private(set) var cursorRetry: Bool?
+    private(set) var cursorRetryPending = false
+    private(set) var cursorRetryError: String?
     private(set) var hubInfo: HubInfoState = .loading
 
     var hubUrl: String { session.hubUrl }
@@ -48,6 +51,31 @@ final class SettingsModel {
     private func loadOwnerGate() async {
         let jwt = try? await session.authManager.validToken()
         isOwner = OwnerGate.isOwnerNamespace(jwt: jwt)
+        if isOwner { await updateCursorRetry() }
+    }
+
+    func updateCursorRetry(_ enabled: Bool? = nil) async {
+        guard isOwner, !cursorRetryPending else { return }
+        if let enabled, cursorRetry == nil || cursorRetry == enabled { return }
+        cursorRetryPending = true
+        defer { cursorRetryPending = false }
+        do {
+            let settings: HubSettingsResponse
+            if let enabled { settings = try await session.api.setCursorAutoRetry(enabled) }
+            else { settings = try await session.api.hubSettings() }
+            cursorRetry = settings.autoBridgeTransientModelErrors
+            cursorRetryError = nil
+        } catch is CancellationError {
+            return
+        } catch {
+            cursorRetry = nil
+            let status = (error as? APIError)?.status
+            if status == 403 || status == 404 { cursorRetryError = nil }
+            else {
+                if enabled != nil { cursorRetry = try? await session.api.hubSettings().autoBridgeTransientModelErrors }
+                cursorRetryError = error.localizedDescription
+            }
+        }
     }
 
     private func loadHubInfo() async {
@@ -90,6 +118,7 @@ struct SettingsView: View {
                 languageSection
                 notificationsSection
                 if model.isOwner {
+                    cursorRetrySection
                     insightsSection
                 }
                 aboutSection
@@ -166,6 +195,26 @@ struct SettingsView: View {
             } message: {
                 Text("Removes the stored access token for this hub. Pair again to reconnect.")
             }
+        }
+    }
+
+    @ViewBuilder private var cursorRetrySection: some View {
+        if let enabled = model.cursorRetry {
+            Section {
+                Toggle("Automatically retry transient model errors once", isOn: Binding(
+                    get: { enabled },
+                    set: { value in Task { await model.updateCursorRetry(value) } }
+                ))
+                .disabled(model.cursorRetryPending)
+            } header: { Text(verbatim: "Cursor") }
+              footer: {
+                  if let error = model.cursorRetryError { Text(error) }
+              }
+        } else if let error = model.cursorRetryError {
+            Section {
+                Text(error).foregroundStyle(.secondary)
+                Button("Retry") { Task { await model.updateCursorRetry() } }.disabled(model.cursorRetryPending)
+            } header: { Text("Automatically retry transient model errors once") }
         }
     }
 

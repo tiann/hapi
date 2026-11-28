@@ -2,8 +2,8 @@ import { useCallback, useSyncExternalStore } from 'react'
 
 /**
  * Session list view preferences: sort key, status filter and whether
- * connected sessions sort ahead of archived ones. One store shared by every
- * consumer (sidebar menu, settings page) and synced across tabs.
+ * connected sessions sort ahead of archived ones. The sidebar list and menu
+ * share this store, and preferences sync across tabs.
  */
 export type SessionListSort = 'last-message' | 'created'
 export type SessionListStatus = 'all' | 'active' | 'archived'

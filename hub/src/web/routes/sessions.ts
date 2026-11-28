@@ -39,6 +39,8 @@ import {
     UpdateSessionSummaryRequestSchema,
     supportsModelChange,
     supportsEffort,
+    usesEffortWithModelChange,
+    usesModelReasoningEffort,
     toSessionSummary,
     UPLOAD_CHUNK_MAX_BYTES,
     UploadFileRequestSchema
@@ -1541,7 +1543,7 @@ export function createSessionsRoutes(
         // Pi commits the model before setting its thinking level, so a failure
         // in between would leave half of the request applied.
         const { model, effort } = parsed.data
-        if (effort !== undefined && flavor !== 'claude' && flavor !== 'agy') {
+        if (effort !== undefined && !usesEffortWithModelChange(flavor)) {
             return c.json({ error: 'Effort can only be sent with a model change for Claude and Antigravity sessions' }, 400)
         }
 
@@ -1566,7 +1568,7 @@ export function createSessionsRoutes(
         }
 
         const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
-        if (flavor !== 'codex' && flavor !== 'opencode' && flavor !== 'dsh') {
+        if (!usesModelReasoningEffort(flavor)) {
             return c.json({ error: 'Model reasoning effort is only supported for Codex, OpenCode, and DSH sessions' }, 400)
         }
         if (sessionResult.session.agentState?.controlledByUser === true && !sessionResult.session.metadata?.capabilities?.concurrentClients) {

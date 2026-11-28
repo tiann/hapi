@@ -12,6 +12,7 @@ vi.mock('@/lib/use-translation', () => ({
 }))
 
 import { AskUserQuestionFooter } from './AskUserQuestionFooter'
+import { AskUserQuestionView } from './views/AskUserQuestionView'
 
 function makeTool(id: string, allowFreeText?: boolean): ChatToolCall {
     return {
@@ -169,6 +170,32 @@ describe('AskUserQuestionFooter draft persistence (hapi#1734)', () => {
         expect(denyPermission).not.toHaveBeenCalled()
         expect(field.value).toBe('my answer')
         expect(document.activeElement).not.toBe(field)
+    })
+
+    it('marks the chosen Cursor option by ID when a completed question is reopened', () => {
+        const tool: ChatToolCall = { ...makeTool('cursor-q'), name: 'CursorAskQuestion', input: {
+            questions: [{ id: 'branch', prompt: 'Which branch?', options: [
+                { id: 'dev', label: 'Development' }, { id: 'main', label: 'Main branch' }
+            ] }]
+        }, permission: { id: 'p', status: 'approved', answers: { branch: ['dev'] } } }
+        render(<AskUserQuestionView block={{ kind: 'tool-call', id: 'q', localId: null, createdAt: 1, children: [], tool }} metadata={null} />)
+        const selected = document.querySelector('div[class*="border-[var(--app-md-quote-border)]"][class*="p-[2px]"]')
+        expect(selected?.textContent).toContain('Development')
+        expect(selected?.textContent).not.toContain('Main branch')
+        expect(screen.queryByText('dev')).toBeNull()
+    })
+
+    it('submits only an advertised option ID from a Cursor question', async () => {
+        const tool: ChatToolCall = { ...makeTool('cursor-q'), name: 'CursorAskQuestion', input: {
+            questions: [{ id: 'branch', prompt: 'Which branch?', options: [{ id: 'dev', label: 'Development' }] }]
+        } }
+        const { approvePermission } = renderFooter('session-A', tool)
+        expect(screen.queryByText('tool.other')).toBeNull()
+        fireEvent.click(screen.getByRole('radio', { name: /Development/ }))
+        fireEvent.click(screen.getByRole('button', { name: 'tool.submit' }))
+        await vi.waitFor(() => expect(approvePermission).toHaveBeenCalledWith(
+            'session-A', 'permission-1', { answers: { branch: ['dev'] } }
+        ))
     })
 
     it('hides Other when the question does not allow free text, and submits an option as accept', async () => {

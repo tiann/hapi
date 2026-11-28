@@ -20,9 +20,6 @@ import { PI_DISPLAY_IMAGE_TOOL_DESCRIPTION } from '@/modules/common/displayToolD
 
 const SESSION_CITATION_INSTRUCTION = buildSessionCitationSteerInstruction({
     inspectTool: 'mcp__hapi__inspect_peer',
-    pingTool: 'mcp__hapi__ping_peer',
-    listPeersTool: 'mcp__hapi__list_peers',
-    spawnTool: 'mcp__hapi__spawn_peer',
 });
 
 /**

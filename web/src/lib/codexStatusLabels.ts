@@ -1,4 +1,4 @@
-import { supportsEffort } from '@hapi/protocol'
+import { showsDefaultEffortLabel, supportsEffort, usesSessionModelReasoningEffort } from '@hapi/protocol'
 
 /** Labels shared by SessionHeader and composer StatusBar for supported reasoning providers. */
 
@@ -13,17 +13,12 @@ export function formatReasoningLabel(effort?: string | null, showLabel = true): 
     return showLabel ? `effort ${value}` : value
 }
 
-/**
- * Status metadata comes from different session fields by agent protocol:
- * Codex/OpenCode publish model reasoning effort; the other effort-capable
- * flavors publish effort.
- */
 export function getReasoningEffortForFlavor(
     agentFlavor: string | null | undefined,
     modelReasoningEffort?: string | null,
     effort?: string | null
 ): string | null {
-    if (agentFlavor === 'codex' || agentFlavor === 'opencode') {
+    if (usesSessionModelReasoningEffort(agentFlavor)) {
         return modelReasoningEffort?.trim() || null
     }
     if (supportsEffort(agentFlavor)) {
@@ -36,8 +31,6 @@ export function shouldShowReasoningStatusLabel(
     agentFlavor: string | null | undefined,
     reasoningEffort?: string | null
 ): boolean {
-    // Flavors whose models always take an effort show "default" when unset.
-    if (agentFlavor === 'codex' || agentFlavor === 'opencode' || agentFlavor === 'claude' || agentFlavor === 'grok') return true
-    // Pi and AGY models may have no effort at all; only show a real level.
+    if (showsDefaultEffortLabel(agentFlavor)) return true
     return supportsEffort(agentFlavor) && Boolean(reasoningEffort?.trim())
 }

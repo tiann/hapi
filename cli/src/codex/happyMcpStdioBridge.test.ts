@@ -200,9 +200,11 @@ describe('runHappyMcpStdioBridge tool forwarding', () => {
         await runHappyMcpStdioBridge(['--url', 'http://127.0.0.1:43006', '--tools', 'ping_peer'])
         const schema = harness.configs.get('ping_peer')?.inputSchema as {
             parse(input: unknown): unknown
+            shape: { deliveryMode: { description?: string } }
         }
         const args = { sessionIdPrefix: 'peer-id', message: 'hello', deliveryMode }
-        expect(harness.configs.get('ping_peer')?.description).toContain('auto (default)')
+        expect(schema.shape.deliveryMode.description).toContain('auto (default)')
+        expect(harness.configs.get('ping_peer')?.description).not.toContain('auto (default)')
         expect(schema.parse(args)).toEqual(args)
         expect(() => schema.parse({ ...args, deliveryMode: 'interrupt' })).toThrow()
         await harness.tools.get('ping_peer')?.(args)

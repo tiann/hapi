@@ -745,6 +745,23 @@ describe('AppServerEventConverter', () => {
         }]);
     });
 
+    it('preserves per-file patch data for ordered entries and legacy path maps', () => {
+        const converter = new AppServerEventConverter();
+        const path = '__proto__';
+        const diff = '@@ -1 +1 @@\n-const retries = 2;\n+const retries = 3;\n';
+        const entries = [
+            { path, kind: { type: 'update', move_path: null }, diff },
+            { path, kind: { type: 'delete' }, diff: 'const retries = 3;\n' }
+        ];
+        const byPath = { [path]: { type: 'update', unified_diff: diff, move_path: null } };
+        for (const changes of [entries, byPath]) {
+            const events = converter.handleNotification('item/started', {
+                item: { type: 'fileChange', id: 'patch-1', changes }
+            });
+            expect(events).toEqual([{ type: 'patch_apply_begin', call_id: 'patch-1', changes }]);
+        }
+    });
+
     it('maps diff updates', () => {
         const converter = new AppServerEventConverter();
 

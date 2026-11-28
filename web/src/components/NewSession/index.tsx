@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
 import { apiErrorMessage } from '@/api/client'
 import type { CodexDuplicateSessionGroup, CodexLocalSessionSummary, Machine, OpencodeLocalSessionSummary, PiLocalSessionSummary } from '@/types/api'
-import { CREATABLE_AGENT_FLAVORS, getYoloToggleMigrationMode, usesNativePermissionSelect, usesSharedPermissionModeState, getAgyModelChoices, splitAgyModelSelection, getClaudeEffortLevelsForModel, resolveClaudeEffortForModel } from '@hapi/protocol'
+import { CREATABLE_AGENT_FLAVORS, getYoloToggleMigrationMode, usesNativePermissionSelect, usesSharedPermissionModeState, usesSessionModelReasoningEffort, getAgyModelChoices, splitAgyModelSelection, getClaudeEffortLevelsForModel, resolveClaudeEffortForModel } from '@hapi/protocol'
 import type { AgentAvailabilityEntry, CodexCollaborationMode, PermissionModeOf, Flavors, PermissionMode, CopilotAgentMode } from '@hapi/protocol'
 import { codexModelAdvertisesFastTier } from '@/components/AssistantChat/codexFastMode'
 import { usePlatform } from '@/hooks/usePlatform'
@@ -2160,7 +2160,7 @@ export function NewSession(props: {
                     && (!agySelectedChoice || agySelectedChoice.supportedEfforts.some((level) => level === effort)))) && effort !== 'auto'
                 ? effort
                 : undefined
-            const resolvedModelReasoningEffort = (agent === 'codex' || agent === 'opencode') && modelReasoningEffort !== 'default'
+            const resolvedModelReasoningEffort = usesSessionModelReasoningEffort(agent) && modelReasoningEffort !== 'default'
                 ? modelReasoningEffort
                 : undefined
             const preferredLaunchSettings = {

@@ -468,11 +468,15 @@ html:has(.chat-scroll-y) #root {
 }
 
 @media (hover: hover) and (pointer: fine) {
-    .session-list-item:hover,
-    .session-list-row:hover > .session-list-item,
+    .session-list-row:hover,
     .session-list-new-button:hover {
         background-color: var(--app-subtle-bg);
     }
+}
+
+.session-list-row:has(> .session-list-item[aria-current="page"]) {
+    background-color: color-mix(in srgb, var(--app-fg) 16%, var(--app-bg));
+    --app-hint: color-mix(in srgb, var(--app-fg) 75%, var(--app-bg));
 }
 
 /* Row quick actions (unpin, archive): replace the time/progress cluster on
@@ -570,28 +574,6 @@ html:has(.chat-scroll-y) #root {
     padding-left: 8px;
 }
 
-/*
- * Open-session position mark on the left scrollbar gutter.
- * Visual-only: a tiny hover target for the native title tooltip, not a jump
- * button — the scrollbar beside it stays the seek surface. Sits in the
- * outer 3px of the 10px rail so it never hides under the thumb (left 3px, 4px
- * wide). Sibling of the scroll container inside the relative session-list
- * shell, so `top` maps onto the visible rail.
- */
-.session-list-open-tick {
-    position: absolute;
-    left: 0;
-    z-index: 10;
-    width: 3px;
-    height: 6px;
-    margin-top: -3px;
-    pointer-events: auto;
-    border-radius: 1px;
-    background: var(--app-link);
-    opacity: 0.9;
-    box-shadow: 0 0 0 1px var(--app-bg);
-}
-
 /* Desktop sidebar: use custom width from CSS variable.
    Kept in sync with the Tailwind `split` breakpoint (see tailwind.config.ts)
    so the sidebar width/resize applies as soon as the split view appears on
@@ -605,6 +587,13 @@ html:has(.chat-scroll-y) #root {
        is a no-op on desktop where 100vw - 424px exceeds the stored width. */
     div[style*="--sidebar-w"] {
         width: min(var(--sidebar-w), calc(100vw - 424px)) !important;
+    }
+    /* While the session files panel is open beside the chat, also reserve its
+       320px minimum and its 4px handle (424 + 324 = 748), so a wide saved
+       sidebar can't squeeze the panel below its minimum at the 1200px
+       breakpoint. The saved width returns once the panel closes. */
+    body:has([data-session-files-panel]) div[style*="--sidebar-w"] {
+        width: min(var(--sidebar-w), calc(100vw - 748px)) !important;
     }
 }
 

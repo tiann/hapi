@@ -42,6 +42,20 @@ class QuestionDetailsTest {
         """{"questions":[{"id":"target","question":"Choose","isOther":true,"multiple":$multiple,"options":[{"label":"Alpha"},{"label":"Beta"}]}]}""",
     ))
 
+    @Test fun cursorQuestionOffersSkipAndOnlyAdvertisedOptions() {
+        val question = pending().copy(name = "CursorAskQuestion", input = HapiJson.parseToJsonElement(
+            """{"questions":[{"id":"target","prompt":"Which branch?","options":[{"id":"dev","label":"Development"}]}]}"""
+        ))
+        var action: PermissionAction? = null
+        compose.setContent {
+            HapiTheme { PendingPermissionFooter(tool = question, requestId = "reply", flavor = "cursor", override = null,
+                onAction = { _, resolved -> action = resolved }) }
+        }
+        compose.onNodeWithTag("question-0-expand-text").assertDoesNotExist()
+        compose.onNodeWithTag("question-skip").performClick()
+        compose.runOnIdle { assertEquals(PermissionAction.Deny, action) }
+    }
+
     @Test fun otherChoiceFocusesOptionalNotesAndSubmitsWithoutAnyNote() {
         val submitted = mutableListOf<Pair<String, PermissionAction>>()
         compose.setContent {

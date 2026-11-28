@@ -11,6 +11,7 @@ import { z } from 'zod'
 import type { AttachedJobPatch } from '@hapi/protocol'
 import {
     SessionJobError,
+    SESSION_JOB_GATE,
     SESSION_JOB_RUN_RECIPE,
     formatSessionJobNotFoundHint,
     isSessionJobNotFoundError,
@@ -42,6 +43,7 @@ export const SESSION_JOB_SET_REFUSED_TEXT = [
  */
 export const SESSION_JOB_TOOL_DESCRIPTION = [
     'Progress meter on THIS HAPI session for work that OUTLIVES the agent turn.',
+    SESSION_JOB_GATE,
     'Own-session only. CRITICAL: do NOT use action=set — it is refused.',
     'HYGIENE: call action=list on session start/resume AND before claiming done or inviting archive.',
     'If list shows status=running but the process is dead / you cannot prove it is alive, action=clear or update status=failed — do not ask the operator to clean meters.',
@@ -50,9 +52,7 @@ export const SESSION_JOB_TOOL_DESCRIPTION = [
     SESSION_JOB_RUN_RECIPE,
     '(auto-heartbeats + completed/failed on exit). Idle agents cannot heartbeat.',
     'This MCP tool: action=update (progress/status), action=clear, action=list only.',
-    'Fraction counts need continuous update/feeder; omit counts when unknown (use --progress unknown).',
-
-    'Never invent a percent or ETA. Not for todos, thinking, or short tool calls.',
+    'Omit counts when unknown (use --progress unknown). Never invent a percent or ETA. Not for todos or thinking.',
 ].join(' ')
 
 export const sessionJobInputSchema: z.ZodTypeAny = z.object({

@@ -18,6 +18,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { z } from 'zod';
 import { PeerDeliveryModeSchema } from '@/modules/pingPeer/deliveryMode';
 import { DISPLAY_IMAGE_TOOL_DESCRIPTION, DISPLAY_MEDIA_TOOL_DESCRIPTION, DISPLAY_VIDEO_TOOL_DESCRIPTION } from '@/modules/common/displayToolDescriptions';
+import { CHANGE_TITLE_TOOL_DESCRIPTION } from '@/modules/common/titleInstruction';
 import {
   INSPECT_PEER_TOOL_DESCRIPTION,
   LIST_PEERS_INCLUDE_INACTIVE_PARAM_DESCRIPTION,
@@ -125,7 +126,7 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
       server.registerTool<any, any>(
         'change_title',
         {
-          description: 'Change the title of the current chat session',
+          description: CHANGE_TITLE_TOOL_DESCRIPTION,
           title: 'Change Chat Title',
           inputSchema: changeTitleInputSchema,
         },

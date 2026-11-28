@@ -129,6 +129,8 @@ request scheduling, answer APIs or notification withdrawal.
 | Allow | `POST /api/sessions/:id/permissions/:requestId/approve` |
 | Deny | `POST /api/sessions/:id/permissions/:requestId/deny` |
 
+Permission replies return HTTP 409 when the runner reports the request is no longer pending. If the runner rejects the submitted decision or answer, the hub returns HTTP 502 with its error text. Clients can keep the pending card open for a corrected reply.
+
 `localId` is optional in the send-message body - an opaque client-generated id for reconciling the locally shown message with the server-echoed one. When omitted, the hub mints one.
 
 The REST send endpoint stamps `sentFrom: 'webapp'` server-side for native

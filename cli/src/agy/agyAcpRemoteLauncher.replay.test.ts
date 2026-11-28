@@ -12,6 +12,12 @@ import { AgyAcpRemoteLauncher } from './agyAcpRemoteLauncher';
 
 vi.mock('@/ui/ink/RemoteModeDisplay', () => ({ RemoteModeDisplay: () => null }));
 vi.mock('@/ui/logger', () => ({ logger: { debug: vi.fn(), warn: vi.fn(), info: vi.fn() } }));
+vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({
+    buildHapiMcpBridge: vi.fn(async () => ({
+        server: { url: 'http://127.0.0.1:0/mcp', stop: vi.fn() },
+        mcpServers: { hapi: { command: 'hapi', args: ['mcp', '--url', 'http://127.0.0.1:0/mcp'] } }
+    }))
+}));
 
 type Frame = { t: number; direction: string; message: Record<string, unknown> };
 const frames = agySteeredTurn.frames as Frame[];

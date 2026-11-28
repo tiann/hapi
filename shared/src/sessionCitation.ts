@@ -50,12 +50,16 @@ export const SPAWN_PEER_TOOL_DESCRIPTION =
     'In-session calls auto-stamp a durable Parent [title](/sessions/<uuid>) chip for this session onto the remit (fail-closed if parent id is missing). ' +
     PEER_IDENTITY_UUID_RULE
 
+/** Headline of {@link PEER_CONTACT_RULE}; the only part repeated in system prompts. */
+export const PEER_CONTACT_SUMMARY =
+    'Message only peers tied to your current task: a session the user cited, your Parent, or peers you spawned or were handed off to.'
+
 /**
  * Who a peer message may go to. Peers carry other agents' work: an unrelated
  * ping derails that agent, and pinging an inactive peer relaunches it.
  */
 export const PEER_CONTACT_RULE =
-    'Message only peers tied to your current task: a session the user cited, your Parent, or peers you spawned or were handed off to. ' +
+    `${PEER_CONTACT_SUMMARY} ` +
     'Never broadcast to a list of peers - not for status updates, and not to announce exclusive work (simulator, device, port, branch, release). ' +
     'For any other peer, call inspect_peer first to see its machine, cwd, and recent work, and message it only when that work actually conflicts with or depends on yours ' +
     '(e.g. same machine and resource, same checkout). ' +
@@ -81,7 +85,7 @@ export const LIST_PEERS_TOOL_DESCRIPTION =
     'Prefer this over shelling `hapi ping-peer --list`. This is a directory, not a recipient list: ' +
     PEER_CONTACT_RULE
 
-/** Shared delivery guidance for the peer MCP schemas, descriptions, and prompts. */
+/** Zod `.describe` for ping_peer `deliveryMode`. Lives on the parameter only, not in the tool description or prompts. */
 export const PEER_DELIVERY_MODE_DESCRIPTION =
     'auto (default): steer an active turn when the target supports steering and is ready; otherwise queue. Inactive peers require explicit wake=true and then receive a queued message. ' +
     'Prefer auto for routine collaboration when queueing is an acceptable fallback. ' +
@@ -102,8 +106,7 @@ export const PING_PEER_TOOL_DESCRIPTION =
     'extract <id> and pass it as sessionIdPrefix. /sessions/<id> is a hub path - do NOT search the local filesystem for it. ' +
     'Prefer this (or `hapi ping-peer`) over reinventing JWT+curl. Targets another session - not the current chat. ' +
     PEER_IDENTITY_UUID_RULE + ' ' +
-    PEER_CONTACT_RULE + ' ' +
-    `Select deliveryMode: ${PEER_DELIVERY_MODE_DESCRIPTION}`
+    PEER_CONTACT_RULE
 
 /** Zod `.describe` for sessionIdPrefix on inspect_peer / ping_peer. */
 export const SESSION_ID_PREFIX_PARAM_DESCRIPTION =
@@ -199,16 +202,9 @@ export function normalizeSessionIdPrefix(raw: string): string {
     return ids.length === 1 ? ids[0]! : ''
 }
 
-export type SessionCitationSteerTools = {
-    /** Flavor-specific inspect tool name, e.g. `mcp__hapi__inspect_peer`. */
-    inspectTool: string
-    /** Flavor-specific ping tool name, e.g. `mcp__hapi__ping_peer`. */
-    pingTool: string
-    /** Flavor-specific discovery tool when no citation is available. */
-    listPeersTool?: string
-    /** Flavor-specific spawn-with-remit tool, e.g. `mcp__hapi__spawn_peer`. */
-    spawnTool?: string
-}
+/** How citations look when pasted, and that they are not files. */
+const SESSION_CITATION_STEER =
+    '/sessions/<id> (bare, linked, or in a copied reference) is another HAPI session, not a file'
 
 /**
  * System-prompt citation block used when peer tools are hidden by
@@ -217,41 +213,18 @@ export type SessionCitationSteerTools = {
  * disabled peer tools.
  */
 export const SESSION_CITATION_DISABLED_STEER =
-    'When the user cites another HAPI session as [title](/sessions/<id>), ' +
-    'Copy-reference prose See session "…" (/sessions/<id>) for context, ' +
-    'or a bare /sessions/<id>, extract that <id>. ' +
-    '/sessions/<id> is a HAPI hub path, not a local filesystem path - do not Grep, Glob, or Read it as a file. ' +
+    `${SESSION_CITATION_STEER}. ` +
     'Peer session tools (inspect_peer / ping_peer / list_peers) are disabled on this machine; ' +
     'ask the user to paste the relevant context from that session instead.'
 
 /**
- * Always-on system-prompt line: both citation forms + hub-not-FS + tool names.
+ * Always-on system-prompt pointer. Every session pays for it, so it says only
+ * what an agent must know before it reads a peer tool's description (agents may
+ * list MCP tools by name only). Usage rules belong in the tool descriptions.
  */
-export function buildSessionCitationSteerInstruction(tools: SessionCitationSteerTools): string {
-    let text =
-        `When the user cites another HAPI session as [title](/sessions/<id>), ` +
-        `Copy-reference prose See session "…" (/sessions/<id>) for context, ` +
-        `or a bare /sessions/<id>, extract that <id>. ` +
-        `/sessions/<id> is a HAPI hub path, not a local filesystem path - do not Grep, Glob, or Read it as a file. ` +
-        `Call "${tools.inspectTool}" with sessionIdPrefix=<id> to read metadata and recent messages; ` +
-        `call "${tools.pingTool}" with sessionIdPrefix=<id> and a message to nudge or hand off. ` +
-        `${PEER_CONTACT_RULE} ` +
-        `An inactive peer is refused unless you pass wake=true; set it only when the user asked or the handed-off work requires that peer to act. ` +
-        `Select deliveryMode: ${PEER_DELIVERY_MODE_DESCRIPTION} ` +
-        `Prefer these over JWT+curl. Shell fallbacks: hapi inspect-peer <id> / hapi ping-peer <id> <message> --delivery-mode auto [--wake].`
-    if (tools.listPeersTool) {
-        text +=
-            ` To find a specific peer without a citation, call "${tools.listPeersTool}" ` +
-            `(active sessions on the same hub/namespace; works from runner-spawned sessions) - it is a directory, not a recipient list. ` +
-            `Shell fallback: hapi ping-peer --list.`
-    }
-    if (tools.spawnTool) {
-        text +=
-            ` To spawn a new peer with work attached, call "${tools.spawnTool}" ` +
-            `with directory and a required message (the remit). ` +
-            `Do not POST /api/machines/.../spawn with a message/prompt/text field - ` +
-            `the hub rejects it (HTTP 400). Use spawn_peer instead. ` +
-            `Shell fallback: hapi spawn-peer --dir PATH --name TITLE --message-file -.`
-    }
-    return text
+export function buildSessionCitationSteerInstruction(tools: {
+    /** Flavor-specific inspect tool name, e.g. `mcp__hapi__inspect_peer`. */
+    inspectTool: string
+}): string {
+    return `${SESSION_CITATION_STEER}: read it with ${tools.inspectTool}. ${PEER_CONTACT_SUMMARY}`
 }

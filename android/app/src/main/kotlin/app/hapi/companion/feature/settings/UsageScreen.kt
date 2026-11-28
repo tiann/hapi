@@ -52,6 +52,7 @@ fun UsageScreen(
     onBack: () -> Unit,
 ) {
     LaunchedEffect(viewModel) { viewModel.start() }
+    val quotas by viewModel.quotas.collectAsState()
     val range by viewModel.range.collectAsState()
     val state by viewModel.state.collectAsState()
 
@@ -78,6 +79,7 @@ fun UsageScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
+            UsageQuotasSection(quotas, viewModel::refreshQuotas)
             UsageRangeControl(selected = range, onSelect = viewModel::setRange)
 
             when (val current = state) {

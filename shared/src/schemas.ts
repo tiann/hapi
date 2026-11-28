@@ -1190,7 +1190,12 @@ export const MachineHealthSchema = z.object({
     load1m: z.number().nonnegative().optional(),
     cpuPercent: z.number().min(0).max(100).optional(),
     memoryPercent: z.number().min(0).max(100).optional(),
-    uptimeSeconds: z.number().nonnegative().optional()
+    uptimeSeconds: z.number().nonnegative().optional(),
+    /** Filesystem holding the runner user's home (where workspaces/uploads live), like `df`. */
+    diskTotalBytes: z.number().nonnegative().optional(),
+    diskUsedBytes: z.number().nonnegative().optional(),
+    /** Space available to unprivileged users (`df` "Avail"). */
+    diskAvailableBytes: z.number().nonnegative().optional()
 }).strict()
 
 export type MachineHealth = z.infer<typeof MachineHealthSchema>

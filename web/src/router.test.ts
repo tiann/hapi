@@ -14,4 +14,19 @@ describe('createAppRouter', () => {
         expect(matches.some((match) => match.routeId === '/sessions/$sessionId')).toBe(true)
         expect(history.location.pathname).toBe('/app/sessions/session-1')
     })
+
+    it('redirects the index route to /sessions while loading, keeping sign-in params', async () => {
+        const history = createMemoryHistory({ initialEntries: ['/?token=abc'] })
+        const router = createAppRouter(history, '/')
+        await router.load()
+
+        expect(router.state.location.pathname).toBe('/sessions')
+        expect(new URLSearchParams(history.location.search).get('token')).toBe('abc')
+
+        // A later URL cleanup that lands back on `/` must redirect again rather
+        // than leaving the router parked on an empty index route.
+        history.replace('/')
+        await router.load()
+        expect(router.state.location.pathname).toBe('/sessions')
+    })
 })
