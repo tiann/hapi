@@ -764,6 +764,37 @@ body:
         expect(template.kind).toBe('form')
     })
 
+    // Same mechanism, applied to the field label itself rather than a
+    // dropdown option (bot review, tiann/hapi#2147, follow-up) — an
+    // unquoted `label: Yes` is a plain string to this parser's own `yaml`
+    // dependency but a Boolean to GitHub's backend, which requires every
+    // label to be a string and rejects the whole form over it.
+    it('is genuinely invalid when a field label is an unquoted GitHub-boolean word', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: input\n    id: confirm\n    attributes:\n      label: Yes'
+        )
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+    })
+
+    it('allows a field label that is a quoted GitHub-boolean word', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: input\n    id: confirm\n    attributes:\n      label: "Yes"'
+        )
+        expect(template.kind).toBe('form')
+    })
+
+    it('allows an ordinary field label that merely contains a GitHub-boolean word as a substring', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: input\n    id: confirm\n    attributes:\n      label: Yesterday\'s date'
+        )
+        expect(template.kind).toBe('form')
+    })
+
     // Regression (Meta review, tiann/hapi#2147, follow-up): "None" is a
     // reserved word GitHub auto-populates as the non-choice option on an
     // optional dropdown — GitHub's own documented example rejects a

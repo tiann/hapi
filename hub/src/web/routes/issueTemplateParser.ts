@@ -38,6 +38,19 @@ function containsForbiddenLabelWord(label: string): boolean {
     return FORBIDDEN_LABEL_WORDS.some(word => lower.includes(word))
 }
 
+// This codebase's own `yaml` dependency only coerces literal `true`/`false`
+// to a non-string — GitHub's own backend parser (the authority
+// `githubValid` answers to) additionally coerces bare `yes`/`no`/`on`/`off`
+// (any case) the same way, confirmed directly against GitHub's docs. A
+// scalar written unquoted as one of these words is a Boolean to GitHub but
+// a plain string here, so checking only the already-resolved JS value can
+// never tell that apart from a legitimately quoted `"Yes"` — both arrive as
+// the identical string. Shared between the dropdown-options check and the
+// field-label check below (bot review, tiann/hapi#2147, follow-up: the
+// label check was the one instance of this exact mechanism not yet applied
+// to every scalar GitHub requires to be a string).
+const GITHUB_BOOLEAN_WORDS = new Set(['y', 'yes', 'n', 'no', 'true', 'false', 'on', 'off'])
+
 // GitHub's own attribute tables, one per field type (confirmed directly
 // against GitHub's documented form-schema syntax) — the full permitted
 // set, used to reject an unrecognized attribute key (see the main parse
@@ -475,6 +488,17 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
         if (!label) {
             return { id, name, kind: 'unsupported', reason: `A "${type}" field is missing a label`, githubValid: false }
         }
+        // Same mechanism as the dropdown-options check below, applied to
+        // the label scalar itself (bot review, tiann/hapi#2147, follow-up):
+        // an unquoted `label: Yes` parses as the plain string "Yes" here,
+        // but GitHub's own backend coerces it to a Boolean, which fails
+        // GitHub's "label must be a string" requirement — rejecting the
+        // whole form, where this parser would otherwise accept it as a
+        // normal label.
+        const labelNode = cstDoc.getIn(['body', elementIndex, 'attributes', 'label'], true) as { type?: string } | undefined
+        if (labelNode?.type === 'PLAIN' && GITHUB_BOOLEAN_WORDS.has(label.toLowerCase())) {
+            return { id, name, kind: 'unsupported', reason: `Field label "${label}" is an unquoted word GitHub's own parser would read as a Boolean — wrap it in quotes`, githubValid: false }
+        }
         if ((type === 'input' || type === 'textarea') && containsForbiddenLabelWord(label)) {
             return { id, name, kind: 'unsupported', reason: `Field "${label}" uses a word GitHub forbids in an input/textarea label ("password")`, githubValid: false }
         }
@@ -550,9 +574,8 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
             // is exactly the information GitHub's own parser is reacting
             // to and this codebase's plain `.toJS()` value discards.
             const optionsNode = cstDoc.getIn(['body', elementIndex, 'attributes', 'options'], true) as { items?: { type?: string }[] } | undefined
-            const BOOLEAN_WORDS = new Set(['y', 'yes', 'n', 'no', 'true', 'false', 'on', 'off'])
             if (optionsNode?.items?.some((item, i) =>
-                item.type === 'PLAIN' && BOOLEAN_WORDS.has(String(rawOptions[i]).toLowerCase())
+                item.type === 'PLAIN' && GITHUB_BOOLEAN_WORDS.has(String(rawOptions[i]).toLowerCase())
             )) {
                 return { id, name, kind: 'unsupported', reason: `Dropdown field "${label}" has an unquoted option GitHub's own parser would read as a Boolean — wrap it in quotes`, githubValid: false }
             }
