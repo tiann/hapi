@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { PropsWithChildren } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { HappyChatContextValue } from '@/components/AssistantChat/context'
+import * as clipboard from '@/lib/clipboard'
 import { I18nProvider } from '@/lib/i18n-context'
 import { findLatestCompletedBoundaryId } from '@/lib/assistant-runtime'
 import { HappyUserMessage } from './UserMessage'
@@ -275,6 +276,55 @@ describe('translated user prompt', () => {
         } finally {
             ctx.inputTranslationEnabled = undefined
             state.message = previous
+        }
+    })
+})
+
+describe('long user prompts', () => {
+    function mountPrompt(text: string) {
+        const previous = state.message
+        state.message = {
+            id: 'user-text:long', role: 'user', createdAt: new Date(10),
+            content: [{ type: 'text', text }],
+            metadata: { custom: { kind: 'user', localId: null, sourceMessageId: 'stored-long', invokedAt: 10, isTranscriptEcho: false } }
+        }
+        mount()
+        return () => { state.message = previous }
+    }
+
+    it.each(['中🙂'.repeat(2500), 'line\n'.repeat(100)])('keeps shorter prompts expanded', (text) => {
+        const restore = mountPrompt(text)
+        try {
+            expect(screen.queryByRole('button', { name: 'Show more' })).toBeNull()
+        } finally {
+            restore()
+        }
+    })
+
+    it.each([
+        { text: `${'中🙂'.repeat(2500)}尾`, preview: '中🙂'.repeat(500) },
+        { text: `${'line\n'.repeat(10)}${'rest'.repeat(1250)}`, preview: Array(10).fill('line').join('\n') },
+    ])('shows a bounded preview and copies the full prompt while collapsed', async ({ text, preview }) => {
+        const copy = vi.spyOn(clipboard, 'safeCopyToClipboard').mockResolvedValue(undefined)
+        const restore = mountPrompt(text)
+        try {
+            const showMore = screen.getByRole('button', { name: 'Show more' })
+            const content = document.getElementById(showMore.getAttribute('aria-controls')!)
+            expect(content?.textContent).toBe(preview)
+            expect(showMore.getAttribute('aria-expanded')).toBe('false')
+
+            fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
+            await waitFor(() => expect(copy).toHaveBeenCalledWith(text))
+
+            fireEvent.click(showMore)
+            const showLess = screen.getByRole('button', { name: 'Show less' })
+            expect(content?.textContent).toBe(text)
+            expect(showLess.getAttribute('aria-expanded')).toBe('true')
+            fireEvent.click(showLess)
+            expect(content?.textContent).toBe(preview)
+        } finally {
+            restore()
+            copy.mockRestore()
         }
     })
 })

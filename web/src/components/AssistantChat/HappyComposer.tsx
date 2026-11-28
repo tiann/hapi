@@ -60,6 +60,9 @@ import { SortableComposerAttachments } from '@/components/AssistantChat/Sortable
 import { ComposerParkingContext } from '@/components/AssistantChat/composerParkingContext'
 import type { ScratchlistParkResult } from '@/lib/scratchlistAttachmentFlow'
 import { useTranslation } from '@/lib/use-translation'
+import { isLongMessage } from '@/lib/longMessage'
+import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { getModelOptionsForFlavor, getNextModelForFlavor } from './modelOptions'
 import { getClaudeComposerEffortOptions } from './claudeEffortOptions'
 import { getCodexComposerReasoningEffortOptions } from './codexReasoningEffortOptions'
@@ -616,6 +619,18 @@ export function HappyComposer(props: {
     const setPendingSchedule = isControlled ? onScheduleProp : setPendingScheduleLocal
 
     const textareaRef = useRef<HTMLTextAreaElement>(null)
+    const textareaPasteHistory = useRef<{
+        before: TextInputState
+        after: TextInputState
+        applied: boolean
+    } | null>(null)
+
+    useEffect(() => {
+        const history = textareaPasteHistory.current
+        if (history && composerText !== (history.applied ? history.after.text : history.before.text)) {
+            textareaPasteHistory.current = null
+        }
+    }, [composerText])
     const richInputRef = useRef<RichComposerInputHandle>(null)
     const richComposerFueAnchorRef = useRef<HTMLDivElement>(null)
     const settingsButtonRef = useRef<HTMLButtonElement>(null)
@@ -1362,12 +1377,38 @@ export function HappyComposer(props: {
         trigger?.focus({ preventScroll: true })
     }, [dismissSettings, settingsSection])
 
+    const applyTextareaEdit = useCallback((input: HTMLTextAreaElement, next: TextInputState) => {
+        api.composer().setText(next.text)
+        setInputState(next)
+        handleUserEdit()
+        requestAnimationFrame(() => {
+            if (textareaRef.current === input && input.value === next.text) {
+                input.setSelectionRange(next.selection.start, next.selection.end)
+            }
+        })
+    }, [api, handleUserEdit])
+
     const handleKeyDown = useCallback((e: ReactKeyboardEvent<HTMLTextAreaElement | HTMLDivElement>) => {
         const key = e.key
 
         // Avoid intercepting IME composition keystrokes (Enter, arrows, etc.)
         if (e.nativeEvent.isComposing) {
             return
+        }
+
+        const history = textareaPasteHistory.current
+        const input = e.currentTarget
+        if (history && input instanceof HTMLTextAreaElement && (e.ctrlKey || e.metaKey) && !e.altKey) {
+            const shortcut = key.toLowerCase()
+            const undo = shortcut === 'z' && !e.shiftKey
+            const redo = (shortcut === 'z' && e.shiftKey) || (shortcut === 'y' && !e.shiftKey)
+            const from = history.applied ? history.after : history.before
+            if ((history.applied ? undo : redo) && input.value === from.text) {
+                e.preventDefault()
+                history.applied = redo
+                applyTextareaEdit(input, redo ? history.after : history.before)
+                return
+            }
         }
 
         // Alt+S is an explicit send shortcut, independent of the Enter setting.
@@ -1473,6 +1514,7 @@ export function HappyComposer(props: {
             haptic('light')
         }
     }, [
+        applyTextareaEdit,
         suggestions,
         selectedIndex,
         moveUp,
@@ -1518,6 +1560,7 @@ export function HappyComposer(props: {
     }, [model, onModelChange, haptic, agentFlavor, availableModelOptions])
 
     const handleChange = useCallback((e: ReactChangeEvent<HTMLTextAreaElement>) => {
+        textareaPasteHistory.current = null
         const selection = {
             start: e.target.selectionStart,
             end: e.target.selectionEnd
@@ -1534,10 +1577,56 @@ export function HappyComposer(props: {
         }))
     }, [])
 
-    const handlePaste = useCallback(async (e: ReactClipboardEvent<HTMLTextAreaElement | HTMLDivElement>) => {
+    const [longPaste, setLongPaste] = useState<{ text: string; insert: () => void } | null>(null)
+    const pasteOnCloseRef = useRef<(() => void) | null>(null)
+    const canAttachPaste = !controlsDisabled && pendingSchedule == null && props.attachmentsEnabled !== false
+
+    const offerLongPaste = useCallback((text: string, insert: () => void) => {
+        if (!canAttachPaste || !isLongMessage(text)) return false
+        setLongPaste({ text, insert })
+        return true
+    }, [canAttachPaste])
+
+    const addPastedFiles = useCallback(async (files: File[]) => {
+        try {
+            for (const file of files) {
+                await api.composer().addAttachment(file)
+            }
+        } catch (error) {
+            console.error('Error adding pasted file:', error)
+        }
+    }, [api])
+
+    const handlePaste = useCallback((e: ReactClipboardEvent<HTMLTextAreaElement | HTMLDivElement>) => {
         const files = Array.from(e.clipboardData?.files || [])
 
-        if (files.length === 0) return
+        if (files.length === 0) {
+            const input = e.currentTarget
+            if (!(input instanceof HTMLTextAreaElement)) return
+            const { value, selectionStart, selectionEnd } = input
+            const text = e.clipboardData.getData('text/plain')
+            const handled = offerLongPaste(text, () => {
+                if (textareaRef.current !== input) return
+                const pastedText = text.replace(/\r\n?/g, '\n')
+                const currentText = input.value
+                // A draft may be restored while the choice is open.
+                const start = currentText === value ? selectionStart : currentText.length
+                const end = currentText === value ? selectionEnd : start
+                const cursor = start + pastedText.length
+                const after = {
+                    text: currentText.slice(0, start) + pastedText + currentText.slice(end),
+                    selection: { start: cursor, end: cursor },
+                }
+                textareaPasteHistory.current = {
+                    before: { text: currentText, selection: { start, end } },
+                    after,
+                    applied: true,
+                }
+                applyTextareaEdit(input, after)
+            })
+            if (handled) e.preventDefault()
+            return
+        }
 
         // The backend rejects scheduledAt + attachments (per-CLI upload dir is
         // torn down before a mature emit could read the files). The button-based
@@ -1551,14 +1640,8 @@ export function HappyComposer(props: {
 
         e.preventDefault()
 
-        try {
-            for (const file of files) {
-                await api.composer().addAttachment(file)
-            }
-        } catch (error) {
-            console.error('Error adding pasted file:', error)
-        }
-    }, [api, pendingSchedule])
+        void addPastedFiles(files)
+    }, [addPastedFiles, applyTextareaEdit, offerLongPaste, pendingSchedule])
 
     // Opens (or closes) the settings sheet. `section` anchors the sheet to a
     // single section ('model' / 'effort'); the gear passes nothing = full sheet.
@@ -2463,6 +2546,7 @@ export function HappyComposer(props: {
                                             onMirrorChange={handleRichMirrorChange}
                                             onKeyDown={handleKeyDown}
                                             onPaste={handlePaste}
+                                            onTextPaste={offerLongPaste}
                                             onFocus={() => engageRichComposerFue()}
                                             resolveSessionMentionTooltip={resolveSessionMentionTooltip}
                                             onEdit={handleRichEdit}
@@ -2606,6 +2690,48 @@ export function HappyComposer(props: {
                         </div>
                     </div>
                 </ComposerPrimitive.Root>
+                <Dialog open={longPaste !== null} onOpenChange={(open) => { if (!open) setLongPaste(null) }}>
+                    <DialogContent
+                        aria-describedby={undefined}
+                        onCloseAutoFocus={(event) => {
+                            event.preventDefault()
+                            if (richMentionsEnabled) richInputRef.current?.focus()
+                            else textareaRef.current?.focus({ preventScroll: true })
+                            const insert = pasteOnCloseRef.current
+                            pasteOnCloseRef.current = null
+                            insert?.()
+                        }}
+                    >
+                        <DialogHeader>
+                            <DialogTitle>{t('composer.longPaste.title')}</DialogTitle>
+                        </DialogHeader>
+                        <div className="mt-4 flex flex-wrap justify-end gap-2">
+                            <Button
+                                type="button"
+                                variant="secondary"
+                                disabled={controlsDisabled}
+                                onClick={() => {
+                                    pasteOnCloseRef.current = longPaste?.insert ?? null
+                                    setLongPaste(null)
+                                }}
+                            >
+                                {t('composer.longPaste.asText')}
+                            </Button>
+                            <Button
+                                type="button"
+                                disabled={!canAttachPaste}
+                                onClick={() => {
+                                    if (!longPaste) return
+                                    const file = new File([longPaste.text], 'pasted-text.txt', { type: 'text/plain' })
+                                    void addPastedFiles([file])
+                                    setLongPaste(null)
+                                }}
+                            >
+                                {t('composer.longPaste.asFile')}
+                            </Button>
+                        </div>
+                    </DialogContent>
+                </Dialog>
             </div>
         </div>
         </ComposerParkingContext.Provider>
