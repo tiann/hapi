@@ -340,6 +340,19 @@ class HapiApiTest {
     }
 
     @Test
+    fun cursorCatalogsDecodeOnMachineAndSessionRoutes() {
+        val body = """{"success":true,"availableModels":[{"modelId":"grok[fast=false]"}],"cliModelSkus":[{"modelId":"grok-fast"}],"currentModelId":"grok[fast=false]"}"""
+        server.enqueue(ok(body))
+        server.enqueue(ok(body))
+        val machine = runBlocking { session.api.getMachineCursorModels("m1") }
+        val chat = runBlocking { session.api.getSessionCursorModels("s1") }
+        assertEquals("/api/machines/m1/cursor-models", server.takeRequest().path)
+        assertEquals("/api/sessions/s1/cursor-models", server.takeRequest().path)
+        assertEquals(machine, chat)
+        assertEquals("grok-fast", machine.cliModelSkus?.single()?.modelId)
+    }
+
+    @Test
     fun `machine codex models decode and rpc_target_missing surfaces as coded ApiError`() {
         server.enqueue(
             ok(

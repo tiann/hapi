@@ -106,6 +106,9 @@
     <string name="new_session_yolo_maps_to">将应用原生的 %1$s 模式。</string>
     <string name="new_session_collaboration_mode">协作模式</string>
     <string name="new_session_copilot_agent_mode">代理模式</string>
+    <string name="cursor_thinking">思考</string>
+    <string name="cursor_context_window">上下文窗口</string>
+    <string name="cursor_model_variant">模型变体</string>
     <string name="new_session_fast_mode">快速模式</string>
     <string name="new_session_fast_mode_standard">标准</string>
     <string name="new_session_fast_mode_fast">快速</string>
@@ -341,6 +344,7 @@
     <string name="chat_notice_request_already_handled">该请求已被处理</string>
     <string name="chat_notice_request_failed">请求失败</string>
     <string name="chat_notice_models_failed">加载模型失败</string>
+    <string name="chat_notice_config_readback_unavailable">设置已被接受，但未能刷新当前值。</string>
     <string name="chat_notice_config_failed">更新会话失败</string>
 
     <!-- Composer (B-M3a/ce/f) -->

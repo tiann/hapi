@@ -99,6 +99,9 @@
     <string name="new_session_yolo_maps_to">Применяет нативный режим %1$s.</string>
     <string name="new_session_collaboration_mode">Режим совместной работы</string>
     <string name="new_session_copilot_agent_mode">Режим агента</string>
+    <string name="cursor_thinking">Размышление</string>
+    <string name="cursor_context_window">Контекстное окно</string>
+    <string name="cursor_model_variant">Вариант</string>
     <string name="new_session_fast_mode">Быстрый режим</string>
     <string name="new_session_fast_mode_standard">Стандартный</string>
     <string name="new_session_fast_mode_fast">Быстрый</string>
@@ -334,6 +337,7 @@
     <string name="chat_notice_request_already_handled">Запрос уже обработан</string>
     <string name="chat_notice_request_failed">Запрос не выполнен</string>
     <string name="chat_notice_models_failed">Не удалось загрузить модели</string>
+    <string name="chat_notice_config_readback_unavailable">Настройка принята. Не удалось обновить текущее значение.</string>
     <string name="chat_notice_config_failed">Не удалось обновить сессию</string>
 
     <!-- Composer (B-M3a/ce/f) -->

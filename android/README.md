@@ -11,6 +11,8 @@ This README covers development builds.
 - **applicationId**: `run.hapi.companion` · **minSdk** 26 · **target/compileSdk** 36
 - **Toolchain**: Gradle 8.14.2 (wrapper) · AGP 8.11.1 · Kotlin 2.1.21 · Compose BOM 2025.05.00 · JDK 17+ (CI uses 21)
 
+Cursor sessions support the machine's advertised models and ACP permission modes in the new-session form. The chat settings sheet fetches the active remote ACP session's own model catalog. Model, reasoning, speed and other offered options select complete runner IDs; coupled variants stay together. Terminal-controlled and legacy stream-json sessions cannot live-switch their model here. When a settings request fails, the app keeps confirmed values and refreshes the session.
+
 ## Current capabilities
 
 The app provides sessions/chat, approvals and questions, new sessions,

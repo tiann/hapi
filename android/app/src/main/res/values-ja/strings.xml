@@ -106,6 +106,9 @@
     <string name="new_session_yolo_maps_to">ネイティブの %1$s モードを適用します。</string>
     <string name="new_session_collaboration_mode">コラボレーションモード</string>
     <string name="new_session_copilot_agent_mode">エージェントモード</string>
+    <string name="cursor_thinking">思考</string>
+    <string name="cursor_context_window">コンテキストウィンドウ</string>
+    <string name="cursor_model_variant">バリアント</string>
     <string name="new_session_fast_mode">高速モード</string>
     <string name="new_session_fast_mode_standard">標準</string>
     <string name="new_session_fast_mode_fast">高速</string>
@@ -341,6 +344,7 @@
     <string name="chat_notice_request_already_handled">リクエストはすでに処理されています</string>
     <string name="chat_notice_request_failed">リクエストに失敗しました</string>
     <string name="chat_notice_models_failed">モデルの読み込みに失敗しました</string>
+    <string name="chat_notice_config_readback_unavailable">設定は受理されました。現在の値を取得できませんでした。</string>
     <string name="chat_notice_config_failed">セッションの更新に失敗しました</string>
 
     <!-- Composer (B-M3a/ce/f) -->

@@ -99,6 +99,9 @@
     <string name="new_session_yolo_maps_to">Applies native %1$s mode.</string>
     <string name="new_session_collaboration_mode">Collaboration mode</string>
     <string name="new_session_copilot_agent_mode">Agent mode</string>
+    <string name="cursor_thinking">Thinking</string>
+    <string name="cursor_context_window">Context window</string>
+    <string name="cursor_model_variant">Variant</string>
     <string name="new_session_fast_mode">Fast mode</string>
     <string name="new_session_fast_mode_standard">Standard</string>
     <string name="new_session_fast_mode_fast">Fast</string>
@@ -334,6 +337,7 @@
     <string name="chat_notice_request_already_handled">Request was already handled</string>
     <string name="chat_notice_request_failed">Request failed</string>
     <string name="chat_notice_models_failed">Failed to load models</string>
+    <string name="chat_notice_config_readback_unavailable">The setting was accepted. Could not refresh its current value.</string>
     <string name="chat_notice_config_failed">Failed to update session</string>
 
     <!-- Composer (B-M3a/ce/f) -->
