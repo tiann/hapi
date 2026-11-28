@@ -422,6 +422,24 @@ it('reloads the v2 batch ledger and consumes the exact combined version', async 
     expect(consumed).toHaveBeenCalledWith(['original-A', 'original-B']);
 });
 
+it('keeps synthetic history IDs unacknowledged until native content proves the batch', async () => {
+    const { queue, native, consumed } = await fixture();
+    await queue.enqueue('original-A', text('MARKER-A'), false, 'same-mode');
+    await queue.enqueue('original-B', text('MARKER-B'), false, 'same-mode');
+    const batchId = native[0].clientUserMessageId;
+    expect(await queue.committedHistory(['standalone', batchId], false)).toEqual(new Set([batchId]));
+    expect(queue.state('standalone')).toBe('consumed');
+    expect(queue.state('original-A')).toBe('queued');
+    expect(queue.state('original-B')).toBe('queued');
+    expect(consumed).not.toHaveBeenCalled();
+    expect(await queue.committed(batchId, combined('MARKER-A', 'MARKER-B'), false)).toEqual([
+        { id: 'original-A', input: text('MARKER-A') }, { id: 'original-B', input: text('MARKER-B') }
+    ]);
+    expect(queue.state('original-A')).toBe('consumed');
+    expect(queue.state('original-B')).toBe('consumed');
+    expect(consumed).not.toHaveBeenCalled();
+});
+
 it('journals a whole-batch native delete and cancels every member on the definitive response', async () => {
     const { queue, native } = await fixture();
     await queue.enqueue('original-A', text('MARKER-A'), false, 'same-mode');

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SharedCodexQueue } from './queue';
@@ -17,6 +17,58 @@ async function fixture() {
     return { queue, rpc, consumed, uncertain, client, dir };
 }
 describe('shared native queue', () => {
+    it('can persist consumption without acknowledging rows that projection has not inserted yet', async () => {
+        const { queue, client, dir, consumed, uncertain, rpc } = await fixture();
+        await queue.committedHistory(['historical'], false);
+        await queue.committed('live', false);
+        expect(consumed).not.toHaveBeenCalled();
+        const restored = new SharedCodexQueue(client, 'thread', join(dir, 'ledger.json'), consumed, uncertain);
+        await restored.load();
+        expect(restored.state('historical')).toBe('consumed');
+        expect(restored.state('live')).toBe('consumed');
+        await restored.enqueue('historical', input);
+        await restored.enqueue('live', input);
+        expect(rpc).not.toHaveBeenCalled();
+    });
+    it('persists all history consumption before acknowledging its batch and survives restart', async () => {
+        const { queue, client, dir, consumed, uncertain, rpc } = await fixture();
+        await queue.committedHistory(['old-1', 'old-2', 'old-1']);
+        expect(consumed).toHaveBeenLastCalledWith(['old-1', 'old-2']);
+        const restored = new SharedCodexQueue(client, 'thread', join(dir, 'ledger.json'), consumed, uncertain);
+        await restored.load();
+        expect(restored.state('old-1')).toBe('consumed');
+        expect(restored.state('old-2')).toBe('consumed');
+        await restored.enqueue('old-1', input);
+        await restored.enqueue('old-2', input);
+        expect(rpc).not.toHaveBeenCalled();
+    });
+    it('never acknowledges a history batch whose durable write fails', async () => {
+        const { queue, dir, consumed } = await fixture();
+        await mkdir(join(dir, 'ledger.json'));
+        await expect(queue.committedHistory(['old-1', 'old-2'])).rejects.toThrow();
+        await expect(queue.committed('old-1')).rejects.toThrow();
+        expect(consumed).not.toHaveBeenCalled();
+    });
+    it('does not acknowledge a repeated consumption if its durable write failed', async () => {
+        const { queue, dir, consumed } = await fixture();
+        await mkdir(join(dir, 'ledger.json'));
+        await expect(queue.committed('historical')).rejects.toThrow();
+        await expect(queue.committed('historical')).rejects.toThrow();
+        expect(consumed).not.toHaveBeenCalled();
+    });
+    it('re-acknowledges consumption after restart without executing the input again', async () => {
+        const { queue, rpc, client, dir, consumed, uncertain } = await fixture();
+        await queue.committed('historical');
+        const restored = new SharedCodexQueue(client, 'thread', join(dir, 'ledger.json'), consumed, uncertain);
+        await restored.load();
+        consumed.mockClear();
+        await restored.committed('historical');
+        expect(consumed).toHaveBeenCalledWith(['historical']);
+        expect(restored.state('historical')).toBe('consumed');
+        await restored.enqueue('historical', input);
+        expect(rpc).not.toHaveBeenCalled();
+        expect(uncertain).not.toHaveBeenCalled();
+    });
     it('does not restore potentially stale input when the shutdown snapshot is unavailable', async () => {
         const { queue, rpc, uncertain } = await fixture();
         rpc.mockResolvedValueOnce({ queuedSubmission: { id: 'n', input, clientUserMessageId: 'local' } }); await queue.enqueue('local', input);

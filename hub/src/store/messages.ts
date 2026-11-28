@@ -138,6 +138,17 @@ export function addMessage(
     scheduledAt?: number | null,
     createdAt?: number
 ): StoredMessage {
+    return addMessageWithStatus(db, sessionId, content, localId, scheduledAt, createdAt).message
+}
+
+export function addMessageWithStatus(
+    db: Database,
+    sessionId: string,
+    content: unknown,
+    localId?: string,
+    scheduledAt?: number | null,
+    createdAt?: number
+): { message: StoredMessage; inserted: boolean } {
     const now = Date.now()
     // Client-provided origin timestamp (e.g. a Claude transcript entry's own
     // `timestamp`), falling back to server-receive time when absent. Only
@@ -160,7 +171,7 @@ export function addMessage(
             'SELECT * FROM messages WHERE session_id = ? AND local_id = ? LIMIT 1'
         ).get(sessionId, localId) as DbMessageRow | undefined
         if (existing) {
-            return toStoredMessage(existing)
+            return { message: toStoredMessage(existing), inserted: false }
         }
     }
 
@@ -218,7 +229,7 @@ export function addMessage(
         const row = prepareCached(db, 'SELECT * FROM messages WHERE id = ?').get(id) as DbMessageRow | undefined
         if (!row) throw new Error('Failed to create message')
         updateLiveTailAfterAppend(db, sessionId, row.id, row.seq, canonicalContent)
-        return toStoredMessage(row)
+        return { message: toStoredMessage(row), inserted: true }
     })()
 }
 
@@ -1081,6 +1092,7 @@ export type AddMessageSweepResult = {
     updated: false
     /** Replaceable live snapshot rows retired by the same transaction. */
     sweptSnapshots: number
+    inserted: boolean
 }
 
 /** Store a message and retire the live snapshots its streams supersede, in
@@ -1102,7 +1114,8 @@ export function addMessageSweepingLiveSnapshots(
     createdAt?: number
 ): AddMessageSweepResult {
     return db.transaction(() => {
-        const message = addMessage(db, sessionId, content, localId, scheduledAt, createdAt)
+        const { message, inserted } = addMessageWithStatus(db, sessionId, content, localId, scheduledAt, createdAt)
+        if (!inserted) return { message, inserted, updated: false as const, sweptSnapshots: 0 }
         let sweptSnapshots = 0
         const reasoningStreamId = getReasoningStreamId(content)
         if (reasoningStreamId !== null) {
@@ -1112,7 +1125,7 @@ export function addMessageSweepingLiveSnapshots(
         if (textStreamId !== null) {
             sweptSnapshots += deleteLiveTextSnapshots(db, sessionId, textStreamId, message.id)
         }
-        return { message, updated: false as const, sweptSnapshots }
+        return { message, inserted, updated: false as const, sweptSnapshots }
     })()
 }
 

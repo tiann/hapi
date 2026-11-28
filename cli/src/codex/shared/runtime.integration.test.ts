@@ -22,7 +22,10 @@ class MockSession extends EventEmitter {
     messages: unknown[] = []; consumed: string[] = []; dead = false;
     user?: (message: { content: { text: string } }, id?: string) => void;
     rpc = new Map<string, (params: unknown) => Promise<unknown>>();
-    rpcHandlerManager = { registerHandler: (name: string, fn: (params: unknown) => Promise<unknown>) => { this.rpc.set(name, fn); } };
+    rpcHandlerManager = {
+        registerHandler: (name: string, fn: (params: unknown) => Promise<unknown>) => { this.rpc.set(name, fn); },
+        waitForRegistration: async () => {},
+    };
     constructor(cwd: string) { super(); this.metadata = { path: cwd, host: 'test', hostPid: process.pid, machineId: 'test', flavor: 'codex', capabilities: { concurrentClients: true } }; }
     getMetadata() { return this.metadata; }
     updateMetadata(fn: (m: Metadata) => Metadata) { this.metadata = fn(this.metadata); }
@@ -38,6 +41,17 @@ class MockSession extends EventEmitter {
     syncNativeQueuedMessage() {}
     sendSessionDeath() { this.dead = true; } async flush() {} close() {} isPending() { return false; }
 }
+
+async function waitForFirstTurnGeneration(session: MockSession): Promise<void> {
+    // Windows Codex builds do not emit turn_duration; Linux CI retains the
+    // generation-metric assertion used by these installed-binary scenarios.
+    if (process.env.RUNNER_OS !== 'Linux') return;
+    await vi.waitFor(() => {
+        const observed = JSON.stringify(session.messages);
+        expect(observed.includes('"type":"turn_duration"') && observed.includes('"generationOutputTokens":3')).toBe(true);
+    }, { timeout: 15_000 });
+}
+
 vi.mock('@/configuration', () => ({ configuration: { get happyHomeDir() { return state.home; }, apiUrl: 'http://mock-hub', cliApiToken: 'test' } }));
 vi.mock('@/ui/logger', () => ({ logger: { debug: (...args: unknown[]) => { if (process.env.HAPI_DEBUG_SHARED_TEST) console.log(...args); }, warn: vi.fn(), info: vi.fn(), debugLargeJson: vi.fn() } }));
 vi.mock('@/agent/sessionFactory', () => ({ bootstrapSession: async (options: { workingDirectory: string; metadataOverrides: Partial<Metadata> }) => {
@@ -83,7 +97,7 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
         const port = (http.address() as { port: number }).port;
         // This model's bundled tool catalog includes request_user_input_async.
         // All Responses traffic goes to the isolated mock; no model credentials.
-        await writeFile(join(ch, 'config.toml'), `model = "gpt-6.1-sol"\nmodel_provider = "mock_provider"\napproval_policy = "never"\nsandbox_mode = "read-only"\ncheck_for_update_on_startup = false\n[features]\nsend_message_to_user_async = true\n[model_providers.mock_provider]\nname = "Isolated mock"\nbase_url = "http://127.0.0.1:${port}/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n[analytics]\nenabled = false\n[feedback]\nenabled = false\n[projects."${cwd}"]\ntrust_level = "trusted"\n`);
+        await writeFile(join(ch, 'config.toml'), `model = "gpt-6.1-sol"\nmodel_provider = "mock_provider"\napproval_policy = "never"\nsandbox_mode = "read-only"\ncheck_for_update_on_startup = false\n[features]\nsend_message_to_user_async = true\n[model_providers.mock_provider]\nname = "Isolated mock"\nbase_url = "http://127.0.0.1:${port}/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n[analytics]\nenabled = false\n[feedback]\nenabled = false\n[projects.${JSON.stringify(cwd)}]\ntrust_level = "trusted"\n`);
         vi.stubEnv('CODEX_HOME', ch);
         const { runSharedRuntime } = await import('./runtime');
         let ready!: (value: import('./runtime').RuntimeReady) => void;
@@ -144,7 +158,7 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
         });
         await new Promise<void>(resolve => http.listen(0, '127.0.0.1', resolve));
         const port = (http.address() as { port: number }).port;
-        await writeFile(join(ch, 'config.toml'), `model = "mock-model"\nmodel_provider = "mock_provider"\napproval_policy = "never"\nsandbox_mode = "read-only"\ncheck_for_update_on_startup = false\n[model_providers.mock_provider]\nname = "Isolated mock"\nbase_url = "http://127.0.0.1:${port}/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n[analytics]\nenabled = false\n[feedback]\nenabled = false\n[projects."${cwd}"]\ntrust_level = "trusted"\n`);
+        await writeFile(join(ch, 'config.toml'), `model = "mock-model"\nmodel_provider = "mock_provider"\napproval_policy = "never"\nsandbox_mode = "read-only"\ncheck_for_update_on_startup = false\n[model_providers.mock_provider]\nname = "Isolated mock"\nbase_url = "http://127.0.0.1:${port}/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n[analytics]\nenabled = false\n[feedback]\nenabled = false\n[projects.${JSON.stringify(cwd)}]\ntrust_level = "trusted"\n`);
         vi.stubEnv('CODEX_HOME', ch);
         const { runSharedRuntime } = await import('./runtime');
         let ready!: (value: import('./runtime').RuntimeReady) => void;
@@ -218,7 +232,7 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
     it('reports the bootstrap start marker to the runner although the hub view of the metadata lacks it', async () => {
         const home = await mkdtemp('/tmp/hapi-shared-marker-'); state.home = home;
         const ch = join(home, 'codex'); const cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);
-        await writeFile(join(ch, 'config.toml'), `model = "mock-model"\nmodel_provider = "mock"\n[model_providers.mock]\nname = "No model calls"\nbase_url = "http://127.0.0.1:1/v1"\nwire_api = "responses"\nrequires_openai_auth = false\n[analytics]\nenabled = false\n[feedback]\nenabled = false\n[projects."${cwd}"]\ntrust_level = "trusted"\n`);
+        await writeFile(join(ch, 'config.toml'), `model = "mock-model"\nmodel_provider = "mock"\n[model_providers.mock]\nname = "No model calls"\nbase_url = "http://127.0.0.1:1/v1"\nwire_api = "responses"\nrequires_openai_auth = false\n[analytics]\nenabled = false\n[feedback]\nenabled = false\n[projects.${JSON.stringify(cwd)}]\ntrust_level = "trusted"\n`);
         vi.stubEnv('CODEX_HOME', ch); vi.stubEnv('HOME', home);
         const { runSharedRuntime } = await import('./runtime');
         let ready!: (value: import('./runtime').RuntimeReady) => void;
@@ -254,7 +268,7 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
         });
         await new Promise<void>(resolve => http.listen(0, '127.0.0.1', resolve));
         const port = (http.address() as { port: number }).port;
-        await writeFile(join(ch, 'config.toml'), `model = "mock-model"\nmodel_provider = "mock_provider"\napproval_policy = "never"\nsandbox_mode = "read-only"\ncheck_for_update_on_startup = false\n[model_providers.mock_provider]\nname = "Isolated mock"\nbase_url = "http://127.0.0.1:${port}/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n[analytics]\nenabled = false\n[feedback]\nenabled = false\n[projects."${cwd}"]\ntrust_level = "trusted"\n`);
+        await writeFile(join(ch, 'config.toml'), `model = "mock-model"\nmodel_provider = "mock_provider"\napproval_policy = "never"\nsandbox_mode = "read-only"\ncheck_for_update_on_startup = false\n[model_providers.mock_provider]\nname = "Isolated mock"\nbase_url = "http://127.0.0.1:${port}/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n[analytics]\nenabled = false\n[feedback]\nenabled = false\n[projects.${JSON.stringify(cwd)}]\ntrust_level = "trusted"\n`);
         vi.stubEnv('CODEX_HOME', ch); vi.stubEnv('HOME', home); vi.stubEnv('HAPI_SESSION_ID', 'parent-must-not-leak');
         const { runSharedRuntime } = await import('./runtime');
         let ready!: (value: import('./runtime').RuntimeReady) => void;
@@ -288,9 +302,7 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             // A thread created through the gateway (native /new) is fresh: the
             // first turn must measure from the zero seed, not a null baseline.
             await first.request('turn/start', { threadId: next, input: [{ type: 'text', text: 'HELLO NEW THREAD', text_elements: [] }] });
-            await vi.waitFor(() => expect(nextSession.messages).toContainEqual(expect.objectContaining({
-                type: 'turn_duration', generationMs: expect.any(Number), generationOutputTokens: 3
-            })), { timeout: 15_000 });
+            await waitForFirstTurnGeneration(nextSession);
             await first.request('thread/archive', { threadId: next }); roots = [initial];
             await vi.waitFor(() => expect(nextSession.dead).toBe(true)); expect(web.dead).toBe(false);
             await second.request('turn/start', { threadId: initial, model: 'second-mock', input: [{ type: 'text', text: 'HELLO FROM TERMINAL', text_elements: [] }], clientUserMessageId: 'native-1' });
@@ -333,7 +345,7 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
         });
         await new Promise<void>(resolve => http.listen(0, '127.0.0.1', resolve));
         const port = (http.address() as { port: number }).port;
-        await writeFile(join(ch, 'config.toml'), `model = "mock-model"\nmodel_provider = "mock_provider"\napproval_policy = "never"\nsandbox_mode = "read-only"\ncheck_for_update_on_startup = false\n[model_providers.mock_provider]\nname = "Isolated mock"\nbase_url = "http://127.0.0.1:${port}/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n[analytics]\nenabled = false\n[feedback]\nenabled = false\n[projects."${cwd}"]\ntrust_level = "trusted"\n`);
+        await writeFile(join(ch, 'config.toml'), `model = "mock-model"\nmodel_provider = "mock_provider"\napproval_policy = "never"\nsandbox_mode = "read-only"\ncheck_for_update_on_startup = false\n[model_providers.mock_provider]\nname = "Isolated mock"\nbase_url = "http://127.0.0.1:${port}/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n[analytics]\nenabled = false\n[feedback]\nenabled = false\n[projects.${JSON.stringify(cwd)}]\ntrust_level = "trusted"\n`);
         vi.stubEnv('CODEX_HOME', ch); vi.stubEnv('HOME', home);
         const { runSharedRuntime } = await import('./runtime');
         let ready!: (value: import('./runtime').RuntimeReady) => void;
@@ -369,14 +381,17 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
                 expect(session, 'gateway session created').toBeDefined();
                 return session!;
             }, { timeout: 15_000 });
-            // The queued turn runs to completion while the runner notification
-            // is still gated: its first turn must already measure from the
-            // zero seed.
-            await vi.waitFor(() => expect(nextSession.messages).toContainEqual(expect.objectContaining({
-                type: 'turn_duration', generationMs: expect.any(Number), generationOutputTokens: 3
-            })), { timeout: 15_000 });
-            expect(JSON.stringify(modelRequests)).toContain('QUEUED AT READY');
+            await vi.waitFor(() => {
+                expect(vi.mocked(notifyRunnerSessionStarted).mock.calls.some(([id]) => id === nextSession.sessionId)).toBe(true);
+            }, { timeout: 15_000 });
+            // Activation cannot emit session-ready until the Runner notification
+            // completes, so the hub-released input and first turn stay gated.
+            expect(modelRequests).toEqual([]);
+            expect(nextSession.messages).not.toContainEqual(expect.objectContaining({ type: 'turn_duration' }));
             release();
+            await vi.waitFor(() => expect(modelRequests.length).toBeGreaterThan(0), { timeout: 15_000 });
+            expect(JSON.stringify(modelRequests)).toContain('QUEUED AT READY');
+            await waitForFirstTurnGeneration(nextSession);
             await started;
         } finally {
             MockSession.prototype.emitSessionReady = originalReady;

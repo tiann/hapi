@@ -202,14 +202,20 @@ export class SharedCodexQueue {
     /** History may prove acceptance after execution replacement, before hub
      * redelivery. For a batch synthetic client ID, only an exact accepted
      * content match may acknowledge that version's original members. */
-    async committed(id: string): Promise<void>;
-    async committed(id: string, actualContent: unknown): Promise<Array<{ id: string; input: QueueInput }> | undefined>;
-    async committed(id: string, actualContent?: unknown): Promise<Array<{ id: string; input: QueueInput }> | undefined | void> {
+    async committed(id: string, acknowledge?: boolean): Promise<void>;
+    async committed(id: string, actualContent: unknown, acknowledge?: boolean): Promise<Array<{ id: string; input: QueueInput }> | undefined>;
+    async committed(id: string, actualContent?: unknown, acknowledge = true): Promise<Array<{ id: string; input: QueueInput }> | undefined | void> {
+        if (typeof actualContent === 'boolean') { acknowledge = actualContent; actualContent = undefined; }
         const batch = this.batches[id];
         if (!batch) {
-            const entry = this.entries[id] ??= { state: 'consumed', input: [] };
-            entry.state = 'consumed';
-            await this.save(); this.consumed([id]);
+            const entry = this.entries[id];
+            if (entry?.state === 'consumed') await this.writes;
+            else {
+                this.entries[id] ??= { state: 'consumed', input: [] };
+                this.entries[id].state = 'consumed';
+                await this.save();
+            }
+            if (acknowledge) this.consumed([id]);
             return undefined;
         }
         const version = this.matchAccepted(batch, normalizeContent(actualContent));
@@ -238,8 +244,29 @@ export class SharedCodexQueue {
         if (batch.versions[batch.current] === version && batch.state !== 'canceled') batch.state = 'consumed';
         await this.save();
         const ids = version.members.map(member => member.id);
-        if (ids.length) this.consumed(ids);
+        if (acknowledge && ids.length) this.consumed(ids);
         return version.members.map(member => ({ id: member.id, input: member.input }));
+    }
+
+    async committedHistory(ids: string[], acknowledge = true): Promise<ReadonlySet<string>> {
+        // A synthetic ID is not acceptance proof. The projection still has to
+        // match its native content against exactly one stored batch version.
+        const verifyContent = new Set(ids.filter(id => this.batches[id]));
+        const unique = [...new Set(ids)].filter(id => !verifyContent.has(id));
+        if (!unique.length) return verifyContent;
+        let changed = false;
+        for (const id of unique) {
+            if (this.entries[id]?.state === 'consumed') continue;
+            const entry = this.entries[id] ??= { state: 'consumed', input: [] };
+            entry.state = 'consumed';
+            changed = true;
+        }
+        // A history snapshot is one proof of consumption: persist it once,
+        // before any of its user items can be acknowledged or redelivered.
+        if (changed) await this.save();
+        else await this.writes;
+        if (acknowledge) this.consumed(unique);
+        return verifyContent;
     }
 
     async list(): Promise<Submission[]> {

@@ -7,6 +7,7 @@ import { prepareCached } from './statementCache'
 import type { StoredMessage } from './types'
 import {
     addMessage,
+    addMessageWithStatus,
     upsertToolCallMessage,
     getLiveToolWork,
     syncNativeQueuedMessage,
@@ -93,6 +94,10 @@ export class MessageStore {
 
     deleteLiveTextSnapshots(sessionId: string, streamId: string, keepMessageId?: string): number {
         return deleteLiveTextSnapshots(this.db, sessionId, streamId, keepMessageId)
+    }
+
+    addMessageWithStatus(sessionId: string, content: unknown, localId?: string, scheduledAt?: number | null, createdAt?: number): { message: StoredMessage; inserted: boolean } {
+        return addMessageWithStatus(this.db, sessionId, content, localId, scheduledAt, createdAt)
     }
 
     upsertToolCallMessage(sessionId: string, content: unknown, callId: string, localId?: string, createdAt?: number): UpsertToolCallResult {
