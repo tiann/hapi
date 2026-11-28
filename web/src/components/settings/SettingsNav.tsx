@@ -46,7 +46,7 @@ export function SettingsNav(props: { activeId?: string; mobile?: boolean }) {
                     >
                         <span className="min-w-0 flex-1">
                             <span className="block font-medium">{t(category.titleKey)}</span>
-                            {props.mobile ? <span className="mt-0.5 block truncate text-sm text-[var(--app-hint)]">{summaries[category.id]}</span> : null}
+                            {props.mobile && summaries[category.id] ? <span className="mt-0.5 block truncate text-sm text-[var(--app-hint)]">{summaries[category.id]}</span> : null}
                         </span>
                         {props.mobile ? <ChevronRightIcon className="h-4 w-4 text-[var(--app-hint)]" /> : null}
                     </button>

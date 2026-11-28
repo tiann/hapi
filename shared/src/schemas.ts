@@ -595,6 +595,15 @@ export const MetadataSchema = z.object({
     // sit quiet indefinitely (operator holding pens, sessions owning work the
     // hub cannot see). Never reconciled to 'idle' while true.
     idleReconcileExempt: z.boolean().optional(),
+    // Externally blocked work distinct from turn-scoped `thinking` (#2020):
+    // waiting on CI, a vendor, or a peer reply. Hub-visible so keepalive-idle
+    // reconcile (and any future destroy-state callers) cannot treat the row as
+    // an idle ghost between polls. Set/clear via MCP `session_waiting` or
+    // CLI update-metadata (`ApiSession.setWaiting` / `clearWaiting`).
+    waiting: z.object({
+        since: z.number(),
+        reason: z.string().optional(),
+    }).nullable().optional(),
     archivedBy: z.string().optional(),
     archiveReason: z.string().optional(),
     // Set only after a completed fresh-session clear. The source row remains

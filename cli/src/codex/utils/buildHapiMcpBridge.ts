@@ -157,6 +157,12 @@ export async function buildHapiMcpBridge(
             approval_mode: 'approve'
         };
     }
+    // Own-session external-wait latch (#2020 / #2616) — versioned metadata only.
+    if (enabledTools.has('session_waiting')) {
+        tools.session_waiting = {
+            approval_mode: 'approve'
+        };
+    }
     // ping_peer / inspect_peer / spawn_peer are registered on the HTTP MCP
     // server / stdio bridge, but are not auto-approved: they target another
     // session (resume + inject, read peer histories, or create + inject).

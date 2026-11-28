@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { beforeEach, describe, expect, it } from 'vitest'
+import { CHAT_SHORTCUTS_STORAGE_KEY, DEFAULT_CHAT_SHORTCUTS } from './chatShortcuts'
 import { exportSettings, importSettings, SETTINGS_STORAGE_KEYS } from './settingsTransfer'
 
 /**
@@ -54,6 +55,7 @@ const NOT_SETTINGS_KEYS = new Set([
     'hapi.scratchlist.v2.migrated.',
     // Not storage keys: event names and the export file format tag
     'hapi-web-settings',
+    'hapi-chat-shortcuts-change',
     'hapi-color-theme-change',
     'hapi-composer-toolbar-layout-change',
     'hapi-session-preview-limit-changed',
@@ -124,5 +126,16 @@ describe('settings export/import', () => {
         expect(() => importSettings('{"format":"hapi-web-settings","version":2,"settings":{}}')).toThrow()
         expect(() => importSettings('not json')).toThrow()
         expect(localStorage.getItem('hapi-appearance')).toBe('dark')
+    })
+
+    it('round-trips custom chat shortcuts', () => {
+        const shortcuts = JSON.stringify({ ...DEFAULT_CHAT_SHORTCUTS, permission: null, effort: 'shift+Tab' })
+        localStorage.setItem(CHAT_SHORTCUTS_STORAGE_KEY, shortcuts)
+        const file = exportSettings()
+        expect(file.settings[CHAT_SHORTCUTS_STORAGE_KEY]).toBe(shortcuts)
+
+        localStorage.clear()
+        expect(importSettings(JSON.stringify(file))).toBe(1)
+        expect(localStorage.getItem(CHAT_SHORTCUTS_STORAGE_KEY)).toBe(shortcuts)
     })
 })

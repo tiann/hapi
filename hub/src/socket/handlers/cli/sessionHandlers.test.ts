@@ -683,6 +683,41 @@ it.each([
         }
     )
 
+    it('rejects malformed waiting without wiping prior metadata (#2616)', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('waiting-ingress', {
+            path: '/tmp/project',
+            host: 'h',
+            lifecycleState: 'running',
+            waiting: { since: 1_700_000_000_000, reason: 'watch CI on tip' },
+        }, null, 'default')
+        const socket = new FakeSocket()
+        let reply: { result: string } | undefined
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({
+                ok: true,
+                value: store.sessions.getSessionByNamespace(session.id, 'default') as StoredSession,
+            }),
+            emitAccessError: () => { throw new Error('unexpected access error') }
+        })
+        socket.trigger('update-metadata', {
+            sid: session.id,
+            expectedVersion: session.metadataVersion,
+            metadata: {
+                path: '/tmp/project',
+                host: 'h',
+                // Missing required `since` — must fail closed before persist.
+                waiting: { reason: 'watch CI' },
+            },
+        }, (ack: unknown) => { reply = ack as { result: string } })
+        expect(reply).toEqual({ result: 'error' })
+        expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).toMatchObject({
+            path: '/tmp/project',
+            waiting: { since: 1_700_000_000_000, reason: 'watch CI on tip' },
+        })
+    })
+
     it('preserves the hub-owned translateInput toggle across CLI metadata replacements', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('preserve-translate', {

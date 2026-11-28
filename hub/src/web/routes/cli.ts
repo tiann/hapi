@@ -15,6 +15,7 @@ import { getConfiguration } from '../../configuration'
 import { readAutoBridgeTransientModelErrorsEnabled } from '../../config/autoBridgeTransientModelErrors'
 import { readSessionSummaryContractEnabled } from '../../config/sessionSummaryContract'
 import { stripExternalRefsWhenAwarenessDisabled, externalRefsInMetadataValid } from '../../sync/externalRefsPolicy'
+import { cliMetadataWaitingValid } from '../../sync/waitingMetadataPolicy'
 import { mapExternalRefRouteError } from '../../sync/externalRefErrors'
 import { constantTimeEquals } from '../../utils/crypto'
 import { parseAccessToken } from '../../utils/accessToken'
@@ -149,6 +150,9 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
             )
             if (!externalRefsInMetadataValid(metadata)) {
                 return c.json({ error: 'Invalid metadata.externalRefs' }, 400)
+            }
+            if (!cliMetadataWaitingValid(metadata)) {
+                return c.json({ error: 'Invalid metadata.waiting' }, 400)
             }
             const session = parsed.data.adopt === true && parsed.data.id
                 ? engine.adoptPreallocatedSession(

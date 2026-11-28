@@ -1617,7 +1617,7 @@
         "--settings",
         "<tmp>/hapi/tmp/hooks/session-hook-<pid>.json",
         "--allowedTools",
-        "mcp__hapi__change_title,mcp__hapi__display_image,mcp__hapi__list_peers,mcp__hapi__session_job",
+        "mcp__hapi__change_title,mcp__hapi__display_image,mcp__hapi__list_peers,mcp__hapi__session_job,mcp__hapi__session_waiting",
         "--add-dir",
         "<tmp>/hapi-blobs",
         "--permission-mode",

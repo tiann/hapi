@@ -155,6 +155,7 @@ describe('runHappyMcpStdioBridge tool forwarding', () => {
             'list_peers',
             'ping_peer',
             'session_job',
+            'session_waiting',
             'spawn_peer',
         ].sort())
         expect(harness.tools.has('link_pr')).toBe(false)
@@ -325,6 +326,7 @@ describe('runHappyMcpStdioBridge tool forwarding', () => {
             'display_video',
             'display_media',
             'session_job',
+            'session_waiting',
             'ping_peer',
             'spawn_peer',
             'inspect_peer',
@@ -338,13 +340,14 @@ describe('runHappyMcpStdioBridge tool forwarding', () => {
         try {
             await runHappyMcpStdioBridge(['--url', 'http://127.0.0.1:43006'])
 
-            // session_job is own-session — kept when peer tools are stripped.
+            // session_job / session_waiting are own-session — kept when peer tools are stripped.
             expect([...harness.tools.keys()]).toEqual([
                 'change_title',
                 'display_image',
                 'display_video',
                 'display_media',
                 'session_job',
+                'session_waiting',
             ])
         } finally {
             delete process.env.HAPI_DISABLE_PEER_TOOLS
