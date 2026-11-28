@@ -317,12 +317,14 @@ async function startCompaction(f: Awaited<ReturnType<typeof fixture>>, id = 'inp
 
 describe('optional bounded history replay', () => {
     it.each([
-        { selected: true, fullHistory: false, bounded: true },
-        { selected: true, fullHistory: true, bounded: false },
-        { selected: false, fullHistory: false, bounded: false },
-    ])('reads the expected history window: %j', async ({ selected, fullHistory, bounded }) => {
+        { configured: ' other, thread ', fullHistory: false, bounded: true },
+        { configured: ' * ', fullHistory: false, bounded: true },
+        { configured: '*', fullHistory: true, bounded: false },
+        { configured: 'other', fullHistory: false, bounded: false },
+        { configured: '', fullHistory: false, bounded: false },
+    ])('reads the expected history window: %j', async ({ configured, fullHistory, bounded }) => {
         const f = await fixture();
-        vi.stubEnv('HAPI_CODEX_LAZY_HISTORY_IDS', selected ? ' other, thread ' : 'other');
+        vi.stubEnv('HAPI_CODEX_LAZY_HISTORY_IDS', configured);
         const request = vi.spyOn(f.root.client, 'request');
         request.mockResolvedValueOnce({ thread: { id: 'thread', historyMode: 'paginated' } });
         if (bounded) request.mockResolvedValueOnce({ data: [{ id: 'new', items: [] }], nextCursor: 'older' });
@@ -341,7 +343,7 @@ describe('optional bounded history replay', () => {
 
     it('retains legacy history reads when the native thread does not support pagination', async () => {
         const f = await fixture();
-        vi.stubEnv('HAPI_CODEX_LAZY_HISTORY_IDS', 'thread');
+        vi.stubEnv('HAPI_CODEX_LAZY_HISTORY_IDS', '*');
         const request = vi.spyOn(f.root.client, 'request');
         request.mockResolvedValueOnce({ thread: { id: 'thread' } })
             .mockResolvedValueOnce({ thread: { id: 'thread', turns: [{ id: 'old', items: [] }] } });

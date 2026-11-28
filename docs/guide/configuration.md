@@ -293,7 +293,7 @@ sessions, the runner for remote spawns.
 | `CLAUDE_REMOTE_RESPAWN_BACKOFF_MS` | Claude Code | `1000` | Delay before respawning a failed remote-mode Claude process. |
 | `HAPI_CODEX_APP_SERVER_BIN` | Codex | `codex` | Command used to start `codex app-server` for remote sessions. |
 | `HAPI_CODEX_MODEL_CATALOG_JSON` | Codex | – | Absolute path (or `~/…`) to a static Codex model catalog, passed as `-c model_catalog_json=…`. |
-| `HAPI_CODEX_LAZY_HISTORY_IDS` | Codex | – | Comma-separated native thread ids that load only their newest turn. For exceptionally large threads; set on the runner. |
+| `HAPI_CODEX_LAZY_HISTORY_IDS` | Codex | – | Use `*` for all HAPI-managed Codex sessions or a comma-separated list of native thread IDs. On recovery, paginated roots replay only the newest turn and skip child history replay. Set on the Runner. |
 | `COPILOT_CLI_PATH` | GitHub Copilot | `copilot` | Path to the Copilot CLI. |
 | `CURSOR_LEGACY_TRANSIENT_BACKOFF_MS` | Cursor (legacy) | `2000` | Delay before retrying after a transient Cursor Agent error. |
 | `HAPI_DSH_ACP_COMMAND` | DeepSeek Harness | `dsh` (with `--profile acp`) | ACP server executable. |
