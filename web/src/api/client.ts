@@ -1,6 +1,6 @@
 import { HubClock } from '@/lib/hubClock'
 import type { AttachedJob } from '@hapi/protocol'
-import type { BranchConversationRequest, BranchConversationResponse } from '@hapi/protocol/apiTypes'
+import type { BranchConversationRequest, BranchConversationResponse, PermissionDecisionResponse } from '@hapi/protocol/apiTypes'
 import { isAuthRejectionStatus } from '@/lib/authConnection'
 import type {
     AttachmentMetadata,
@@ -1184,12 +1184,13 @@ export class ApiClient {
             allowTools?: string[]
             decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
             answers?: Record<string, string[]> | Record<string, { answers: string[] }>
+            instanceId?: string
         }
-    ): Promise<void> {
+    ): Promise<PermissionDecisionResponse> {
         const body = typeof modeOrOptions === 'string' || modeOrOptions === undefined
             ? { mode: modeOrOptions }
             : modeOrOptions
-        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(requestId)}/approve`, {
+        return this.request(`/api/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(requestId)}/approve`, {
             method: 'POST',
             body: JSON.stringify(body)
         })
@@ -1200,9 +1201,10 @@ export class ApiClient {
         requestId: string,
         options?: {
             decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
+            instanceId?: string
         }
-    ): Promise<void> {
-        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(requestId)}/deny`, {
+    ): Promise<PermissionDecisionResponse> {
+        return this.request(`/api/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(requestId)}/deny`, {
             method: 'POST',
             body: JSON.stringify(options ?? {})
         })

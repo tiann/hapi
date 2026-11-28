@@ -12,7 +12,7 @@ import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
 } from '@hapi/protocol/runnerCapabilities'
-import type { AbortChunkedUploadResponse, CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, InitChunkedUploadRequest, InitChunkedUploadResponse, MessageContextResponse, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse, UploadChunkResponse } from '@hapi/protocol/apiTypes'
+import type { AbortChunkedUploadResponse, CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, InitChunkedUploadRequest, InitChunkedUploadResponse, MessageContextResponse, MessageDeliveryMode, MessagesResponse, PermissionDecisionResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse, UploadChunkResponse } from '@hapi/protocol/apiTypes'
 import { FORK_PREVIEW_TAIL_ROWS, type ForkBoundary, type ForkBoundaryErrorCode, type ForkPreviewRequest, type ForkPreviewResponse, type ForkPreviewRow } from '@hapi/protocol/forkBoundary'
 import type { UsageQueryAgent, UsageQueryAgentSettings, UsageQueryResult, UsageQuerySettingsResponse, UsageQueryTemplate } from '@hapi/protocol/usageQuery'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
@@ -2173,21 +2173,23 @@ export class SyncEngine {
         mode?: PermissionMode,
         allowTools?: string[],
         decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort',
-        answers?: Record<string, string[]> | Record<string, { answers: string[] }>
-    ): Promise<void> {
+        answers?: Record<string, string[]> | Record<string, { answers: string[] }>,
+        instanceId?: string
+    ): Promise<PermissionDecisionResponse['acknowledgement']> {
         // Do not clear agentState.requests here on PermissionRequestNotFoundError.
         // A concurrent first answer may still be finalizing asynchronously; hub-side
         // cancel would race it into "canceled" and drop the real decision
         // (tiann/hapi#2415 review). CLI orphan finalize owns sticky-badge cleanup.
-        await this.rpcGateway.approvePermission(sessionId, requestId, mode, allowTools, decision, answers)
+        return this.rpcGateway.approvePermission(sessionId, requestId, mode, allowTools, decision, answers, instanceId)
     }
 
     async denyPermission(
         sessionId: string,
         requestId: string,
-        decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
-    ): Promise<void> {
-        await this.rpcGateway.denyPermission(sessionId, requestId, decision)
+        decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort',
+        instanceId?: string
+    ): Promise<PermissionDecisionResponse['acknowledgement']> {
+        return this.rpcGateway.denyPermission(sessionId, requestId, decision, instanceId)
     }
 
     async abortSession(sessionId: string): Promise<void> {

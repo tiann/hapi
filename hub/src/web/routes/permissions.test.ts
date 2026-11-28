@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'bun:test'
 import { Hono } from 'hono'
+import { CODEX_ASYNC_QUESTION_REQUEST_PREFIX, CODEX_QUESTION_REISSUED, PERMISSION_REQUEST_NOT_FOUND_MESSAGE } from '@hapi/protocol/rpcMethods'
+import type { Server } from 'socket.io'
+import type { RpcRegistry } from '../../socket/rpcRegistry'
 import type { Session, SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
-import { PermissionRequestNotFoundError } from '../../sync/rpcGateway'
+import { PermissionRequestNotFoundError, RpcGateway } from '../../sync/rpcGateway'
 import { createPermissionsRoutes } from './permissions'
 
-function createSession(): Session {
+function createSession(flavor: 'claude' | 'codex' = 'claude'): Session {
     return {
         id: 'session-1',
         namespace: 'default',
@@ -14,7 +17,7 @@ function createSession(): Session {
         updatedAt: 1,
         active: true,
         activeAt: 1,
-        metadata: { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
+        metadata: { path: '/tmp/project', host: 'localhost', flavor },
         metadataVersion: 1,
         agentState: {
             controlledByUser: false,
@@ -36,10 +39,11 @@ function createSession(): Session {
 }
 
 function createApp(opts?: {
+    session?: Session
     approvePermission?: SyncEngine['approvePermission']
     denyPermission?: SyncEngine['denyPermission']
 }) {
-    const session = createSession()
+    const session = opts?.session ?? createSession()
     const engine = {
         resolveSessionAccess: () => ({ ok: true, sessionId: session.id, session }),
         approvePermission: opts?.approvePermission ?? (async () => {}),
@@ -67,6 +71,131 @@ describe('permissions routes (tiann/hapi#1735)', () => {
         })
         expect(res.status).toBe(200)
         expect(await res.json()).toEqual({ ok: true })
+    })
+
+    it('rejects a failed Codex async answer RPC and accepts a subsequent corrected answer', async () => {
+        const id = `${CODEX_ASYNC_QUESTION_REQUEST_PREFIX}test`
+        const session = createSession('codex')
+        session.agentState = { requests: { [id]: { tool: 'request_user_input', arguments: { isBlocking: false } } } }
+        let reply = { error: 'An answer is required' } as { error: string } | { ok: true }
+        const socket = { timeout: () => ({ emitWithAck: async () => JSON.stringify(reply) }) }
+        const io = { of: () => ({ sockets: new Map([['socket-1', socket]]) }) } as unknown as Server
+        const registry = { getSocketIdForMethod: () => 'socket-1' } as unknown as RpcRegistry
+        const gateway = new RpcGateway(io, registry)
+        const app = createApp({ session, approvePermission: gateway.approvePermission.bind(gateway) })
+        const answer = (answers: string[]) => app.request(`/api/sessions/session-1/permissions/${encodeURIComponent(id)}/approve`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ answers: { q: { answers } } })
+        })
+
+        expect((await answer(['None of the above'])).status).toBe(422)
+        reply = { ok: true }
+        expect((await answer(['None of the above', 'user_note: corrected'])).status).toBe(200)
+    })
+
+    it('rejects dismiss while an async answer is in flight even if the answer later fails', async () => {
+        const id = `${CODEX_ASYNC_QUESTION_REQUEST_PREFIX}test`
+        const session = createSession('codex')
+        session.agentState = { requests: { [id]: { tool: 'request_user_input', arguments: { isBlocking: false } } } }
+        const started = Promise.withResolvers<void>()
+        const inFlight = Promise.withResolvers<string>()
+        const socket = { timeout: () => ({ emitWithAck: async (_event: string, request: { params: string }) => {
+            if (!JSON.parse(request.params).approved) {
+                return JSON.stringify({ error: 'Question already submitted or unavailable' })
+            }
+            started.resolve()
+            return inFlight.promise
+        } }) }
+        const io = { of: () => ({ sockets: new Map([['socket-1', socket]]) }) } as unknown as Server
+        const registry = { getSocketIdForMethod: () => 'socket-1' } as unknown as RpcRegistry
+        const gateway = new RpcGateway(io, registry)
+        const app = createApp({
+            session, approvePermission: gateway.approvePermission.bind(gateway), denyPermission: gateway.denyPermission.bind(gateway)
+        })
+        const post = (action: 'approve' | 'deny') => app.request(`/api/sessions/session-1/permissions/${encodeURIComponent(id)}/${action}`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(action === 'approve' ? { answers: { q: ['Web'] } } : {})
+        })
+
+        const answering = post('approve')
+        await started.promise
+        const dismissal = await post('deny')
+        inFlight.resolve(JSON.stringify({ error: 'Native input failed' }))
+        expect(dismissal.status).toBe(422)
+        expect((await answering).status).toBe(422)
+        expect(session.agentState.requests?.[id]).toBeDefined()
+    })
+
+    it('returns only a matching runner acknowledgement for a Codex decision', async () => {
+        const requestId = `${CODEX_ASYNC_QUESTION_REQUEST_PREFIX}test`
+        const instanceId = 'issuance'
+        const session = createSession('codex')
+        session.agentState = { requests: { [requestId]: { tool: 'request_user_input', arguments: {}, instanceId } } }
+        const acknowledgement = { requestId, instanceId }
+        const socket = { timeout: () => ({ emitWithAck: async () => JSON.stringify(rpcResponse) }) }
+        const io = { of: () => ({ sockets: new Map([['socket-1', socket]]) }) } as unknown as Server
+        const registry = { getSocketIdForMethod: () => 'socket-1' } as unknown as RpcRegistry
+        const gateway = new RpcGateway(io, registry)
+        const app = createApp({
+            session, approvePermission: gateway.approvePermission.bind(gateway), denyPermission: gateway.denyPermission.bind(gateway)
+        })
+        let rpcResponse: unknown
+        for (const action of ['approve', 'deny']) {
+            for (const ack of [acknowledgement, undefined, { ...acknowledgement, instanceId: 'different' }]) {
+                rpcResponse = { ok: true, acknowledgement: ack }
+                const response = await app.request(`/api/sessions/session-1/permissions/${encodeURIComponent(requestId)}/${action}`, {
+                    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ instanceId })
+                })
+                expect(response.status).toBe(200)
+                expect(await response.json()).toEqual(ack === acknowledgement ? { ok: true, acknowledgement } : { ok: true })
+            }
+        }
+    })
+
+    it('forwards the expected issuance and returns a distinguishable conflict for a replacement', async () => {
+        const id = `${CODEX_ASYNC_QUESTION_REQUEST_PREFIX}test`
+        const session = createSession('codex')
+        session.agentState = { requests: { [id]: { tool: 'request_user_input', arguments: {}, instanceId: 'replacement' } } }
+        const socket = { timeout: () => ({ emitWithAck: async (_event: string, request: { params: string }) => {
+            const { instanceId } = JSON.parse(request.params)
+            if (instanceId === 'original') return JSON.stringify({ error: CODEX_QUESTION_REISSUED })
+            return JSON.stringify({ ok: true })
+        } }) }
+        const io = { of: () => ({ sockets: new Map([['socket-1', socket]]) }) } as unknown as Server
+        const registry = { getSocketIdForMethod: () => 'socket-1' } as unknown as RpcRegistry
+        const gateway = new RpcGateway(io, registry)
+        const app = createApp({
+            session, approvePermission: gateway.approvePermission.bind(gateway), denyPermission: gateway.denyPermission.bind(gateway)
+        })
+        for (const action of ['approve', 'deny']) {
+            const response = await app.request(`/api/sessions/session-1/permissions/${encodeURIComponent(id)}/${action}`, {
+                method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ instanceId: 'original' })
+            })
+            expect(response.status).toBe(409)
+            expect(await response.json()).toEqual({ error: 'Question was reissued', code: CODEX_QUESTION_REISSUED })
+        }
+    })
+
+    it('returns 404 if the Codex runner already consumed an async question the hub still lists', async () => {
+        const id = `${CODEX_ASYNC_QUESTION_REQUEST_PREFIX}test`
+        const session = createSession('codex')
+        session.agentState = { requests: { [id]: { tool: 'request_user_input', arguments: { isBlocking: false } } } }
+        const socket = { timeout: () => ({
+            emitWithAck: async () => JSON.stringify({ error: PERMISSION_REQUEST_NOT_FOUND_MESSAGE })
+        }) }
+        const io = { of: () => ({ sockets: new Map([['socket-1', socket]]) }) } as unknown as Server
+        const registry = { getSocketIdForMethod: () => 'socket-1' } as unknown as RpcRegistry
+        const gateway = new RpcGateway(io, registry)
+        const app = createApp({
+            session, approvePermission: gateway.approvePermission.bind(gateway), denyPermission: gateway.denyPermission.bind(gateway)
+        })
+        for (const action of ['approve', 'deny']) {
+            const response = await app.request(`/api/sessions/session-1/permissions/${encodeURIComponent(id)}/${action}`, {
+                method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}'
+            })
+            expect(response.status).toBe(404)
+        }
     })
 
     it('returns 409 when the CLI no longer has the request pending on approve', async () => {
@@ -97,7 +226,7 @@ describe('permissions routes (tiann/hapi#1735)', () => {
 
     it('404s for a request id the session has never heard of, without calling the engine', async () => {
         let called = false
-        const app = createApp({ approvePermission: async () => { called = true } })
+        const app = createApp({ approvePermission: async () => { called = true; return undefined } })
         const res = await app.request('/api/sessions/session-1/permissions/unknown-request/approve', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },

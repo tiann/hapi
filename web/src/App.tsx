@@ -40,6 +40,7 @@ import { ReconnectingBanner } from '@/components/ReconnectingBanner'
 import { VoiceErrorBanner } from '@/components/VoiceErrorBanner'
 import { RunnerVersionSkewBanner } from '@/components/RunnerVersionSkewBanner'
 import { LoadingState } from '@/components/LoadingState'
+import { CodexQuestionSubmissionProvider } from '@/components/ToolCard/CodexQuestionSubmission'
 import { ToastContainer } from '@/components/ToastContainer'
 import { PwaUpdateProvider } from '@/lib/pwa-update-context'
 import { ToastProvider, useAddToast } from '@/lib/toast-context'
@@ -611,7 +612,9 @@ function AppInner() {
                     />
                     <RunnerVersionSkewBanner inStatusStack={connectionBannerHeight > 0} />
                     <div className="flex min-h-0 flex-1 flex-col">
-                        <Outlet />
+                        <CodexQuestionSubmissionProvider key={baseUrl}>
+                            <Outlet />
+                        </CodexQuestionSubmissionProvider>
                     </div>
                 </div>
                 <ToastContainer />

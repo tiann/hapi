@@ -8,6 +8,7 @@ import {
 import type { PermissionModeTone } from '@hapi/protocol'
 import * as Popover from '@radix-ui/react-popover'
 import { useMemo, useState } from 'react'
+import type { CodexQuestionSubmission } from '@/components/ToolCard/CodexQuestionSubmission'
 import type { AgentState, CodexCollaborationMode, PermissionMode } from '@/types/api'
 import type { ConversationStatus } from '@/realtime/types'
 import { getContextBudgetTokens } from '@/chat/modelConfig'
@@ -61,6 +62,7 @@ function getConnectionStatus(
     active: boolean,
     thinking: boolean,
     pendingRequests: readonly PendingRequestEntry[],
+    waitingForAgent: boolean,
     voiceStatus: ConversationStatus | undefined,
     backgroundTaskCount: number,
     t: (key: string) => string
@@ -82,6 +84,16 @@ function getConnectionStatus(
             color: 'text-[#999]',
             dotColor: 'bg-[#999]',
             isPulsing: false,
+            hasPendingRequests: false
+        }
+    }
+
+    if (waitingForAgent) {
+        return {
+            text: t('tool.answerSentWaiting'),
+            color: 'text-[#007AFF]',
+            dotColor: 'bg-[#007AFF]',
+            isPulsing: true,
             hasPendingRequests: false
         }
     }
@@ -277,6 +289,7 @@ export function StatusBar(props: {
     copilotAgentMode?: import('@hapi/protocol').CopilotAgentMode
     agentFlavor?: string | null
     voiceStatus?: ConversationStatus
+    pendingRequestReceipts?: ReadonlyMap<string, CodexQuestionSubmission['status']>
     onPendingRequestClick?: (requestId: string) => void
 }) {
     const { t } = useTranslation()
@@ -286,9 +299,18 @@ export function StatusBar(props: {
         () => getPendingRequestEntries(props.agentState?.requests),
         [props.agentState?.requests]
     )
+    const actionableRequests = useMemo(
+        () => props.pendingRequestReceipts?.size
+            ? pendingRequests.filter(request => !props.pendingRequestReceipts?.has(request.id))
+            : pendingRequests,
+        [pendingRequests, props.pendingRequestReceipts]
+    )
+    const hasActionableShortcut = Boolean(props.onPendingRequestClick && actionableRequests.length > 0)
+    const waitingForAgent = actionableRequests.length === 0
+        && pendingRequests.some(request => props.pendingRequestReceipts?.get(request.id) === 'answered')
     const connectionStatus = useMemo(
-        () => getConnectionStatus(props.active, props.thinking, pendingRequests, props.voiceStatus, props.backgroundTaskCount ?? 0, t),
-        [props.active, props.thinking, pendingRequests, props.voiceStatus, props.backgroundTaskCount, t]
+        () => getConnectionStatus(props.active, props.thinking, actionableRequests, waitingForAgent, props.voiceStatus, props.backgroundTaskCount ?? 0, t),
+        [props.active, props.thinking, actionableRequests, waitingForAgent, props.voiceStatus, props.backgroundTaskCount, t]
     )
 
     const contextHeuristicModel = props.contextModel ?? props.model
@@ -362,14 +384,14 @@ export function StatusBar(props: {
     return (
         <div className="flex min-w-0 items-baseline justify-between gap-2 px-2 pb-1">
             <div className="flex min-w-0 items-baseline gap-2">
-                {connectionStatus.hasPendingRequests && props.onPendingRequestClick ? (
-                    pendingRequests.length === 1 ? (
+                {connectionStatus.hasPendingRequests && hasActionableShortcut ? (
+                    actionableRequests.length === 1 ? (
                         <button
                             type="button"
                             className="relative top-px flex shrink-0 cursor-pointer items-center gap-1.5 rounded-sm bg-transparent p-0 text-left outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-link)] sm:top-0.5"
                             aria-label={connectionStatus.text}
                             title={connectionStatus.text}
-                            onClick={() => props.onPendingRequestClick?.(pendingRequests[0]!.id)}
+                            onClick={() => props.onPendingRequestClick?.(actionableRequests[0]!.id)}
                         >
                             <span
                                 aria-hidden="true"
@@ -407,7 +429,7 @@ export function StatusBar(props: {
                                     className="z-50 w-[calc(100vw-1.5rem)] rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] p-1 shadow-lg sm:w-fit sm:min-w-[14rem] sm:max-w-[28rem]"
                                 >
                                     <div className="flex flex-col">
-                                        {pendingRequests.map((request) => {
+                                        {actionableRequests.map((request) => {
                                             const detail = getPendingRequestDetail(request)
                                             const label = request.kind === 'input'
                                                 ? t('misc.inputRequired')

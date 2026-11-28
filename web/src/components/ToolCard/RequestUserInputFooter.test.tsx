@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
+import { CODEX_ASYNC_QUESTION_REQUEST_PREFIX } from '@hapi/protocol/rpcMethods'
 import type { ApiClient } from '@/api/client'
 import type { ChatToolCall } from '@/chat/types'
 
@@ -51,6 +52,46 @@ function makeTool(input: unknown): ChatToolCall {
 }
 
 describe('RequestUserInputFooter', () => {
+    it('clears an unsent selection and note only when the question is reissued', () => {
+        const { props, rerender, approvePermission } = renderFooter({ isBlocking: false, questions: [choice] })
+        const renderIssuance = (instanceId: string) => rerender(<RequestUserInputFooter
+            {...props}
+            tool={{ ...props.tool, permission: { id: 'permission-1', status: 'pending', instanceId } }}
+        />)
+
+        renderIssuance('original')
+        fireEvent.click(screen.getByRole('radio', { name: /Alpha/ }))
+        fireEvent.click(screen.getByRole('button', { name: 'tool.requestUserInput.addNote' }))
+        fireEvent.change(screen.getByRole('textbox'), { target: { value: 'old note' } })
+
+        renderIssuance('original')
+        expect(screen.getByRole('radio', { name: /Alpha/ })).toBeChecked()
+        expect(screen.getByRole('textbox')).toHaveValue('old note')
+
+        renderIssuance('replacement')
+        expect(screen.getByRole('radio', { name: /Alpha/ })).not.toBeChecked()
+        expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+        fireEvent.click(screen.getByRole('button', { name: 'tool.submit' }))
+        expect(approvePermission).not.toHaveBeenCalled()
+        expect(screen.getByText('tool.selectOption')).toBeVisible()
+    })
+
+    it('requires a nonblank note for the generated Codex async question option', async () => {
+        const { props, rerender, approvePermission } = renderFooter({ isBlocking: false, questions: [choice] })
+        const id = `${CODEX_ASYNC_QUESTION_REQUEST_PREFIX}test`
+        rerender(<RequestUserInputFooter {...props} tool={{ ...props.tool, permission: { id, status: 'pending' } }} />)
+        fireEvent.click(screen.getByRole('radio', { name: /以上都不是/ }))
+        fireEvent.change(screen.getByRole('textbox'), { target: { value: '   ' } })
+        fireEvent.click(screen.getByRole('button', { name: 'tool.submit' }))
+        expect(approvePermission).not.toHaveBeenCalled()
+
+        fireEvent.change(screen.getByRole('textbox'), { target: { value: 'A different answer' } })
+        fireEvent.click(screen.getByRole('button', { name: 'tool.submit' }))
+        await waitFor(() => expect(approvePermission).toHaveBeenCalledExactlyOnceWith('session-1', id, {
+            answers: { choice: { answers: ['None of the above', 'user_note: A different answer'] } }
+        }))
+    })
+
     it('dismisses only the optional request without validating or submitting answers', async () => {
         const { props, denyPermission, approvePermission } = renderFooter({ isBlocking: false, questions: [choice] })
         fireEvent.click(screen.getByRole('button', { name: 'button.dismiss' }))

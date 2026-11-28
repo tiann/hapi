@@ -1,10 +1,14 @@
+import { getPermissionDecisionAcknowledgement, type PermissionDecisionResponse } from '@hapi/protocol/apiTypes'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { ApiClient } from '@/api/client'
+import { CODEX_ASYNC_QUESTION_REQUEST_PREFIX, CODEX_QUESTION_REISSUED } from '@hapi/protocol/rpcMethods'
+import { ApiError, type ApiClient } from '@/api/client'
 import type { ChatToolCall } from '@/chat/types'
+import { useCodexQuestionSubmission, type CodexQuestionSubmission } from '@/components/ToolCard/CodexQuestionSubmission'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 import {
+    REQUEST_USER_INPUT_OTHER,
     isRequestUserInputToolName,
     isAsyncRequestUserInput,
     parseRequestUserInputInput,
@@ -32,16 +36,34 @@ type QuestionState = {
 // Same shape as Submit, quieter colors.
 const addNoteButtonClassName = 'h-8 rounded-full border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-3.5 text-[var(--app-hint)] hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)]'
 
-export function RequestUserInputFooter(props: {
+type RequestUserInputFooterProps = {
     api: ApiClient
     sessionId: string
     tool: ChatToolCall
     disabled: boolean
     onDone: () => void
-}) {
+}
+
+export function RequestUserInputFooter(props: RequestUserInputFooterProps) {
+    const requestId = props.tool.permission?.id
+    const instanceId = props.tool.permission?.instanceId
+    const [draft, setDraft] = useState(() => ({ requestId, instanceId, revision: 0 }))
+
+    if (requestId !== draft.requestId) {
+        setDraft({ requestId, instanceId, revision: draft.revision + 1 })
+    } else if (instanceId && instanceId !== draft.instanceId) {
+        // Learning the first issuance ID leaves the current draft mounted.
+        setDraft({ requestId, instanceId, revision: draft.revision + (draft.instanceId ? 1 : 0) })
+    }
+
+    return <RequestUserInputForm key={draft.revision} {...props} />
+}
+
+function RequestUserInputForm(props: RequestUserInputFooterProps) {
     const { t } = useTranslation()
     const { haptic } = usePlatform()
     const permission = props.tool.permission
+    const { record } = useCodexQuestionSubmission(props.sessionId)
     const parsed = useMemo(() => parseRequestUserInputInput(props.tool.input), [props.tool.input])
     const questions = parsed.questions
     const isAsync = isAsyncRequestUserInput(props.tool.name, props.tool.input)
@@ -80,14 +102,33 @@ export function RequestUserInputFooter(props: {
     if (!permission || permission.status !== 'pending') return null
     if (!isRequestUserInputToolName(props.tool.name)) return null
 
-    const run = async (action: () => Promise<void>, hapticType: 'success' | 'error') => {
+    const isCodexAsync = isAsync && permission.id.startsWith(CODEX_ASYNC_QUESTION_REQUEST_PREFIX)
+    const instanceId = isAsync ? permission.instanceId : undefined
+    const recordSubmission = instanceId && record
+        ? (submission: CodexQuestionSubmission) => record(props.sessionId, permission.id, instanceId, submission)
+        : undefined
+    const run = async (action: () => Promise<PermissionDecisionResponse>, submission: CodexQuestionSubmission) => {
         if (props.disabled) return
         setError(null)
         try {
-            await action()
-            haptic.notification(hapticType)
+            const response = await action()
+            if (getPermissionDecisionAcknowledgement(response, permission.id, instanceId)) {
+                recordSubmission?.(submission)
+                haptic.notification('success')
+            } else if (!isCodexAsync) {
+                haptic.notification('success')
+            }
             props.onDone()
         } catch (e) {
+            const reissued = e instanceof ApiError && e.status === 409 && e.code === CODEX_QUESTION_REISSUED
+            if (recordSubmission && (reissued || (e instanceof ApiError && e.status === 404))) {
+                recordSubmission({ status: 'missing' })
+                props.onDone()
+                return
+            }
+            if (instanceId && reissued) {
+                props.onDone()
+            }
             haptic.notification('error')
             setError(e instanceof Error ? e.message : t('dialog.error.default'))
         }
@@ -97,8 +138,18 @@ export function RequestUserInputFooter(props: {
     const clampedStep = Math.min(Math.max(step, 0), total - 1)
     const currentQuestion = questions[clampedStep] as RequestUserInputQuestion | undefined
 
-    const validateQuestion = (question: RequestUserInputQuestion): boolean => {
-        return isRequestUserInputQuestionAnswered(question, stateByQuestion[question.id])
+    const usesGeneratedOther = (question: RequestUserInputQuestion, answer: QuestionState | undefined) => (
+        isCodexAsync && question.isOther
+        && answer?.selected.length === 1 && answer.selected[0] === REQUEST_USER_INPUT_OTHER
+        && !question.options.some(option => option.label === REQUEST_USER_INPUT_OTHER)
+    )
+
+    const validationError = (question: RequestUserInputQuestion): string | null => {
+        const answer = stateByQuestion[question.id]
+        if (answer && usesGeneratedOther(question, answer) && !answer.userNote.trim()) {
+            return t('tool.requestUserInput.otherAnswerRequired')
+        }
+        return isRequestUserInputQuestionAnswered(question, answer) ? null : t('tool.selectOption')
     }
 
     const submit = async () => {
@@ -107,8 +158,9 @@ export function RequestUserInputFooter(props: {
         // Validate all questions
         for (let i = 0; i < questions.length; i += 1) {
             const q = questions[i]
-            if (!validateQuestion(q)) {
-                setError(t('tool.selectOption'))
+            const error = validationError(q)
+            if (error) {
+                setError(error)
                 setStep(i)
                 return
             }
@@ -130,14 +182,18 @@ export function RequestUserInputFooter(props: {
         }
 
         setLoading(true)
-        await run(() => props.api.approvePermission(props.sessionId, permission.id, formattedAnswers), 'success')
+        const options = instanceId ? { ...formattedAnswers, instanceId } : formattedAnswers
+        await run(() => props.api.approvePermission(props.sessionId, permission.id, options), {
+            status: 'answered', answers: formattedAnswers.answers
+        })
         setLoading(false)
     }
 
     const next = () => {
         if (!currentQuestion) return
-        if (!validateQuestion(currentQuestion)) {
-            setError(t('tool.selectOption'))
+        const error = validationError(currentQuestion)
+        if (error) {
+            setError(error)
             return
         }
         setError(null)
@@ -148,7 +204,10 @@ export function RequestUserInputFooter(props: {
     const dismiss = async () => {
         if (!isAsync || loading) return
         setLoading(true)
-        await run(() => props.api.denyPermission(props.sessionId, permission.id), 'success')
+        const deny = () => instanceId
+            ? props.api.denyPermission(props.sessionId, permission.id, { instanceId })
+            : props.api.denyPermission(props.sessionId, permission.id)
+        await run(deny, { status: 'dismissed' })
         setLoading(false)
     }
 
@@ -213,7 +272,10 @@ export function RequestUserInputFooter(props: {
         })
     }
 
-    const currentState = currentQuestion ? stateByQuestion[currentQuestion.id] : null
+    const currentState = currentQuestion ? stateByQuestion[currentQuestion.id] : undefined
+    const noteLabel = t(currentQuestion && usesGeneratedOther(currentQuestion, currentState)
+        ? 'tool.requestUserInput.otherAnswerRequired'
+        : 'tool.requestUserInput.noteLabel')
     const isPureTextQuestion = currentQuestion && currentQuestion.options.length === 0
     const hasSelection = (currentState?.selected.length ?? 0) > 0
     const hasNoteContent = (currentState?.userNote.trim().length ?? 0) > 0
@@ -274,7 +336,7 @@ export function RequestUserInputFooter(props: {
                                             checked={isSelected}
                                             disabled={props.disabled || loading}
                                             title={opt.isOther ? t('tool.requestUserInput.otherLabel') : opt.label}
-                                            description={opt.isOther ? t('tool.requestUserInput.otherDescription') : opt.description}
+                                            description={opt.isOther && !isCodexAsync ? t('tool.requestUserInput.otherDescription') : opt.description}
                                             markdown
                                             onClick={() => selectOption(currentQuestion, opt)}
                                         />
@@ -285,11 +347,11 @@ export function RequestUserInputFooter(props: {
                             {isNoteExpanded ? (
                                 <div className="mt-3">
                                     <div className="text-xs text-[var(--app-hint)] mb-1">
-                                        {t('tool.requestUserInput.noteLabel')}
+                                        {noteLabel}
                                     </div>
                                     <textarea
                                         ref={noteRef}
-                                        aria-label={t('tool.requestUserInput.noteLabel')}
+                                        aria-label={noteLabel}
                                         value={currentState?.userNote ?? ''}
                                         onChange={(e) => updateUserNote(currentQuestion, e.target.value)}
                                         disabled={props.disabled || loading}

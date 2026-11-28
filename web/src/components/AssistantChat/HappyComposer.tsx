@@ -21,6 +21,7 @@ import {
     useRef,
     useState
 } from 'react'
+import type { CodexQuestionSubmission } from '@/components/ToolCard/CodexQuestionSubmission'
 import { useNarrowViewport } from '@/hooks/useNarrowViewport'
 import { shouldInvokeComposerDictateShortcut } from '@/lib/composerDictateShortcut'
 import { isRichComposerMentionsEnabled, resolveComposerPlaceholderKey } from '@/lib/composerSegments'
@@ -309,6 +310,7 @@ export function HappyComposer(props: {
     allowSendWhenInactive?: boolean
     thinking?: boolean
     agentState?: AgentState | null
+    pendingRequestReceipts?: ReadonlyMap<string, CodexQuestionSubmission['status']>
     onPendingRequestClick?: (requestId: string) => void
     /** Quick toggle for hub input translation; omitted when the hub has no provider. */
     inputTranslation?: StatusBarInputTranslation
@@ -436,6 +438,7 @@ export function HappyComposer(props: {
         allowSendWhenInactive = false,
         thinking = false,
         agentState,
+        pendingRequestReceipts,
         onPendingRequestClick,
         inputTranslation,
         backgroundTaskCount,
@@ -2359,6 +2362,7 @@ export function HappyComposer(props: {
                         machineId={machineId}
                         thinking={thinking}
                         agentState={agentState}
+                        pendingRequestReceipts={pendingRequestReceipts}
                         onPendingRequestClick={onPendingRequestClick}
                         inputTranslation={inputTranslation}
                         backgroundTaskCount={backgroundTaskCount}

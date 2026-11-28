@@ -1,6 +1,11 @@
-import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
-import type { ApiClient } from '@/api/client'
+import { QueryClientProvider } from '@tanstack/react-query'
+import { CODEX_ASYNC_QUESTION_REQUEST_PREFIX, CODEX_QUESTION_REISSUED } from '@hapi/protocol/rpcMethods'
+import { createQueryClient } from '@/lib/query-client'
+import { queryKeys } from '@/lib/query-keys'
+import { CodexQuestionSubmissionProvider } from './CodexQuestionSubmission'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
+import { ApiError, type ApiClient } from '@/api/client'
 import type { ToolCallBlock, ToolPermission } from '@/chat/types'
 import { ToolCard } from './ToolCard'
 import { permissionFooterContent } from './PermissionFooter'
@@ -32,13 +37,73 @@ function question(status: ToolPermission['status'], reason?: string, name: 'requ
     }
 }
 
-function card(block: ToolCallBlock) {
+function card(block: ToolCallBlock, api = {} as ApiClient) {
     return <I18nProvider>
-        <ToolCard api={{} as ApiClient} sessionId="session-1" metadata={null} terminalToolDisplayMode="compact" disabled={false} onDone={() => {}} block={block} />
+        <ToolCard api={api} sessionId="session-1" metadata={null} terminalToolDisplayMode="compact" disabled={false} onDone={() => {}} block={block} />
     </I18nProvider>
 }
 
 describe('async question transcript status', () => {
+    it('shows processing in the header after an answer is acknowledged, then shows completion', () => {
+        const block = question('pending')
+        block.tool.state = 'pending'
+        const { rerender } = render(card(block))
+        const header = () => screen.getByRole('button', { expanded: false })
+        expect(header().querySelector('.text-amber-600 svg rect')).toBeInTheDocument()
+
+        rerender(card({
+            ...block,
+            tool: { ...block.tool, permission: {
+                ...block.tool.permission!, status: 'resolved', answerSubmitted: true, answers: { q: { answers: ['Web'] } }
+            } }
+        }))
+        expect(screen.getByText('Answer sent. Waiting for the agent.')).toBeVisible()
+        expect(header().querySelector('svg.animate-spin')).toBeInTheDocument()
+        expect(header().querySelector('.text-amber-600')).not.toBeInTheDocument()
+
+        rerender(card(question('resolved')))
+        expect(header().querySelector('.text-emerald-600')).toBeInTheDocument()
+        expect(header().querySelector('svg.animate-spin')).not.toBeInTheDocument()
+    })
+
+    it.each(['dismissed', 'missing', 'reissued'])('shows a closed header for a %s receipt', async (outcome) => {
+        const id = `${CODEX_ASYNC_QUESTION_REQUEST_PREFIX}q`
+        const instanceId = 'issuance'
+        const block = question('pending')
+        block.tool.state = 'pending'
+        block.tool.permission = { id, instanceId, status: 'pending' }
+        const api = {
+            denyPermission: vi.fn().mockResolvedValue({ ok: true, acknowledgement: { requestId: id, instanceId } }),
+            approvePermission: vi.fn().mockRejectedValue(outcome === 'missing'
+                ? new ApiError('Not found', 404)
+                : new ApiError('Question was reissued', 409, CODEX_QUESTION_REISSUED))
+        } as unknown as ApiClient
+        const client = createQueryClient()
+        client.setQueryData(queryKeys.session('session-1'), {
+            session: { id: 'session-1', agentStateVersion: 1, agentState: {
+                requests: { [id]: { tool: 'request_user_input', arguments: asyncInput, instanceId } }
+            } }
+        })
+        render(<QueryClientProvider client={client}>
+            <CodexQuestionSubmissionProvider>{card(block, api)}</CodexQuestionSubmissionProvider>
+        </QueryClientProvider>)
+        const header = () => screen.getByRole('button', { expanded: false })
+        expect(header().querySelector('.text-amber-600 svg rect')).toBeInTheDocument()
+
+        if (outcome === 'dismissed') {
+            fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+        } else {
+            fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Web' } })
+            fireEvent.click(screen.getByRole('button', { name: 'Submit' }))
+        }
+
+        await waitFor(() => expect(screen.queryByRole('button', { name: 'Dismiss' })).not.toBeInTheDocument())
+        if (outcome === 'dismissed') expect(screen.getByText('Canceled')).toBeVisible()
+        expect(header().querySelector('.text-amber-600')).not.toBeInTheDocument()
+        expect(header().querySelector('svg line')).toBeInTheDocument()
+        expect(header().querySelector('svg.animate-spin')).not.toBeInTheDocument()
+    })
+
     it('shows Canceled and removes reply controls once a dismissal settles without a reason', () => {
         const { rerender } = render(card(question('pending')))
         expect(screen.getByRole('button', { name: 'Dismiss' })).toBeVisible()

@@ -490,8 +490,17 @@ export function useSSE(options: {
 
                 const existingIndex = previous.sessions.findIndex((item) => item.id === session.id)
                 const existing = existingIndex >= 0 ? previous.sessions[existingIndex] : undefined
+                const newerAgentState = existing && existing.agentStateVersion > session.agentStateVersion
+                    ? {
+                        agentStateVersion: existing.agentStateVersion,
+                        pendingRequestsCount: existing.pendingRequestsCount,
+                        pendingRequestKinds: existing.pendingRequestKinds,
+                        pendingRequests: existing.pendingRequests
+                    }
+                    : undefined
                 const summary = {
                     ...toSessionSummary(session),
+                    ...newerAgentState,
                     attachedJob: existing?.attachedJob ?? null,
                     attachedJobUpdatedAt: existing?.attachedJobUpdatedAt ?? 0,
                     contentRevision: Math.max(existing?.contentRevision ?? 0, session.contentRevision ?? 0),
@@ -775,13 +784,8 @@ export function useSSE(options: {
                     clearMessageWindow(event.sessionId)
                     queueScratchlistStatusInvalidation()
                 } else if (isSessionRecord(event.data) && event.data.id === event.sessionId) {
-                    const incoming = event.data
-                    observeSessionDetail(queryClient, event.sessionId, incoming)
-                    queryClient.setQueryData<SessionResponse>(queryKeys.session(event.sessionId), previous => ({ session: {
-                        ...incoming,
-                        contentRevision: Math.max(previous?.session.contentRevision ?? 0, incoming.contentRevision ?? 0),
-                        readState: mergeReadState(previous?.session.readState, incoming.readState)
-                    } }))
+                    observeSessionDetail(queryClient, event.sessionId, event.data)
+                    queryClient.setQueryData<SessionResponse>(queryKeys.session(event.sessionId), { session: event.data })
                     upsertSessionSummary(event.data)
                     if (event.type === 'session-added') {
                         queueScratchlistStatusInvalidation()

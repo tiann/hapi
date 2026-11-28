@@ -168,6 +168,20 @@ export type SessionContentMatchesResponse = {
     /** True when this query may miss content omitted by an indexing optimization. */
     hasPotentiallyIncompleteResults: boolean
 }
+const PermissionDecisionResponseSchema = z.object({
+    ok: z.literal(true),
+    acknowledgement: z.object({ requestId: z.string(), instanceId: z.string() }).optional()
+})
+export type PermissionDecisionResponse = z.infer<typeof PermissionDecisionResponseSchema>
+
+export function getPermissionDecisionAcknowledgement(response: unknown, requestId: string, instanceId: string | undefined) {
+    if (!instanceId) return undefined
+    const parsed = PermissionDecisionResponseSchema.safeParse(response)
+    const acknowledgement = parsed.success ? parsed.data.acknowledgement : undefined
+    return acknowledgement?.requestId === requestId && acknowledgement.instanceId === instanceId
+        ? acknowledgement : undefined
+}
+
 export type SessionResponse = { session: Session }
 export type MessagesResponse = {
     messages: DecryptedMessage[]

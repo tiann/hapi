@@ -448,6 +448,8 @@ export const AgentStateRequestSchema = z.object({
     tool: z.string(),
     // Correlation only; replies use the request map key, never this tool id.
     toolCallId: z.string().optional(),
+    // The same Codex async question can be issued again when native history is replayed.
+    instanceId: z.string().optional(),
     arguments: z.unknown(),
     createdAt: z.number().nullish()
 })

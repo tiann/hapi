@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { CODEX_QUESTION_REISSUED, PERMISSION_REQUEST_NOT_FOUND_MESSAGE } from '@hapi/protocol/rpcMethods';
 import type { ApiSessionClient } from '@/api/apiSession';
 import { AgentStateSchema, type AgentState } from '@/api/types';
 import { INDETERMINATE_SYMBOL } from '../codexAppServerClient';
@@ -53,6 +54,18 @@ describe('Codex queued follow-up questions', () => {
         expect(f.state().requests![questions[1].id]).toBeDefined();
     });
 
+    it('reports a consumed question as stale while using the retryable error for a pending submission', async () => {
+        const f = fixture();
+        const q = questions[0];
+        f.manager.observeItem('thread', item);
+        const reply = { id: q.id, approved: true, answers: { [q.questionItemId]: ['Web'] } };
+        await f.manager.answer(reply);
+        await expect(f.manager.answer(reply)).rejects.toThrow('already submitted');
+        f.manager.observeItem('thread', nativeReply(q.questionItemId, 'Web'));
+        await expect(f.manager.answer(reply)).rejects.toThrow(PERMISSION_REQUEST_NOT_FOUND_MESSAGE);
+        expect(f.submit).toHaveBeenCalledOnce();
+    });
+
     it('rejects missing/empty answers without submitting and allows a corrected answer', async () => {
         const f = fixture(); f.manager.observeItem('thread', item); const q = questions[1];
         for (const answers of [undefined, {}, { [q.questionItemId]: ['user_note:  '] }]) {
@@ -70,7 +83,8 @@ describe('Codex queued follow-up questions', () => {
         f.manager.observeItem('thread', item);
         expect(f.state().requests![q.id]).toBeUndefined();
         expect(f.state().completedRequests![q.id].status).toBe('resolved');
-        expect(await f.manager.answer({ id: q.id, approved: true, answers: { [q.questionItemId]: ['Web'] } })).toBe(false);
+        await expect(f.manager.answer({ id: q.id, approved: true, answers: { [q.questionItemId]: ['Web'] } }))
+            .rejects.toThrow(PERMISSION_REQUEST_NOT_FOUND_MESSAGE);
         expect(f.submit).not.toHaveBeenCalled();
         f.manager.observeItem('thread', item);
         expect(Object.keys(f.state().requests!)).toEqual([questions[1].id]);
@@ -124,11 +138,47 @@ describe('Codex queued follow-up questions', () => {
         restored.manager.observeItem('thread', item);
         expect(Object.keys(restored.state().requests ?? {})).toEqual([unanswered.id]);
         expect(restored.state().completedRequests?.[dismissed.id]).toEqual(before.state().completedRequests?.[dismissed.id]);
-        expect(await restored.manager.answer({ id: dismissed.id, approved: false })).toBe(false);
+        await expect(restored.manager.answer({ id: dismissed.id, approved: false })).rejects.toThrow(PERMISSION_REQUEST_NOT_FOUND_MESSAGE);
         expect(restored.send).not.toHaveBeenCalled();
 
         restored.manager.observeItem('thread', nativeReply(dismissed.questionItemId, 'Terminal'));
         expect(restored.state().completedRequests?.[dismissed.id]?.status).toBe('resolved');
+    });
+
+    it('publishes one instance per issuance, including replay of the same historical question', () => {
+        const historical = { ...item, completedAtMs: 1_000 };
+        const before = fixture();
+        const id = questions[0].id;
+        before.manager.observeItem('thread', historical);
+        const request = AgentStateSchema.parse(before.state()).requests![id];
+        before.manager.observeItem('thread', historical);
+        expect(before.state().requests![id]).toEqual(request);
+        before.manager.close();
+
+        const after = fixture(before.state());
+        after.manager.observeItem('thread', historical);
+        const restored = AgentStateSchema.parse(after.state()).requests![id];
+        expect(restored.createdAt).toBe(request.createdAt);
+        expect(request.instanceId).toEqual(expect.any(String));
+        expect(restored.instanceId).toEqual(expect.any(String));
+        expect(restored.instanceId).not.toBe(request.instanceId);
+    });
+
+    it.each([true, false])('rejects a decision for a previous issuance (approved: %s)', async approved => {
+        const q = questions[0];
+        const first = fixture();
+        first.manager.observeItem('thread', item);
+        const previous = first.state().requests![q.id].instanceId;
+        first.manager.close();
+
+        const replacement = fixture(first.state());
+        replacement.manager.observeItem('thread', item);
+        const reply = { id: q.id, instanceId: previous, approved, answers: { [q.questionItemId]: ['Web'] } };
+        await expect(replacement.manager.answer(reply)).rejects.toThrow(CODEX_QUESTION_REISSUED);
+        expect(replacement.submit).not.toHaveBeenCalled();
+        const current = replacement.state().requests![q.id].instanceId;
+        expect(current).not.toBe(previous);
+        await expect(replacement.manager.answer({ ...reply, instanceId: current })).resolves.toBe(true);
     });
 
     it('parses literal reply tags inside an answer and ignores quoted or malformed replies', () => {
