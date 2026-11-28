@@ -1,7 +1,16 @@
 import { useQuery } from '@tanstack/react-query'
-import type { ApiClient } from '@/api/client'
+import { RPC_TARGET_MISSING_ERROR_CODE } from '@hapi/protocol/rpcMethods'
+import { ApiError, type ApiClient } from '@/api/client'
 import type { HermesModelSummary } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
+
+export const HERMES_SESSION_RPC_REGISTERING_MAX_RETRIES = 6
+
+export function isHermesRpcTargetMissingError(error: unknown): boolean {
+    return error instanceof ApiError
+        && error.status === 503
+        && (error.code === undefined || error.code === RPC_TARGET_MISSING_ERROR_CODE)
+}
 
 export interface HermesModelsState {
     availableModels: HermesModelSummary[]
@@ -45,6 +54,7 @@ export function useHermesModelsForSession(args: {
     api: ApiClient | null
     sessionId?: string | null
     enabled?: boolean
+    retryDelayMs?: number
 }): HermesModelsState {
     const enabled = Boolean(args.enabled && args.api && args.sessionId)
     const query = useQuery({
@@ -57,7 +67,11 @@ export function useHermesModelsForSession(args: {
         },
         enabled,
         staleTime: 30_000,
-        retry: false,
+        retry: (failureCount, error) =>
+            failureCount < HERMES_SESSION_RPC_REGISTERING_MAX_RETRIES
+            && isHermesRpcTargetMissingError(error),
+        retryDelay: (attemptIndex) =>
+            args.retryDelayMs ?? Math.min(250 * (2 ** attemptIndex), 2_000),
     })
 
     return {

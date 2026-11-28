@@ -4357,6 +4357,117 @@ describe('session model', () => {
         }
     })
 
+    it('keeps native readiness barrier in effect across reopen/resume retries after a Hermes timeout with a live child', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'hermes-timeout-unresolved',
+                {
+                    path: '/remote/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'hermes',
+                    hermesSessionId: 'hermes-native-timeout',
+                    lifecycleState: 'archived',
+                    archivedBy: 'cli',
+                    archiveReason: 'Exited',
+                    lifecycleStateSince: 100
+                },
+                null,
+                'default'
+            )
+            engine.getOrCreateMachine(
+                'machine-1',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                { status: 'running' },
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+            engine.handleSessionEnd({ sid: session.id, time: Date.now() })
+
+            let stopResponse: 'still_alive' | 'already_gone' = 'still_alive'
+            let spawnCount = 0
+            ;(engine as any).rpcGateway.spawnSession = async () => {
+                spawnCount += 1
+                engine.handleSessionAlive({ sid: session.id, time: Date.now() })
+                return { type: 'success', sessionId: session.id }
+            }
+            ;(engine as any).rpcGateway.stopRunnerSession = async () => stopResponse
+            const origWait = (engine as any).waitForSessionReady.bind(engine)
+            let forceTimeoutOnce = true
+            ;(engine as any).waitForSessionReady = async (id: string) => {
+                if (forceTimeoutOnce) {
+                    forceTimeoutOnce = false
+                    return 'timeout'
+                }
+                return origWait(id)
+            }
+
+            // First reopen times out waiting for session-ready while child stays active.
+            expect(await engine.reopenSession(session.id, 'default')).toMatchObject({
+                type: 'error',
+                message: 'Hermes native resume timed out and the child is still active',
+                code: 'resume_failed'
+            })
+            expect(spawnCount).toBe(1)
+            expect(engine.getSessionByNamespace(session.id, 'default')?.active).toBe(true)
+
+            // Retrying reopen or calling resumeSession while child is still unready must NOT hit active shortcut.
+            expect(await engine.reopenSession(session.id, 'default')).toEqual({
+                type: 'error',
+                message: 'Hermes native resume timed out and the child is still active',
+                code: 'resume_failed'
+            })
+            expect(await engine.resumeSession(session.id, 'default')).toEqual({
+                type: 'error',
+                message: 'Hermes native resume timed out and the child is still active',
+                code: 'resume_failed',
+                rollbackSafe: false
+            })
+            expect(spawnCount).toBe(1)
+
+            // Once late session-ready arrives, unresolved state clears and reopen succeeds.
+            engine.handleSessionReady({ sid: session.id, time: Date.now() })
+            expect(await engine.reopenSession(session.id, 'default')).toEqual({
+                type: 'success',
+                sessionId: session.id,
+                resumed: false
+            })
+            expect(spawnCount).toBe(1)
+
+            // Also verify already_gone on retry clears unresolved state and allows fresh respawn.
+            engine.handleSessionEnd({ sid: session.id, time: Date.now() })
+            forceTimeoutOnce = true
+            stopResponse = 'still_alive'
+            expect(await engine.reopenSession(session.id, 'default')).toMatchObject({ type: 'error', code: 'resume_failed' })
+            stopResponse = 'already_gone'
+            const spawnWithReady = (engine as any).rpcGateway.spawnSession = async () => {
+                spawnCount += 1
+                engine.handleSessionAlive({ sid: session.id, time: Date.now() })
+                setTimeout(() => {
+                    engine.handleSessionReady({ sid: session.id, time: Date.now() })
+                }, 20)
+                return { type: 'success', sessionId: session.id }
+            }
+            void spawnWithReady
+            expect(await engine.reopenSession(session.id, 'default')).toEqual({
+                type: 'success',
+                sessionId: session.id,
+                resumed: true
+            })
+            expect(spawnCount).toBe(3)
+        } finally {
+            engine.stop()
+        }
+    })
+
     it('resumeSession fresh-spawns when inactive cursor session has no agent id and no user messages', async () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(

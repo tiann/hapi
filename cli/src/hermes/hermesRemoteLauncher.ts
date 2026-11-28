@@ -84,7 +84,7 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
             initialModelRevision?: number
             onModelRollback?: (model: string | null, revision?: number) => void
             onConfigDiscovered?: (model: string | null, revision?: number) => void
-            onModelChanged?: (model: string | null) => number | void
+            onModelChanged?: (model: string | null, revision?: number) => number | null | void
         } = {}
     ) {
         super(process.env.DEBUG ? session.logPath : undefined)
@@ -375,9 +375,11 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
                 consecutiveReconnects = 0
                 this.session.queue.commitBatch(batch)
                 this.currentBackendModel = slashModelTarget
-                const nextRev = this.opts.onModelChanged?.(slashModelTarget)
+                const nextRev = this.opts.onModelChanged?.(slashModelTarget, batch.mode.modelRevision)
                 if (typeof nextRev === 'number') {
                     this.currentBackendModelRevision = nextRev
+                } else if (batch.mode.modelRevision !== undefined) {
+                    this.currentBackendModelRevision = batch.mode.modelRevision
                 }
                 this.messageBuffer.addMessage(batch.message, 'user')
                 this.messageBuffer.addMessage(`[MODEL:${slashModelTarget}]`, 'system')

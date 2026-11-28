@@ -82,9 +82,16 @@ describe('createHermesModelPreferenceController', () => {
         expect(synced).toEqual(['model-a'])
 
         // Backend-driven /model change advances revision and syncs new model.
-        const revSlash = controller.applyBackendModelChange('model-c')
+        const revSlash = controller.applyBackendModelChange('model-c', revB)
         expect(revSlash).toBe(2)
         expect(controller.getModel()).toBe('model-c')
+        expect(synced).toEqual(['model-a', 'model-c'])
+
+        // Stale /model completion must not overwrite a newer picker selection.
+        const revD = controller.applyConfigModel('model-d')
+        expect(revD).toBe(3)
+        expect(controller.applyBackendModelChange('model-stale', revSlash!)).toBeNull()
+        expect(controller.getModel()).toBe('model-d')
         expect(synced).toEqual(['model-a', 'model-c'])
     })
 })

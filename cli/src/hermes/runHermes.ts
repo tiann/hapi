@@ -76,7 +76,10 @@ export function createHermesModelPreferenceController(
             onSync(currentModel)
             return true
         },
-        applyBackendModelChange(model: string | null): number {
+        applyBackendModelChange(model: string | null, expectedRevision?: number): number | null {
+            if (expectedRevision !== undefined && expectedRevision !== revision) {
+                return null
+            }
             currentModel = model ?? null
             revision += 1
             onSync(currentModel)
@@ -197,7 +200,7 @@ export async function runHermes(opts: {
         onConfigDiscovered: (model, revision) => {
             modelController.applyDiscoveredModel(model, revision)
         },
-        onModelChanged: (model) => modelController.applyBackendModelChange(model)
+        onModelChanged: (model, revision) => modelController.applyBackendModelChange(model, revision)
     })
     sessionRef.current = hermesSession
     launcherRef.current = launcher

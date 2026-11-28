@@ -521,7 +521,7 @@ describe('HermesRemoteLauncher', () => {
 
             // 1. /model model-b calls backend.setModel without backend.prompt and updates catalog + revision.
             session.queue.push('/model model-b', { permissionMode: 'default', model: 'model-a', modelRevision: 0 })
-            await vi.waitFor(() => expect(onModelChanged).toHaveBeenCalledWith('model-b'))
+            await vi.waitFor(() => expect(onModelChanged).toHaveBeenCalledWith('model-b', 0))
             expect(harness.setModelCalls).toEqual([{ sessionId: 'hermes-session-1', model: 'model-b' }])
             expect(harness.prompts).toHaveLength(0)
             expect(session.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
@@ -552,6 +552,69 @@ describe('HermesRemoteLauncher', () => {
             await vi.waitFor(() => expect(harness.prompts).toHaveLength(3))
             expect(harness.prompts[2]).toEqual([{ type: 'text', text: '/model' }])
         } finally {
+            session.queue.close()
+            await running
+        }
+    })
+
+    it('preserves a newer picker model selection if a slash /model switch completes while the picker already moved on', async () => {
+        harness.modelsMetadata = {
+            availableModels: [
+                { modelId: 'model-a', name: 'Model A' },
+                { modelId: 'model-b', name: 'Model B' }
+            ],
+            currentModelId: 'model-init'
+        }
+        let releaseSlash!: () => void
+        let modelRevision = 0
+        let pickerModel = 'model-init'
+        const onModelChanged = vi.fn((model: string | null, expectedRev?: number) => {
+            if (expectedRev !== undefined && expectedRev !== modelRevision) {
+                return null
+            }
+            modelRevision += 1
+            pickerModel = model ?? 'model-init'
+            return modelRevision
+        })
+
+        const { session, handlers } = createSessionWithBatches([], { keepQueueOpen: true })
+        const running = new HermesRemoteLauncher(session as never, {
+            initialModelRevision: 0,
+            onModelChanged
+        }).launch()
+        try {
+            await vi.waitFor(() => expect(handlers.has(RPC_METHODS.ListHermesModels)).toBe(true))
+            harness.backend!.setModel.mockImplementationOnce(async (sessionId: string, model: string) => {
+                harness.setModelCalls.push({ sessionId, model })
+                await new Promise<void>((resolve) => {
+                    releaseSlash = resolve
+                })
+            })
+
+            session.queue.push('/model model-a', { permissionMode: 'default', model: 'model-init', modelRevision: 0 })
+            await vi.waitFor(() => expect(releaseSlash).toBeDefined())
+
+            // User concurrently selects model-b in the web picker (advancing revision to 1)
+            // and queues a follow-up prompt before /model model-a finishes.
+            modelRevision = 1
+            pickerModel = 'model-b'
+            session.queue.push('turn after picker change', {
+                permissionMode: 'default',
+                model: 'model-b',
+                modelRevision: 1
+            })
+
+            releaseSlash()
+            await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+
+            expect(onModelChanged).toHaveBeenCalledWith('model-a', 0)
+            expect(pickerModel).toBe('model-b')
+            expect(harness.setModelCalls).toEqual([
+                { sessionId: 'hermes-session-1', model: 'model-a' },
+                { sessionId: 'hermes-session-1', model: 'model-b' }
+            ])
+        } finally {
+            releaseSlash?.()
             session.queue.close()
             await running
         }
