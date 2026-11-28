@@ -53,7 +53,7 @@ public struct AgentReasoningEffortOption: Codable, Equatable, Sendable {
 public struct AgentModelsResponse: Codable, Equatable, Sendable {
     public var success: Bool
     public var availableModels: [AgentModelSummary]?
-    /// Cursor CLI SKUs (variant rows); the flat iOS picker does not use them.
+    /// Cursor CLI SKUs advertised alongside ACP model rows.
     public var cliModelSkus: [AgentModelSummary]?
     /// The agent's own default (opencode/grok/copilot/kimi/dsh probes) or
     /// the running model (session routes).

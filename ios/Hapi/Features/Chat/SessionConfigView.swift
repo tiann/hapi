@@ -87,7 +87,13 @@ struct SessionConfigView: View {
 
             if model.showsModel || model.showsEffort {
                 Section {
-                    if model.showsModel { modelRow }
+                    if model.showsModel {
+                        if let catalog = model.cursorCatalog {
+                            CursorModelControls(catalog: catalog, selection: model.currentModel, onSelect: model.selectModel)
+                        } else {
+                            modelRow
+                        }
+                    }
                     if model.showsEffort { effortMenu }
                 }
                 .disabled(model.isApplying)

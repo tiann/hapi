@@ -93,7 +93,18 @@ struct ChatView: View {
             reconnectNotice
         }
         .safeAreaInset(edge: .top, spacing: 0) {
-            warningBanner
+            VStack(spacing: 0) {
+                warningBanner
+                if let error = model.cursorModelError {
+                    CursorModelErrorBanner(
+                        error: error, active: model.sessionIsActive == true,
+                        abortRevision: model.interactor.abortRevision
+                    ) { action in
+                        try await model.performModelErrorAction(action, eventId: error.eventId)
+                    }
+                    .id(error.eventId)
+                }
+            }
         }
         // Toast overlays the thread; applying it before the bottom inset
         // anchors it just above the composer instead of on top of it.

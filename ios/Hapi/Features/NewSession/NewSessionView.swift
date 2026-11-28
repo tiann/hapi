@@ -328,29 +328,32 @@ struct NewSessionView: View {
     @ViewBuilder
     private var optionsSection: some View {
         Section("Options") {
-            if let options = model.modelOptions {
+            if let catalog = model.cursorCatalog {
+                CursorModelControls(catalog: catalog, selection: model.form.model, onSelect: model.setModel)
+                    .disabled(model.modelsLoading || model.modelsError != nil)
+            } else if let options = model.modelOptions {
                 optionPicker(
                     "Model",
                     options: options,
                     selection: Binding(get: { model.form.model }, set: { model.setModel($0) })
                 )
                 .disabled(model.modelsLoading || model.modelsError != nil)
-                if model.modelsLoading {
-                    Text("Loading…")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                if let error = model.modelsError {
-                    HStack {
-                        Text(error)
-                            .font(.footnote)
-                            .foregroundStyle(.red)
-                        Spacer()
-                        Button("Retry") {
-                            model.retryModels()
-                        }
+            }
+            if model.modelsLoading {
+                Text("Loading…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let error = model.modelsError {
+                HStack {
+                    Text(error)
                         .font(.footnote)
+                        .foregroundStyle(.red)
+                    Spacer()
+                    Button("Retry") {
+                        model.retryModels()
                     }
+                    .font(.footnote)
                 }
             }
 

@@ -8,11 +8,33 @@ public enum SessionsListOrder: String, Sendable {
     case updatedAt
 }
 
+public enum ModelErrorAction: String, Sendable {
+    case bridge, acknowledge
+}
+
 /// Session list, detail, and lifecycle endpoints
 /// (`docs/api/client-contract/rest.md`).
 extension APIClient {
     public func updateSessionReadState(id: String, state: SessionReadStateRequest) async throws -> SessionReadStateResponse {
         try await request(.put, "/api/sessions/\(encodePathComponent(id))/read-state", body: state)
+    }
+
+    public func performModelErrorAction(_ action: ModelErrorAction, sessionId: String, eventId: String) async throws {
+        struct Response: Decodable {
+            let ok: Bool
+            let reason: String?
+        }
+        let path = "/api/sessions/\(encodePathComponent(sessionId))/model-error/\(action.rawValue)"
+        do {
+            let response: Response = try await request(.post, path, body: ["eventId": eventId])
+            guard response.ok else { throw URLError(.badServerResponse) }
+        } catch let error as APIError where error.status == 409 {
+            // CLI refusals use {ok:false, reason} in place of the usual {error}.
+            guard let body = error.body,
+                  let reply = try? HapiJSON.decoder.decode(Response.self, from: Data(body.utf8)),
+                  !reply.ok, let reason = reply.reason else { throw error }
+            throw APIError(status: error.status, code: reason, body: body)
+        }
     }
 
     /// `GET /api/sessions`.

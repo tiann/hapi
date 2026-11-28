@@ -43,14 +43,13 @@ public enum AgentModelCatalog {
         }
     }
 
-    /// Catalog rows a picker lists: cursor keeps ACP model ids only, copilot
+    /// Cursor accepts ACP rows and advertised CLI SKUs. Copilot
     /// drops its own `auto` row (the picker supplies one); duplicates collapse.
     public static func listedModels(_ response: AgentModelsResponse, flavor: AgentFlavor) -> [AgentModelSummary] {
+        if flavor == .cursor { return CursorModelCatalog(response: response).options }
         var seen = Set<String>()
         return (response.availableModels ?? []).filter { model in
             switch flavor {
-            case .cursor:
-                guard isCursorCatalogModelId(model.modelId) else { return false }
             case .copilot:
                 guard model.modelId != "auto" else { return false }
             default:
@@ -164,8 +163,9 @@ public enum AgentModelCatalog {
                 .first { $0.modelId == id }
                 .map { modelValue($0, flavor: .pi) } ?? id
         case .cursor:
-            let normalized = sessionModel?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-            return ["", "auto", "default", "default[]"].contains(normalized) ? "auto" : sessionModel
+            if let sessionModel, !sessionModel.isEmpty { return sessionModel }
+            let hint = response.currentModelId
+            return ["default", "default[]"].contains(hint ?? "") ? "auto" : hint ?? "auto"
         case .opencode, .agy:
             return sessionModel ?? response.currentModelId
         default:
@@ -194,7 +194,7 @@ public enum AgentModelCatalog {
             options = [CatalogOption(value: nil, label: "Auto")] + rows
         case .cursor:
             // Cursor's Auto is an explicit wire id.
-            options = rows.isEmpty ? [] : [CatalogOption(value: "auto", label: "Auto")] + rows
+            options = [CatalogOption(value: "auto", label: "Auto")] + rows
         case .grok, .kimi:
             options = [CatalogOption(value: nil, label: "Default")] + rows
         default:
@@ -295,7 +295,7 @@ public enum AgentModelCatalog {
         return cursorCliSkuBaseId(trimmed) == trimmed
     }
 
-    private static func cursorCliSkuBaseId(_ slug: String) -> String {
+    static func cursorCliSkuBaseId(_ slug: String) -> String {
         var base = slug
         var changed = true
         while changed {

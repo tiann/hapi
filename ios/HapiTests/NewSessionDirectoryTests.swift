@@ -105,6 +105,27 @@ final class NewSessionDirectoryTests: XCTestCase {
         XCTAssertEqual(finalSpawns.count, 1)
     }
 
+    func testCursorDraftCanReturnToDefaultAndSpawnAnAdvertisedSKU() async throws {
+        let harness = try NewSessionDirectoryHarness()
+        defer { harness.model.stopDirectoryWork() }
+        harness.prefs.writeDraft(NewSessionForm(machineId: "m1", directory: "/repo", agent: .cursor, yolo: true))
+        await harness.model.start()
+        try await newSessionEventually { harness.model.cursorCatalog?.contains("sonic-high-fast") == true }
+        XCTAssertEqual(harness.model.permission, .nativeSelect(AgentFlavor.cursor.permissionModes.map(PermissionModeOption.init)))
+        XCTAssertEqual(harness.model.form.permissionMode, .yolo)
+        harness.model.setPermissionMode(.default)
+        harness.model.setModel("sonic-high-fast")
+        XCTAssertEqual(harness.prefs.readDraft()?.permissionMode, .default)
+        try await newSessionEventually { harness.model.canCreate }
+        harness.model.create()
+        try await newSessionEventually { !harness.model.isSpawning }
+        let spawns = await harness.http.spawns
+        XCTAssertEqual(spawns.count, 1)
+        XCTAssertEqual(spawns.first?.model, "sonic-high-fast")
+        XCTAssertEqual(spawns.first?.permissionMode, .default)
+        XCTAssertNil(spawns.first?.yolo)
+    }
+
     func testMachineGoingOfflineDuringCreatePreflightDoesNotSpawnElsewhere() async throws {
         let harness = try NewSessionDirectoryHarness()
         defer { harness.model.stopDirectoryWork() }
@@ -187,7 +208,9 @@ private actor NewSessionDirectoryHTTP: HTTPPerforming {
             }
             data = try HapiJSON.encoder.encode(Roster(machines: machines))
         } else if url.path.hasSuffix("/agent-availability") {
-            data = Data(#"{"agents":[{"agent":"claude","available":true}]}"#.utf8)
+            data = Data(#"{"agents":[{"agent":"claude","available":true},{"agent":"cursor","available":true}]}"#.utf8)
+        } else if url.path.hasSuffix("/cursor-models") {
+            data = Data(#"{"success":true,"cliModelSkus":[{"modelId":"sonic-high-fast"}]}"#.utf8)
         } else if url.path.hasSuffix("/list-directory") {
             data = Data(#"{"success":true,"entries":[]}"#.utf8)
         } else if url.path.hasSuffix("/paths/exists") {

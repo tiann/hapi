@@ -22,10 +22,10 @@ struct DirectoryStatusUI: Equatable {
 
 /// Which permission control the current flavor renders (web `PermissionField`).
 enum PermissionUI: Equatable {
-    /// Native permission-mode picker (claude, grok, codex-family —
+    /// Native permission-mode picker (claude, cursor, grok, codex-family —
     /// `NewSessionLogic.usesNativePermissionSelect`).
     case nativeSelect([PermissionModeOption])
-    /// HAPI YOLO toggle (agy/cursor) with the native mode it maps to.
+    /// HAPI YOLO toggle (agy) with the native mode it maps to.
     case yoloToggle(nativeModeLabel: String?)
     /// Pi: the agent manages its own permissions.
     case managed
@@ -137,7 +137,7 @@ struct NewSessionPrefsStore {
 /// - model pickers: claude (static presets), codex (machine catalog; hidden
 ///   when the runner lacks the RPC) and the `AgentModelCatalog` flavors —
 ///   agy/cursor/dsh/pi per machine, copilot/grok/kimi/opencode once the
-///   directory exists. Cursor is a flat list of ACP ids (no variant drill-down).
+///   directory exists. Cursor variants use exact IDs from that machine’s catalog.
 /// - effort: claude static levels, grok per-model efforts, pi thinking
 ///   levels; reasoning effort: codex catalog, opencode variants.
 /// - `startingMode` stays unset → the runner spawns `'remote'` (pty deferred).
@@ -355,8 +355,13 @@ final class NewSessionModel {
         }
     }
 
-    /// Nil hides the model picker.
+    var cursorCatalog: CursorModelCatalog? {
+        form.agent == .cursor ? CursorModelCatalog(response: loadedAgentModels) : nil
+    }
+
+    /// Nil hides the generic model picker.
     var modelOptions: [NewSessionOption]? {
+        guard form.agent != .cursor else { return nil }
         switch (form.agent, codexModels) {
         case (.claude, _):
             return NewSessionCatalogs.claudeModels
@@ -601,7 +606,7 @@ final class NewSessionModel {
         form.model = "auto"
         form.effort = "auto"
         form.modelReasoningEffort = "default"
-        form.permissionMode = .default
+        form.permissionMode = agent == .cursor && form.yolo ? .yolo : .default
         form.serviceTier = .standard
         form.collaborationMode = .default
         form.copilotAgentMode = .interactive
@@ -631,6 +636,8 @@ final class NewSessionModel {
 
     func setPermissionMode(_ mode: PermissionMode) {
         form.permissionMode = mode
+        // An explicit Default must survive the legacy draft migration on the next launch.
+        if form.agent == .cursor, mode == .default { form.yolo = false }
         persistDraft()
     }
 
@@ -686,6 +693,7 @@ final class NewSessionModel {
         var current = form
         current.directory = normalizedDirectory
         guard let machineId = current.machineId else { return }
+        let cursorCatalog = self.cursorCatalog
         let directory = current.trimmedDirectory
         guard !directory.isEmpty, !spawnInFlight else { return }
         if current.sessionType == .worktree,
@@ -734,7 +742,8 @@ final class NewSessionModel {
 
                 let request = NewSessionLogic.buildSpawnRequest(
                     form: current,
-                    codexFastTierVisible: self.codexFastTierVisible(current)
+                    codexFastTierVisible: self.codexFastTierVisible(current),
+                    cursorCatalog: cursorCatalog
                 )
                 switch try await api.spawnSession(machineId: machineId, request) {
                 case .success(let sessionId):
@@ -1001,6 +1010,9 @@ final class NewSessionModel {
             if case .loaded(let response) = state {
                 self.agentModelsCache[request] = CachedAgentModels(response: response, variants: variants)
                 self.form = self.reconcileAgentModelSelections(self.form)
+                self.persistDraft()
+            } else if request.flavor == .cursor {
+                self.form.model = "auto"
                 self.persistDraft()
             }
         }

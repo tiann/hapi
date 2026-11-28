@@ -23,6 +23,11 @@ final class SessionConfigModel {
     var permission: PermissionMode { config.permissionMode ?? .default }
     var collaborationMode: CodexCollaborationMode { config.collaborationMode ?? .default }
 
+    var cursorCatalog: CursorModelCatalog? {
+        guard config.flavor == "cursor", case .loaded(let response) = interactor.agentModels else { return nil }
+        return CursorModelCatalog(response: response)
+    }
+
     var currentModel: String? {
         if config.flavor == "claude" {
             return ModelCatalog.normalizeClaudeModel(config.model)
