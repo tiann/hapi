@@ -198,6 +198,18 @@ describe('silent-success scar (dropped-await / non-string marker)', () => {
         expect(killed).toEqual([])
         expect(status).toBe('still_alive')
     })
+
+    it('fail-closed: legacy findOrphans + undefined initial probe must not report stopped', async () => {
+        const killed: number[] = []
+        const status = await reapRunnerSpawnedOrphans('sess-legacy-undefined', {
+            findOrphans: async () => [4242],
+            getStartMarker: (() => undefined) as unknown as () => string | null,
+            isAlive: () => false,
+            killTree: async (pid) => { killed.push(pid); return true },
+        })
+        expect(killed).toEqual([])
+        expect(status).toBe('still_alive')
+    })
 })
 
 describe('reapRunnerSpawnedOrphans (stopSession orphan path)', () => {

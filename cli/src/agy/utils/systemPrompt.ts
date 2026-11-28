@@ -46,12 +46,11 @@ export function getAgySystemPromptAppend(
 
     if (isPeerToolsDisabled(env)) {
         lines.push(SESSION_CITATION_DISABLED_STEER);
-    } else if (toolSet.has('inspect_peer') && toolSet.has('ping_peer')) {
+    } else if (toolSet.has('inspect_peer')) {
+        // Prompt refactor (#8ae7729): citation steer is a short pointer; peer
+        // contact rules live on the MCP tool descriptions.
         lines.push(buildSessionCitationSteerInstruction({
             inspectTool: 'inspect_peer',
-            pingTool: 'ping_peer',
-            ...(toolSet.has('list_peers') ? { listPeersTool: 'list_peers' } : {}),
-            ...(toolSet.has('spawn_peer') ? { spawnTool: 'spawn_peer' } : {})
         }));
     } else {
         lines.push(SESSION_CITATION_UNEXPOSED_STEER);

@@ -359,6 +359,10 @@ export async function reapRunnerSpawnedOrphans(
         : isProcessAlive)
 
     let targets: OrphanTarget[]
+    // Legacy findOrphans path: malformed initial probes must not become null
+    // (null + dead PID → stopped). Track them as unconfirmed and omit from
+    // kill targets (#2592 Codex Minor follow-up).
+    let initialUnconfirmed = false
     if (deps.findTargets) {
         const found = await deps.findTargets(sessionId)
         if (found === 'scan_failed') return 'still_alive'
@@ -367,26 +371,27 @@ export async function reapRunnerSpawnedOrphans(
         // Legacy: pids only — capture markers in a separate probe (tests / older callers).
         const orphanPids = await deps.findOrphans(sessionId)
         if (orphanPids === 'scan_failed') return 'still_alive'
-        targets = await Promise.all(orphanPids.map(async (pid) => {
+        targets = []
+        for (const pid of orphanPids) {
             const marker = await resolveStartMarker(getStartMarker, pid)
-            return {
-                pid,
-                // Invalid probe → treat as unknown generation (null path).
-                startMarker: marker === START_MARKER_INVALID ? null : marker,
+            if (marker === START_MARKER_INVALID) {
+                initialUnconfirmed = true
+                continue
             }
-        }))
+            targets.push({ pid, startMarker: marker })
+        }
     } else {
         const found = await findRunnerSpawnedOrphanTargets(sessionId)
         if (found === 'scan_failed') return 'still_alive'
         targets = found
     }
 
-    if (targets.length === 0) return null
+    if (targets.length === 0) return initialUnconfirmed ? 'still_alive' : null
 
     // killProcessTreeByPid returns false if any collected descendant survives,
     // even when the stamped root PID has already exited. Trust that result —
     // do not downgrade to stopped based on root liveness alone (#1910 / #1911 B2).
-    let anyUnconfirmed = false
+    let anyUnconfirmed = initialUnconfirmed
     let resolved = 0
     for (const target of targets) {
         const { pid: orphanPid, startMarker: expectedMarker } = target
