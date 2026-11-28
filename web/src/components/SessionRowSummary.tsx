@@ -9,7 +9,7 @@ import { classifySessionAttention, sessionIsUnread } from '@/lib/sessionAttentio
 import { getSessionLastSeenAt, getSessionManualUnreadAt } from '@/lib/sessionLastSeen'
 import { formatRelativeTime } from '@/lib/relativeTime'
 import { getStoppedSessionTime } from '@/lib/sessionListOrder'
-import { formatScheduledTooltipDetail } from '@/lib/scheduledTime'
+import { formatScheduledTooltipDetail, formatTaskTooltipDetail, formatTaskTooltipLabel } from '@/lib/scheduledTime'
 import { getCodexImportedAt, subscribeCodexImportedSessions } from '@/lib/codexImportedSessions'
 import { useMinuteTick } from '@/hooks/useMinuteTick'
 import { LOW_RATE_STRIPES_CLASS, useLowRateAnimation } from '@/hooks/useLowRateAnimation'
@@ -24,6 +24,21 @@ import {
     isAttachedJobStale
 } from '@/lib/attachedJob'
 import { hasUrgentModelError } from '@/components/ModelErrorBanner'
+
+/** A repeat task: the same mark the Tasks bar uses, so the row and the bar read as one thing. */
+function TaskRepeatIcon({ className }: { className?: string }) {
+    return (
+        <svg className={className} viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path
+                d="M13 8a5 5 0 0 1-8.7 3.4M3 8a5 5 0 0 1 8.7-3.4M11.5 2v2.7H8.8M4.5 14v-2.7h2.7"
+                stroke="currentColor"
+                strokeWidth="1.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+            />
+        </svg>
+    )
+}
 
 function BulbIcon(props: { className?: string }) {
     return (
@@ -114,6 +129,8 @@ export function SessionRowSummary(props: {
     /** Recompute local unread attention when the session-list watermark changes. */
     lastSeenVersion?: number
     scheduleTooltipId?: string
+    /** Pass from parent when the parent owns `aria-describedby` (session list); names the task tooltip. */
+    taskTooltipId?: string
     className?: string
     /** When enabled, show primary GitHub PR chip left of the time column (ADR D8). */
     githubPrAwarenessEnabled?: boolean
@@ -149,6 +166,7 @@ export function SessionRowSummary(props: {
         attentionTooltipId: attentionTooltipIdProp,
         lastSeenVersion,
         scheduleTooltipId: scheduleTooltipIdProp,
+        taskTooltipId: taskTooltipIdProp,
         className,
         githubPrAwarenessEnabled = false,
         showPrChip = true,
@@ -188,12 +206,17 @@ export function SessionRowSummary(props: {
         ? t('session.item.scheduledMessages', { count: s.futureScheduledMessageCount })
         : t('session.item.scheduledMessage')
     const hasScheduleTooltip = showDetailedStatus && s.futureScheduledMessageCount > 0
+    // Repeat and queue tasks the hub runs on its own; the tooltip says how many and when the next one goes out.
+    const hasTaskTooltip = showDetailedStatus && s.activeTaskCount > 0
+    const taskLabel = hasTaskTooltip ? formatTaskTooltipLabel(s, t) : ''
     const ownedIds = useSessionRowTooltipIds(
         Boolean(attention) && nestedTooltips && !attentionTooltipIdProp,
-        hasScheduleTooltip && nestedTooltips && !scheduleTooltipIdProp
+        hasScheduleTooltip && nestedTooltips && !scheduleTooltipIdProp,
+        hasTaskTooltip && nestedTooltips && !taskTooltipIdProp
     )
     const attentionId = attentionTooltipIdProp ?? ownedIds.attentionId
     const scheduleId = scheduleTooltipIdProp ?? ownedIds.scheduleId
+    const taskId = taskTooltipIdProp ?? ownedIds.taskId
     // Rows are memoized, so the label keeps itself current (also advances job elapsed).
     useMinuteTick()
     const nowMs = useHubClock()?.now() ?? Date.now()
@@ -337,12 +360,14 @@ export function SessionRowSummary(props: {
                                 ) : null}
                             </span>
                         ) : null}
+                        {/* Both icons sit after the name, toward the row's right, so their bubbles grow leftwards
+                            (like the PR chip's): a bubble starting at the icon runs past the sidebar's edge. */}
                         {hasScheduleTooltip && nestedTooltips && scheduleId ? (
                             <HoverTooltip
                                 id={scheduleId}
                                 target={<ScheduleIcon className="h-3.5 w-3.5 text-[var(--app-hint)]" />}
                                 side="bottom"
-                                align="start"
+                                align="end"
                                 className="shrink-0"
                                 revealOnParentFocusClass={SESSION_ROW_TOOLTIP_FOCUS_CLASS}
                             >
@@ -356,6 +381,27 @@ export function SessionRowSummary(props: {
                         ) : hasScheduleTooltip ? (
                             <span className="shrink-0" aria-label={scheduledLabel} title={scheduledLabel}>
                                 <ScheduleIcon className="h-3.5 w-3.5 text-[var(--app-hint)]" />
+                            </span>
+                        ) : null}
+                        {hasTaskTooltip && nestedTooltips && taskId ? (
+                            <HoverTooltip
+                                id={taskId}
+                                target={<TaskRepeatIcon className="h-3.5 w-3.5 text-[var(--app-hint)]" />}
+                                side="bottom"
+                                align="end"
+                                className="shrink-0"
+                                revealOnParentFocusClass={SESSION_ROW_TOOLTIP_FOCUS_CLASS}
+                            >
+                                <span className="block">
+                                    <span className="block font-medium">{taskLabel}</span>
+                                    <span className="mt-1 block text-[var(--app-hint)]">
+                                        {formatTaskTooltipDetail(s, t)}
+                                    </span>
+                                </span>
+                            </HoverTooltip>
+                        ) : hasTaskTooltip ? (
+                            <span className="shrink-0" aria-label={taskLabel} title={taskLabel}>
+                                <TaskRepeatIcon className="h-3.5 w-3.5 text-[var(--app-hint)]" />
                             </span>
                         ) : null}
                     </div>

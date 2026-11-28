@@ -33,6 +33,8 @@ function makeSummary(overrides: Partial<SessionSummary> = {}): SessionSummary {
         backgroundTaskCount: 2,
         futureScheduledMessageCount: 0,
         nextScheduledAt: null,
+        activeTaskCount: 0,
+        nextTaskRunAt: null,
         attachedJob: null,
         attachedJobUpdatedAt: 0,
         model: null,
@@ -950,5 +952,80 @@ describe('SessionRowSummary model-error + attention', () => {
         )
 
         expect(screen.queryByLabelText(/Model error/i)).toBeNull()
+    })
+})
+
+describe('SessionRowSummary task indicator', () => {
+    it('marks a session that has active tasks, next to the scheduled-message clock', () => {
+        renderWithI18n(
+            <SessionRowSummary
+                session={makeSummary({ activeTaskCount: 3, nextTaskRunAt: Date.now() + 20 * 60_000, futureScheduledMessageCount: 1 })}
+                showDetailedStatus
+                nestedTooltips={false}
+            />
+        )
+        const tasks = screen.getByLabelText('3 tasks')
+        expect(tasks.tagName).toBe('SPAN')
+        expect(screen.getByLabelText('Scheduled message pending')).toBeTruthy()
+        // Both sit in the same indicator cluster.
+        expect(tasks.parentElement).toBe(screen.getByLabelText('Scheduled message pending').parentElement)
+    })
+
+    it('uses the singular for one task and shows nothing without tasks', () => {
+        const view = renderWithI18n(
+            <SessionRowSummary
+                session={makeSummary({ activeTaskCount: 1, nextTaskRunAt: null })}
+                showDetailedStatus
+                nestedTooltips={false}
+            />
+        )
+        expect(screen.getByLabelText('1 task')).toBeTruthy()
+        view.rerender(
+            <I18nProvider>
+                <SessionRowSummary session={makeSummary({ activeTaskCount: 0 })} showDetailedStatus nestedTooltips={false} />
+            </I18nProvider>
+        )
+        expect(screen.queryByLabelText(/^\d+ tasks?$/)).toBeNull()
+    })
+
+    /** The nested bubble of one indicator (its id ends in the indicator's name); jsdom keeps hidden bubbles in the tree. */
+    function bubbleOf(indicator: string): HTMLElement {
+        const bubble = screen.getAllByRole('tooltip', { hidden: true }).find((candidate) => candidate.id.endsWith(`-${indicator}`))
+        expect(bubble, indicator).toBeTruthy()
+        return bubble as HTMLElement
+    }
+
+    it('grows the task bubble and the clock bubble leftwards from their icons, so neither runs past the sidebar\'s edge', () => {
+        renderWithI18n(
+            <SessionRowSummary
+                session={makeSummary({ activeTaskCount: 1, nextTaskRunAt: Date.now() + 20 * 60_000, futureScheduledMessageCount: 1, nextScheduledAt: Date.now() + 3_600_000 })}
+                showDetailedStatus
+            />
+        )
+        // jsdom lays nothing out, so the class is what is checked. Both icons sit after the name, toward the
+        // row's right: a bubble that started at the icon would be cut by the sidebar's edge (the longest
+        // task sentence lost half of it), so both end at the icon, as the PR chip's bubble does.
+        for (const indicator of ['tasks', 'schedule']) {
+            const classes = bubbleOf(indicator).className.split(/\s+/)
+            expect(classes, indicator).toContain('right-0')
+            expect(classes, indicator).not.toContain('left-0')
+        }
+        expect(bubbleOf('tasks')).toHaveTextContent('Next in 20m')
+    })
+
+    it('says a task the hub keeps due is due now, without the send the task bar promises for it', () => {
+        // The hub never reports a next run in the past: a task that is due but held up (its machine is
+        // offline, its session archived) reads as due now. The list cannot tell that from a send under way,
+        // so it must not say "sending next", which the bar says only when the hub is really sending.
+        renderWithI18n(
+            <SessionRowSummary
+                session={makeSummary({ activeTaskCount: 1, nextTaskRunAt: Date.now() - 5 * 60_000 })}
+                showDetailedStatus
+            />
+        )
+        const tooltip = bubbleOf('tasks')
+        expect(tooltip).toHaveTextContent('1 task')
+        expect(tooltip).toHaveTextContent('Due now')
+        expect(tooltip).not.toHaveTextContent('sending next')
     })
 })

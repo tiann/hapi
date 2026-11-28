@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { PropsWithChildren } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { HappyChatContextValue } from '@/components/AssistantChat/context'
@@ -47,6 +47,7 @@ vi.mock('./MessageAttachments', () => ({ MessageAttachments: () => null }))
 vi.mock('./MessageStatusIndicator', () => ({ MessageStatusIndicator: () => null }))
 vi.mock('./user-bubble', () => ({
     UserBubbleContent: ({ text }: { text: string }) => <span>{text}</span>,
+    FromTaskChip: ({ label }: { label: string }) => <span>{label}</span>,
     getUserBubbleClassName: () => '', shouldShowMessageStatus: () => false
 }))
 vi.mock('@/components/ui/ConfirmDialog', () => ({
@@ -224,6 +225,53 @@ describe('HAPI system notes', () => {
         expect(root).not.toBeNull()
         expect(screen.getByText(/Attached job "batch"/)).toBeTruthy()
         expect(document.querySelector('[data-hapi-message-role="user"]')).toBeNull()
+    })
+})
+
+describe('a prompt a task sent', () => {
+    function promptWithLocalId(localId: string | null) {
+        const previous = state.message
+        state.thread.isRunning = false
+        state.message = {
+            id: `user-text:${localId}`, role: 'user', createdAt: new Date(10),
+            content: [{ type: 'text', text: 'check progress' }],
+            metadata: { custom: { kind: 'user', localId, sourceMessageId: 'stored-task', invokedAt: 10, isTranscriptEcho: false } }
+        }
+        return () => { state.message = previous }
+    }
+
+    it('is marked as coming from a task, since the hub stores it with the task\'s localId', () => {
+        const restore = promptWithLocalId('hapi-task:t1:1')
+        try {
+            mount()
+            const bubble = document.querySelector('[data-hapi-message-role="user"]')
+            expect(bubble).toBeTruthy()
+            expect(within(bubble as HTMLElement).getByText('From task')).toBeTruthy()
+            expect(screen.getByText('check progress')).toBeTruthy()
+        } finally {
+            restore()
+        }
+    })
+
+    it('leaves a prompt the user typed unmarked', () => {
+        const restore = promptWithLocalId('local-typed')
+        try {
+            mount()
+            expect(screen.queryByText('From task')).toBeNull()
+            expect(screen.getByText('check progress')).toBeTruthy()
+        } finally {
+            restore()
+        }
+    })
+
+    it('leaves a message without a localId unmarked', () => {
+        const restore = promptWithLocalId(null)
+        try {
+            mount()
+            expect(screen.queryByText('From task')).toBeNull()
+        } finally {
+            restore()
+        }
     })
 })
 

@@ -1,10 +1,11 @@
 import { ComposerPrimitive, useAui } from '@assistant-ui/react'
 import type { ConversationStatus } from '@/realtime/types'
+import type { CreateSessionTaskRequest, PermissionMode } from '@hapi/protocol'
 import { useTranslation } from '@/lib/use-translation'
 import { ScheduleIcon } from '@/components/icons'
 import { AttachmentPicker } from './AttachmentPicker'
-import { ScheduleTimePicker } from './ScheduleTimePicker'
-import type { PendingSchedule } from './ScheduleTimePicker'
+import { EMPTY_SESSION_TASK_DRAFTS, ScheduleTimePicker } from './ScheduleTimePicker'
+import type { PendingSchedule, SessionTaskHistorySource } from './ScheduleTimePicker'
 import { useFue } from '@/lib/use-fue'
 import { FueCallout, FueDot } from '@/components/Fue'
 import { Children, isValidElement, useCallback, useRef, useState, type ReactElement, type ReactNode, type Ref } from 'react'
@@ -812,6 +813,21 @@ export function ComposerButtons(props: {
     pendingSchedule?: PendingSchedule | null
     onSchedule?: (pending: PendingSchedule) => void
     onClearSchedule?: () => void
+    /**
+     * Adds Repeat and Queue to the clock panel. Omit it to keep the panel to
+     * scheduled send only.
+     */
+    sessionTasks?: {
+        createTask: (request: CreateSessionTaskRequest) => Promise<void>
+        /** The composer's text, offered as a task's first prompt. */
+        composerDraft: string
+        /** Empties the composer once its text became a task, when it still holds that text. */
+        onComposerDraftConsumed: (text: string) => void
+        /** The session's stored permission mode, which a task's prompts run with. */
+        permissionMode?: PermissionMode
+        /** Where the panel reads the run history of the session's tasks. */
+        history?: SessionTaskHistorySource
+    }
     // The backend rejects scheduled-send + attachment combinations (the per-CLI
     // upload directory is torn down before a mature emit could read the files).
     // The composer must surface that constraint at UI time so the user never
@@ -863,6 +879,9 @@ export function ComposerButtons(props: {
         : layout
     const isVoiceConnected = props.voiceStatus === 'connected'
     const [showSchedulePicker, setShowSchedulePicker] = useState(false)
+    // Task form text lives here, not in the panel, so a mis-tap that closes
+    // the panel does not throw away a half-typed queue.
+    const [taskDrafts, setTaskDrafts] = useState(EMPTY_SESSION_TASK_DRAFTS)
     const scheduleButtonRef = useRef<HTMLButtonElement>(null)
 
     const hasSchedule = props.pendingSchedule != null
@@ -1075,8 +1094,8 @@ export function ComposerButtons(props: {
                         <button
                             ref={scheduleButtonRef}
                             type="button"
-                            aria-label={t('composer.scheduleSend')}
-                            title={t('composer.scheduleSend')}
+                            aria-label={t(props.sessionTasks ? 'composer.scheduleAndTasks' : 'composer.scheduleSend')}
+                            title={t(props.sessionTasks ? 'composer.scheduleAndTasks' : 'composer.scheduleSend')}
                             disabled={props.controlsDisabled || hasAttachments}
                             onClick={() => {
                                 if (hasSchedule && props.onClearSchedule) {
@@ -1102,6 +1121,15 @@ export function ComposerButtons(props: {
                                 }}
                                 onClose={() => setShowSchedulePicker(false)}
                                 pendingSchedule={props.pendingSchedule}
+                                tasks={props.sessionTasks ? {
+                                    composerDraft: props.sessionTasks.composerDraft,
+                                    createTask: props.sessionTasks.createTask,
+                                    consumeComposerDraft: props.sessionTasks.onComposerDraftConsumed,
+                                    drafts: taskDrafts,
+                                    onDraftsChange: setTaskDrafts,
+                                    permissionMode: props.sessionTasks.permissionMode,
+                                    history: props.sessionTasks.history
+                                } : undefined}
                             />
                         )}
                     </div>

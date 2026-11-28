@@ -6,6 +6,8 @@
 **/.vitepress/cache/
 **/dist-exe/
 **/*.tsbuildinfo
+# Bun's `compile:` intermediate (<hash>-00000000.bun-build, ~60 MB); passkey.bundle.test.ts leaves one behind when it fails.
+**/*.bun-build
 hub/src/web/embeddedAssets.generated.ts
 hub/src/generated/
 

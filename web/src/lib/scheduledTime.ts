@@ -69,3 +69,29 @@ export function formatScheduledTooltipDetail(
     }
     return t('session.tooltip.scheduled.body')
 }
+
+/** The session list's label for a session's tasks: how many, and when the next one runs. */
+export function formatTaskTooltipLabel(
+    summary: { activeTaskCount: number },
+    t: (key: string, params?: Record<string, string | number>) => string
+): string {
+    return t(summary.activeTaskCount === 1 ? 'tasks.countOne' : 'tasks.count', { count: summary.activeTaskCount })
+}
+
+/**
+ * Session-list task tooltip body: the next run, that it is due, or that every task is waiting on a prompt.
+ */
+export function formatTaskTooltipDetail(
+    summary: { nextTaskRunAt: number | null },
+    t: (key: string, params?: Record<string, string | number>) => string
+): string {
+    if (summary.nextTaskRunAt != null) {
+        // The hub never reports a next run in the past: a task that is due but held up (its machine is
+        // offline, its session archived) reads as due now. So this is not a promise of a send, which the
+        // task bar's own "Due now; sending next" is: it may be waiting for the cause to go away.
+        if (summary.nextTaskRunAt <= Date.now()) return t('tasks.tooltipDueNow')
+        const when = formatScheduledFireLabel(summary.nextTaskRunAt, t)
+        if (when) return t('tasks.nextRun', { when })
+    }
+    return t('tasks.tooltipWaiting')
+}

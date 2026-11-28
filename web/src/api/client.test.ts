@@ -363,6 +363,40 @@ describe('ApiClient error mapping', () => {
         expect(init).toMatchObject({ method: 'POST' })
     })
 
+    it('runs a task now and reads its run history through the task routes', async () => {
+        const task = { id: 'task-1', sessionId: 'session-1' }
+        fetchMock.mockResolvedValueOnce(
+            new Response(JSON.stringify({ task }), { status: 200 })
+        )
+        const runs = [{ id: 'run-1', sessionId: 'session-1', taskId: 'task-1' }]
+        fetchMock.mockResolvedValueOnce(
+            new Response(JSON.stringify({ runs }), { status: 200 })
+        )
+
+        const api = new ApiClient('test-token')
+        await expect(api.runSessionTask('session /1', 'task /1')).resolves.toEqual({ task })
+        await expect(api.listSessionTaskRuns('session /1', 20)).resolves.toEqual({ runs })
+
+        const [runUrl, runInit] = fetchMock.mock.calls[0] ?? []
+        expect(runUrl).toBe('/api/sessions/session%20%2F1/tasks/task%20%2F1/run')
+        expect(runInit).toMatchObject({ method: 'POST' })
+        const [historyUrl] = fetchMock.mock.calls[1] ?? []
+        expect(historyUrl).toBe('/api/sessions/session%20%2F1/tasks/history?limit=20')
+    })
+
+    it('returns what became of a deleted task\'s pending prompt', async () => {
+        fetchMock.mockResolvedValueOnce(
+            new Response(JSON.stringify({ ok: true, prompt: 'unconfirmed' }), { status: 200 })
+        )
+
+        const api = new ApiClient('test-token')
+        await expect(api.deleteSessionTask('session-1', 'task-1')).resolves.toEqual({ ok: true, prompt: 'unconfirmed' })
+
+        const [url, init] = fetchMock.mock.calls[0] ?? []
+        expect(url).toBe('/api/sessions/session-1/tasks/task-1')
+        expect(init).toMatchObject({ method: 'DELETE' })
+    })
+
     it('requests usage buckets in the viewer IANA time zone', async () => {
         fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 200 }))
 

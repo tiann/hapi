@@ -1,0 +1,82 @@
+{
+    "description": "The same hub row with a future scheduledAt is a queued row like any other awaiting its time (it is a reconcile candidate after a resume gap, and stays queued). message-cancelled carries the hub's messageId, and the removal matches a row by id as well as by localId (the op's localId field holds the id here); the row leaves, the newest cursor stays where the page left it, and a repeat is an idempotent no-op.",
+    "expectedState": {
+        "epoch": 0,
+        "hasMore": false,
+        "messages": [],
+        "newestCursor": {
+            "at": 1000,
+            "seq": 1
+        },
+        "olderCursor": {
+            "at": 1000,
+            "seq": 1
+        },
+        "readThroughRevision": 0,
+        "viewMode": "tail"
+    },
+    "fixtureVersion": 1,
+    "name": "scheduled-hub-row-cancelled-by-id",
+    "ops": [
+        {
+            "expectedRequests": [
+                {
+                    "limit": 20
+                }
+            ],
+            "op": "sync-tail",
+            "responses": [
+                {
+                    "messages": [
+                        {
+                            "content": {
+                                "content": {
+                                    "text": "check progress",
+                                    "type": "text"
+                                },
+                                "role": "user"
+                            },
+                            "createdAt": 1000,
+                            "id": "srv-task-1",
+                            "invokedAt": null,
+                            "localId": "hapi-task:t1:1",
+                            "scheduledAt": 60000,
+                            "seq": 1
+                        }
+                    ],
+                    "page": {
+                        "direction": "latest",
+                        "epoch": 0,
+                        "hasMore": false,
+                        "limit": 200,
+                        "nextAfterAt": null,
+                        "nextAfterSeq": null,
+                        "nextBeforeAt": 1000,
+                        "nextBeforeSeq": 1,
+                        "reset": false,
+                        "snapshotHeadAt": 1000,
+                        "snapshotHeadSeq": 1
+                    }
+                }
+            ]
+        },
+        {
+            "expectedCandidates": [
+                "hapi-task:t1:1"
+            ],
+            "invoked": [],
+            "op": "queued-state",
+            "queuedLocalIds": [
+                "hapi-task:t1:1"
+            ]
+        },
+        {
+            "localId": "srv-task-1",
+            "op": "message-cancelled"
+        },
+        {
+            "localId": "srv-task-1",
+            "op": "message-cancelled"
+        }
+    ]
+}

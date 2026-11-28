@@ -94,11 +94,12 @@ export function HoverTooltip(props: {
     )
 }
 
-/** Convenience hook: `${base}-attention` / `${base}-schedule` ids for a row. */
-export function useSessionRowTooltipIds(hasAttention: boolean, hasSchedule: boolean) {
+/** Convenience hook: `${base}-attention` / `${base}-schedule` / `${base}-tasks` ids for a row. */
+export function useSessionRowTooltipIds(hasAttention: boolean, hasSchedule: boolean, hasTasks = false) {
     const base = useId()
     const attentionId = hasAttention ? `${base}-attention` : undefined
     const scheduleId = hasSchedule ? `${base}-schedule` : undefined
-    const describedBy = [attentionId, scheduleId].filter(Boolean).join(' ') || undefined
-    return { attentionId, scheduleId, describedBy }
+    const taskId = hasTasks ? `${base}-tasks` : undefined
+    const describedBy = [attentionId, scheduleId, taskId].filter(Boolean).join(' ') || undefined
+    return { attentionId, scheduleId, taskId, describedBy }
 }

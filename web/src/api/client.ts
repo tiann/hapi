@@ -1,5 +1,13 @@
 import { HubClock } from '@/lib/hubClock'
-import type { AttachedJob } from '@hapi/protocol'
+import type {
+    AttachedJob,
+    CreateSessionTaskRequest,
+    SessionTaskDeleteResponse,
+    SessionTaskListResponse,
+    SessionTaskResponse,
+    SessionTaskRunListResponse,
+    UpdateSessionTaskRequest
+} from '@hapi/protocol'
 import type { BranchConversationRequest, BranchConversationResponse } from '@hapi/protocol/apiTypes'
 import { isAuthRejectionStatus } from '@/lib/authConnection'
 import type {
@@ -898,6 +906,59 @@ export class ApiClient {
                 method: 'POST',
                 body: JSON.stringify({ localIds })
             }
+        )
+    }
+
+    async listSessionTasks(sessionId: string): Promise<SessionTaskListResponse> {
+        return await this.request<SessionTaskListResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/tasks`
+        )
+    }
+
+    async createSessionTask(sessionId: string, request: CreateSessionTaskRequest): Promise<SessionTaskResponse> {
+        return await this.request<SessionTaskResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/tasks`,
+            {
+                method: 'POST',
+                body: JSON.stringify(request)
+            }
+        )
+    }
+
+    async updateSessionTask(
+        sessionId: string,
+        taskId: string,
+        request: UpdateSessionTaskRequest
+    ): Promise<SessionTaskResponse> {
+        return await this.request<SessionTaskResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/tasks/${encodeURIComponent(taskId)}`,
+            {
+                method: 'PATCH',
+                body: JSON.stringify(request)
+            }
+        )
+    }
+
+    async deleteSessionTask(sessionId: string, taskId: string): Promise<SessionTaskDeleteResponse> {
+        return await this.request<SessionTaskDeleteResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/tasks/${encodeURIComponent(taskId)}`,
+            { method: 'DELETE' }
+        )
+    }
+
+    /** Sends the task's next prompt now. The hub answers 409 `prompt_pending` while one of its prompts waits. */
+    async runSessionTask(sessionId: string, taskId: string): Promise<SessionTaskResponse> {
+        return await this.request<SessionTaskResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/tasks/${encodeURIComponent(taskId)}/run`,
+            { method: 'POST' }
+        )
+    }
+
+    /** The newest runs of a session's tasks first; at most `limit` (200 at most, 50 by the hub's default). */
+    async listSessionTaskRuns(sessionId: string, limit?: number): Promise<SessionTaskRunListResponse> {
+        const query = limit !== undefined ? `?limit=${limit}` : ''
+        return await this.request<SessionTaskRunListResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/tasks/history${query}`
         )
     }
 

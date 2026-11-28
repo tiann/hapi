@@ -78,7 +78,7 @@ Live broadcasts that occur while the replay is being written are queued server-s
 | `resume` verdict | Meaning | Client action |
 |---|---|---|
 | `ok` | The replay that follows contains **every** event missed since the cursor. | Skip the REST resync entirely. |
-| `gap` (or field absent — older hubs) | The hub cannot prove continuity. | Full refetch: session list, session detail(s), message tail sync **catching up the cursor first, then the latest page applied by id** (rows updated in place keep their cursor position, so a cursor sync alone never re-delivers them; the applied page must not discard already-loaded history, and an epoch change falls back to a full replacement), and queued-state reconcile for the open session (see [pagination](./pagination.md#queued-state-recovery)). |
+| `gap` (or field absent — older hubs) | The hub cannot prove continuity. | Full refetch: session list, session detail(s), message tail sync **catching up the cursor first, then the latest page applied by id** (rows updated in place keep their cursor position, so a cursor sync alone never re-delivers them; the applied page must not discard already-loaded history, and an epoch change falls back to a full replacement), queued-state reconcile for the open session (see [pagination](./pagination.md#queued-state-recovery)), and the session tasks with their run history (`GET /api/sessions/:id/tasks` and `…/tasks/history`, for every session whose tasks are shown — a task another client changed during the gap is not announced again; see [REST](./rest.md#session-tasks)). |
 
 `gap` is returned whenever: no cursor was sent, the cursor is malformed, `epoch` differs (hub restarted), `nsTag` differs (cursor issued under a different namespace — e.g. after a token swap on the same hub), `seq` is out of range, or events between the cursor and the ring's oldest entry were evicted.
 
@@ -125,7 +125,7 @@ Hub-side delivery (`SSEManager.shouldSend`):
 | `heartbeat` | every connection |
 | `toast` | every **visible** connection in the namespace, regardless of filter (no `id`, never replayed) |
 | `message-received`, `scheduled-matured` | `all=true` connections + matching `sessionId` connections |
-| `session-added` / `session-updated` / `session-removed` / `session-ended` / `messages-invalidated` / `messages-consumed` / `messages-indeterminate` / `messages-requeued` / `message-cancelled` | `all=true` connections + matching `sessionId` connections |
+| `session-added` / `session-updated` / `session-removed` / `session-ended` / `messages-invalidated` / `messages-consumed` / `messages-indeterminate` / `messages-requeued` / `message-cancelled` / `session-tasks-changed` | `all=true` connections + matching `sessionId` connections |
 | `machine-updated`, `machine-agy-models-updated` | `all=true` connections + matching `machineId` connections |
 
 **The global connection must also handle the message-stream events** (`message-received`, `messages-consumed`, `messages-indeterminate`, `messages-requeued`, `message-cancelled`, `scheduled-matured`): while a session connection is down (reconnect gap) or the session isn't open, the global pipe is the only one alive, and it must still keep queued/optimistic bookkeeping correct — mark local messages consumed, remove cancelled rows, and refresh session-list scheduled counts. The session-scoped connection additionally ingests `message-received` into the message window.
@@ -134,7 +134,7 @@ The two connections have **no ordering relationship with each other** — the sa
 
 ---
 
-## SyncEvent union (16 types)
+## SyncEvent union (17 types)
 
 Schema: `SyncEventSchema` in `shared/src/schemas.ts` (discriminated on `type`). All events except `connection-changed` carry `namespace?: string`. Ignore unknown event types.
 
@@ -145,11 +145,12 @@ Schema: `SyncEventSchema` in `shared/src/schemas.ts` (discriminated on `type`). 
 | `session-removed` | `sessionId` | Drop the session from the list, drop its detail cache, clear its message window. |
 | `message-received` | `sessionId`, `message: DecryptedMessage` | Ingest into the message window; advance the tail cursor (see [pagination](./pagination.md)). Also fired for the caller's own send (the localId echo). |
 | `messages-invalidated` | `sessionId`; rewind may also include `reason: 'rewind'` and `truncateFromLocalId` | Message history changed **structurally** (rewind, fork, import, clear). For a rewind, retain only the known prefix through the client boundary before tail-syncing; for every other invalidation, discard the whole window and run a fresh tail sync. Global scope: refetch the session list. |
-| `scheduled-matured` | `sessionId` | A scheduled message became due and was handed to the agent. Refetch list/queue indicators. |
+| `scheduled-matured` | `sessionId` | A scheduled message came due and was released toward the agent; the hub resumes an inactive session so it can take the message. Refetch list/queue indicators. |
+| `session-tasks-changed` | `sessionId` | A repeat/queue task of the session was created, edited, paused, resumed, ran, skipped a slot, hit an error, was deleted or finished, or moved into the session through a merge or an OpenCode `/clear`; also when the hub's follow-up of a cancelled prompt settles its run-history row (see Delete under [Session tasks](./rest.md#session-tasks)). Refetch `GET /api/sessions/:id/tasks` and the run history if it is shown (see [REST](./rest.md#session-tasks)); the list row's `activeTaskCount` / `nextTaskRunAt` change too, so invalidate the session list for that id. |
 | `session-ended` | `sessionId`, `reason?: 'completed'\|'terminated'\|'error'\|'handoff'\|'cleared'` | Session lifecycle signal (the `session-updated` flow still carries the state change). |
 | `machine-updated` | `machineId`, `data?: Machine \| MachinePatch \| null` | Full `Machine`: upsert (remove when `active:false`). `null`: machine removed. Patch `{active?, activeAt?, updatedAt?}`: `active:false` ⇒ remove, otherwise refetch machines. `data` absent ⇒ refetch. |
 | `machine-agy-models-updated` | `machineId` | The machine's `agy models` listing changed on a background re-check. Refetch `GET /api/machines/:id/agy-models` for that machine (answered from the machine's cache; it starts no `agy` run and produces no further event). Emitted when the re-check changes what that route would answer — a different listing, or a sign-in warning that appeared or cleared — never for the machine's first listing. |
-| `toast` | `data: {title, body, sessionId, url}` | Show as in-app toast/banner. Only delivered to visible connections (see [Visibility](#visibility)). |
+| `toast` | `data: {title, body, sessionId, url}` | Show as in-app toast/banner. Only delivered to visible connections (see [Visibility](#visibility)). Titles the hub sends: `Ready for input`, `Permission Request` and `<agent> needs your input` (notifications), and `Scheduled message not sent` — a scheduled message came due on a session the hub could not resume; the body names the message and the session, `url` opens it (see [Messages](./rest.md#messages)); and `Deleted task prompt was taken` / `Paused task prompt was taken` — the agent took a prompt that a task cancelled while no CLI could confirm it (see Delete under [Session tasks](./rest.md#session-tasks)). |
 | `messages-consumed` | `sessionId`, `localIds: string[]`, `invokedAt: number` | The agent consumed queued user messages: stamp `invokedAt`, flip status to `sent`, remove from the queued bar. |
 | `messages-indeterminate` | `sessionId`, `localIds: string[]` | A native dispatch/queue mutation has an unknown outcome. Keep the row uninvoked, show an explicit Retry/Cancel resolution, and do not auto-replay it. Shared-engine Retry/Cancel can remain unavailable until reconciliation proves the outcome. |
 | `messages-requeued` | `sessionId`, `localIds: string[]` | An explicit Retry restored delivery to the normal queue. Clear the indeterminate marker. |

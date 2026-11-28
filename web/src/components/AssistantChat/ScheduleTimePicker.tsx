@@ -1,5 +1,53 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
+import type { CreateSessionTaskRequest, PermissionMode } from '@hapi/protocol'
+import type { ApiClient } from '@/api/client'
+import { useSessionTaskHistory } from '@/hooks/queries/useSessionTasks'
 import { useTranslation } from '@/lib/use-translation'
+import {
+    EMPTY_QUEUE_DRAFT,
+    EMPTY_REPEAT_DRAFT,
+    type QueueTaskDraft,
+    type RepeatTaskDraft
+} from '@/lib/sessionTasks'
+import { QueueTaskForm, RepeatTaskForm, type CreateTaskFromForm } from './SessionTaskForms'
+import { TEXT_BUTTON_CLASS } from './SessionTaskFields'
+import { SessionTaskHistory } from './SessionTaskHistory'
+
+/** Repeat / queue form text, owned outside the panel so closing it loses nothing. */
+export type SessionTaskDrafts = { repeat: RepeatTaskDraft; queue: QueueTaskDraft }
+
+export const EMPTY_SESSION_TASK_DRAFTS: SessionTaskDrafts = { repeat: EMPTY_REPEAT_DRAFT, queue: EMPTY_QUEUE_DRAFT }
+
+/**
+ * Where the panel reads the run history: the session's tasks' runs, from the
+ * hub the task bar talks to as well.
+ */
+export type SessionTaskHistorySource = { api: ApiClient | null; sessionId: string }
+
+/**
+ * Lets the panel create repeat and queue tasks besides one-shot scheduled
+ * sends. Left out where tasks cannot be created, which keeps the panel to
+ * scheduled send only.
+ */
+export type SessionTaskPickerBridge = {
+    /** The composer's text: a task's first prompt until the user types their own. */
+    composerDraft: string
+    createTask: (request: CreateSessionTaskRequest) => Promise<void>
+    /** Empties the composer once its text became a task, but only if it is still that text. */
+    consumeComposerDraft: (text: string) => void
+    drafts: SessionTaskDrafts
+    /** Takes an updater, so resetting one mode's draft never overwrites the other's. */
+    onDraftsChange: (update: (previous: SessionTaskDrafts) => SessionTaskDrafts) => void
+    /** The session's stored permission mode, which the task's prompts run with; the forms say so where it does not ask first. */
+    permissionMode?: PermissionMode
+    /** Adds History to the panel's header: the runs of the session's tasks, finished or deleted ones included. */
+    history?: SessionTaskHistorySource
+}
+
+/** Desktop keyboards get focus moved into the panel; a finger never opened a keyboard to begin with. */
+function prefersKeyboardFocus(): boolean {
+    return typeof window !== 'undefined' && window.matchMedia('(pointer: fine)').matches
+}
 
 // ---------------------------------------------------------------------------
 // PendingSchedule — discriminated union for "what the user chose"
@@ -134,6 +182,15 @@ export function computeSchedulePickerPlacement(params: {
 const PRESETS = ['+5m', '+30m', '+1h', '+4h'] as const
 type Preset = typeof PRESETS[number]
 
+const PICKER_MODES: readonly PickerMode[] = ['send', 'repeat', 'queue']
+const PICKER_MODE_LABEL: Record<PickerMode, string> = {
+    send: 'composer.scheduleModeSend',
+    repeat: 'composer.scheduleModeRepeat',
+    queue: 'composer.scheduleModeQueue'
+}
+/** The keyboard offset on iOS: the layout viewport keeps its height while the visual one shrinks under the keyboard. */
+const KEYBOARD_OFFSET_CLASS = 'bottom-[calc(env(safe-area-inset-bottom)+12px+(100dvh-var(--app-viewport-height,100dvh)))]'
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -150,17 +207,117 @@ interface ScheduleTimePickerProps {
     anchorRef: React.RefObject<HTMLButtonElement | null>
     /** Currently active pending schedule, used to highlight the selected preset. */
     pendingSchedule?: PendingSchedule | null
+    /** Adds Repeat and Queue modes to the panel. */
+    tasks?: SessionTaskPickerBridge
 }
 
-export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSchedule }: ScheduleTimePickerProps) {
+type PickerMode = 'send' | 'repeat' | 'queue'
+
+/**
+ * The header's History toggle. Hidden once the hub has answered the history
+ * route with 404: nothing behind it could work. The runs themselves are asked
+ * for only while the view is open, so on such a hub the first open is what
+ * finds out, and the view falls back to the forms at once.
+ */
+function ScheduleTaskHistoryToggle({ history, open, disabled, onToggle }: {
+    history: SessionTaskHistorySource
+    open: boolean
+    disabled: boolean
+    onToggle: () => void
+}) {
     const { t } = useTranslation()
+    const { unsupported } = useSessionTaskHistory(history.api, history.sessionId, open)
+    if (unsupported) return null
+    return (
+        <button
+            type="button"
+            aria-pressed={open}
+            disabled={disabled}
+            onClick={onToggle}
+            className={`${TEXT_BUTTON_CLASS} text-[var(--app-hint)] hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)]`}
+        >
+            {t('tasks.history')}
+        </button>
+    )
+}
+
+/** The runs, in place of the forms; fetched while shown, and shown alone. */
+function ScheduleTaskHistoryView({ history, onUnsupported }: {
+    history: SessionTaskHistorySource
+    /** The hub has no history route: the view has nothing to show and gives way to the forms. */
+    onUnsupported: () => void
+}) {
+    const { runs, isLoading, error, unsupported, refetch } = useSessionTaskHistory(history.api, history.sessionId, true)
+    useEffect(() => {
+        if (unsupported) onUnsupported()
+    }, [unsupported, onUnsupported])
+    return (
+        <div className="max-h-64 overflow-y-auto px-3 pb-3">
+            <SessionTaskHistory
+                runs={runs}
+                isLoading={isLoading}
+                error={error}
+                onRetry={() => { void refetch() }}
+            />
+        </div>
+    )
+}
+
+export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSchedule, tasks }: ScheduleTimePickerProps) {
+    const { t } = useTranslation()
+    const [mode, setMode] = useState<PickerMode>('send')
     const [tab, setTab] = useState<'relative' | 'specific'>('relative')
     const [specificValue, setSpecificValue] = useState('')
     const [specificError, setSpecificError] = useState<string | null>(null)
+    // The runs replace the forms while open. The state lives here, so closing the panel forgets it.
+    const [historyOpen, setHistoryOpen] = useState(false)
     const panelRef = useRef<HTMLDivElement>(null)
+    // The first control of the panel's body, which is where the keyboard is taken: the header's History toggle comes first in the DOM.
+    const bodyRef = useRef<HTMLDivElement>(null)
     const [pos, setPos] = useState<SchedulePickerPlacement | null>(null)
     const [isMobilePanel, setIsMobilePanel] = useState(false)
     const [isContentConstrained, setIsContentConstrained] = useState(false)
+    const [creating, setCreating] = useState(0)
+    // A create in flight keeps the mode switch still: switching would unmount the
+    // form whose answer is on its way.
+    const createTask: CreateTaskFromForm = useCallback(async (request, consumed) => {
+        if (!tasks) return
+        setCreating((count) => count + 1)
+        try {
+            await tasks.createTask(request)
+            if (consumed) tasks.consumeComposerDraft(consumed.composerText)
+        } finally {
+            setCreating((count) => count - 1)
+        }
+    }, [tasks])
+
+    // Keyboard users step into the panel; wherever focus was when the panel
+    // closes, it goes back to the clock button (so Tab does not restart at the
+    // top of the page after a create unmounts the form).
+    // The panel is `visibility: hidden` until its first measure places it, and a
+    // browser does not focus an element inside a hidden box, so the move waits
+    // for that: it runs once the panel is placed, or has become the mobile sheet.
+    const focusMovedRef = useRef(false)
+    useEffect(() => {
+        if (focusMovedRef.current || !prefersKeyboardFocus()) return
+        if (!isMobilePanel && pos === null) return
+        focusMovedRef.current = true
+        bodyRef.current?.querySelector<HTMLElement>('button')?.focus()
+    }, [pos, isMobilePanel])
+    const close = useCallback(() => {
+        const panel = panelRef.current
+        if (panel && document.activeElement !== null && panel.contains(document.activeElement)) {
+            anchorRef.current?.focus()
+        }
+        onClose()
+    }, [anchorRef, onClose])
+    const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+        // The Escape that dismisses an IME's candidate list is not the one that closes the panel.
+        if (event.key !== 'Escape' || event.defaultPrevented || event.nativeEvent.isComposing) return
+        event.preventDefault()
+        event.stopPropagation()
+        close()
+    }
 
     // Compute fixed position and keep it inside the visual viewport. On mobile,
     // use a bottom panel instead of anchoring to the tiny toolbar button.
@@ -171,7 +328,7 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
             if (!anchor) return
             const mobile = window.matchMedia('(max-width: 640px), (pointer: coarse)').matches
             setIsMobilePanel(mobile)
-            const fullHeight = (panel?.scrollHeight ?? (tab === 'specific' ? 260 : 180)) + 4
+            const fullHeight = (panel?.scrollHeight ?? (mode !== 'send' || tab === 'specific' ? 260 : 180)) + 4
             if (mobile) {
                 const viewportHeight = window.visualViewport?.height ?? window.innerHeight
                 setIsContentConstrained(fullHeight > Math.min(viewportHeight * 0.85, viewportHeight - 24))
@@ -199,14 +356,21 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
         window.addEventListener('scroll', measure, { passive: true, capture: true })
         window.visualViewport?.addEventListener('resize', measure, { passive: true })
         window.visualViewport?.addEventListener('scroll', measure, { passive: true })
+        // The task forms grow with their textareas; keep the panel anchored above the button.
+        const resizeObserver = typeof ResizeObserver !== 'undefined' && panelRef.current
+            ? new ResizeObserver(() => measure())
+            : null
+        resizeObserver?.observe(panelRef.current as Element)
         return () => {
             window.removeEventListener('resize', measure)
             window.removeEventListener('scroll', measure, true)
             window.visualViewport?.removeEventListener('resize', measure)
             window.visualViewport?.removeEventListener('scroll', measure)
+            resizeObserver?.disconnect()
         }
-    // anchorRef is a useRef object — stable identity, so this effect runs once on mount.
-    }, [anchorRef, tab])
+    // anchorRef is a useRef object — stable identity, so this effect runs once on mount,
+    // and again when the content swaps (a mode, a tab, the history for the forms).
+    }, [anchorRef, tab, mode, historyOpen])
 
     // Click-outside closes the panel.
     //
@@ -221,11 +385,11 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
             const target = e.target as Node
             if (panelRef.current?.contains(target)) return
             if (anchorRef.current?.contains(target)) return
-            onClose()
+            close()
         }
         document.addEventListener('pointerdown', handlePointerDown)
         return () => document.removeEventListener('pointerdown', handlePointerDown)
-    }, [onClose, anchorRef])
+    }, [close, anchorRef])
 
     // Compute max value for datetime-local input (7 days from now)
     const maxDatetimeLocal = (() => {
@@ -245,7 +409,7 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
     const handlePresetClick = (preset: Preset) => {
         // Store the preset key only — absolute ms is computed at send time (send-time base).
         onSchedule({ type: 'preset', preset })
-        onClose()
+        close()
     }
 
     const handleSpecificSubmit = () => {
@@ -263,7 +427,7 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
             return
         }
         onSchedule({ type: 'absolute', ms: parsed })
-        onClose()
+        close()
     }
 
     const handleSpecificChange = (value: string) => {
@@ -282,7 +446,8 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
         <div
             ref={panelRef}
             role="dialog"
-            aria-label={t('composer.scheduleSend')}
+            aria-label={t(mode === 'send' ? 'composer.scheduleSend' : PICKER_MODE_LABEL[mode])}
+            onKeyDown={handleKeyDown}
             style={
                 isMobilePanel
                     ? { position: 'fixed' }
@@ -292,95 +457,168 @@ export function ScheduleTimePicker({ onSchedule, onClose, anchorRef, pendingSche
             }
             className={
                 isMobilePanel
-                    ? `z-50 box-border max-h-[min(85dvh,calc(var(--app-viewport-height,100dvh)-24px))] ${isContentConstrained ? 'overflow-y-auto' : 'overflow-y-visible'} rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] shadow-lg fixed inset-x-3 bottom-[calc(env(safe-area-inset-bottom)+12px)] sm:left-1/2 sm:right-auto sm:w-80 sm:-translate-x-1/2`
+                    ? `z-50 box-border max-h-[min(85dvh,calc(var(--app-viewport-height,100dvh)-24px))] ${isContentConstrained ? 'overflow-y-auto' : 'overflow-y-visible'} rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] shadow-lg fixed inset-x-3 ${KEYBOARD_OFFSET_CLASS} sm:left-1/2 sm:right-auto sm:w-80 sm:-translate-x-1/2`
                     : `z-50 box-border w-80 max-w-[calc(100vw-16px)] ${isContentConstrained ? 'overflow-y-auto' : 'overflow-y-visible'} rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] shadow-lg`
             }
             onPointerDown={(e) => e.stopPropagation()}
         >
-            {/* Header */}
-            <div className="px-3 pt-3 pb-2">
-                <p className="text-xs font-semibold text-[var(--app-hint)]">
-                    {t('composer.scheduleSend')}
+            {/* Header: the mode's name, and History where the hub has it */}
+            <div className="flex items-center gap-2 px-3 pt-3 pb-2">
+                <p className="flex-1 text-xs font-semibold text-[var(--app-hint)]">
+                    {t(mode === 'send' ? 'composer.scheduleSend' : PICKER_MODE_LABEL[mode])}
                 </p>
+                {tasks?.history ? (
+                    <ScheduleTaskHistoryToggle
+                        history={tasks.history}
+                        open={historyOpen}
+                        disabled={creating > 0}
+                        onToggle={() => setHistoryOpen((open) => !open)}
+                    />
+                ) : null}
             </div>
 
-            {/* Tab buttons */}
-            <div className="flex px-3 gap-1 mb-2">
-                <button
-                    type="button"
-                    onClick={() => setTab('relative')}
-                    className={`flex-1 rounded-md px-2 py-1 text-xs font-medium transition-colors ${
-                        tab === 'relative'
-                            ? 'bg-[var(--app-secondary-bg)] text-[var(--app-fg)]'
-                            : 'text-[var(--app-hint)] hover:text-[var(--app-fg)]'
-                    }`}
-                >
-                    {t('composer.scheduleRelativeTab')}
-                </button>
-                <button
-                    type="button"
-                    onClick={() => setTab('specific')}
-                    className={`flex-1 rounded-md px-2 py-1 text-xs font-medium transition-colors ${
-                        tab === 'specific'
-                            ? 'bg-[var(--app-secondary-bg)] text-[var(--app-fg)]'
-                            : 'text-[var(--app-hint)] hover:text-[var(--app-fg)]'
-                    }`}
-                >
-                    {t('composer.scheduleSpecificTab')}
-                </button>
-            </div>
-
-            {/* Tab content */}
-            <div className="px-3 pb-3">
-                {tab === 'relative' ? (
-                    <div className="grid grid-cols-2 gap-1.5">
-                        {PRESETS.map((preset) => {
-                            const isSelected = pendingSchedule?.type === 'preset' && pendingSchedule.preset === preset
-                            return (
-                                <button
-                                    key={preset}
-                                    type="button"
-                                    onClick={() => handlePresetClick(preset)}
-                                    className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
-                                        isSelected
-                                            ? 'border-blue-500 bg-blue-500 text-white'
-                                            : 'border-[var(--app-border)] text-[var(--app-fg)] hover:bg-[var(--app-secondary-bg)] hover:border-[var(--app-link)]'
-                                    }`}
-                                >
-                                    {preset}
-                                </button>
-                            )
-                        })}
-                    </div>
+            <div ref={bodyRef}>
+                {historyOpen && tasks?.history ? (
+                    <ScheduleTaskHistoryView
+                        history={tasks.history}
+                        onUnsupported={() => setHistoryOpen(false)}
+                    />
                 ) : (
-                    <div className="flex flex-col gap-2">
-                        <input
-                            type="datetime-local"
-                            value={specificValue}
-                            min={minDatetimeLocal}
-                            max={maxDatetimeLocal}
-                            onChange={(e) => handleSpecificChange(e.target.value)}
-                            onKeyDown={handleSpecificKeyDown}
-                            className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm text-[var(--app-fg)] focus:outline-none focus:ring-1 focus:ring-[var(--app-link)]"
-                        />
-                        {specificError ? (
-                            <p className="text-xs text-red-500">{specificError}</p>
-                        ) : (
-                            <p className="break-words text-xs text-[var(--app-hint)]">
-                                {t('composer.scheduleSpecificHint')}
-                            </p>
-                        )}
-                        <button
-                            type="button"
-                            disabled={!specificValue}
-                            onClick={handleSpecificSubmit}
-                            className="w-full rounded-lg bg-blue-500 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-40"
-                        >
-                            {t('composer.scheduleSend')}
-                        </button>
+                <>
+                {tasks ? (
+                    /* Mode switch: scheduled send, or a task the hub keeps running. */
+                    <div className="flex px-3 gap-1 mb-2">
+                        {PICKER_MODES.map((candidate) => (
+                            <button
+                                key={candidate}
+                                type="button"
+                                aria-pressed={mode === candidate}
+                                disabled={creating > 0}
+                                onClick={() => setMode(candidate)}
+                                className={`flex-1 rounded-md px-2 py-1 text-xs font-medium transition-colors ${
+                                    mode === candidate
+                                        ? 'bg-[var(--app-secondary-bg)] text-[var(--app-fg)]'
+                                        : 'text-[var(--app-hint)] hover:text-[var(--app-fg)]'
+                                }`}
+                            >
+                                {t(PICKER_MODE_LABEL[candidate])}
+                            </button>
+                        ))}
                     </div>
+                ) : null}
+    
+                {mode === 'send' ? (
+                <>
+                {/* Tab buttons */}
+                <div className="flex px-3 gap-1 mb-2">
+                    <button
+                        type="button"
+                        onClick={() => setTab('relative')}
+                        className={`flex-1 rounded-md px-2 py-1 text-xs font-medium transition-colors ${
+                            tab === 'relative'
+                                ? 'bg-[var(--app-secondary-bg)] text-[var(--app-fg)]'
+                                : 'text-[var(--app-hint)] hover:text-[var(--app-fg)]'
+                        }`}
+                    >
+                        {t('composer.scheduleRelativeTab')}
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => setTab('specific')}
+                        className={`flex-1 rounded-md px-2 py-1 text-xs font-medium transition-colors ${
+                            tab === 'specific'
+                                ? 'bg-[var(--app-secondary-bg)] text-[var(--app-fg)]'
+                                : 'text-[var(--app-hint)] hover:text-[var(--app-fg)]'
+                        }`}
+                    >
+                        {t('composer.scheduleSpecificTab')}
+                    </button>
+                </div>
+    
+                {/* Tab content */}
+                <div className="px-3 pb-3">
+                    {tab === 'relative' ? (
+                        <div className="grid grid-cols-2 gap-1.5">
+                            {PRESETS.map((preset) => {
+                                const isSelected = pendingSchedule?.type === 'preset' && pendingSchedule.preset === preset
+                                return (
+                                    <button
+                                        key={preset}
+                                        type="button"
+                                        onClick={() => handlePresetClick(preset)}
+                                        className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+                                            isSelected
+                                                ? 'border-blue-500 bg-blue-500 text-white'
+                                                : 'border-[var(--app-border)] text-[var(--app-fg)] hover:bg-[var(--app-secondary-bg)] hover:border-[var(--app-link)]'
+                                        }`}
+                                    >
+                                        {preset}
+                                    </button>
+                                )
+                            })}
+                        </div>
+                    ) : (
+                        <div className="flex flex-col gap-2">
+                            <input
+                                type="datetime-local"
+                                value={specificValue}
+                                min={minDatetimeLocal}
+                                max={maxDatetimeLocal}
+                                onChange={(e) => handleSpecificChange(e.target.value)}
+                                onKeyDown={handleSpecificKeyDown}
+                                className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm text-[var(--app-fg)] focus:outline-none focus:ring-1 focus:ring-[var(--app-link)]"
+                            />
+                            {specificError ? (
+                                <p className="text-xs text-red-500">{specificError}</p>
+                            ) : (
+                                <p className="break-words text-xs text-[var(--app-hint)]">
+                                    {t('composer.scheduleSpecificHint')}
+                                </p>
+                            )}
+                            <button
+                                type="button"
+                                disabled={!specificValue}
+                                onClick={handleSpecificSubmit}
+                                className="w-full rounded-lg bg-blue-500 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                                {t('composer.scheduleSend')}
+                            </button>
+                        </div>
+                    )}
+                </div>
+                </>
+                ) : (
+                    <div className="px-3 pb-3">
+                        {mode === 'repeat' && tasks ? (
+                            <RepeatTaskForm
+                                draft={tasks.drafts.repeat}
+                                onDraftChange={(repeat) => tasks.onDraftsChange((previous) => ({ ...previous, repeat }))}
+                                composerDraft={tasks.composerDraft}
+                                createTask={createTask}
+                                permissionMode={tasks.permissionMode}
+                                onCreated={() => {
+                                    tasks.onDraftsChange((previous) => ({ ...previous, repeat: EMPTY_REPEAT_DRAFT }))
+                                    close()
+                                }}
+                            />
+                        ) : mode === 'queue' && tasks ? (
+                            <QueueTaskForm
+                                draft={tasks.drafts.queue}
+                                composerDraft={tasks.composerDraft}
+                                onDraftChange={(queue) => tasks.onDraftsChange((previous) => ({ ...previous, queue }))}
+                                createTask={createTask}
+                                permissionMode={tasks.permissionMode}
+                                onCreated={() => {
+                                    tasks.onDraftsChange((previous) => ({ ...previous, queue: EMPTY_QUEUE_DRAFT }))
+                                    close()
+                                }}
+                            />
+                            ) : null}
+                        </div>
+                    )}
+                    </>
                 )}
             </div>
         </div>
-    )
+        )
 }

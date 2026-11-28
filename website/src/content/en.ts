@@ -115,6 +115,11 @@ export const en = {
                         body: "Run `hapi runner start`, then pick a machine, directory and agent from New Session in the apps.",
                     },
                     {
+                        icon: "calendar-clock",
+                        title: "Scheduled sends & repeat tasks",
+                        body: "Send a message later, or hand the hub a repeat or queue task: it delivers the prompts into the session on its own, waking the session if it is not running.",
+                    },
+                    {
                         icon: "mic",
                         title: "Voice",
                         body: "Talk to your agent hands-free with the web voice assistant, or dictate in the native apps and review before sending.",

@@ -12,6 +12,7 @@ import { PushStore } from './pushStore'
 import { FcmStore } from './fcmStore'
 import { ScratchlistStore } from './scratchlistStore'
 import { SessionJobsStore } from './sessionJobsStore'
+import { SESSION_TASK_RUNS_TABLE_SQL, SESSION_TASKS_TABLE_SQL, SessionTaskStore } from './sessionTasks'
 import { SessionRedirectStore } from './sessionRedirectStore'
 import { SessionStore } from './sessionStore'
 import { UserStore } from './userStore'
@@ -39,13 +40,15 @@ export type {
     StoredUser,
     VersionedUpdateResult
 } from './types'
-export type { CancelQueuedMessageResult, LookupQueuedMessageResult } from './messages'
+export type { CancelQueuedMessageOptions, CancelQueuedMessageResult, LookupQueuedMessageResult } from './messages'
 export { MachineStore } from './machineStore'
 export { MessageStore } from './messageStore'
 export { PushStore } from './pushStore'
 export { FcmStore } from './fcmStore'
 export { ScratchlistStore } from './scratchlistStore'
 export { SessionJobsStore } from './sessionJobsStore'
+export { SessionTaskStore } from './sessionTasks'
+export type { StoredSessionTask } from './sessionTasks'
 export { SessionStore } from './sessionStore'
 export { UserStore } from './userStore'
 export { PasskeyStore } from './passkeyStore'
@@ -60,7 +63,7 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 36
+const SCHEMA_VERSION: number = 38
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -74,6 +77,8 @@ const REQUIRED_TABLES = [
     'fcm_devices',
     'session_scratchlist',
     'session_jobs',
+    'session_tasks',
+    'session_task_runs',
     'usage_events',
     'usage_scan_state',
     'events',
@@ -97,6 +102,7 @@ export class Store {
     readonly fcm: FcmStore
     readonly scratchlist: ScratchlistStore
     readonly sessionJobs: SessionJobsStore
+    readonly sessionTasks: SessionTaskStore
     readonly sessionRedirects: SessionRedirectStore
     readonly usage: UsageStore
     readonly turns: TurnStore
@@ -155,6 +161,7 @@ export class Store {
         this.fcm = new FcmStore(this.db)
         this.scratchlist = new ScratchlistStore(this.db)
         this.sessionJobs = new SessionJobsStore(this.db)
+        this.sessionTasks = new SessionTaskStore(this.db)
         this.sessionRedirects = new SessionRedirectStore(this.db)
         this.usage = new UsageStore(this.db)
         this.turns = new TurnStore(this.db)
@@ -232,6 +239,23 @@ export class Store {
         })()
     }
 
+    /**
+     * Where a message sent to `sessionId` lands: the session itself, or the
+     * replacement an unfinished OpenCode /clear redirects new messages to.
+     * Null when the session does not exist.
+     */
+    resolveMessageTarget(sessionId: string): string | null {
+        const row = this.db.prepare('SELECT metadata FROM sessions WHERE id = ?').get(sessionId) as { metadata: string | null } | undefined
+        if (!row) return null
+        if (!row.metadata) return sessionId
+        const metadata = JSON.parse(row.metadata) as { opencodeClearOperation?: { replacementSessionId?: string; state?: string }, supersededBySessionId?: string }
+        return metadata.supersededBySessionId
+            ?? (metadata.opencodeClearOperation?.state !== 'aborted'
+                ? metadata.opencodeClearOperation?.replacementSessionId
+                : undefined)
+            ?? sessionId
+    }
+
     /** Resolve a durable OpenCode clear reservation and insert in one SQLite transaction. */
     addMessageForCurrentSession(
         sessionId: string,
@@ -240,17 +264,9 @@ export class Store {
         scheduledAt?: number | null
     ): { sessionId: string; message: StoredMessage; inserted: boolean } {
         return this.db.transaction(() => {
-            const row = this.db.prepare('SELECT namespace, metadata FROM sessions WHERE id = ?').get(sessionId) as { namespace: string; metadata: string | null } | undefined
+            const row = this.db.prepare('SELECT namespace FROM sessions WHERE id = ?').get(sessionId) as { namespace: string } | undefined
             if (!row) throw new Error('Message source session not found')
-            let targetSessionId = sessionId
-            if (row?.metadata) {
-                const metadata = JSON.parse(row.metadata) as { opencodeClearOperation?: { replacementSessionId?: string; state?: string }, supersededBySessionId?: string }
-                targetSessionId = metadata.supersededBySessionId
-                    ?? (metadata.opencodeClearOperation?.state !== 'aborted'
-                        ? metadata.opencodeClearOperation?.replacementSessionId
-                        : undefined)
-                    ?? sessionId
-            }
+            const targetSessionId = this.resolveMessageTarget(sessionId) as string
             if (targetSessionId !== sessionId) {
                 const target = this.db.prepare('SELECT 1 FROM sessions WHERE id = ? AND namespace = ?')
                     .get(targetSessionId, row.namespace)
@@ -395,6 +411,8 @@ export class Store {
             // #1489 wake-on-terminal at v33→v34; session_redirects at v34→v35;
             // passkey_credentials at v35→v36
             // (jobs remapped again after upstream took 28/29/30).
+            // session_tasks (repeat/queue schedules) at v36→v37; start_at and the
+            // session_task_runs history at v37→v38.
             21: () => this.migrateFromV21ToV22(),
             22: () => this.migrateFromV22ToV23(),
             23: () => this.migrateFromV23ToV24(),
@@ -410,6 +428,8 @@ export class Store {
             33: () => this.migrateFromV33ToV34(),
             34: () => this.migrateFromV34ToV35(),
             35: () => this.migrateFromV35ToV36(),
+            36: () => this.migrateFromV36ToV37(),
+            37: () => this.migrateFromV37ToV38(),
         })
 
         if (currentVersion === 0) {
@@ -454,6 +474,8 @@ export class Store {
             this.migrateFromV33ToV34()
             this.migrateFromV34ToV35()
             this.migrateFromV35ToV36()
+            this.migrateFromV36ToV37()
+            this.migrateFromV37ToV38()
             this.ensureUsageScanParserVersion()
             this.setUserVersion(SCHEMA_VERSION)
             return
@@ -637,6 +659,9 @@ export class Store {
             );
             CREATE INDEX IF NOT EXISTS idx_session_jobs_session_status_updated
                 ON session_jobs(session_id, status, updated_at DESC);
+
+            ${SESSION_TASKS_TABLE_SQL}
+            ${SESSION_TASK_RUNS_TABLE_SQL}
 
             CREATE TABLE IF NOT EXISTS session_redirects (
                 old_id TEXT PRIMARY KEY,
@@ -1395,6 +1420,37 @@ export class Store {
     /** v35→v36: WebAuthn credentials that can be exchanged for a web JWT. */
     private migrateFromV35ToV36(): void {
         this.db.exec(PASSKEY_CREDENTIALS_TABLE_SQL)
+    }
+
+    /**
+     * v36→v37: session_tasks — hub-scheduled repeat/queue prompts that send
+     * into a session unattended. Idempotent (`IF NOT EXISTS`).
+     * Rollback: `DROP TABLE session_tasks; PRAGMA user_version = 36;`
+     */
+    private migrateFromV36ToV37(): void {
+        this.db.exec(SESSION_TASKS_TABLE_SQL)
+    }
+
+    /**
+     * v37→v38: `start_at` on session_tasks (a task that has not run yet keeps
+     * its first-run time across a pause) and `session_task_runs`, the history
+     * of what the tasks did. A database that got the table from the v36→v37
+     * step of this build already carries the column. Rows written before the
+     * column exist are dated from their planned first run when they have not
+     * run yet (phase 1 kept it in `next_run_at`), and from their creation
+     * once they have. Idempotent.
+     * Rollback: `DROP TABLE session_task_runs; ALTER TABLE session_tasks DROP COLUMN start_at; PRAGMA user_version = 37;`
+     */
+    private migrateFromV37ToV38(): void {
+        const columns = this.db.prepare('PRAGMA table_info(session_tasks)').all() as Array<{ name: string }>
+        if (!columns.some((col) => col.name === 'start_at')) {
+            this.db.exec(`
+                ALTER TABLE session_tasks ADD COLUMN start_at INTEGER NOT NULL DEFAULT 0;
+                UPDATE session_tasks
+                SET start_at = CASE WHEN run_count = 0 AND next_run_at IS NOT NULL THEN next_run_at ELSE created_at END;
+            `)
+        }
+        this.db.exec(SESSION_TASK_RUNS_TABLE_SQL)
     }
 
     private ensureUsageScanParserVersion(): void {

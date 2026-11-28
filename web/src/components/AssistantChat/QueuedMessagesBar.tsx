@@ -12,7 +12,9 @@ import { useRetryIndeterminateMessage } from '@/hooks/mutations/useRetryIndeterm
 import { useTranslation } from '@/lib/use-translation'
 import { useToast } from '@/lib/toast-context'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
+import { FromTaskChip } from '@/components/AssistantChat/messages/user-bubble'
 import { formatScheduledTime } from '@/lib/scheduledTime'
+import { isSessionTaskMessageLocalId } from '@hapi/protocol'
 import {
     beginQueuedOperation,
     clearQueuedEditRecovery,
@@ -23,6 +25,10 @@ import {
     subscribeQueuedEditRecovery,
     subscribeQueuedOperation,
 } from '@/lib/queued-edit-recovery'
+
+/** 24 px here, a full 32 px where a finger does the tapping; the group widens its gap to match. */
+const ROW_BUTTON_CLASS = 'flex h-6 w-6 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-border)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-40 pointer-coarse:h-8 pointer-coarse:w-8'
+const ROW_BUTTON_GROUP_CLASS = 'flex shrink-0 items-center gap-1 pointer-coarse:gap-1.5'
 
 function ClockIcon() {
     return (
@@ -382,8 +388,13 @@ export function QueuedMessagesBar({
                         // on the same server-echo + no-pending-op conditions as
                         // Edit/Cancel, and never offered for future-scheduled rows
                         // (the hub rejects those).
+                        // A prompt a task inserted cannot be edited into a manual message or
+                        // steered: the task tracks that row. Cancelling it is the task's "Skip": the
+                        // task moves on, and the history lists the prompt as cancelled.
+                        const fromTask = isSessionTaskMessageLocalId(msg.localId)
                         const canSteerRow = Boolean(
                             canSteer
+                            && !fromTask
                             && msg.deliveryState !== 'indeterminate'
                             && msg.scheduledAt == null
                             && canCancel
@@ -514,7 +525,7 @@ export function QueuedMessagesBar({
                             }
                         }
 
-                        const canEdit = canCancel
+                        const canEdit = canCancel && !fromTask
 
                         return (
                             <li
@@ -522,6 +533,11 @@ export function QueuedMessagesBar({
                                 className="flex items-start gap-2 min-w-0 rounded-lg bg-[var(--app-secondary-bg)] px-3 py-2 shadow-sm"
                             >
                                 <div className="flex-1 min-w-0">
+                                    {fromTask ? (
+                                        <div className="mb-1">
+                                            <FromTaskChip label={t('queuedMessages.fromTask')} />
+                                        </div>
+                                    ) : null}
                                     {text ? (
                                         <span className="line-clamp-3 whitespace-pre-wrap break-words text-[var(--app-fg)]">
                                             {text}
@@ -564,7 +580,7 @@ export function QueuedMessagesBar({
                                         </div>
                                     )}
                                 </div>
-                                <div className="flex shrink-0 items-center gap-1">
+                                <div className={ROW_BUTTON_GROUP_CLASS}>
                                     {needsResolution && !waitingForCompaction ? (
                                         <button
                                             type="button"
@@ -573,7 +589,7 @@ export function QueuedMessagesBar({
                                             disabled={!canCancel || retryPending}
                                             onClick={handleRetry}
                                             onMouseDown={(e) => e.preventDefault()}
-                                            className="flex h-6 w-6 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-border)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-40"
+                                            className={ROW_BUTTON_CLASS}
                                         >
                                             <span aria-hidden="true">↻</span>
                                         </button>
@@ -586,41 +602,44 @@ export function QueuedMessagesBar({
                                             disabled={steerPending}
                                             onClick={handleSteer}
                                             onMouseDown={(e) => e.preventDefault()}
-                                            className="flex h-6 w-6 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-border)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-40"
+                                            className={ROW_BUTTON_CLASS}
                                         >
                                             <SteerIcon />
                                         </button>
                                     ) : null}
-                                    <button
-                                        type="button"
-                                        aria-label="Edit queued message"
-                                        disabled={!canEdit}
-                                        onClick={handleEdit}
-                                        onMouseDown={(e) => e.preventDefault()}
-                                        className="flex h-6 w-6 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-border)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-40"
-                                    >
-                                        <svg
-                                            viewBox="0 0 16 16"
-                                            fill="none"
-                                            className="h-3.5 w-3.5"
-                                            aria-hidden="true"
+                                    {fromTask ? null : (
+                                        <button
+                                            type="button"
+                                            aria-label="Edit queued message"
+                                            disabled={!canEdit}
+                                            onClick={handleEdit}
+                                            onMouseDown={(e) => e.preventDefault()}
+                                            className={ROW_BUTTON_CLASS}
                                         >
-                                            <path
-                                                d="M11.5 2.5a1.414 1.414 0 0 1 2 2L5 13H3v-2L11.5 2.5Z"
-                                                stroke="currentColor"
-                                                strokeWidth="1.4"
-                                                strokeLinecap="round"
-                                                strokeLinejoin="round"
-                                            />
-                                        </svg>
-                                    </button>
+                                            <svg
+                                                viewBox="0 0 16 16"
+                                                fill="none"
+                                                className="h-3.5 w-3.5"
+                                                aria-hidden="true"
+                                            >
+                                                <path
+                                                    d="M11.5 2.5a1.414 1.414 0 0 1 2 2L5 13H3v-2L11.5 2.5Z"
+                                                    stroke="currentColor"
+                                                    strokeWidth="1.4"
+                                                    strokeLinecap="round"
+                                                    strokeLinejoin="round"
+                                                />
+                                            </svg>
+                                        </button>
+                                    )}
                                     <button
                                         type="button"
-                                        aria-label="Cancel queued message"
+                                        aria-label={fromTask ? t('queuedMessages.skipTaskPrompt') : 'Cancel queued message'}
+                                        title={fromTask ? t('queuedMessages.skipTaskPrompt') : undefined}
                                         disabled={!canCancel}
                                         onClick={handleCancel}
                                         onMouseDown={(e) => e.preventDefault()}
-                                        className="flex h-6 w-6 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-border)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-40"
+                                        className={ROW_BUTTON_CLASS}
                                     >
                                         <svg
                                             viewBox="0 0 16 16"

@@ -826,6 +826,40 @@ describe('formatScheduledTime', () => {
     })
 })
 
+describe('QueuedMessagesBar prompts inserted by a task', () => {
+    it('labels a task prompt and offers only Skip, never Edit or Steer', () => {
+        const api = { steerMessage: mocks.steerMessage } as unknown as ApiClient
+        renderQueuedMessage(null, null, 0, true, api, { localId: 'hapi-task:task-1:2' })
+        expect(screen.getByText('queuedMessages.fromTask')).toBeTruthy()
+        expect(screen.getByRole('button', { name: 'queuedMessages.skipTaskPrompt' })).toBeTruthy()
+        expect(screen.queryByRole('button', { name: 'Edit queued message' })).toBeNull()
+        expect(screen.queryByRole('button', { name: 'Steer queued message' })).toBeNull()
+        expect(screen.queryByRole('button', { name: 'Cancel queued message' })).toBeNull()
+    })
+
+    it('keeps Edit, Cancel and Steer for a prompt the user queued', () => {
+        const api = { steerMessage: mocks.steerMessage } as unknown as ApiClient
+        renderQueuedMessage(null, null, 0, true, api, { localId: 'local-server-message-id' })
+        expect(screen.queryByText('queuedMessages.fromTask')).toBeNull()
+        expect(screen.getByRole('button', { name: 'Edit queued message' })).toBeTruthy()
+        expect(screen.getByRole('button', { name: 'Steer queued message' })).toBeTruthy()
+        expect(screen.getByRole('button', { name: 'Cancel queued message' })).toBeTruthy()
+    })
+
+    it('gives the row buttons a 32 px target and a wider gap under a coarse pointer only', () => {
+        const api = { steerMessage: mocks.steerMessage } as unknown as ApiClient
+        renderQueuedMessage(null, null, 0, true, api)
+        // jsdom applies no media query, so the classes are what is checked: 24 px and gap 1 by default,
+        // 32 px and gap 1.5 under (pointer: coarse), like the task bar.
+        const group = screen.getByRole('button', { name: 'Cancel queued message' }).parentElement as HTMLElement
+        expect(group.className.split(/\s+/)).toEqual(expect.arrayContaining(['gap-1', 'pointer-coarse:gap-1.5']))
+        for (const name of ['Edit queued message', 'Steer queued message', 'Cancel queued message']) {
+            const classes = screen.getByRole('button', { name }).className.split(/\s+/)
+            expect(classes, name).toEqual(expect.arrayContaining(['h-6', 'w-6', 'pointer-coarse:h-8', 'pointer-coarse:w-8']))
+        }
+    })
+})
+
 describe('QueuedMessagesBar steer action', () => {
     // The real useSteerQueuedMessage hook runs here (only the cancel hook is
     // module-mocked); pass a fake api whose steerMessage resolves on demand.

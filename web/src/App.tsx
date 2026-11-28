@@ -24,7 +24,7 @@ import { AppContextProvider } from '@/lib/app-context'
 import { clearMessageWindow, recoverWindowAfterGapResume, rewindMessageWindow, syncTailMessages } from '@/lib/message-window-store'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { useTranslation } from '@/lib/use-translation'
-import { translateInputRequestTitle } from '@/lib/input-request-toast'
+import { translateIncomingToast } from '@/lib/incoming-toast'
 import { VoiceProvider } from '@/lib/voice-context'
 import { requireHubUrlForLogin } from '@/lib/runtime-config'
 import { getAppGlobalSseSubscription, getAppSessionSseSubscription } from '@/lib/appSseSubscriptions'
@@ -375,63 +375,15 @@ function AppInner() {
         })
     }, [api, selectedSessionId])
 
-    const translateIncomingToast = useCallback((title: string, body: string): { title: string; body: string } => {
-        const normalizedTitle = title.trim()
-        const normalizedBody = body.trim()
-        const inputTitle = translateInputRequestTitle(normalizedTitle, t)
-        if (inputTitle) {
-            return { title: inputTitle, body: normalizedBody }
-        }
-
-        if (normalizedTitle === 'Ready for input') {
-            const waitingMatch = normalizedBody.match(/^(.+)\s+is waiting in\s+(.+)$/i)
-            if (waitingMatch) {
-                const agent = waitingMatch[1]?.trim() ?? ''
-                const sessionName = waitingMatch[2]?.trim() ?? ''
-                return {
-                    title: t('toast.ready.title'),
-                    body: t('toast.ready.body', { agent, session: sessionName })
-                }
-            }
-            return {
-                title: t('toast.ready.title'),
-                body: normalizedBody
-            }
-        }
-
-        if (normalizedTitle === 'Permission Request') {
-            return {
-                title: t('toast.permission.title'),
-                body: normalizedBody
-            }
-        }
-
-        if (normalizedTitle === 'Task completed') {
-            return {
-                title: t('toast.task.completed'),
-                body: normalizedBody
-            }
-        }
-
-        if (normalizedTitle === 'Task failed') {
-            return {
-                title: t('toast.task.failed'),
-                body: normalizedBody
-            }
-        }
-
-        return { title, body }
-    }, [t])
-
     const handleToast = useCallback((event: ToastEvent) => {
-        const localized = translateIncomingToast(event.data.title, event.data.body)
+        const localized = translateIncomingToast(event.data.title, event.data.body, t)
         addToast({
             title: localized.title,
             body: localized.body,
             sessionId: event.data.sessionId,
             url: event.data.url
         })
-    }, [addToast, translateIncomingToast])
+    }, [addToast, t])
 
     const globalEventSubscription = useMemo(() => getAppGlobalSseSubscription(), [])
     const sessionEventSubscription = useMemo(
