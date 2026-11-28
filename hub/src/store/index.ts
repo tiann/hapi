@@ -60,7 +60,7 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 36
+const SCHEMA_VERSION: number = 37
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -393,7 +393,7 @@ export class Store {
             // upstream read-state at v29→v30;
             // #1404 session_jobs at v31→v32 (after upstream FTS v30→v31); run_id fence at v32→v33;
             // #1489 wake-on-terminal at v33→v34; session_redirects at v34→v35;
-            // passkey_credentials at v35→v36
+            // passkey_credentials at v35→v36; uninvoked-local index at v36→v37
             // (jobs remapped again after upstream took 28/29/30).
             21: () => this.migrateFromV21ToV22(),
             22: () => this.migrateFromV22ToV23(),
@@ -410,6 +410,7 @@ export class Store {
             33: () => this.migrateFromV33ToV34(),
             34: () => this.migrateFromV34ToV35(),
             35: () => this.migrateFromV35ToV36(),
+            36: () => this.migrateFromV36ToV37(),
         })
 
         if (currentVersion === 0) {
@@ -454,6 +455,7 @@ export class Store {
             this.migrateFromV33ToV34()
             this.migrateFromV34ToV35()
             this.migrateFromV35ToV36()
+            this.migrateFromV36ToV37()
             this.ensureUsageScanParserVersion()
             this.setUserVersion(SCHEMA_VERSION)
             return
@@ -559,6 +561,9 @@ export class Store {
                   AND local_id IS NOT NULL
                   AND scheduled_at IS NOT NULL
                   AND delivery_state = 'queued';
+            CREATE INDEX IF NOT EXISTS idx_messages_uninvoked_local
+                ON messages(session_id, seq)
+                WHERE invoked_at IS NULL AND local_id IS NOT NULL;
 
             CREATE TABLE IF NOT EXISTS message_epochs (
                 session_id TEXT PRIMARY KEY,
@@ -1395,6 +1400,16 @@ export class Store {
     /** v35→v36: WebAuthn credentials that can be exchanged for a web JWT. */
     private migrateFromV35ToV36(): void {
         this.db.exec(PASSKEY_CREDENTIALS_TABLE_SQL)
+    }
+
+    /** v36→v37: index the latest-page uninvoked-local-message lookup. */
+    private migrateFromV36ToV37(): void {
+        if (this.getMessageColumnNames().size === 0) return
+        this.db.exec(`
+            CREATE INDEX IF NOT EXISTS idx_messages_uninvoked_local
+                ON messages(session_id, seq)
+                WHERE invoked_at IS NULL AND local_id IS NOT NULL
+        `)
     }
 
     private ensureUsageScanParserVersion(): void {
