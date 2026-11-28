@@ -25,7 +25,7 @@ import type { Server } from 'socket.io'
 import { createHash, randomUUID } from 'node:crypto'
 import type { BranchConversationRequest, BranchConversationResponse } from '@hapi/protocol/apiTypes'
 import { branchSessionId, buildBranchPrompt } from './branchTranscript'
-import type { Store, CancelQueuedMessageResult } from '../store'
+import type { Store, CancelQueuedMessageOptions, CancelQueuedMessageResult } from '../store'
 import type { StoredMessage } from '../store/types'
 import type {
     MessageContentSearchMatch,
@@ -37,6 +37,32 @@ import { clearAgentTerminalBuffer } from '../socket/agentTerminalBuffer'
 import type { SSEManager } from '../sse/sseManager'
 import { CursorLegacyMigrator, type CursorLegacyMigratorOptions } from '../cursor/cursorLegacyMigrator'
 import { toAttachedJob } from '../store/sessionJobs'
+import {
+    sessionTaskRunPreview,
+    toSessionTask,
+    toSessionTaskRun,
+    type SessionTaskStore,
+    type SessionTaskSummary,
+    type StoredSessionTask
+} from '../store/sessionTasks'
+import {
+    SESSION_TASK_MAX_ACTIVE_PER_SESSION,
+    SESSION_TASK_MESSAGE_LOCAL_ID_PREFIX,
+    type CreateSessionTaskRequest,
+    type SessionTask,
+    type SessionTaskDeleteResponse,
+    type SessionTaskRun,
+    type UpdateSessionTaskRequest
+} from '@hapi/protocol'
+import { SessionTaskRunner, taskErrorCodeFor } from './sessionTaskRunner'
+import type {
+    CreateSessionTaskResult,
+    DeleteSessionTaskResult,
+    RunSessionTaskNowResult,
+    UpdateSessionTaskResult
+} from './sessionTaskTypes'
+import { SessionWakeGate, type SessionWakeResult, type WakeableSession } from './sessionWakeGate'
+import { getSessionName } from '../notifications/sessionInfo'
 import {
     buildJobTerminalWakePrompt,
     buildJobWakeLocalId,
@@ -181,6 +207,94 @@ function asRecord(value: unknown): Record<string, unknown> | null {
         ? value as Record<string, unknown>
         : null
 }
+
+/** Patch fields that do not apply to a task of this kind. */
+function wrongTaskKindFields(task: StoredSessionTask, patch: UpdateSessionTaskRequest): string[] {
+    const fields: string[] = []
+    if (task.kind === 'repeat') {
+        if (patch.items !== undefined) fields.push('items')
+        return fields
+    }
+    if (patch.text !== undefined) fields.push('text')
+    if (patch.maxRuns !== undefined) fields.push('maxRuns')
+    return fields
+}
+
+/** The run limit is reached and nothing is pending: the task is over the moment the change lands. */
+function endsAtOnce(task: Pick<StoredSessionTask, 'kind' | 'maxRuns' | 'runCount' | 'pendingLocalId'>): boolean {
+    return task.pendingLocalId === null && task.kind === 'repeat' && task.maxRuns !== null && task.runCount >= task.maxRuns
+}
+
+/**
+ * When a resumed task runs next. A task with a prompt pending is scheduled by
+ * the acknowledgement instead (null). Otherwise now, except that a task
+ * which has not run yet keeps its first-run time and a `queue` task keeps
+ * its spacing from when the agent took its last prompt.
+ */
+function resumeRunAt(task: StoredSessionTask, intervalMs: number, now: number): number | null {
+    if (task.pendingLocalId !== null) return null
+    if (task.runCount === 0) return Math.max(now, task.startAt)
+    if (task.kind === 'queue' && task.lastConsumedAt !== null) return Math.max(now, task.lastConsumedAt + intervalMs)
+    return now
+}
+
+/**
+ * How long a task's cancel waits for the CLI's answer. The queued-message
+ * bar's cancel waits 500 ms; a task's cancel is the user saying "this must
+ * not go out", and the answer is the only proof that it will not. A round
+ * trip to a distant machine takes a few hundred ms, so 500 ms read as "no
+ * answer" now and then. One attempt, no retry: a second ask would be
+ * answered `not-found` by a wrapper that removed the item on the first, and
+ * `not-found` is no proof (some flavours answer false while they hold it).
+ */
+export const SESSION_TASK_CANCEL_PROBE_MS = 3000
+/** The follow-up of an unconfirmed cancel asks a CLI that is there now with this budget. */
+export const SESSION_TASK_CANCEL_FOLLOW_UP_PROBE_MS = 2000
+/**
+ * How long the hub keeps asking a CLI that is in the room about a prompt a
+ * task cancelled without its confirmation. The time counts from the first
+ * tick on which a CLI is there: one that is away (its machine is offline,
+ * its socket is down) is asked when it comes back, however long that takes.
+ * After that the history row keeps its marker and nothing more is asked.
+ */
+export const SESSION_TASK_CANCEL_FOLLOW_UP_MS = 2 * 60_000
+
+/**
+ * A task prompt cancelled without a CLI confirming it holds no copy. The hub
+ * asks again on its tick while a CLI is in the room, until the CLI answers
+ * or has been there for `SESSION_TASK_CANCEL_FOLLOW_UP_MS`. The run row
+ * carries `cancel_unconfirmed` meanwhile, so the list survives a hub restart.
+ */
+type CancelFollowUp = {
+    /** The task's session: the run row lives there, and the change is announced to it. */
+    sessionId: string
+    /** Where the prompt lives (an unfinished OpenCode /clear may have redirected it). */
+    promptSessionId: string
+    localId: string
+    /** When a CLI was first seen in the room; null until then. */
+    cliSeenAt: number | null
+    /** A probe is under way: the tick leaves it alone. */
+    probing: boolean
+}
+
+/** The task and the run a task prompt's localId names (`hapi-task:<taskId>:<n>`). */
+function taskPromptOf(localId: string): { taskId: string; runNumber: number } | null {
+    if (!localId.startsWith(SESSION_TASK_MESSAGE_LOCAL_ID_PREFIX)) return null
+    const rest = localId.slice(SESSION_TASK_MESSAGE_LOCAL_ID_PREFIX.length)
+    const separator = rest.lastIndexOf(':')
+    const runNumber = Number(rest.slice(separator + 1))
+    const taskId = rest.slice(0, separator)
+    if (separator <= 0 || taskId === '' || !Number.isInteger(runNumber) || runNumber < 1) return null
+    return { taskId, runNumber }
+}
+
+/** What became of a task's waiting prompt when the hub asked the CLI to drop it. */
+type WaitingPromptCancel =
+    /** The hub's row is gone; `confirmed` says the CLI itself dropped its copy. */
+    | { type: 'cancelled'; confirmed: boolean }
+    | { type: 'invoked'; invokedAt: number }
+    /** The CLI did not answer, or answered that it cannot say: the row waits in the queued-message bar. */
+    | { type: 'unconfirmed' }
 
 function normalizeUserMessageText(value: string): string | undefined {
     const text = value.trim().replace(/\s+/g, ' ')
@@ -380,6 +494,9 @@ export class SyncEngine {
         this.rpcGateway = new RpcGateway(io, rpcRegistry)
         this.sessionCache.closeTurnsLeftOpen()
         this.reloadAll()
+        // Hub start: prompts a task cancelled without a CLI's confirmation are
+        // still marked in the run history; keep asking about them.
+        this.cancelFollowUpList = this.loadCancelFollowUps()
         this.inactivityTimer = setInterval(() => this.expireInactive(), 5_000)
         // Hub start: undelivered opt-in wakes survive process restart as eligible
         // SQLite rows — requeue after caches are warm.
@@ -1342,6 +1459,590 @@ export class SyncEngine {
         return this.store.sessionJobs.getPrimaryRunningBySessionIds(sessionIds)
     }
 
+    // ---- Session tasks (repeat / queue schedules) ----------------------------
+
+    private wakeGate: SessionWakeGate | null = null
+    private taskRunner: SessionTaskRunner | null = null
+    /** Prompts a task cancelled without a CLI's confirmation; null until first read (see `cancelFollowUps`). */
+    private cancelFollowUpList: CancelFollowUp[] | null = null
+
+    /** A session as the wake gate and the task scheduler see it: an archived one is never resumed. */
+    private wakeableSession(sessionId: string): WakeableSession | null {
+        const session = this.sessionCache.getSession(sessionId)
+        if (!session) return null
+        return {
+            id: session.id,
+            namespace: session.namespace,
+            active: session.active,
+            archived: session.metadata?.lifecycleState === 'archived'
+        }
+    }
+
+    /** Mature scheduled messages a toast was sent for (see `reportUnresumableScheduledMessages`). */
+    private readonly reportedScheduledMessages = new Set<string>()
+
+    /** Lazily built: `resumeSession` and `sessionCache` are only wired after construction. */
+    private get deliveryWakeGate(): SessionWakeGate {
+        this.wakeGate ??= new SessionWakeGate({
+            getSession: (sessionId) => this.wakeableSession(sessionId),
+            resumeSession: (sessionId, namespace) => this.resumeSession(sessionId, namespace),
+            log: (message, detail) => console.warn(message, detail)
+        })
+        return this.wakeGate
+    }
+
+    private get sessionTaskRunner(): SessionTaskRunner {
+        this.taskRunner ??= new SessionTaskRunner({
+            store: this.store,
+            getSession: (sessionId) => this.wakeableSession(sessionId),
+            wake: (sessionId) => this.deliveryWakeGate.wake(sessionId),
+            sendMessage: (sessionId, payload) => this.sendMessage(sessionId, { ...payload, sentFrom: 'webapp' }),
+            // A prompt the runner inserted whose task stopped counting it (deleted or paused while the insert
+            // was under way). The ask is as patient as any task's cancel, and when no CLI confirms it, the
+            // hub keeps asking: nobody else tracks that prompt any more.
+            cancelMessage: (sessionId, localId, task) => this.takeBackUntrackedPrompt(task, sessionId, localId),
+            promptHeld: (localId) => this.promptHeld(localId),
+            onTasksChanged: (sessionId) => this.emitSessionTasksChanged(sessionId),
+            log: (message, detail) => console.warn(message, detail)
+        })
+        return this.taskRunner
+    }
+
+    private emitSessionTasksChanged(sessionId: string): void {
+        this.eventPublisher.emit({ type: 'session-tasks-changed', sessionId })
+    }
+
+    /**
+     * Run due tasks now instead of waiting for the next 5s tick (after create / resume / run now),
+     * and ask a CLI that is there about prompts cancelled without its confirmation.
+     */
+    private runSessionTaskTick(): void {
+        if (!this.store) return
+        void this.sessionTaskRunner.tick().catch((error) => {
+            console.warn('[session-task] tick failed', error instanceof Error ? error.message : error)
+        })
+        void this.followUpCancels().catch((error) => {
+            console.warn('[session-task] cancel follow-up failed', error instanceof Error ? error.message : error)
+        })
+    }
+
+    /** The prompts cancelled without a CLI's confirmation; read from the run history once per process. */
+    private get cancelFollowUps(): CancelFollowUp[] {
+        this.cancelFollowUpList ??= this.loadCancelFollowUps()
+        return this.cancelFollowUpList
+    }
+
+    private loadCancelFollowUps(): CancelFollowUp[] {
+        const list: CancelFollowUp[] = []
+        for (const run of this.store.sessionTasks.listRunsCancelUnconfirmed()) {
+            if (run.localId === null) continue
+            list.push({
+                sessionId: run.sessionId,
+                promptSessionId: this.store.resolveMessageTarget(run.sessionId) ?? run.sessionId,
+                localId: run.localId,
+                cliSeenAt: null,
+                probing: false
+            })
+        }
+        return list
+    }
+
+    /** The hub removed a task prompt without a CLI confirming it holds no copy: say so on the run row, and ask again when a CLI is there. */
+    private registerCancelFollowUp(task: StoredSessionTask, promptSessionId: string, localId: string, uncountedRun?: number): void {
+        const runs = this.store.sessionTasks
+        if (!runs.markRunCancelUnconfirmed(task.sessionId, localId) && uncountedRun !== undefined) {
+            // No run row remembers the prompt: its send was never counted (the task stopped while the
+            // insert was under way). Write one, so that the ask outlives a hub restart.
+            runs.recordRun({
+                sessionId: task.sessionId,
+                taskId: task.id,
+                taskKind: task.kind,
+                runNumber: uncountedRun,
+                localId,
+                outcome: 'cancelled',
+                scheduledFor: task.nextRunAt,
+                preview: sessionTaskRunPreview(task.items[task.runCount] ?? task.items[0] ?? '')
+            }, Date.now())
+            runs.markRunCancelUnconfirmed(task.sessionId, localId)
+        }
+        if (this.cancelFollowUps.some((followUp) => followUp.sessionId === task.sessionId && followUp.localId === localId)) return
+        this.cancelFollowUps.push({
+            sessionId: task.sessionId,
+            promptSessionId,
+            localId,
+            cliSeenAt: null,
+            probing: false
+        })
+    }
+
+    /** Whether a CLI has yet to confirm it dropped an earlier copy of this prompt. The run that would send it waits until then. */
+    private promptHeld(localId: string): boolean {
+        return this.cancelFollowUps.some((followUp) => followUp.localId === localId)
+    }
+
+    /**
+     * One pass on the tick: forget what no session holds any more, note the
+     * CLIs that are there, give up on what they have had their time for, and
+     * ask the rest.
+     */
+    private async followUpCancels(): Promise<void> {
+        const now = Date.now()
+        const list = this.cancelFollowUps
+        const asking: CancelFollowUp[] = []
+        for (const followUp of [...list]) {
+            if (followUp.probing) continue
+            // The runs of a merged-away session moved to its survivor: follow them.
+            followUp.sessionId = this.store.resolveMessageTarget(followUp.sessionId) ?? followUp.sessionId
+            if (!this.store.sessions.getSession(followUp.sessionId)) {
+                // The session is gone, and with it its runs and the process that held the prompt.
+                this.dropCancelFollowUp(followUp)
+                continue
+            }
+            if (followUp.cliSeenAt === null && this.messageService.hasCliSocket(followUp.promptSessionId)) followUp.cliSeenAt = now
+            if (followUp.cliSeenAt !== null && now - followUp.cliSeenAt >= SESSION_TASK_CANCEL_FOLLOW_UP_MS) {
+                this.dropCancelFollowUp(followUp)
+                console.warn('[session-task] gave up asking the CLI about a cancelled prompt', {
+                    sessionId: followUp.sessionId,
+                    localId: followUp.localId
+                })
+                continue
+            }
+            if (followUp.cliSeenAt !== null) asking.push(followUp)
+        }
+        await Promise.all(asking.map(async (followUp) => {
+            followUp.probing = true
+            try {
+                await this.probeCancelledPrompt(followUp)
+            } catch (error) {
+                console.warn('[session-task] could not ask the CLI again about a cancelled prompt', {
+                    sessionId: followUp.promptSessionId,
+                    localId: followUp.localId,
+                    error: error instanceof Error ? error.message : error
+                })
+            } finally {
+                followUp.probing = false
+            }
+        }))
+    }
+
+    private dropCancelFollowUp(followUp: CancelFollowUp): void {
+        const index = this.cancelFollowUps.indexOf(followUp)
+        if (index >= 0) this.cancelFollowUps.splice(index, 1)
+    }
+
+    /**
+     * Ask the CLI about a prompt a task cancelled without its confirmation.
+     * A prompt whose row is still there goes through the ordinary cancel
+     * (the row goes on `removed`, is stamped on `consumed`; `not-found` leaves
+     * it indeterminate, since the hub must not read it as removed). A prompt
+     * whose row is gone is only asked to drop its own copy: `removed` and
+     * `not-found` both end the matter there.
+     */
+    private async probeCancelledPrompt(followUp: CancelFollowUp): Promise<void> {
+        const { sessionId, promptSessionId, localId } = followUp
+        let settled: 'removed' | 'consumed' | null = null
+        let takenAt = 0
+        if (this.store.messages.lookupQueuedMessage(promptSessionId, localId).status !== 'absent') {
+            const result = await this.cancelQueuedMessage(promptSessionId, localId, { probeTimeoutMs: SESSION_TASK_CANCEL_FOLLOW_UP_PROBE_MS })
+            if (result.status === 'invoked') {
+                settled = 'consumed'
+                takenAt = result.message.invokedAt ?? Date.now()
+            } else if (result.status === 'cancelled' && result.unconfirmed !== true && result.localId === localId) {
+                // The CLI confirmed the removal (the row was indeterminate and is gone only on its answer).
+                settled = 'removed'
+            }
+        } else {
+            const answer = await this.messageService.requestCliCancelAck(promptSessionId, localId, localId, SESSION_TASK_CANCEL_FOLLOW_UP_PROBE_MS)
+            if (answer === 'removed' || answer === 'not-found') settled = 'removed'
+            else if (answer === 'consumed') {
+                settled = 'consumed'
+                takenAt = Date.now()
+            }
+        }
+        if (settled === null) {
+            // In flight, indeterminate, or no answer: the next tick asks again, until the CLI has had its time.
+            if (followUp.cliSeenAt !== null && Date.now() - followUp.cliSeenAt >= SESSION_TASK_CANCEL_FOLLOW_UP_MS) this.dropCancelFollowUp(followUp)
+            return
+        }
+        this.dropCancelFollowUp(followUp)
+        const runs = this.store.sessionTasks
+        if (settled === 'removed') runs.markRunCancelled(sessionId, localId)
+        else runs.markRunTaken(sessionId, localId, takenAt)
+        runs.clearRunCancelUnconfirmed(sessionId, localId)
+        if (settled === 'consumed') this.reportTakenPrompt(sessionId, localId)
+        this.emitSessionTasksChanged(sessionId)
+        // A run may have waited for this answer (see `promptHeld`): it does not wait for the next tick.
+        this.runSessionTaskTick()
+    }
+
+    /**
+     * A CLI reports that the agent took a prompt whose cancel it never
+     * confirmed. When a pause had taken that prompt back from a task that is
+     * still there, that task would send it again: the prompt counts as sent
+     * after all, and the task goes on after it. The user hears of it either
+     * way, through a toast.
+     */
+    private reportTakenPrompt(sessionId: string, localId: string): void {
+        const runs = this.store.sessionTasks
+        const prompt = taskPromptOf(localId)
+        const task = prompt === null ? null : runs.getById(prompt.taskId)
+        const pulledBack = prompt !== null && task !== null && task.pendingLocalId === null
+            && task.runCount === prompt.runNumber - 1
+            && runs.recountUnsent(task.id, prompt.runNumber, Date.now())
+        if (pulledBack && prompt !== null) {
+            const after = runs.getById(prompt.taskId)
+            // Resumed since the pause: nothing else is pending, so the task goes on one interval after this take.
+            if (after !== null && after.state === 'active') {
+                const now = Date.now()
+                runs.update(after.id, { state: { paused: false, nextRunAt: now + after.intervalMs } }, now)
+            }
+        }
+        const session = this.getSession(sessionId)
+        if (!session) return
+        void this.eventPublisher
+            .sendToast(session.namespace, {
+                type: 'toast',
+                data: {
+                    title: pulledBack ? 'Paused task prompt was taken' : 'Deleted task prompt was taken',
+                    body: pulledBack
+                        ? 'The prompt that was pulled back when you paused the task reached the agent after all: its process still held the copy. The task does not send it again.'
+                        : 'A prompt of a task you deleted reached the agent after all: its process still held the copy when the task was deleted. Check the session.',
+                    sessionId,
+                    url: `/sessions/${sessionId}`
+                }
+            })
+            .catch(() => undefined)
+    }
+
+    /**
+     * Scheduled messages that came due while their session was inactive used
+     * to wait for the next client to open it. Resume the session instead so
+     * the message goes out at the time it was scheduled for. A machine that
+     * is offline makes this a no-op until it is back (see SessionWakeGate).
+     */
+    private wakeSessionsWithMatureMessages(sessionIds: readonly string[]): void {
+        for (const sessionId of sessionIds) {
+            void this.deliveryWakeGate
+                .wake(sessionId)
+                .then((outcome) => this.reportUnresumableScheduledMessages(sessionId, outcome))
+                .catch(() => undefined)
+        }
+    }
+
+    /**
+     * A scheduled message that came due on a session the hub cannot resume
+     * needs the user: the hub goes on retrying with backoff for as long as
+     * the message waits, and nobody would see why it never goes out. Say so
+     * through a toast, once per scheduled message and hub process. A machine
+     * that is offline clears by itself and an archived session is a state
+     * the user chose, so neither is reported; the toast is offered again on
+     * the next refused wake while no visible connection has received it.
+     */
+    private reportUnresumableScheduledMessages(sessionId: string, outcome: SessionWakeResult): void {
+        if (outcome.type !== 'refused' || taskErrorCodeFor(outcome.failure.code) !== 'session_unavailable') return
+        const session = this.getSession(sessionId)
+        if (!session) return
+        const name = getSessionName(session)
+        for (const message of this.store.messages.getMatureScheduledMessages(Date.now())) {
+            if (message.sessionId !== sessionId || this.reportedScheduledMessages.has(message.id)) continue
+            this.reportedScheduledMessages.add(message.id)
+            const preview = createPromptTitle(message.content)
+            const what = preview ? `"${preview}"` : 'A scheduled message'
+            void this.eventPublisher
+                .sendToast(session.namespace, {
+                    type: 'toast',
+                    data: {
+                        title: 'Scheduled message not sent',
+                        body: `${what} is waiting in ${name}: the session could not be resumed. The hub keeps retrying.`,
+                        sessionId,
+                        url: `/sessions/${sessionId}`
+                    }
+                })
+                .then((delivered) => {
+                    if (delivered === 0) this.reportedScheduledMessages.delete(message.id)
+                })
+                .catch(() => this.reportedScheduledMessages.delete(message.id))
+        }
+    }
+
+    listSessionTasks(sessionId: string): SessionTask[] {
+        return this.store.sessionTasks.list(sessionId).map(toSessionTask)
+    }
+
+    /** Newest first. */
+    listSessionTaskRuns(sessionId: string, limit: number): SessionTaskRun[] {
+        return this.store.sessionTasks.listRuns(sessionId, limit).map(toSessionTaskRun)
+    }
+
+    /** Active tasks and their earliest next run, per session (for `activeTaskCount` / `nextTaskRunAt`). */
+    getSessionTaskSummaries(sessionIds: string[]): Map<string, SessionTaskSummary> {
+        return this.store.sessionTasks.summarizeActiveBySessionIds(sessionIds)
+    }
+
+    createSessionTask(sessionId: string, request: CreateSessionTaskRequest): CreateSessionTaskResult {
+        const now = Date.now()
+        if (this.store.sessionTasks.countActive(sessionId) >= SESSION_TASK_MAX_ACTIVE_PER_SESSION) {
+            return { type: 'too-many-tasks' }
+        }
+        const startAt = request.startAt ?? now
+        const task = this.store.sessionTasks.create({
+            sessionId,
+            kind: request.kind,
+            items: request.kind === 'queue' ? request.items.map((item) => item.text) : [request.text],
+            intervalMs: request.intervalMs,
+            maxRuns: request.kind === 'repeat' ? (request.maxRuns ?? null) : null,
+            startAt,
+            // A first run that is already past (within the route's grace) goes out now.
+            nextRunAt: Math.max(startAt, now)
+        })
+        this.emitSessionTasksChanged(sessionId)
+        this.runSessionTaskTick()
+        return { type: 'created', task: toSessionTask(task) }
+    }
+
+    /**
+     * Edit a task. Which fields apply depends on its kind (see
+     * `wrongTaskKindFields`). A pause stops scheduling and takes the prompt
+     * that is waiting back, when the CLI confirms the cancel (the request
+     * waits for that answer, up to a few seconds): the task is then as before
+     * the send, and a resume sends that prompt again. A prompt the CLI could
+     * not be asked about stays tracked. A resume runs a task that has nothing
+     * pending now, except that a task which has not run yet keeps its
+     * first-run time and a queue task keeps its spacing from when the agent
+     * took its last prompt. The cap of active tasks looks at the task after
+     * the change: a resume counts against it, an edit that keeps the task
+     * paused or ends it at once does not.
+     */
+    async updateSessionTask(sessionId: string, taskId: string, patch: UpdateSessionTaskRequest): Promise<UpdateSessionTaskResult> {
+        const store = this.store.sessionTasks
+        const task = store.get(sessionId, taskId)
+        if (!task) return { type: 'not-found' }
+        const wrongKind = wrongTaskKindFields(task, patch)
+        if (wrongKind.length > 0) return { type: 'wrong-task-kind', fields: wrongKind }
+        if (patch.maxRuns != null && patch.maxRuns < task.runCount) return { type: 'invalid-max-runs' }
+        const resuming = patch.paused === false && task.state === 'paused'
+        const pausing = patch.paused === true && task.state !== 'paused'
+
+        const now = Date.now()
+        const changes: Parameters<SessionTaskStore['update']>[1] = {}
+        if (patch.text !== undefined) {
+            changes.items = [patch.text]
+        }
+        if (patch.items !== undefined) {
+            // The prompts already sent stay: the list is the task's history and its future.
+            changes.items = [...task.items.slice(0, task.runCount), ...patch.items.map((item) => item.text)]
+        }
+        if (patch.intervalMs !== undefined) changes.intervalMs = patch.intervalMs
+        if (patch.maxRuns !== undefined) changes.maxRuns = patch.maxRuns
+        if (patch.paused !== undefined && patch.paused !== (task.state === 'paused')) {
+            changes.state = {
+                paused: patch.paused,
+                nextRunAt: patch.paused ? null : resumeRunAt(task, patch.intervalMs ?? task.intervalMs, now)
+            }
+        }
+        // A new interval re-anchors a task that may run after this request (it
+        // stays active, or the request resumes it), has nothing pending and has
+        // already run: the next prompt goes out one interval from now. A task
+        // the request pauses cannot run after it, so the pause stands; a
+        // paused task keeps its pause; an edit of the interval alone never
+        // resumes it.
+        const activeAfter = patch.paused === undefined ? task.state === 'active' : !patch.paused
+        if (
+            changes.intervalMs !== undefined
+            && activeAfter
+            && task.pendingLocalId === null
+            && task.runCount > 0
+        ) {
+            changes.state = { paused: false, nextRunAt: now + changes.intervalMs }
+        }
+
+        // The cap is about what the session holds after the change. A resume
+        // that ends the task at once (the limit brought down to what already
+        // ran, nothing pending) leaves the session as it was, so it fits.
+        const maxRunsAfter = changes.maxRuns === undefined ? task.maxRuns : changes.maxRuns
+        if (
+            resuming
+            && !endsAtOnce({ ...task, maxRuns: maxRunsAfter })
+            && store.countActive(sessionId) >= SESSION_TASK_MAX_ACTIVE_PER_SESSION
+        ) {
+            return { type: 'too-many-tasks' }
+        }
+
+        // The pause applies at once (nothing new goes out); the prompt that is
+        // waiting is taken back while the runner leaves the task alone. (A
+        // task with a prompt pending is never ended by the request, and the
+        // pull-back lowers the count, so it cannot end it either.)
+        const pullBack = pausing && task.pendingLocalId !== null
+        if (pullBack) this.sessionTaskRunner.hold(taskId)
+        let updated = store.update(taskId, changes, now)
+        if (!updated) return { type: 'not-found' }
+        if (pullBack) {
+            try {
+                updated = await this.pullBackOnPause(updated)
+            } finally {
+                this.sessionTaskRunner.release(taskId)
+            }
+            // Deleted while the cancel was on its way: its own delete says what became of the prompt.
+            if (!updated) return { type: 'not-found' }
+        }
+        if (resuming) {
+            // The user asked for the prompt to be delivered again: the wake count starts over.
+            this.sessionTaskRunner.forgetPrompt(task.pendingLocalId)
+        }
+        // maxRuns brought down to what already ran ends the task now that nothing is pending
+        // (with a prompt pending, the acknowledgement ends it: SessionTaskRunner.completeSend).
+        if (endsAtOnce(updated)) store.delete(updated.id)
+        this.emitSessionTasksChanged(sessionId)
+        if (resuming || (pullBack && updated.state === 'active')) this.runSessionTaskTick()
+        return { type: 'updated', task: toSessionTask(updated) }
+    }
+
+    /**
+     * Ask the CLI to drop a task's waiting prompt, and classifies the answer.
+     * The probe waits `SESSION_TASK_CANCEL_PROBE_MS`: the answer is the only
+     * proof that the prompt will not go out. A throw counts as unconfirmed.
+     */
+    private async cancelWaitingPrompt(promptSessionId: string, localId: string): Promise<WaitingPromptCancel> {
+        try {
+            const result = await this.cancelQueuedMessage(promptSessionId, localId, { probeTimeoutMs: SESSION_TASK_CANCEL_PROBE_MS })
+            if (result.status === 'cancelled') {
+                // Confirmed by the CLI itself: it answered, and this call removed the row.
+                return { type: 'cancelled', confirmed: result.unconfirmed !== true && result.localId === localId }
+            }
+            if (result.status === 'invoked') return { type: 'invoked', invokedAt: result.message.invokedAt ?? Date.now() }
+        } catch (error) {
+            console.warn('[session-task] could not cancel the pending prompt', {
+                sessionId: promptSessionId,
+                localId,
+                error: error instanceof Error ? error.message : error
+            })
+        }
+        return { type: 'unconfirmed' }
+    }
+
+    /**
+     * The runner inserted a prompt and then found its task deleted or paused
+     * in the meantime, so the send was never counted: the prompt goes back.
+     * The ask is as patient as any task's cancel. When no CLI confirms it,
+     * the hub keeps asking on its tick, and since the send wrote no run row,
+     * one is written to remember the prompt by.
+     */
+    private async takeBackUntrackedPrompt(task: StoredSessionTask, promptSessionId: string, localId: string): Promise<void> {
+        const outcome = await this.cancelWaitingPrompt(promptSessionId, localId)
+        if (outcome.type === 'cancelled' && outcome.confirmed) return
+        const runNumber = taskPromptOf(localId)?.runNumber
+        this.registerCancelFollowUp(task, promptSessionId, localId, runNumber)
+        if (outcome.type === 'cancelled') this.emitSessionTasksChanged(task.sessionId)
+    }
+
+    /**
+     * The pause of a task with a prompt waiting (the task is held for the
+     * runner meanwhile). When the hub's row is gone, the task is as before
+     * the send: the prompt is not counted, its run row is cancelled, the wake
+     * count is forgotten, and a resumed queue sends that same prompt again.
+     * With no CLI in the room nobody confirmed the cancel: a wrapper that is
+     * alive may still hold the prompt in memory, so it is asked to drop it
+     * when it shows up (`cancelFollowUps`), and until it has, the task does
+     * not send that prompt again (`promptHeld`). A prompt the agent took
+     * first stays counted (the runner settles it on its next tick). A prompt
+     * the CLI could not be asked about, with its row still there, stays
+     * pending as before the request: the task still owns it, so nothing is
+     * followed up here. Null once the task was deleted while the cancel was
+     * on its way.
+     */
+    private async pullBackOnPause(paused: StoredSessionTask): Promise<StoredSessionTask | null> {
+        const store = this.store.sessionTasks
+        const localId = paused.pendingLocalId as string
+        const promptSessionId = this.store.resolveMessageTarget(paused.sessionId) ?? paused.sessionId
+        const outcome = await this.cancelWaitingPrompt(promptSessionId, localId)
+        const current = store.getById(paused.id)
+        if (!current) {
+            if (outcome.type === 'invoked') store.markRunTaken(paused.sessionId, localId, outcome.invokedAt)
+            return null
+        }
+        if (outcome.type === 'cancelled') {
+            store.markRunCancelled(paused.sessionId, localId)
+            if (store.unsentPending(paused.id, localId, Date.now())) {
+                this.sessionTaskRunner.forgetPrompt(localId)
+                if (!outcome.confirmed) this.registerCancelFollowUp(paused, promptSessionId, localId)
+                // Resumed in the meantime: with nothing pending the task runs now, as a resume of such a task does,
+                // unless the prompt it would send is still waiting for a CLI to confirm it dropped the earlier copy.
+                const after = store.getById(paused.id) ?? current
+                if (after.state === 'active' && after.pendingLocalId === null && !this.promptHeld(localId)) {
+                    const now = Date.now()
+                    store.update(paused.id, { state: { paused: false, nextRunAt: resumeRunAt(after, after.intervalMs, now) } }, now)
+                }
+            }
+        } else if (outcome.type === 'invoked') {
+            store.markRunTaken(paused.sessionId, localId, outcome.invokedAt)
+        }
+        return store.getById(paused.id) ?? current
+    }
+
+    /** Run the task's next prompt now instead of waiting for its next run. A paused task becomes active, within the session's cap. */
+    runSessionTaskNow(sessionId: string, taskId: string): RunSessionTaskNowResult {
+        const store = this.store.sessionTasks
+        const task = store.get(sessionId, taskId)
+        if (!task) return { type: 'not-found' }
+        if (task.pendingLocalId !== null) return { type: 'prompt-pending', task: toSessionTask(task) }
+        if (task.state === 'paused' && store.countActive(sessionId) >= SESSION_TASK_MAX_ACTIVE_PER_SESSION) {
+            return { type: 'too-many-tasks' }
+        }
+        const now = Date.now()
+        // The state change clears the stored error as well.
+        const updated = store.update(taskId, { state: { paused: false, nextRunAt: now } }, now)
+        if (!updated) return { type: 'not-found' }
+        this.emitSessionTasksChanged(sessionId)
+        this.runSessionTaskTick()
+        return { type: 'queued', task: toSessionTask(updated) }
+    }
+
+    /**
+     * Delete a task. The row goes first; a prompt it sent that the agent has
+     * not taken yet is cancelled so it cannot go out on its own, with the
+     * patient probe; the answer says what became of it (`unconfirmed` when the
+     * CLI did not confirm the cancel — the row stays indeterminate in the
+     * queued-message bar, where the user retries or discards it). A cancel no
+     * CLI confirmed, with or without `unconfirmed` in the answer, is followed
+     * up on the hub's tick (`cancelFollowUps`).
+     */
+    async deleteSessionTask(sessionId: string, taskId: string): Promise<DeleteSessionTaskResult> {
+        const store = this.store.sessionTasks
+        const task = store.get(sessionId, taskId)
+        if (!task) return { type: 'not-found' }
+        if (!store.delete(taskId)) return { type: 'not-found' }
+        // Nothing is left to count wakes for.
+        this.sessionTaskRunner.forgetPrompt(task.pendingLocalId)
+        let prompt: SessionTaskDeleteResponse['prompt'] = 'none'
+        if (task.pendingLocalId !== null) {
+            prompt = await this.cancelTaskPrompt(task)
+        }
+        this.emitSessionTasksChanged(sessionId)
+        return { type: 'deleted', prompt }
+    }
+
+    /**
+     * Cancel the prompt a deleted task left waiting. The prompt may sit in a
+     * replacement session an unfinished OpenCode /clear redirected it to.
+     */
+    private async cancelTaskPrompt(task: StoredSessionTask): Promise<SessionTaskDeleteResponse['prompt']> {
+        const localId = task.pendingLocalId as string
+        const promptSessionId = this.store.resolveMessageTarget(task.sessionId) ?? task.sessionId
+        const outcome = await this.cancelWaitingPrompt(promptSessionId, localId)
+        if (outcome.type === 'cancelled') {
+            this.store.sessionTasks.markRunCancelled(task.sessionId, localId)
+            // With no CLI in the room the hub removed its row on its own: a wrapper that is alive may still hold the prompt.
+            if (!outcome.confirmed) this.registerCancelFollowUp(task, promptSessionId, localId)
+            return 'cancelled'
+        }
+        if (outcome.type === 'invoked') {
+            this.store.sessionTasks.markRunTaken(task.sessionId, localId, outcome.invokedAt)
+            return 'taken'
+        }
+        this.registerCancelFollowUp(task, promptSessionId, localId)
+        return 'unconfirmed'
+    }
+
     /** Move outliving jobs + redirects onto another session (pre-delete). */
     transferAttachedJobs(fromSessionId: string, toSessionId: string, namespace: string): void {
         this.sessionCache.transferAttachedJobs(fromSessionId, toSessionId, namespace)
@@ -1889,8 +2590,15 @@ export class SyncEngine {
         // Piggybacked on the inactivity tick; not a logical part of expireInactive
         // but shares its 5s cadence (avoids a second timer).
         const held = new Set(this.historyActionsInFlight)
-        for (const session of this.sessionCache.getSessions()) if (this.openCodeRewindPending(session.id)) held.add(session.id)
-        this.messageService.releaseMatureScheduledMessages(Date.now(), held)
+        for (const session of this.sessionCache.getSessions()) {
+            if (this.openCodeRewindPending(session.id)) held.add(session.id)
+            // An archived session is neither released into nor woken (SessionWakeGate refuses it too).
+            if (session.metadata?.lifecycleState === 'archived') held.add(session.id)
+        }
+        const maturedSessionIds = this.messageService.releaseMatureScheduledMessages(Date.now(), held)
+        this.wakeSessionsWithMatureMessages(maturedSessionIds ?? [])
+        // Same cadence as the scheduled-message scan above: one hub timer drives both.
+        this.runSessionTaskTick()
         void this.reconcileOpenCodeClears()
         this.reconcileDerivedToolWork()
     }
@@ -2073,9 +2781,10 @@ export class SyncEngine {
 
     async cancelQueuedMessage(
         sessionId: string,
-        messageId: string
+        messageId: string,
+        options?: CancelQueuedMessageOptions
     ): Promise<CancelQueuedMessageResult> {
-        return this.messageService.cancelQueuedMessage(sessionId, messageId)
+        return this.messageService.cancelQueuedMessage(sessionId, messageId, options)
     }
 
     async retryIndeterminateMessage(

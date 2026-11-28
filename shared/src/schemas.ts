@@ -965,6 +965,10 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
     SessionChangedSchema.extend({
         type: z.literal('scheduled-matured')
     }),
+    /** A session's tasks changed; clients refetch `GET /sessions/:id/tasks`. */
+    SessionChangedSchema.extend({
+        type: z.literal('session-tasks-changed')
+    }),
     SessionChangedSchema.extend({
         type: z.literal('session-ended'),
         reason: SessionEndReasonSchema.optional()

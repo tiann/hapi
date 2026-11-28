@@ -1430,9 +1430,25 @@ export function getMinSeq(db: Database, sessionId: string): number | null {
 }
 
 export type CancelQueuedMessageResult =
-    | { status: 'cancelled'; localId: string | null }
+    /**
+     * `unconfirmed: true` — the hub removed its row without a CLI to ask (no
+     * CLI socket was in the session's room). A wrapper process that is alive
+     * with its socket down may still hold the prompt in memory; the result
+     * says so, and the caller decides what to do about it.
+     */
+    | { status: 'cancelled'; localId: string | null; unconfirmed?: true }
     | { status: 'invoked'; message: StoredMessage }
     | { status: 'busy'; localId: string }
+
+export type CancelQueuedMessageOptions = {
+    /**
+     * How long to wait for the CLI's answer to the cancel. The default
+     * (500 ms) suits the queued-message bar. A task cancelling its prompt
+     * waits longer: the answer is the only proof that the prompt will not go
+     * out, and a round trip to a distant machine takes a few hundred ms.
+     */
+    probeTimeoutMs?: number
+}
 
 /** Delete a queued (invoked_at IS NULL) message by session + message id.
  *

@@ -938,7 +938,7 @@ export default {
   'composer.scheduleSend': '定时发送',
   'composer.scheduleRelativeTab': '相对时间',
   'composer.scheduleSpecificTab': '指定时间',
-  'composer.scheduleSpecificHint': '最多 7 天。需 Hub 运行；CLI 下次连接时会接收消息。',
+  'composer.scheduleSpecificHint': '最多 7 天。需 Hub 运行；到时会话没在运行的话，Hub 会自动把它拉起来；机器离线时等上线后再发。',
   'composer.scheduleErrorPast': '发送时间必须在未来。',
   'composer.scheduleErrorTooFar': '最多只能定时 7 天。',
   'queuedMessages.scheduledFor': '定时发送: {time}',
