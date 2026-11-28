@@ -2931,12 +2931,13 @@ export class SessionCache {
 
     private extractAgentSessionId(
         metadata: NonNullable<Session['metadata']>
-    ): { field: 'codexSessionId' | 'claudeSessionId' | 'geminiSessionId' | 'opencodeSessionId' | 'grokSessionId' | 'cursorSessionId' | 'piSessionId' | 'agySessionId' | 'copilotSessionId'; value: string; dedupeKey: string; machineId?: string } | null {
-        const scoped = (field: 'codexSessionId' | 'claudeSessionId' | 'geminiSessionId' | 'opencodeSessionId' | 'grokSessionId' | 'cursorSessionId' | 'piSessionId' | 'agySessionId' | 'copilotSessionId', value: string) => {
-            const machineScoped = field === 'piSessionId' || field === 'opencodeSessionId'
+    ): { field: 'codexSessionId' | 'claudeSessionId' | 'geminiSessionId' | 'opencodeSessionId' | 'grokSessionId' | 'cursorSessionId' | 'piSessionId' | 'agySessionId' | 'hermesSessionId' | 'copilotSessionId'; value: string; dedupeKey: string; machineScoped: boolean; machineId?: string } | null {
+        const scoped = (field: 'codexSessionId' | 'claudeSessionId' | 'geminiSessionId' | 'opencodeSessionId' | 'grokSessionId' | 'cursorSessionId' | 'piSessionId' | 'agySessionId' | 'hermesSessionId' | 'copilotSessionId', value: string) => {
+            const machineScoped = field === 'hermesSessionId' || field === 'piSessionId' || field === 'opencodeSessionId'
             return {
                 field,
                 value,
+                machineScoped,
                 dedupeKey: machineScoped ? `${field}:${metadata.machineId ?? 'unscoped'}:${value}` : `${field}:${value}`,
                 ...(machineScoped && metadata.machineId ? { machineId: metadata.machineId } : {})
             }
@@ -2949,6 +2950,7 @@ export class SessionCache {
         if (metadata.cursorSessionId) return scoped('cursorSessionId', metadata.cursorSessionId)
         if (metadata.piSessionId) return scoped('piSessionId', metadata.piSessionId)
         if (metadata.agySessionId) return scoped('agySessionId', metadata.agySessionId)
+        if (metadata.hermesSessionId) return scoped('hermesSessionId', metadata.hermesSessionId)
         if (metadata.copilotSessionId) return scoped('copilotSessionId', metadata.copilotSessionId)
         return null
     }
@@ -3001,7 +3003,7 @@ export class SessionCache {
                 const passSession = currentSession ?? session
                 const passMetadata = currentSession?.metadata ?? session.metadata
                 const candidates: { id: string; session: Session }[] = []
-                const machineScoped = agentId.field === 'piSessionId' || agentId.field === 'opencodeSessionId'
+                const { machineScoped } = agentId
                 if (currentSession?.metadata && currentSession.metadata[agentId.field] === agentId.value) {
                     if (!machineScoped || currentSession.metadata.machineId === agentId.machineId) {
                         candidates.push({ id: passSessionId, session: currentSession })

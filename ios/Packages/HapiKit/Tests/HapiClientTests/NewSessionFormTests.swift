@@ -134,6 +134,18 @@ struct NewSessionSpawnBodyTests {
         """)
     }
 
+    @Test func hermesUsesNativePermissionModesAndOmitsYolo() throws {
+        #expect(NewSessionLogic.usesNativePermissionSelect(.hermes))
+        #expect(NewSessionLogic.hapiYoloNativeMode(for: .hermes) == .yolo)
+        let body = try canonicalBody(
+            NewSessionForm(directory: "/repo", agent: .hermes, permissionMode: .safeYolo, yolo: true),
+            codexFastTierVisible: false
+        )
+        #expect(body == """
+        {"agent":"hermes","directory":"/repo","permissionMode":"safe-yolo","sessionType":"simple"}
+        """)
+    }
+
     @Test func dshUsesManagedPermissionPolicyAndOmitsYolo() throws {
         let body = try canonicalBody(
             NewSessionForm(directory: "/repo", agent: .dsh, yolo: true),

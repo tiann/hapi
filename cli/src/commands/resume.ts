@@ -161,6 +161,20 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
         return
     }
 
+    if (target.flavor === 'hermes') {
+        const { runHermes } = await import('@/hermes/runHermes')
+        await runHermes({
+            existingSessionId: base.existingSessionId,
+            workingDirectory: base.workingDirectory,
+            resumeSessionId: base.resumeSessionId,
+            startedBy: base.startedBy,
+            permissionMode: base.permissionMode as PermissionModeOf<typeof Flavors.hermes> | undefined,
+            startingMode: 'remote',
+            model: target.model ?? undefined
+        })
+        return
+    }
+
     if (target.flavor === 'agy') {
         const { runAgy } = await import('@/agy/runAgy')
         await runAgy({

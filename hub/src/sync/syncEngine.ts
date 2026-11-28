@@ -77,6 +77,7 @@ import {
     type RpcListOpencodeModelVariantsResponse,
     type RpcListGrokModelsResponse,
     type RpcListDshModelsResponse,
+    type RpcListHermesModelsResponse,
     type RpcListCopilotModelsResponse,
     type RpcListKimiModelsResponse,
     type RpcListGrokReasoningEffortOptionsResponse,
@@ -127,6 +128,7 @@ export type {
     RpcListOpencodeModelVariantsResponse,
     RpcListGrokModelsResponse,
     RpcListDshModelsResponse,
+    RpcListHermesModelsResponse,
     RpcListCopilotModelsResponse,
     RpcListKimiModelsResponse,
     RpcListGrokReasoningEffortOptionsResponse,
@@ -255,6 +257,8 @@ export class SyncEngine {
     private readonly piResumeQuarantinedIds = new Set<string>()
     /** Unexpected version-skew temp child -> original row whose retry is blocked until child ends. */
     private readonly piUnexpectedTempOriginalIds = new Map<string, string>()
+    /** Hermes in-place native resume attempts that timed out with an unconfirmed active child. */
+    private readonly hermesUnresolvedResumeIds = new Map<string, { machineId: string }>()
     /** Serialize scratchlist uploads per session so disk-byte caps cannot race. */
     private readonly scratchlistUploadTails = new Map<string, Promise<unknown>>()
     /** Coalesce duplicate clear requests so retries cannot spawn two fresh sessions. */
@@ -893,6 +897,7 @@ export class SyncEngine {
             }
         }
         this.sessionReadyIds.add(payload.sid)
+        this.hermesUnresolvedResumeIds.delete(payload.sid)
         if (session?.active && session.metadata?.codexResumePending
             && session.metadata.codexResumePending.nativeSessionId === session.metadata.codexSessionId) {
             this.writeCodexResumePending(session.id, session.namespace, undefined)
@@ -1085,6 +1090,7 @@ export class SyncEngine {
             this.triggerDedupIfNeeded(payload.sid)
         }
         this.sessionReadyIds.delete(payload.sid)
+        this.hermesUnresolvedResumeIds.delete(payload.sid)
         this.piResumeQuarantinedIds.delete(payload.sid)
         this.piUnexpectedTempOriginalIds.delete(payload.sid)
         if (ownsPiAttempt || isPiAttemptChild) {
@@ -4940,6 +4946,7 @@ export class SyncEngine {
         if (flavor === 'agy') return metadata.agySessionId ?? null
         if (flavor === 'cursor') return metadata.cursorSessionId ?? null
         if (flavor === 'kimi') return metadata.kimiSessionId ?? null
+        if (flavor === 'hermes') return metadata.hermesSessionId ?? null
         if (flavor === 'copilot') return metadata.copilotSessionId ?? null
         if (flavor === 'pi') return metadata.piSessionId ?? null
         // Current DSH ACP profiles resume persisted sessions through their
@@ -5470,6 +5477,18 @@ export class SyncEngine {
             this.ptyResumeQuarantinedIds.delete(access.sessionId)
             initialSession = this.sessionCache.getSessionByNamespace(access.sessionId, namespace) ?? initialSession
         }
+        if (this.hermesUnresolvedResumeIds.has(access.sessionId)) {
+            const reconciled = await this.reconcileUnresolvedHermesResume(access.sessionId)
+            if (!reconciled) {
+                return {
+                    type: 'error',
+                    message: 'Hermes native resume timed out and the child is still active',
+                    code: 'resume_failed',
+                    rollbackSafe: false,
+                }
+            }
+            initialSession = this.sessionCache.getSessionByNamespace(access.sessionId, namespace) ?? initialSession
+        }
         if (initialSession.active) {
             return { type: 'success', sessionId: access.sessionId }
         }
@@ -5510,7 +5529,7 @@ export class SyncEngine {
             namespace,
             {
                 strictMachineId: flavor === 'cursor'
-                    || ((flavor === 'pi' || flavor === 'opencode' || flavor === 'dsh') && resumeToken !== undefined)
+                    || ((flavor === 'pi' || flavor === 'opencode' || flavor === 'dsh' || flavor === 'hermes') && resumeToken !== undefined)
             }
         )
         if (!targetMachine) {
@@ -5522,6 +5541,7 @@ export class SyncEngine {
         }
 
         const requiresPiNativeReady = flavor === 'pi' && resumeToken !== undefined
+        const requiresHermesNativeReady = flavor === 'hermes' && resumeToken !== undefined
         if (requiresPiNativeReady) {
             if (this.isPiResumeBlocked(access.sessionId)) {
                 return { type: 'error', message: 'Pi resume is already in progress', code: 'resume_failed' }
@@ -5634,6 +5654,9 @@ export class SyncEngine {
                 }
             }
 
+            if (requiresHermesNativeReady) {
+                this.sessionReadyIds.delete(access.sessionId)
+            }
             if (flavor === 'codex' && resumeToken) {
                 this.sessionReadyIds.delete(access.sessionId)
                 this.writeCodexResumePending(access.sessionId, namespace, { machineId: targetMachine.id, nativeSessionId: resumeToken })
@@ -5730,6 +5753,7 @@ export class SyncEngine {
 
             const needsReadyBeforeSuccess = resumedStartingMode === 'pty'
                 || requiresPiNativeReady
+                || requiresHermesNativeReady
                 || (
                     spawnResult.sessionId !== access.sessionId
                     && flavor === 'cursor'
@@ -5792,6 +5816,38 @@ export class SyncEngine {
                             return { type: 'error', message: 'Pi native resume timed out and the child is still active', code: 'resume_failed', rollbackSafe: false }
                         }
                     }
+                    if (requiresHermesNativeReady && readyResult === 'timeout') {
+                        let status: 'stopped' | 'already_gone' | 'still_alive' | 'unknown'
+                        try {
+                            status = await this.rpcGateway.stopRunnerSession(
+                                targetMachine.id,
+                                spawnResult.sessionId
+                            )
+                        } catch {
+                            status = 'still_alive'
+                        }
+                        let inactive = false
+                        if (status === 'already_gone') {
+                            const current = this.sessionCache.getSession(spawnResult.sessionId)
+                            if (current?.active) {
+                                this.handleSessionEnd({ sid: spawnResult.sessionId, time: Date.now(), reason: 'error' })
+                            }
+                            inactive = true
+                        } else if (status === 'stopped') {
+                            inactive = await this.waitForSessionInactive(spawnResult.sessionId)
+                        }
+                        if (!inactive) {
+                            if (!this.sessionReadyIds.has(spawnResult.sessionId)) {
+                                this.hermesUnresolvedResumeIds.set(access.sessionId, { machineId: targetMachine.id })
+                            }
+                            return {
+                                type: 'error',
+                                message: 'Hermes native resume timed out and the child is still active',
+                                code: 'resume_failed',
+                                rollbackSafe: false,
+                            }
+                        }
+                    }
                     if (resumedStartingMode === 'pty') {
                         try {
                             // Child stopped after timeout — restore archive from
@@ -5811,6 +5867,10 @@ export class SyncEngine {
                         ? readyResult === 'ended'
                             ? 'Pi session ended before native resume completed'
                             : 'Pi session failed to become native-ready'
+                        : flavor === 'hermes'
+                            ? readyResult === 'ended'
+                                ? 'Hermes session ended before native resume completed'
+                                : 'Hermes session failed to become native-ready'
                         : resumedStartingMode === 'pty'
                             ? readyResult === 'ended'
                                 ? 'Session ended before the agent PTY became ready'
@@ -6007,6 +6067,19 @@ export class SyncEngine {
                 }
             }
             return { type: 'error', message: 'Pi resume is already in progress', code: 'resume_failed' }
+        }
+
+        if (this.hermesUnresolvedResumeIds.has(access.sessionId)) {
+            const reconciled = await this.reconcileUnresolvedHermesResume(access.sessionId)
+            if (!reconciled) {
+                return {
+                    type: 'error',
+                    message: 'Hermes native resume timed out and the child is still active',
+                    code: 'resume_failed',
+                }
+            }
+            session = this.sessionCache.getSessionByNamespace(access.sessionId, namespace) ?? session
+            metadata = session.metadata
         }
 
         if (session.active) {
@@ -6277,6 +6350,7 @@ export class SyncEngine {
             && (prev?.cursorSessionId ?? null) === (next.cursorSessionId ?? null)
             && (prev?.piSessionId ?? null) === (next.piSessionId ?? null)
             && (prev?.kimiSessionId ?? null) === (next.kimiSessionId ?? null)
+            && (prev?.hermesSessionId ?? null) === (next.hermesSessionId ?? null)
             && (prev?.agySessionId ?? null) === (next.agySessionId ?? null)
             && (prev?.copilotSessionId ?? null) === (next.copilotSessionId ?? null)
     }
@@ -6388,6 +6462,41 @@ export class SyncEngine {
             machineId,
             startedAt: Date.now(),
         })
+    }
+
+    private async reconcileUnresolvedHermesResume(sessionId: string): Promise<boolean> {
+        const unresolved = this.hermesUnresolvedResumeIds.get(sessionId)
+        if (!unresolved) return true
+        if (this.sessionReadyIds.has(sessionId) || !this.sessionCache.getSession(sessionId)?.active) {
+            this.hermesUnresolvedResumeIds.delete(sessionId)
+            return true
+        }
+        let status: 'stopped' | 'already_gone' | 'still_alive' | 'unknown'
+        try {
+            status = await this.rpcGateway.stopRunnerSession(unresolved.machineId, sessionId)
+        } catch {
+            status = 'still_alive'
+        }
+        if (this.sessionReadyIds.has(sessionId)) {
+            this.hermesUnresolvedResumeIds.delete(sessionId)
+            return true
+        }
+        if (status === 'already_gone') {
+            const current = this.sessionCache.getSession(sessionId)
+            if (current?.active) {
+                this.handleSessionEnd({ sid: sessionId, time: Date.now(), reason: 'error' })
+            }
+            this.hermesUnresolvedResumeIds.delete(sessionId)
+            return true
+        }
+        if (status === 'stopped') {
+            const inactive = await this.waitForSessionInactive(sessionId)
+            if (inactive || this.sessionReadyIds.has(sessionId)) {
+                this.hermesUnresolvedResumeIds.delete(sessionId)
+                return true
+            }
+        }
+        return false
     }
 
     private isPiResumeBlocked(sessionId: string): boolean {
@@ -6900,6 +7009,22 @@ export class SyncEngine {
             () => this.rpcGateway.listDshModelsForSession(sessionId),
             SyncEngine.modelListCacheable
         ) as RpcListDshModelsResponse
+    }
+
+    async listHermesModelsForMachine(machineId: string): Promise<RpcListHermesModelsResponse> {
+        return await this.modelListCache.get(
+            `${machineId}|hermes-models`,
+            () => this.rpcGateway.listHermesModelsForMachine(machineId),
+            SyncEngine.modelListCacheable
+        ) as RpcListHermesModelsResponse
+    }
+
+    async listHermesModelsForSession(sessionId: string): Promise<RpcListHermesModelsResponse> {
+        return await this.modelListCache.get(
+            `${sessionId}|hermes-models`,
+            () => this.rpcGateway.listHermesModelsForSession(sessionId),
+            SyncEngine.modelListCacheable
+        ) as RpcListHermesModelsResponse
     }
 
     async listGrokReasoningEffortOptionsForSession(sessionId: string): Promise<RpcListGrokReasoningEffortOptionsResponse> {

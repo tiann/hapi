@@ -135,6 +135,7 @@ public struct SessionMetadata: Codable, Equatable, Sendable {
     public var grokSessionId: String?
     public var agySessionId: String?
     public var cursorSessionId: String?
+    public var hermesSessionId: String?
     public var kimiSessionId: String?
     public var copilotSessionId: String?
     public var piSessionId: String?
@@ -171,6 +172,7 @@ public struct SessionMetadata: Codable, Equatable, Sendable {
         grokSessionId: String? = nil,
         agySessionId: String? = nil,
         cursorSessionId: String? = nil,
+        hermesSessionId: String? = nil,
         kimiSessionId: String? = nil,
         copilotSessionId: String? = nil,
         piSessionId: String? = nil,
@@ -202,6 +204,7 @@ public struct SessionMetadata: Codable, Equatable, Sendable {
         self.grokSessionId = grokSessionId
         self.agySessionId = agySessionId
         self.cursorSessionId = cursorSessionId
+        self.hermesSessionId = hermesSessionId
         self.kimiSessionId = kimiSessionId
         self.copilotSessionId = copilotSessionId
         self.piSessionId = piSessionId

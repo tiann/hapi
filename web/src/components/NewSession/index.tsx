@@ -16,6 +16,7 @@ import { useClaudeModels } from '@/hooks/queries/useClaudeModels'
 import { getClaudeLaunchModelOptions } from '@/components/AssistantChat/modelOptions'
 import { getClaudeComposerEffortOptions } from '@/components/AssistantChat/claudeEffortOptions'
 import { useDshModelsForMachine } from '@/hooks/queries/useDshModels'
+import { useHermesModelsForMachine } from '@/hooks/queries/useHermesModels'
 import { useOpencodeModelsForCwd } from '@/hooks/queries/useOpencodeModelsForCwd'
 import { useOpencodeModelVariants } from '@/hooks/queries/useOpencodeModelVariants'
 import { useGrokModelsForCwd } from '@/hooks/queries/useGrokModelsForCwd'
@@ -364,6 +365,9 @@ export function NewSession(props: {
         setDshSelectedModel(
             draft.agent === 'dsh' && draft.model !== 'auto' ? draft.model : null
         )
+        setHermesSelectedModel(
+            draft.agent === 'hermes' && draft.model !== 'auto' ? draft.model : null
+        )
         setServiceTier(draft.serviceTier)
         setCollaborationMode(draft.collaborationMode)
         setCopilotAgentMode(draft.copilotAgentMode)
@@ -444,6 +448,8 @@ export function NewSession(props: {
                 setAgySelectedModel(hubModelForTarget)
             } else if (targetAgent === 'dsh') {
                 setDshSelectedModel(hubModelForTarget)
+            } else if (targetAgent === 'hermes') {
+                setHermesSelectedModel(hubModelForTarget)
             } else {
                 setModel(hubModelForTarget)
                 if (targetAgent === 'cursor') {
@@ -522,6 +528,7 @@ export function NewSession(props: {
     // change under an open form while they are looking at it.
     const agyModelPickedByUserRef = useRef(false)
     const [dshSelectedModel, setDshSelectedModel] = useState<string | null>(null)
+    const [hermesSelectedModel, setHermesSelectedModel] = useState<string | null>(null)
     const runnerSpawnError = useMemo(
         () => formatRunnerSpawnError(selectedMachine),
         [selectedMachine]
@@ -911,6 +918,11 @@ export function NewSession(props: {
         machineId,
         enabled: agent === 'dsh' && Boolean(machineId)
     })
+    const hermesModelsState = useHermesModelsForMachine({
+        api: props.api,
+        machineId,
+        enabled: agent === 'hermes' && Boolean(machineId)
+    })
     const piModelsState = usePiModelsForMachine({
         api: props.api,
         machineId,
@@ -1034,7 +1046,28 @@ export function NewSession(props: {
         agyModelPickedByUserRef.current = false
         setAgySelectedModel(null)
         setDshSelectedModel(null)
+        setHermesSelectedModel(null)
     }, [agent, machineId])
+
+    useEffect(() => {
+        if (
+            agent !== 'hermes'
+            || hermesModelsState.isLoading
+            || hermesModelsState.error
+            || hermesSelectedModel === null
+        ) {
+            return
+        }
+        if (!hermesModelsState.availableModels.some((candidate) => candidate.modelId === hermesSelectedModel)) {
+            setHermesSelectedModel(null)
+        }
+    }, [
+        agent,
+        hermesModelsState.availableModels,
+        hermesModelsState.error,
+        hermesModelsState.isLoading,
+        hermesSelectedModel
+    ])
 
     useEffect(() => {
         if (
@@ -1219,6 +1252,9 @@ export function NewSession(props: {
         // Validate restored DSH models against the selected machine's catalog.
         setDshSelectedModel(
             agent === 'dsh' && nextModel !== 'auto' ? nextModel : null
+        )
+        setHermesSelectedModel(
+            agent === 'hermes' && nextModel !== 'auto' ? nextModel : null
         )
     }, [agent, legacyYoloBridge, machineId, usesSharedPermissionMode])
 
@@ -1956,7 +1992,9 @@ export function NewSession(props: {
                 ? (agySelectedModel ?? 'auto')
                 : agent === 'dsh'
                     ? (dshSelectedModel ?? 'auto')
-                    : agent === 'opencode'
+                    : agent === 'hermes'
+                        ? (hermesSelectedModel ?? 'auto')
+                        : agent === 'opencode'
                     ? (opencodeSelectedModel ?? 'auto')
                     : model,
             cursorSelectedBase,
@@ -1980,6 +2018,7 @@ export function NewSession(props: {
         opencodeSelectedModel,
         agySelectedModel,
         dshSelectedModel,
+        hermesSelectedModel,
         cursorSelectedBase,
         machineId,
         effort,
@@ -2124,7 +2163,9 @@ export function NewSession(props: {
                     ? (agySelectedModel ?? undefined)
                     : agent === 'dsh'
                         ? (dshSelectedModel ?? undefined)
-                        : agent === 'cursor'
+                        : agent === 'hermes'
+                            ? (hermesSelectedModel ?? undefined)
+                            : agent === 'cursor'
                         ? (model === 'auto' || !model ? 'auto' : model)
                         : (model !== 'auto' ? model : undefined)
             const resolvedEffort = (agent === 'claude' || agent === 'grok' || agent === 'pi'
@@ -2140,7 +2181,9 @@ export function NewSession(props: {
                     ? (agySelectedModel ?? 'auto')
                     : agent === 'dsh'
                         ? (dshSelectedModel ?? 'auto')
-                        : agent === 'opencode'
+                        : agent === 'hermes'
+                            ? (hermesSelectedModel ?? 'auto')
+                            : agent === 'opencode'
                         ? (opencodeSelectedModel ?? 'auto')
                         : model,
                 cursorSelectedBase,
@@ -2361,6 +2404,9 @@ export function NewSession(props: {
         || (agent === 'dsh'
             && dshSelectedModel !== null
             && dshModelsState.isLoading)
+        || (agent === 'hermes'
+            && hermesSelectedModel !== null
+            && hermesModelsState.isLoading)
         || (agent === 'cursor'
             && (model !== 'auto' || cursorSelectedBase !== 'auto')
             && cursorModelsState.isLoading)
@@ -2560,6 +2606,27 @@ export function NewSession(props: {
                     onModelChange={(value) => {
                         editedModelRef.current = true
                         setDshSelectedModel(value === 'auto' ? null : value)
+                    }}
+                />
+            ) : agent === 'hermes' ? (
+                <ModelSelector
+                    agent={agent}
+                    model={hermesSelectedModel ?? 'auto'}
+                    options={[
+                        { value: 'auto', label: 'Default' },
+                        ...hermesModelsState.availableModels.map((entry) => ({
+                            value: entry.modelId,
+                            label: entry.name ?? entry.modelId
+                        }))
+                    ]}
+                    isDisabled={isFormDisabled}
+                    isLoading={hermesModelsState.isLoading}
+                    error={hermesModelsState.error
+                        ? `${t('newSession.model.loadFailed')}: ${hermesModelsState.error}`
+                        : null}
+                    onModelChange={(value) => {
+                        editedModelRef.current = true
+                        setHermesSelectedModel(value === 'auto' ? null : value)
                     }}
                 />
             ) : agent === 'agy' ? (

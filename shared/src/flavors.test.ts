@@ -31,7 +31,7 @@ describe('flavor registry', () => {
     // The agent selectors list flavors in this order.
     test('AGENT_FLAVORS keeps its order', () => {
         expect([...AGENT_FLAVORS]).toEqual([
-            'agy', 'claude', 'codex', 'dsh', 'copilot', 'cursor', 'gemini', 'grok', 'kimi', 'opencode', 'pi'
+            'agy', 'claude', 'codex', 'dsh', 'copilot', 'cursor', 'gemini', 'grok', 'hermes', 'kimi', 'opencode', 'pi'
         ])
     })
 

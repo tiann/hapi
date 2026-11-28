@@ -120,6 +120,7 @@ object SummaryPatching {
                 "grok" -> metadata.grokSessionId
                 "agy" -> metadata.agySessionId
                 "cursor" -> metadata.cursorSessionId
+                "hermes" -> metadata.hermesSessionId
                 "kimi" -> metadata.kimiSessionId
                 "copilot" -> metadata.copilotSessionId
                 "pi" -> metadata.piSessionId
@@ -136,6 +137,7 @@ object SummaryPatching {
             ?: metadata.agySessionId
             ?: metadata.cursorSessionId
             ?: metadata.kimiSessionId
+            ?: metadata.hermesSessionId
             ?: metadata.copilotSessionId
             ?: metadata.dshSessionId
     }

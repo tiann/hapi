@@ -12,6 +12,7 @@ import KimiMono from '@lobehub/icons/es/Kimi/components/Mono'
 import OpenCodeMono from '@lobehub/icons/es/OpenCode/components/Mono'
 import type { IconType } from '@lobehub/icons/es/types'
 import { CopilotIcon } from '@/components/icons/CopilotIcon'
+import hermesIcon from '@/assets/hermes-icon.png'
 
 // Use the tile-free glyph for Codex with a blue visible on light and dark surfaces.
 // Kimi uses Mono because its Color glyph is white.
@@ -75,6 +76,17 @@ export function AgentFlavorIcon({ flavor, className }: { flavor?: string | null;
                 className={`inline-flex items-center justify-center leading-none text-[var(--app-fg)] ${sizeClass}`}
             >
                 <PiLogo />
+            </span>
+        )
+    }
+
+    if (normalized === 'hermes') {
+        return (
+            <span
+                aria-hidden="true"
+                className={`inline-flex items-center justify-center leading-none ${sizeClass}`}
+            >
+                <img src={hermesIcon} alt="" className="h-full w-full rounded-sm object-contain" />
             </span>
         )
     }

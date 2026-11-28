@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { AGENT_FLAVORS, getPermissionModesForFlavor } from './flavors'
+import { AGENT_FLAVORS, Flavors, getPermissionModesForFlavor, type PermissionModeOf } from './flavors'
 
 // Re-exported for importers of '@hapi/protocol/modes'.
 export {
@@ -26,6 +26,9 @@ export const AgentFlavorSchema = z.enum(AGENT_FLAVORS)
 
 export const CODEX_COLLABORATION_MODES = ['default', 'plan'] as const
 export type CodexCollaborationMode = typeof CODEX_COLLABORATION_MODES[number]
+
+export const HERMES_PERMISSION_MODES = Flavors.hermes.permissionModes
+export type HermesPermissionMode = PermissionModeOf<typeof Flavors.hermes>
 
 export const PERMISSION_MODES = [
     'default',

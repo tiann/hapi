@@ -1,5 +1,5 @@
 ---
-description: "Coding agents supported by HAPI (Claude Code, Codex, Cursor, Grok Build, OpenCode, Kimi, Copilot, Antigravity, Pi, DeepSeek Harness) and which features each supports."
+description: "Coding agents supported by HAPI (Claude Code, Codex, Cursor, Grok Build, OpenCode, Kimi, Hermes, Copilot, Antigravity, Pi, DeepSeek Harness) and which features each supports."
 ---
 
 # Supported Agents
@@ -22,6 +22,7 @@ agent's integration; their supported syntax varies by agent.
 | Grok Build | `hapi grok` | ACP (`grok agent stdio`) | ✓ | ✓ | `default` `auto` `plan` `bypassPermissions` | ✓ |
 | GitHub Copilot | `hapi copilot` | ACP (`copilot --acp --stdio`) | ✓ | ✓ | `default` `read-only` `safe-yolo` `yolo` | ✓ |
 | Kimi | `hapi kimi` | ACP (`kimi acp`) | ✓ | ✓ | `default` `read-only` `safe-yolo` `yolo` | ✓ |
+| Hermes | `hapi hermes` | ACP (`hermes acp`) | — | ✓ | `default` `read-only` `safe-yolo` `yolo` | ✓ |
 | OpenCode | `hapi opencode` | ACP (`opencode acp`) | ✓ | ✓ | `default` `plan` `yolo` | ✓ |
 | DeepSeek Harness | `hapi dsh` | ACP (`dsh --profile acp` or configured server) | — | ✓ | Managed by DSH ACP composition | ✓* |
 | Antigravity (agy) | `hapi agy` | ACP (`agy acp`, agy 1.5.0+); persistent stream-json for older agy | — | ✓ | `request-review` `acceptEdits` `plan` `always-proceed` | ✓ |
@@ -42,6 +43,7 @@ Steer, effort and history controls apply to sessions under remote control. The w
 | Grok Build | — | ✓ | Probed | — | — |
 | GitHub Copilot | — | ✓ | — | — | — |
 | Kimi | — | ✓ | — | — | — |
+| Hermes | — | — | — | — | — |
 | OpenCode | ✓ | ✓ (reasoning effort) | Probed (OpenCode v2) | — | ✓ |
 | DeepSeek Harness | — | — | — | — | — |
 | Antigravity | ✓ (ACP sessions) | ✓ | — | — | — |
@@ -57,7 +59,7 @@ Source: `STEERING_SUPPORTED_FLAVORS` in `shared/src/modes.ts`, `shared/src/flavo
 
 ### ACP
 
-Most remote integrations speak the [Agent Client Protocol](https://agentclientprotocol.com) (ACP) over stdio through a shared HAPI backend. ACP gives remote sessions bidirectional permission approval, plan/todo updates, question UI, model catalogs, and session resume via `session/load`. Cursor, Grok, Copilot, Kimi, OpenCode, Antigravity, and DeepSeek Harness remote sessions all run over ACP. DSH's official ACP server is automation-focused and currently supports committed assistant output, cancellation, one-shot permissions, native session resume via `session/resume`, and per-turn model switching through `session/set_config_option`; it does not provide MCP injection or live tool/reasoning telemetry. Legacy or incompatible DSH ACP servers fall back to a fresh session when native resume is unavailable.
+Most remote integrations speak the [Agent Client Protocol](https://agentclientprotocol.com) (ACP) over stdio through a shared HAPI backend. ACP gives remote sessions bidirectional permission approval, plan/todo updates, question UI, model catalogs, and session resume via `session/load`. Cursor, Grok, Copilot, Kimi, Hermes, OpenCode, Antigravity, and DeepSeek Harness remote sessions all run over ACP. DSH's official ACP server is automation-focused and currently supports committed assistant output, cancellation, one-shot permissions, native session resume via `session/resume`, and per-turn model switching through `session/set_config_option`; it does not provide MCP injection or live tool/reasoning telemetry. Legacy or incompatible DSH ACP servers fall back to a fresh session when native resume is unavailable.
 
 ### Permission modes
 
@@ -65,7 +67,7 @@ Permission modes are per-agent — each flavor exposes its own set (see the matr
 
 ### Local and remote mode
 
-Work **locally** in the terminal or **remotely** from web/phone, keeping the same conversation when you hand off. The support matrix shows which interfaces each agent offers; DSH, Pi, and Antigravity accept input only through HAPI's remote interface.
+Work **locally** in the terminal or **remotely** from web/phone, keeping the same conversation when you hand off. The support matrix shows which interfaces each agent offers; DSH, Hermes, Pi, and Antigravity accept input only through HAPI's remote interface.
 
 - **Remote → local:** continue in the terminal. If it shows the remote-control screen, press double-space to return to local input.
 - **Local → remote:** send a message from the web UI or phone; HAPI handles the handoff.
@@ -79,7 +81,7 @@ hapi resume                # Interactive picker of resumable sessions on this ma
 hapi resume <session-id>   # Resume a specific HAPI session
 ```
 
-`hapi resume` reopens the conversation on this machine, including active sessions you were using from your phone. Gemini cannot be resumed. DSH resume depends on the configured ACP server: current DSH ACP profiles restore the native session, while a fresh-session-only server starts a new session with a status message. Pi and Antigravity resume with input still controlled from HAPI rather than the terminal.
+`hapi resume` reopens the conversation on this machine, including active sessions you were using from your phone. Gemini cannot be resumed. DSH resume depends on the configured ACP server: current DSH ACP profiles restore the native session, while a fresh-session-only server starts a new session with a status message. Hermes, Pi, and Antigravity resume with input still controlled from HAPI rather than the terminal.
 
 ### Displaying images
 
@@ -421,6 +423,7 @@ the prompt is loaded by DSH through its own `skill` tool and catalog.
   The composer remembers and toggles **fast mode** (Codex's fast service tier) for remote sessions. Remote sessions also load the MCP servers configured in your Codex config alongside HAPI's own tools. To use a custom model catalog, set `HAPI_CODEX_MODEL_CATALOG_JSON` to an absolute path (or `~/…`); HAPI passes it to Codex as `model_catalog_json` unless you already pass that setting with `-c`.
 - **GitHub Copilot** (`hapi copilot`) — Copilot CLI over ACP (`copilot --acp --stdio`). Remote sessions can pick a reasoning effort in the composer when the active model offers one; HAPI applies it before the next turn through ACP `session/set_config_option`. [GitHub Copilot](https://github.com/features/copilot)
 - **Kimi** (`hapi kimi`) — Moonshot AI's Kimi CLI over ACP (`kimi acp`). Remote sessions can pick a thinking level in the composer when the active model offers one; HAPI applies it before the next turn through ACP `session/set_config_option`. [MoonshotAI/kimi-cli](https://github.com/MoonshotAI/kimi-cli)
+- **Hermes** (`hapi hermes`) — Nous Research's Hermes Agent over ACP (`hermes acp`). Requires a Hermes installation that includes the ACP server (`hermes acp`), and accepts input only through HAPI's remote interface (no local terminal input mode). Supports model selection from Hermes's ACP catalog and custom provider models configured in `~/.hermes/config.yaml` (or `$HERMES_HOME/config.yaml`), permission mode switching (`default`, `read-only`, `safe-yolo`, `yolo`), and native session resume via `session/load`. [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)
 - **OpenCode** (`hapi opencode`) — the open-source OpenCode agent over ACP (`opencode acp`). Remote sessions support **Steer**; on OpenCode v2, steered messages are delivered at the next step boundary, and HAPI can fork and rewind the conversation through OpenCode's native history. Remote sessions on Windows with OpenCode v2 support `/compact` and show upstream retry status in the chat. Local OpenCode sessions can be imported into HAPI ([Import local sessions](./import-local-sessions.md)). [opencode.ai](https://opencode.ai)
 - **Antigravity** (`hapi agy`) — Google's Antigravity CLI (`agy`) over ACP
   (`agy acp`, added in agy 1.5.0). HAPI checks `agy --version` when the

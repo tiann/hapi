@@ -44,6 +44,7 @@ export type {
     AgentFlavor,
     CodexCollaborationMode,
     CodexCollaborationModeOption,
+    HermesPermissionMode,
     PermissionMode,
     PermissionModeOf,
     PermissionModeOption,

@@ -190,6 +190,12 @@ export function getModelOptionsForFlavor(
     if (flavor === 'grok') {
         return withCurrentModelOption([{ value: null, label: 'Default' }], currentModel)
     }
+    if (flavor === 'hermes') {
+        if (customOptions && customOptions.length > 0) {
+            return withCurrentModelOption(customOptions, currentModel)
+        }
+        return withCurrentModelOption([{ value: null, label: 'Default' }], currentModel)
+    }
     // Pi model list is provided dynamically via piModels prop in SessionChat,
     // not through this function. Show just the auto/default option here to
     // prevent falling through to the Claude preset cycler (which would
@@ -256,6 +262,9 @@ export function getNextModelForFlavor(
         return normalizeCurrentModel(currentModel)
     }
     if (flavor === 'grok') {
+        return normalizeCurrentModel(currentModel)
+    }
+    if (flavor === 'hermes') {
         return normalizeCurrentModel(currentModel)
     }
     // Pi model list is provided dynamically via piModels prop — pressing

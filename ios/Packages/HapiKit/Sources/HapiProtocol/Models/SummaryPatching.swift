@@ -121,6 +121,7 @@ public enum SummaryPatching {
             case .grok: flavorSessionId = metadata.grokSessionId
             case .agy: flavorSessionId = metadata.agySessionId
             case .cursor: flavorSessionId = metadata.cursorSessionId
+            case .hermes: flavorSessionId = metadata.hermesSessionId
             case .kimi: flavorSessionId = metadata.kimiSessionId
             case .copilot: flavorSessionId = metadata.copilotSessionId
             case .pi: flavorSessionId = metadata.piSessionId
@@ -140,6 +141,7 @@ public enum SummaryPatching {
             metadata.agySessionId,
             metadata.cursorSessionId,
             metadata.kimiSessionId,
+            metadata.hermesSessionId,
             metadata.copilotSessionId,
             metadata.dshSessionId,
         ]

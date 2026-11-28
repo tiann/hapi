@@ -232,6 +232,20 @@ const grok = defineFlavor({
     steering: null,
 })
 
+const hermes = defineFlavor({
+    label: 'Hermes',
+    modelField: { kind: 'select', optionSource: 'machine' },
+    settingsFields: [],
+    effort: null,
+    permissionReplyStyle: 'decision',
+    permissionModes: ['default', 'read-only', 'safe-yolo', 'yolo'],
+    decisionToolNamePrefix: null,
+    ownPermissionFormState: false,
+    migratesYoloToggle: false,
+    creatable: true,
+    steering: null,
+})
+
 const kimi = defineFlavor({
     label: 'Kimi',
     modelField: { kind: 'select', optionSource: 'directory' },
@@ -279,7 +293,7 @@ const pi = defineFlavor({
 
 // One entry per flavor; the key is the flavor id stored in session metadata.
 export const Flavors = {
-    agy, claude, codex, dsh, copilot, cursor, gemini, grok, kimi, opencode, pi,
+    agy, claude, codex, dsh, copilot, cursor, gemini, grok, hermes, kimi, opencode, pi,
 } satisfies Record<string, FlavorTraits>
 
 export type AgentFlavor = keyof typeof Flavors

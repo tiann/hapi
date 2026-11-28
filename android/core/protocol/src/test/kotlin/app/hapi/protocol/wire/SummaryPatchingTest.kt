@@ -204,6 +204,14 @@ class SummaryPatchingTest {
         )
         assertEquals("dsh-1", dsh?.agentSessionId)
 
+        val hermes = SummaryPatching.toSessionSummaryMetadata(
+            SessionMetadata(
+                path = "/p", host = "h", flavor = "hermes",
+                codexSessionId = "stale", hermesSessionId = "  hermes-1  ",
+            )
+        )
+        assertEquals("hermes-1", hermes?.agentSessionId)
+
         // Unknown flavor: legacy fallback chain, codex first, untrimmed.
         val unknown = SummaryPatching.toSessionSummaryMetadata(
             SessionMetadata(path = "/p", host = "h", flavor = "newagent", claudeSessionId = "cl", codexSessionId = "cx")
