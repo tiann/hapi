@@ -84,6 +84,20 @@ describe('shouldMarkKeepaliveIdle', () => {
         )).toBe(false)
     })
 
+    it('treats metadata.waiting as live work distinct from thinking (#2020)', () => {
+        const waiting = session({
+            thinking: false,
+            backgroundTaskCount: 0,
+            metadata: {
+                path: '/tmp/p',
+                host: 'h',
+                lifecycleState: 'running',
+                waiting: { since: NOW - HOUR, reason: 'watch CI on tip' },
+            },
+        })
+        expect(shouldMarkKeepaliveIdle(waiting, NOW - 87 * HOUR, NOW, window)).toBe(false)
+    })
+
     it('honours the explicit escape hatch', () => {
         const exempt = session({ metadata: { path: '/tmp/p', host: 'h', lifecycleState: 'running', idleReconcileExempt: true } })
         expect(shouldMarkKeepaliveIdle(exempt, NOW - 87 * HOUR, NOW, window)).toBe(false)

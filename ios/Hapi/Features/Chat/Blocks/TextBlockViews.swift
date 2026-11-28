@@ -15,6 +15,12 @@ import SwiftUI
 struct UserTextBlockView: View {
     let block: UserTextBlock
     private let preview: MessageTextPage
+    /// Preview of `translatedFrom` (what the user typed); nil when the hub
+    /// did not translate this prompt.
+    private let originalPreview: MessageTextPage?
+    /// Translated prompt: false shows what the user typed (web default),
+    /// true the English sent to the agent. Survives cell recycling.
+    @ChatStoredState private var showsSentText: Bool
 
     @Environment(\.chatInteractions) private var interactions
     @Environment(\.hapiTypography) private var typography
@@ -23,22 +29,41 @@ struct UserTextBlockView: View {
     init(block: UserTextBlock) {
         self.block = block
         preview = .preview(block.text)
+        originalPreview = block.translatedFrom.map { .preview($0) }
+        _showsSentText = ChatStoredState(wrappedValue: false, id: block.id, field: "showsSentText")
+    }
+
+    /// The text the bubble shows — also what "View full message" opens.
+    private var visibleText: String {
+        if let original = block.translatedFrom, !showsSentText { return original }
+        return block.text
+    }
+
+    private var visiblePreview: MessageTextPage {
+        if let originalPreview, !showsSentText { return originalPreview }
+        return preview
     }
 
     var body: some View {
+        let text = visibleText
+        let preview = visiblePreview
         HStack(alignment: .bottom, spacing: 0) {
             Spacer(minLength: 48)
             VStack(alignment: .trailing, spacing: 2) {
                 VStack(alignment: .leading, spacing: 8) {
-                    if !block.text.isEmpty {
+                    if !text.isEmpty {
                         Text(verbatim: preview.text)
                             .font(typography.bodyFont)
                             .lineSpacing(typography.bodyLineSpacing)
-                            .lineLimit(preview.end < block.text.endIndex ? MessageTextPage.previewLines : nil)
+                            .lineLimit(preview.end < text.endIndex ? MessageTextPage.previewLines : nil)
                             .fixedSize(horizontal: false, vertical: true)
                             .textSelection(.enabled)
-                        if preview.end < block.text.endIndex {
-                            Button { openMessage?(block) } label: {
+                        if preview.end < text.endIndex {
+                            Button {
+                                var shown = block
+                                shown.text = text
+                                openMessage?(shown)
+                            } label: {
                                 Label("View full message", systemImage: "doc.text")
                                     .font(.footnote)
                                     .frame(minHeight: 44)
@@ -66,6 +91,24 @@ struct UserTextBlockView: View {
                         topTrailingRadius: 16
                     )
                 )
+                if block.translatedFrom != nil {
+                    // Web `HappyUserMessage` caption: what the agent got is
+                    // one tap away.
+                    Button {
+                        showsSentText.toggle()
+                    } label: {
+                        let action = showsSentText
+                            ? String(localized: "Show original")
+                            : String(localized: "Show English sent to agent")
+                        Text(verbatim: "\(String(localized: "Translated")) · \(action)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .padding(.trailing, 4)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(showsSentText ? .isSelected : [])
+                    .accessibilityIdentifier("message-translation-\(block.id)")
+                }
                 if block.status == "failed" {
                     if let interactions, let retryLocalId = block.localId {
                         Button {

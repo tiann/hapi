@@ -594,6 +594,7 @@ it.each([
         ['titleSuggestionAutoAttemptedAt', 1234],
         ['titleSuggestionTurn', { first: false, completed: true }],
         ['promptTitle', 'Forged title'],
+        ['translateInput', true],
         ['jobsAcceptedFromSessionIds', ['foreign-session']],
         ['jobsTransferredToSessionId', 'foreign-session'],
         ['jobKeyRedirects', { 'foreign-session/beets': 'beets.foreign' }],
@@ -619,6 +620,61 @@ it.each([
             expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).not.toHaveProperty(field)
         }
     )
+
+    it('rejects malformed waiting without wiping prior metadata (#2616)', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('waiting-ingress', {
+            path: '/tmp/project',
+            host: 'h',
+            lifecycleState: 'running',
+            waiting: { since: 1_700_000_000_000, reason: 'watch CI on tip' },
+        }, null, 'default')
+        const socket = new FakeSocket()
+        let reply: { result: string } | undefined
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({
+                ok: true,
+                value: store.sessions.getSessionByNamespace(session.id, 'default') as StoredSession,
+            }),
+            emitAccessError: () => { throw new Error('unexpected access error') }
+        })
+        socket.trigger('update-metadata', {
+            sid: session.id,
+            expectedVersion: session.metadataVersion,
+            metadata: {
+                path: '/tmp/project',
+                host: 'h',
+                // Missing required `since` — must fail closed before persist.
+                waiting: { reason: 'watch CI' },
+            },
+        }, (ack: unknown) => { reply = ack as { result: string } })
+        expect(reply).toEqual({ result: 'error' })
+        expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).toMatchObject({
+            path: '/tmp/project',
+            waiting: { since: 1_700_000_000_000, reason: 'watch CI on tip' },
+        })
+    })
+
+    it('preserves the hub-owned translateInput toggle across CLI metadata replacements', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('preserve-translate', {
+            path: '/tmp/project', translateInput: true
+        }, null, 'default')
+        const socket = new FakeSocket()
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+            emitAccessError: () => { throw new Error('unexpected access error') }
+        })
+        socket.trigger('update-metadata', {
+            sid: session.id,
+            expectedVersion: session.metadataVersion,
+            metadata: { path: '/tmp/project', translateInput: false }
+        }, () => {})
+        expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata)
+            .toMatchObject({ translateInput: true })
+    })
 
     it.each([1234, null])('preserves Codex import state %s across CLI bootstrap replacements', (codexImportedAt) => {
         const store = new Store(':memory:')

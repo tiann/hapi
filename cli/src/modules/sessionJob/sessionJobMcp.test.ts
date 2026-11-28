@@ -5,6 +5,7 @@ import {
     SESSION_JOB_SET_REFUSED_TEXT,
     SESSION_JOB_TOOL_DESCRIPTION
 } from './sessionJobMcp'
+import { SESSION_JOB_GATE } from './sessionJob'
 
 vi.mock('./sessionJob', async (importOriginal) => {
     const actual = await importOriginal<typeof import('./sessionJob')>()
@@ -39,6 +40,15 @@ describe('sessionJobMcp', () => {
         expect(SESSION_JOB_TOOL_DESCRIPTION).toMatch(/action=list on session start\/resume/i)
         expect(SESSION_JOB_TOOL_DESCRIPTION).toMatch(/before claiming done or inviting archive/i)
         expect(SESSION_JOB_TOOL_DESCRIPTION).toMatch(/do not ask the operator to clean meters/i)
+    })
+
+    it('description carries the attach gate the system prompt only summarizes', () => {
+        expect(SESSION_JOB_TOOL_DESCRIPTION).toContain(SESSION_JOB_GATE)
+        expect(SESSION_JOB_GATE).toMatch(/Default is NOT/)
+        expect(SESSION_JOB_GATE).toMatch(/operator would reopen the chat/)
+        expect(SESSION_JOB_GATE).toMatch(/tests, builds, installs, typechecks, git/)
+        expect(SESSION_JOB_GATE).toMatch(/If unsure, do not attach/)
+        expect(SESSION_JOB_GATE).toMatch(/--wake-on-terminal unless the operator asked/)
     })
 
     it('hard-refuses action=set and never calls setSessionJob', async () => {

@@ -3,7 +3,7 @@ import { authAndSetupMachineIfNeeded } from '@/ui/auth'
 import { initializeToken } from '@/ui/tokenInit'
 import { maybeAutoStartServer } from '@/utils/autoStartServer'
 import type { CommandDefinition } from './types'
-import { OPENCODE_PERMISSION_MODES } from '@hapi/protocol/modes'
+import { Flavors } from '@hapi/protocol/modes'
 import { parseRemoteAgentCommandOptions } from './agentCommandOptions'
 
 export const opencodeCommand: CommandDefinition = {
@@ -11,7 +11,7 @@ export const opencodeCommand: CommandDefinition = {
     requiresRuntimeAssets: true,
     run: async ({ commandArgs }) => {
         try {
-            const options = parseRemoteAgentCommandOptions(commandArgs, OPENCODE_PERMISSION_MODES)
+            const options = parseRemoteAgentCommandOptions(commandArgs, Flavors.opencode.permissionModes)
 
             await initializeToken()
             await maybeAutoStartServer()

@@ -468,11 +468,15 @@ html:has(.chat-scroll-y) #root {
 }
 
 @media (hover: hover) and (pointer: fine) {
-    .session-list-item:hover,
-    .session-list-row:hover > .session-list-item,
+    .session-list-row:hover,
     .session-list-new-button:hover {
         background-color: var(--app-subtle-bg);
     }
+}
+
+.session-list-row:has(> .session-list-item[aria-current="page"]) {
+    background-color: color-mix(in srgb, var(--app-fg) 16%, var(--app-bg));
+    --app-hint: color-mix(in srgb, var(--app-fg) 75%, var(--app-bg));
 }
 
 /* Row quick actions (unpin, archive): replace the time/progress cluster on
@@ -583,6 +587,13 @@ html:has(.chat-scroll-y) #root {
        is a no-op on desktop where 100vw - 424px exceeds the stored width. */
     div[style*="--sidebar-w"] {
         width: min(var(--sidebar-w), calc(100vw - 424px)) !important;
+    }
+    /* While the session files panel is open beside the chat, also reserve its
+       320px minimum and its 4px handle (424 + 324 = 748), so a wide saved
+       sidebar can't squeeze the panel below its minimum at the 1200px
+       breakpoint. The saved width returns once the panel closes. */
+    body:has([data-session-files-panel]) div[style*="--sidebar-w"] {
+        width: min(var(--sidebar-w), calc(100vw - 748px)) !important;
     }
 }
 

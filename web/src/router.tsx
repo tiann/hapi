@@ -2,11 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { NativeAppPromoButton, NativeAppPromoSheet } from '@/components/NativeAppPromo'
 import { useQueryClient } from '@tanstack/react-query'
 import {
-    Navigate,
     Outlet,
     createRootRoute,
     createRoute,
     createRouter,
+    redirect,
     useLocation,
     useMatchRoute,
     useNavigate,
@@ -32,6 +32,12 @@ import { useAppContext } from '@/lib/app-context'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { isTelegramApp } from '@/hooks/useTelegram'
 import { useSidebarResize } from '@/hooks/useSidebarResize'
+import {
+    SESSION_FILES_PANEL_QUERY,
+    SESSION_FILES_PANEL_RESIZE,
+    SessionFilesPanelProvider,
+    useSessionFilesPanelAvailable,
+} from '@/components/SessionFilesPanel'
 import { useMessages } from '@/hooks/queries/useMessages'
 import { useMachines } from '@/hooks/queries/useMachines'
 import { useMachineLabels } from '@/hooks/useMachineLabels'
@@ -74,6 +80,7 @@ import SettingsHubPage from '@/routes/settings'
 import SettingsGeneralPage from '@/routes/settings/general'
 import SettingsDisplayPage from '@/routes/settings/display'
 import SettingsChatPage from '@/routes/settings/chat'
+import SettingsShortcutsPage from '@/routes/settings/shortcuts'
 import SettingsVoicePage from '@/routes/settings/voice'
 import SettingsVoiceVoicesPage from '@/routes/settings/voice-voices'
 import SettingsVoiceAdvancedPage from '@/routes/settings/voice-advanced'
@@ -304,7 +311,7 @@ function SessionsPage() {
                 className={`${shouldShowSidebar ? (isSessionsIndex ? 'flex' : 'hidden split:flex') : 'hidden'} min-w-0 w-full shrink-0 flex-col bg-[var(--app-bg)]`}
                 style={{ '--sidebar-w': `${sidebar.width}px` } as React.CSSProperties}
             >
-                <div className="flex min-h-0 flex-1 flex-col pt-[env(safe-area-inset-top)]">
+                <div className="flex min-h-0 flex-1 flex-col pt-[var(--route-safe-area-top,env(safe-area-inset-top))]">
                     {error ? (
                         <div className="mx-auto w-full max-w-content px-3 py-2">
                             <div className="text-sm text-red-600">{error}</div>
@@ -374,7 +381,7 @@ function SessionsPage() {
 
             <div className={`${isSessionsIndex ? 'hidden split:flex' : 'flex'} relative min-w-0 flex-1 flex-col bg-[var(--app-bg)]`}>
                 {isSessionsIndex ? (
-                    <div className="absolute right-3 top-[calc(env(safe-area-inset-top)+0.75rem)] z-10 hidden split:block">
+                    <div className="absolute right-3 top-[calc(var(--route-safe-area-top,env(safe-area-inset-top))+0.75rem)] z-10 hidden split:block">
                         <NativeAppPromoButton />
                     </div>
                 ) : null}
@@ -444,6 +451,7 @@ function SessionPage() {
     const {
         session,
         error: sessionError,
+        isFetching: checkingSession,
         refetch: refetchSession,
     } = useSession(api, sessionId)
     const {
@@ -457,6 +465,7 @@ function SessionPage() {
         warning: messagesWarning,
         isSyncingTail: messagesSyncingTail,
         isCatchingUpFromCache: messagesCatchingUpFromCache,
+        cachedTailFirstFrame: messagesCachedTailFirstFrame,
         isLoadingMore: messagesLoadingMore,
         hasMore: messagesHasMore,
         hasMoreNewer: messagesHasMoreNewer,
@@ -708,7 +717,11 @@ function SessionPage() {
     // SessionPage unmounts.
     const router = useRouter()
     const handleVoiceSessionResolved = useCallback((resolvedSessionId: string) => {
-        if (!isOnSessionPage(router.state.location.pathname, sessionId)) return
+        // On wide viewports the files routes keep this chat visible beside them.
+        const chatBesideFiles = typeof window !== 'undefined'
+            && typeof window.matchMedia === 'function'
+            && window.matchMedia(SESSION_FILES_PANEL_QUERY).matches
+        if (!isOnSessionPage(router.state.location.pathname, sessionId, { chatBesideFiles })) return
         handleSessionResolved(resolvedSessionId)
     }, [handleSessionResolved, router, sessionId])
 
@@ -955,6 +968,7 @@ function SessionPage() {
 
     return (
         <SessionChat
+            checkingSession={checkingSession}
             readThroughRevision={readThroughRevision}
             api={api}
             titleSuggestionAvailable={titleSuggestionAvailable}
@@ -968,6 +982,7 @@ function SessionPage() {
             hasMoreNewerMessages={messagesHasMoreNewer}
             isSyncingTail={messagesSyncingTail}
             isCatchingUpFromCache={messagesCatchingUpFromCache}
+            cachedTailFirstFrame={messagesCachedTailFirstFrame}
             isLoadingMoreMessages={messagesLoadingMore}
             isSending={isSending}
             viewMode={messagesViewMode}
@@ -1031,6 +1046,25 @@ function SessionDetailRoute() {
     useSessionBrowserTitle(session)
     const basePath = `/sessions/${sessionId}`
     const isChat = pathname === basePath || pathname === `${basePath}/`
+    const filesPanelAvailable = useSessionFilesPanelAvailable()
+    const filesPanel = useSidebarResize(SESSION_FILES_PANEL_RESIZE)
+    const closeFilesPanel = useCallback(() => {
+        navigate({
+            to: '/sessions/$sessionId',
+            params: { sessionId },
+            ...PRESERVE_SESSION_SIDEBAR_SCROLL,
+        })
+    }, [navigate, sessionId])
+    const chatFilesPanelState = useMemo(() => ({
+        open: !isChat,
+        inPanel: false,
+        close: closeFilesPanel,
+    }), [closeFilesPanel, isChat])
+    const panelFilesPanelState = useMemo(() => ({
+        open: true,
+        inPanel: true,
+        close: closeFilesPanel,
+    }), [closeFilesPanel])
     const supersedingSessionId = getSupersedingSessionId(sessionId, session?.metadata)
     const observedSessionRef = useRef<{
         sessionId: string
@@ -1098,7 +1132,46 @@ function SessionDetailRoute() {
         )
     }
 
-    return isChat ? <SessionPage /> : <Outlet />
+    const isFilesPanelRoute = pathname === `${basePath}/files`
+        || pathname === `${basePath}/files/`
+        || pathname === `${basePath}/file`
+        || pathname === `${basePath}/file/`
+    const filesPanelOpen = filesPanelAvailable && isFilesPanelRoute
+
+    // Narrow viewports (and the terminal route) keep the full-pane behavior.
+    if (!isChat && !filesPanelOpen) {
+        return <Outlet />
+    }
+
+    // Keep SessionPage at the same tree position whether or not the files panel
+    // is open so toggling the panel doesn't remount the chat (scroll, composer).
+    return (
+        <div className="flex h-full min-h-0">
+            <SessionFilesPanelProvider value={chatFilesPanelState}>
+                <div className="flex min-w-0 flex-1 flex-col">
+                    <SessionPage />
+                </div>
+            </SessionFilesPanelProvider>
+            {filesPanelOpen ? (
+                <>
+                    <div
+                        className="sidebar-resize-handle shrink-0"
+                        data-dragging={filesPanel.isDragging || undefined}
+                        onPointerDown={filesPanel.onPointerDown}
+                    />
+                    <SessionFilesPanelProvider value={panelFilesPanelState}>
+                        <aside
+                            className="flex min-w-0 shrink-0 flex-col bg-[var(--app-bg)]"
+                            style={{ width: `min(${filesPanel.width}px, calc(100% - 424px))` }}
+                            data-session-files-panel="true"
+                        >
+                            <Outlet />
+                        </aside>
+                    </SessionFilesPanelProvider>
+                </>
+            ) : null}
+        </div>
+    )
 }
 
 function NewSessionPage() {
@@ -1155,7 +1228,7 @@ function NewSessionPage() {
 
     return (
         <div className="flex h-full min-h-0 flex-col">
-            <div className="flex items-center gap-2 border-b border-[var(--app-border)] bg-[var(--app-bg)] p-3 pt-[calc(0.75rem+env(safe-area-inset-top))]">
+            <div className="flex items-center gap-2 border-b border-[var(--app-border)] bg-[var(--app-bg)] p-3 pt-[calc(0.75rem+var(--route-safe-area-top,env(safe-area-inset-top)))]">
                 {!isTelegramApp() && (
                     <button
                         type="button"
@@ -1212,7 +1285,7 @@ function BrowsePage() {
 
     return (
         <div className="flex h-full min-h-0 flex-col">
-            <div className="flex items-center gap-2 border-b border-[var(--app-border)] bg-[var(--app-bg)] p-3 pt-[calc(0.75rem+env(safe-area-inset-top))]">
+            <div className="flex items-center gap-2 border-b border-[var(--app-border)] bg-[var(--app-bg)] p-3 pt-[calc(0.75rem+var(--route-safe-area-top,env(safe-area-inset-top)))]">
                 {!isTelegramApp() && (
                     <button
                         type="button"
@@ -1245,7 +1318,15 @@ const rootRoute = createRootRoute({
 const indexRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/',
-    component: () => <Navigate to="/sessions" replace />,
+    // Redirect while the route loads, not from a one-shot <Navigate> render:
+    // a direct link like `/?token=...` strips its sign-in params with a history
+    // replace that can race the index redirect. If the router settled on `/`
+    // after that race, the already-fired <Navigate> rendered nothing and the
+    // app stayed blank under a `/sessions` address bar. Keep the search so the
+    // sign-in params survive until auth has read and cleared them.
+    beforeLoad: ({ search }) => {
+        throw redirect({ to: '/sessions', search, replace: true })
+    },
 })
 
 const sessionsRoute = createRoute({
@@ -1427,6 +1508,12 @@ const settingsChatRoute = createRoute({
     component: SettingsChatPage,
 })
 
+const settingsShortcutsRoute = createRoute({
+    getParentRoute: () => settingsRoute,
+    path: 'shortcuts',
+    component: SettingsShortcutsPage,
+})
+
 const settingsVoiceRoute = createRoute({
     getParentRoute: () => settingsRoute,
     path: 'voice',
@@ -1498,6 +1585,7 @@ export const routeTree = rootRoute.addChildren([
         settingsGeneralRoute,
         settingsDisplayRoute,
         settingsChatRoute,
+        settingsShortcutsRoute,
         settingsVoiceRoute,
         settingsVoiceVoicesRoute,
         settingsVoiceAdvancedRoute,

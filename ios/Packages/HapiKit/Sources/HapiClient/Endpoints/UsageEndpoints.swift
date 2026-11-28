@@ -1,7 +1,7 @@
 import Foundation
 import HapiProtocol
 
-/// Owner-only dashboard endpoints (A-M4d). Both answer `403` unless the JWT
+/// Owner-only dashboard endpoints (A-M4d). These answer `403` unless the JWT
 /// namespace is `default`
 /// (`docs/api/client-contract/rest.md#usage--storage-owner-only`).
 extension APIClient {
@@ -16,6 +16,11 @@ extension APIClient {
             URLQueryItem(name: "range", value: range),
             URLQueryItem(name: "timeZone", value: timeZone),
         ])
+    }
+
+    /// Bypass the runner quota cache only for an explicit refresh.
+    public func usageQuotas(refresh: Bool = false) async throws -> UsageQuotasResponse {
+        try await request(.get, "/api/usage/quotas", query: refresh ? [URLQueryItem(name: "refresh", value: "1")] : [])
     }
 
     /// `GET /api/storage/sqlite` — hub db/wal/shm file sizes.

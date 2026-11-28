@@ -374,3 +374,33 @@ data class TranscriptionProviderInfo(
     /** Subset of `standard` / `realtime`; native dictation uses `standard`. */
     val modes: List<String>,
 )
+
+/**
+ * `GET /api/hub-settings` — only what the app reads (readable by every
+ * namespace). [translateInputByDefault] is the hub-wide input-translation
+ * default for sessions without an explicit `metadata.translateInput`;
+ * absent (older hub) ⇒ off.
+ */
+@Serializable
+data class HubSettingsResponse(
+    val translateInputByDefault: Boolean = false,
+    val autoBridgeTransientModelErrors: Boolean? = null,
+)
+
+/** `inputTranslation` in `GET /api/features` — true when the hub has a translation provider. */
+@Serializable
+data class InputTranslationFeature(
+    val available: Boolean = false,
+)
+
+/**
+ * `GET /api/features` — only the fields a native client branches on;
+ * `ignoreUnknownKeys` drops the rest (`githubPrAwareness`, `prChipDisplay`).
+ * [inputTranslation] is optional on the wire; absent ⇒ unavailable.
+ */
+@Serializable
+data class FeaturesResponse(
+    val inputTranslation: InputTranslationFeature? = null,
+) {
+    val inputTranslationAvailable: Boolean get() = inputTranslation?.available == true
+}

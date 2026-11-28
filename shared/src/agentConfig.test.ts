@@ -2,8 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import {
     AgentConfigDescriptorSchema,
     getAgentConfigDescriptor,
-    getBuiltinAgentConfigDescriptors,
-    resolveHapiYoloPermissionMode
+    getBuiltinAgentConfigDescriptors
 } from './agentConfig'
 
 describe('agent config descriptors', () => {
@@ -39,7 +38,6 @@ describe('agent config descriptors', () => {
             kind: 'status',
             availability: 'managed'
         })])
-        expect(resolveHapiYoloPermissionMode('dsh')).toBeNull()
     })
 
     test('reports Pi permission as managed rather than pretending YOLO applies', () => {
@@ -60,16 +58,6 @@ describe('agent config descriptors', () => {
             optionSource: 'static',
             availability: 'both'
         }))
-        expect(resolveHapiYoloPermissionMode('pi')).toBeNull()
-    })
-
-    test('maps HAPI YOLO to each supported agent native permission mode', () => {
-        expect(resolveHapiYoloPermissionMode('claude')).toBe('bypassPermissions')
-        expect(resolveHapiYoloPermissionMode('grok')).toBe('bypassPermissions')
-        expect(resolveHapiYoloPermissionMode('codex')).toBe('yolo')
-        expect(resolveHapiYoloPermissionMode('cursor')).toBe('yolo')
-        expect(resolveHapiYoloPermissionMode('opencode')).toBe('yolo')
-        expect(resolveHapiYoloPermissionMode('kimi')).toBe('yolo')
     })
 
     test('validates descriptors received from a runner', () => {
@@ -85,12 +73,11 @@ describe('agent config descriptors', () => {
         }).success).toBe(true)
     })
 
-    test('every builtin descriptor validates and carries a permission field', () => {
+    test('every builtin descriptor validates', () => {
         const descriptors = getBuiltinAgentConfigDescriptors()
         expect(descriptors.length).toBeGreaterThan(0)
         for (const descriptor of descriptors) {
             expect(AgentConfigDescriptorSchema.safeParse(descriptor).success).toBe(true)
-            expect(descriptor.fields.some((field) => field.id === 'permission')).toBe(true)
         }
     })
 })

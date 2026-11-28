@@ -38,6 +38,9 @@ import app.hapi.protocol.wire.QueuedStateResponse
 import app.hapi.protocol.wire.RegisterDeviceRequest
 import app.hapi.protocol.wire.RenameMachineRequest
 import app.hapi.protocol.wire.RenameSessionRequest
+import app.hapi.protocol.wire.SetSessionTranslateInputRequest
+import app.hapi.protocol.wire.FeaturesResponse
+import app.hapi.protocol.wire.HubSettingsResponse
 import app.hapi.protocol.wire.ReopenSessionResponse
 import app.hapi.protocol.wire.ResumeSessionRequest
 import app.hapi.protocol.wire.ResumeSessionResponse
@@ -63,6 +66,7 @@ import app.hapi.protocol.wire.UnregisterDeviceRequest
 import app.hapi.protocol.wire.UpdateSessionSummaryRequest
 import app.hapi.protocol.wire.UploadFileRequest
 import app.hapi.protocol.wire.UploadFileResponse
+import app.hapi.protocol.wire.UsageQuotasResponse
 import app.hapi.protocol.wire.UsageSummaryResponse
 import app.hapi.protocol.wire.VisibilityRequest
 import java.io.IOException
@@ -421,6 +425,26 @@ class HapiApi internal constructor(
         request<Unit>("PATCH", url("api", "sessions", sessionId).build(), RenameSessionRequest(name).toJsonBody())
     }
 
+    /** `PATCH /api/sessions/:id {translateInput}` — hub-owned per-session input translation. */
+    override suspend fun setSessionTranslateInput(sessionId: String, enabled: Boolean) {
+        request<Unit>(
+            "PATCH",
+            url("api", "sessions", sessionId).build(),
+            SetSessionTranslateInputRequest(enabled).toJsonBody(),
+        )
+    }
+
+    suspend fun setCursorAutoRetry(enabled: Boolean): HubSettingsResponse =
+        request("PUT", url("api", "hub-settings").build(), mapOf("autoBridgeTransientModelErrors" to enabled).toJsonBody())
+
+    /** `GET /api/features`. */
+    override suspend fun getFeatures(): FeaturesResponse =
+        request("GET", url("api", "features").build())
+
+    /** `GET /api/hub-settings`. */
+    override suspend fun getHubSettings(): HubSettingsResponse =
+        request("GET", url("api", "hub-settings").build())
+
     /** `PATCH /api/sessions/:id/summary` (1–255 chars). */
     suspend fun updateSessionSummary(sessionId: String, text: String) {
         request<Unit>(
@@ -769,6 +793,12 @@ class HapiApi internal constructor(
         val target = url("api", "usage", "summary")
             .addQueryParameter("range", range)
             .addQueryParameter("timeZone", timeZone)
+        return request("GET", target.build())
+    }
+
+    suspend fun getUsageQuotas(refresh: Boolean = false): UsageQuotasResponse {
+        val target = url("api", "usage", "quotas")
+        if (refresh) target.addQueryParameter("refresh", "1")
         return request("GET", target.build())
     }
 

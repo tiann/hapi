@@ -15,7 +15,7 @@ import type {
 } from '@/claude/sdk'
 import type { RawJSONLines } from '@/claude/types'
 import { isClaudeModelPreset } from '@hapi/protocol'
-import type { ClaudePermissionMode } from '@hapi/protocol/types'
+import type { PermissionModeOf, Flavors } from '@hapi/protocol/types'
 import { logger } from '@/lib'
 
 /**
@@ -61,8 +61,25 @@ export interface ConversionContext {
 
 type PermissionResponse = {
     approved: boolean
-    mode?: ClaudePermissionMode
+    mode?: PermissionModeOf<typeof Flavors.claude>
     reason?: string
+}
+
+/** Raw cumulative `total_cost_usd` and `duration_api_ms` of the previous result. */
+type CumulativeUsageBaseline = {
+    totalCostUsd: number
+    durationApiMs: number
+}
+
+/**
+ * Per-round delta of a cumulative counter, or undefined when no trustworthy
+ * delta exists (no baseline, or a value that went backwards and rebased).
+ * A restored stale snapshot still above the baseline under-reports that round; accepted.
+ */
+function perRoundDelta(current: number, previous: number | undefined): number | undefined {
+    if (previous === undefined) return undefined
+    const delta = current - previous
+    return delta >= 0 ? delta : undefined
 }
 
 /**
@@ -111,6 +128,11 @@ export class SDKToLogConverter {
     // must not overwrite it.
     private contextUsageKeys = new Set<string>()
     private accountIdentity: string | null
+    // Cumulative cost/duration_api_ms survive --resume, so emit only
+    // deltas against a known baseline and omit fields when none is available.
+    private previousCumulative: CumulativeUsageBaseline | null = null
+    // Native session id that owns previousCumulative; null until learned.
+    private usageSessionId: string | null = null
 
     constructor(
         context: Omit<ConversionContext, 'parentUuid'>,
@@ -193,6 +215,12 @@ export class SDKToLogConverter {
      */
     updateSessionId(sessionId: string): void {
         this.context.sessionId = sessionId
+        // The usage baseline belongs to one native session: a different id
+        // (new session, /clear rotation, fork) cannot be differenced against it.
+        if (this.usageSessionId !== null && this.usageSessionId !== sessionId) {
+            this.previousCumulative = null
+        }
+        this.usageSessionId = sessionId
     }
 
     /**
@@ -215,6 +243,51 @@ export class SDKToLogConverter {
     resetParentChain(): void {
         this.lastUuid = null
         this.context.parentUuid = null
+        // The usage baseline is kept: updateSessionId clears it when the native session id changes.
+    }
+
+    /**
+     * Seed a zero baseline for a process started without a prior transcript.
+     */
+    startFreshProcessBaseline(): void {
+        // A fresh process owns whatever session id it reports next.
+        this.usageSessionId = null
+        this.previousCumulative = { totalCostUsd: 0, durationApiMs: 0 }
+    }
+
+    /**
+     * Advance the cumulative baseline for a result that produces no transcript
+     * entry, so the next round does not absorb its cost and API time.
+     */
+    consumeResultForAccounting(resultMsg: SDKResultMessage): void {
+        this.consumeCumulativeDeltas(resultMsg)
+    }
+
+    /**
+     * Diff a result's cumulative fields against the previous raw values, then
+     * advance the baseline even for errored/compaction rounds and backwards
+     * values. Fields without a trustworthy delta are omitted, not emitted raw.
+     */
+    private consumeCumulativeDeltas(resultMsg: SDKResultMessage): {
+        totalCostUsd: number | undefined
+        durationApiMs: number | undefined
+    } {
+        // A result from another native session (e.g. a background task of a
+        // session cleared after binding) is neither diffed nor used as a baseline.
+        if (this.usageSessionId !== null && typeof resultMsg.session_id === 'string'
+            && resultMsg.session_id !== this.usageSessionId) {
+            return { totalCostUsd: undefined, durationApiMs: undefined }
+        }
+        const previous = this.previousCumulative
+        const totalCostUsd = perRoundDelta(resultMsg.total_cost_usd, previous?.totalCostUsd)
+        const durationApiMs = typeof resultMsg.duration_api_ms === 'number'
+            ? perRoundDelta(resultMsg.duration_api_ms, previous?.durationApiMs)
+            : undefined
+        this.previousCumulative = {
+            totalCostUsd: resultMsg.total_cost_usd,
+            durationApiMs: resultMsg.duration_api_ms
+        }
+        return { totalCostUsd, durationApiMs }
     }
 
     /**
@@ -486,6 +559,18 @@ export class SDKToLogConverter {
                         }
                     }
                 }
+                // A held command result was counted on arrival and has no round of its own.
+                if (resultMsg.hapi_held_result === true) break
+                // Cost and API time are cumulative across resumes; emit only a
+                // trustworthy per-round delta, never a lifetime total. Token
+                // counts come only from `usage`, which is already per round. A
+                // result without `usage` (for example from a compatible API that
+                // reports none) carries no token counts: the cumulative
+                // `modelUsage` cannot be attributed to one round, so it is not a
+                // fallback.
+                const perRound = resultMsg.hapi_skip_usage === true
+                    ? { totalCostUsd: undefined, durationApiMs: undefined }
+                    : this.consumeCumulativeDeltas(resultMsg)
                 logMessage = {
                     ...baseFields,
                     type: 'system',
@@ -493,11 +578,10 @@ export class SDKToLogConverter {
                     durationMs: resultMsg.duration_ms,
                     resultSummary: {
                         usage: resultMsg.usage,
-                        modelUsage: resultMsg.modelUsage,
-                        total_cost_usd: resultMsg.total_cost_usd,
+                        ...(perRound.totalCostUsd !== undefined ? { total_cost_usd: perRound.totalCostUsd } : {}),
                         num_turns: resultMsg.num_turns,
                         duration_ms: resultMsg.duration_ms,
-                        ...claudeGenerationFields(resultMsg)
+                        ...claudeGenerationFields(resultMsg, perRound.durationApiMs)
                     }
                 }
                 break
@@ -653,15 +737,17 @@ export function convertSDKToLog(
 }
 
 /**
- * tok/s fields straight from the result: `duration_api_ms` is Claude Code's
- * own API-active time (tool execution and permission waits are already
- * outside it), and the round's output tokens. Errored rounds and manual
- * compaction turns have no meaningful generation rate, so they emit nothing
- * rather than a wrong one.
+ * tok/s fields for the round: `generationMs` is the per-round delta of Claude
+ * Code's own API-active time (`duration_api_ms`, with tool execution and
+ * permission waits already outside it), paired with the round's output tokens.
+ * Errored rounds and manual compaction turns have no meaningful generation
+ * rate, so they emit nothing rather than a wrong one.
  */
-function claudeGenerationFields(resultMsg: SDKResultMessage): { generation_ms: number; generation_output_tokens: number } | Record<string, never> {
+function claudeGenerationFields(
+    resultMsg: SDKResultMessage,
+    generationMs: number | undefined
+): { generation_ms: number; generation_output_tokens: number } | Record<string, never> {
     if (resultMsg.is_error || resultMsg.hapi_compact_turn === true) return {}
-    const generationMs = resultMsg.duration_api_ms
     const outputTokens = resultMsg.usage?.output_tokens
     const measurable = (value: unknown): value is number =>
         typeof value === 'number' && Number.isSafeInteger(value) && value > 0

@@ -1,6 +1,7 @@
 package app.hapi.companion.feature.settings
 
 import app.hapi.data.api.ApiError
+import app.hapi.protocol.wire.UsageQuotasResponse
 import app.hapi.protocol.wire.UsageSummaryResponse
 import java.time.LocalDate
 import java.time.ZoneId
@@ -23,6 +24,12 @@ enum class UsageRange(val wireValue: String, val days: Int?) {
 fun interface UsageGateway {
     suspend fun summary(range: String, timeZone: String): UsageSummaryResponse
 }
+
+data class QuotaUiState(
+    val snapshot: UsageQuotasResponse? = null,
+    val loading: Boolean = true,
+    val failure: Exception? = null,
+)
 
 sealed interface UsageUiState {
     data object Loading : UsageUiState
@@ -47,6 +54,7 @@ sealed interface UsageUiState {
  */
 class UsageViewModel(
     private val gateway: UsageGateway,
+    private val loadQuotas: suspend (refresh: Boolean) -> UsageQuotasResponse,
     private val scope: CoroutineScope,
     private val zone: ZoneId = ZoneId.systemDefault(),
     /** Injectable for deterministic calendar-fill tests. */
@@ -63,8 +71,35 @@ class UsageViewModel(
 
     private var loadJob: Job? = null
 
+    private val mutableQuotas = MutableStateFlow(QuotaUiState())
+    val quotas = mutableQuotas.asStateFlow()
+    private var quotaJob: Job? = null
+
     fun start() {
         if (loadJob == null) load(mutableRange.value)
+        if (quotaJob == null) fetchQuotas(refresh = false)
+    }
+
+    fun refreshQuotas() = fetchQuotas(refresh = true)
+
+    private fun fetchQuotas(refresh: Boolean) {
+        if (quotaJob?.isActive == true) return
+        val previous = mutableQuotas.value.snapshot
+        mutableQuotas.value = QuotaUiState(snapshot = previous)
+        quotaJob = scope.launch {
+            mutableQuotas.value = try {
+                QuotaUiState(snapshot = loadQuotas(refresh), loading = false)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val status = (e as? ApiError)?.status
+                QuotaUiState(
+                    snapshot = previous.takeUnless { status == 401 || status == 403 || status == 404 },
+                    loading = false,
+                    failure = e,
+                )
+            }
+        }
     }
 
     fun setRange(range: UsageRange) {

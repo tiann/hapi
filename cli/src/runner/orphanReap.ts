@@ -17,6 +17,7 @@
 import spawn from 'cross-spawn'
 import { getProcessStartMarker, isProcessAlive, windowsProcessListCimCommand } from '@/utils/process'
 import { readWindowsProcessTable } from '@/utils/windowsProcessStop'
+import { windowsSystemTool } from '@/utils/windowsSystemTools'
 
 export type ProcessSnapshot = {
     pid: number
@@ -184,7 +185,7 @@ export {
 /** Win32 process list with CommandLine + CreationDate for argv orphan matching. */
 export function listWindowsProcessesWithCommandLine(): ProcessSnapshot[] {
     const result = spawn.sync(
-        'powershell',
+        windowsSystemTool('powershell'),
         [
             '-NoProfile',
             '-NonInteractive',
@@ -279,6 +280,50 @@ export async function findRunnerSpawnedOrphanPids(
 }
 
 /**
+ * Start-marker identity must be a string (or null = unknown).
+ *
+ * Silent-success scar: a dropped `await` left `getStartMarker()` returning a
+ * Promise. `Promise !== expectedMarker` took the PID-reuse branch, incremented
+ * `resolved`, never called killTree, and still returned `'stopped'`. Rejecting
+ * non-strings as `START_MARKER_INVALID` makes that path fail closed
+ * (`still_alive`) even if an await is dropped again —
+ * `normalizeStartMarker(promise)` is invalid, not a reuse success.
+ *
+ * `undefined` is also invalid (omitted return), not null. Null alone means
+ * "probe could not read a marker" and keeps the liveness fallback; treating
+ * undefined as null let a dead PID report `'stopped'` without killTree
+ * (#2591 / Codex Minor on #2592).
+ *
+ * Symbol (not the string `'invalid'`) so a second normalize of an already-invalid
+ * result cannot be mistaken for a real marker string.
+ */
+export const START_MARKER_INVALID: unique symbol = Symbol('start-marker-invalid')
+export type StartMarkerResult = string | null | typeof START_MARKER_INVALID
+
+export function normalizeStartMarker(value: unknown): StartMarkerResult {
+    if (value === null) return null
+    if (value === undefined) return START_MARKER_INVALID
+    if (value === START_MARKER_INVALID) return START_MARKER_INVALID
+    if (typeof value === 'string') return value
+    return START_MARKER_INVALID
+}
+
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+    return typeof value === 'object'
+        && value !== null
+        && typeof (value as PromiseLike<unknown>).then === 'function'
+}
+
+async function resolveStartMarker(
+    getStartMarker: (pid: number) => string | null | Promise<string | null>,
+    pid: number
+): Promise<StartMarkerResult> {
+    const value: unknown = getStartMarker(pid)
+    const settled: unknown = isThenable(value) ? await value : value
+    return normalizeStartMarker(settled)
+}
+
+/**
  * Tree-kill every argv-matched orphan for `sessionId`.
  * Returns null when none were found (caller continues to other stop paths).
  * Returns still_alive when the process scan fails — empty is not proof gone.
@@ -314,6 +359,10 @@ export async function reapRunnerSpawnedOrphans(
         : isProcessAlive)
 
     let targets: OrphanTarget[]
+    // Legacy findOrphans path: malformed initial probes must not become null
+    // (null + dead PID → stopped). Track them as unconfirmed and omit from
+    // kill targets (#2592 Codex Minor follow-up).
+    let initialUnconfirmed = false
     if (deps.findTargets) {
         const found = await deps.findTargets(sessionId)
         if (found === 'scan_failed') return 'still_alive'
@@ -322,22 +371,27 @@ export async function reapRunnerSpawnedOrphans(
         // Legacy: pids only — capture markers in a separate probe (tests / older callers).
         const orphanPids = await deps.findOrphans(sessionId)
         if (orphanPids === 'scan_failed') return 'still_alive'
-        targets = await Promise.all(orphanPids.map(async (pid) => ({
-            pid,
-            startMarker: await getStartMarker(pid),
-        })))
+        targets = []
+        for (const pid of orphanPids) {
+            const marker = await resolveStartMarker(getStartMarker, pid)
+            if (marker === START_MARKER_INVALID) {
+                initialUnconfirmed = true
+                continue
+            }
+            targets.push({ pid, startMarker: marker })
+        }
     } else {
         const found = await findRunnerSpawnedOrphanTargets(sessionId)
         if (found === 'scan_failed') return 'still_alive'
         targets = found
     }
 
-    if (targets.length === 0) return null
+    if (targets.length === 0) return initialUnconfirmed ? 'still_alive' : null
 
     // killProcessTreeByPid returns false if any collected descendant survives,
     // even when the stamped root PID has already exited. Trust that result —
     // do not downgrade to stopped based on root liveness alone (#1910 / #1911 B2).
-    let anyUnconfirmed = false
+    let anyUnconfirmed = initialUnconfirmed
     let resolved = 0
     for (const target of targets) {
         const { pid: orphanPid, startMarker: expectedMarker } = target
@@ -353,7 +407,14 @@ export async function reapRunnerSpawnedOrphans(
             continue
         }
 
-        const currentMarker = await getStartMarker(orphanPid)
+        // Outer normalizeStartMarker: if `await` on resolveStartMarker is dropped,
+        // the value is still a Promise and normalizes to START_MARKER_INVALID
+        // (fail closed) instead of taking the PID-reuse success branch.
+        const currentMarker = normalizeStartMarker(await resolveStartMarker(getStartMarker, orphanPid))
+        if (currentMarker === START_MARKER_INVALID) {
+            anyUnconfirmed = true
+            continue
+        }
         if (currentMarker === null) {
             // Probe failed mid-flight. Null is not proof of PID reuse (psutil
             // lesson: unknown create_time ≠ recycled). Skip kill; if still
@@ -375,7 +436,8 @@ export async function reapRunnerSpawnedOrphans(
         if (deps.prepare) {
             if (!await deps.prepare(target)) { anyUnconfirmed = true; continue }
             if (!await isAlive(orphanPid)) { resolved++; continue }
-            if (await getStartMarker(orphanPid) !== expectedMarker) { anyUnconfirmed = true; continue }
+            const afterPrepare = normalizeStartMarker(await resolveStartMarker(getStartMarker, orphanPid))
+            if (afterPrepare !== expectedMarker) { anyUnconfirmed = true; continue }
         }
         if (!(await killTree(orphanPid))) {
             anyUnconfirmed = true

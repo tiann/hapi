@@ -72,6 +72,14 @@ describe('isOnSessionPage', () => {
         expect(isOnSessionPage('/settings', 'abc')).toBe(false)
         expect(isOnSessionPage('/', 'abc')).toBe(false)
     })
+
+    it('counts the files routes only when they sit beside the chat', () => {
+        expect(isOnSessionPage('/sessions/abc/files', 'abc', { chatBesideFiles: true })).toBe(true)
+        expect(isOnSessionPage('/sessions/abc/file/', 'abc', { chatBesideFiles: true })).toBe(true)
+        expect(isOnSessionPage('/sessions/abc/files', 'abc')).toBe(false)
+        expect(isOnSessionPage('/sessions/abc/terminal', 'abc', { chatBesideFiles: true })).toBe(false)
+        expect(isOnSessionPage('/sessions/other/files', 'abc', { chatBesideFiles: true })).toBe(false)
+    })
 })
 
 

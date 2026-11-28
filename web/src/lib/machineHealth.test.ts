@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+    formatMachineHealthInline,
     formatMachineUptimeSeconds,
+    formatStorageBytes,
     presentMachineHealth,
 } from './machineHealth'
 
@@ -57,5 +59,36 @@ describe('formatMachineUptimeSeconds', () => {
         expect(formatMachineUptimeSeconds(3_720)).toBe('1h 2m')
         expect(formatMachineUptimeSeconds(300)).toBe('5m')
         expect(formatMachineUptimeSeconds(45)).toBe('45s')
+    })
+})
+
+describe('machine disk presentation', () => {
+    const GiB = 1024 ** 3
+
+    it('formats sizes with binary units like df -h', () => {
+        expect(formatStorageBytes(162.5 * GiB)).toBe('163 GB')
+        expect(formatStorageBytes(9.5 * GiB)).toBe('9.5 GB')
+        expect(formatStorageBytes(512 * 1024 ** 2)).toBe('512 MB')
+        expect(formatStorageBytes(2 * 1024 ** 4)).toBe('2.0 TB')
+    })
+
+    it('presents disk usage without changing the agent-capacity status', () => {
+        const presentation = presentMachineHealth({
+            collectedAt: 1,
+            cpuPercent: 7,
+            memoryPercent: 37,
+            diskTotalBytes: 197 * GiB,
+            diskUsedBytes: 163 * GiB,
+            diskAvailableBytes: 26 * GiB,
+        })
+        expect(presentation?.disk).toMatchObject({ percent: 87, tone: 'warn' })
+        expect(presentation?.status).toBe('healthy')
+        expect(formatMachineHealthInline(presentation!, 'Disk')).toBe('CPU 7% · RAM 37% · Disk 163 GB / 197 GB')
+    })
+
+    it('omits disk when the runner does not report it', () => {
+        const presentation = presentMachineHealth({ collectedAt: 1, cpuPercent: 7, memoryPercent: 37 })
+        expect(presentation?.disk).toBeUndefined()
+        expect(formatMachineHealthInline(presentation!, 'Disk')).toBe('CPU 7% · RAM 37%')
     })
 })

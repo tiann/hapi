@@ -4,7 +4,7 @@
  */
 
 import type { Readable } from 'node:stream'
-import type { ClaudePermissionMode } from '@hapi/protocol/types'
+import type { PermissionModeOf, Flavors } from '@hapi/protocol/types'
 
 /**
  * SDK message types
@@ -107,6 +107,18 @@ export interface SDKResultMessage extends SDKMessage {
      * not an assistant round. Never present on the wire from Claude itself.
      */
     hapi_compact_turn?: boolean
+    /**
+     * Set in-process on a result forwarded for display whose cumulative
+     * counters belong to another session than the active one, so the log
+     * converter must not diff or rebase usage with it.
+     */
+    hapi_skip_usage?: boolean
+    /**
+     * Set in-process on a command result forwarded on its input echo after
+     * usage counted it on arrival, so the log converter neither counts it
+     * again nor writes a summary that would land on a reply shown meanwhile.
+     */
+    hapi_held_result?: boolean
 }
 
 export interface SDKControlResponse extends SDKMessage {
@@ -139,7 +151,7 @@ export interface InterruptRequest extends ControlRequest {
 
 export interface SetPermissionModeRequest extends ControlRequest {
     subtype: 'set_permission_mode'
-    mode: ClaudePermissionMode
+    mode: PermissionModeOf<typeof Flavors.claude>
 }
 
 export interface ApplyFlagSettingsRequest extends ControlRequest {
@@ -213,7 +225,7 @@ export interface QueryOptions {
     maxTurns?: number
     mcpServers?: Record<string, unknown>
     pathToClaudeCodeExecutable?: string
-    permissionMode?: ClaudePermissionMode
+    permissionMode?: PermissionModeOf<typeof Flavors.claude>
     continue?: boolean
     resume?: string
     /**

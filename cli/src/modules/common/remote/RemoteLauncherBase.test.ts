@@ -283,3 +283,26 @@ describe('RemoteLauncherBase abort barrier', () => {
         expect(barrierPassed).toBe(true)
     })
 })
+
+it('rechecks the terminal after an asynchronous display resolves and skips Ink if the TTY disappeared', async () => {
+    let tty = true
+    let release!: (element: ReactElement) => void
+    class LosingTerminal extends RemoteLauncherBase {
+        constructor() { super() }
+        protected get hasTTY() { return tty }
+        protected createDisplay() {
+            return new Promise<ReactElement>(resolve => { release = resolve })
+        }
+        protected runMainLoop = vi.fn(async () => {})
+        protected cleanup = vi.fn(async () => {})
+        launch() { return this.start({ onExit() {} }) }
+    }
+    const { render } = await import('ink')
+    const running = new LosingTerminal().launch()
+    tty = false
+    release({} as ReactElement)
+    await expect(running).resolves.toBe('exit')
+    expect(render).not.toHaveBeenCalled()
+})
+
+vi.mock('ink', () => ({ render: vi.fn() }))

@@ -41,3 +41,16 @@ test.describe('session separate window', () => {
         await expect(page.getByRole('menuitem', { name: 'Open in separate window' })).toBeHidden()
     })
 })
+
+
+test('shows the complete Reopen explanation in the mobile action menu', async ({ page }) => {
+    await page.setViewportSize({ width: 360, height: 450 })
+    await page.goto(`${fixtureUrl}?reopenHint`)
+    const reopen = page.getByRole('menuitem', { name: 'Reopen' })
+    await reopen.focus()
+    const hint = page.getByText('Could not verify Cursor chat data.', { exact: false })
+    await expect(reopen).toHaveAccessibleDescription(await hint.innerText())
+    await hint.scrollIntoViewIfNeeded()
+    await expect(hint).toBeInViewport({ ratio: 1 })
+    await expect(page.getByRole('menuitem', { name: 'Delete' })).toBeVisible()
+})

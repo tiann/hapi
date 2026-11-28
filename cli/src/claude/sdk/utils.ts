@@ -9,6 +9,7 @@ import { homedir } from 'node:os'
 import path from 'node:path'
 import { logger } from '@/ui/logger'
 import { getAgentLaunchCommand, resolveExecutable } from '@/agent/agentLaunchCommand'
+import { windowsSystemTool } from '@/utils/windowsSystemTools'
 
 const windowsPath = path.win32
 
@@ -43,7 +44,7 @@ function resolveWindowsClaudePathCandidate(candidate: string): string | null {
 
 function findWhereResults(command: string): string[] {
     try {
-        const result = execFileSync('where.exe', [command], {
+        const result = execFileSync(windowsSystemTool('where'), [command], {
             encoding: 'utf8',
             stdio: ['pipe', 'pipe', 'pipe'],
             cwd: homedir(),

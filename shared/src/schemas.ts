@@ -201,6 +201,9 @@ export const MetadataSchema = z.object({
     // Hub-owned provisional title from the first user prompt. Shown only until
     // `name` or `summary` exists; it never blocks generated/native titles.
     promptTitle: z.string().optional(),
+    // Hub-owned per-session toggle: translate user prompts to English before
+    // they reach the agent (falls back to the original text on failure).
+    translateInput: z.boolean().optional(),
     machineId: z.string().optional(),
     claudeSessionId: z.string().optional(),
     // Earlier Claude session ids of this HAPI session (Claude rotates the id on
@@ -304,6 +307,15 @@ export const MetadataSchema = z.object({
     // sit quiet indefinitely (operator holding pens, sessions owning work the
     // hub cannot see). Never reconciled to 'idle' while true.
     idleReconcileExempt: z.boolean().optional(),
+    // Externally blocked work distinct from turn-scoped `thinking` (#2020):
+    // waiting on CI, a vendor, or a peer reply. Hub-visible so keepalive-idle
+    // reconcile (and any future destroy-state callers) cannot treat the row as
+    // an idle ghost between polls. Set/clear via MCP `session_waiting` or
+    // CLI update-metadata (`ApiSession.setWaiting` / `clearWaiting`).
+    waiting: z.object({
+        since: z.number(),
+        reason: z.string().optional(),
+    }).nullable().optional(),
     archivedBy: z.string().optional(),
     archiveReason: z.string().optional(),
     // Set only after a completed fresh-session clear. The source row remains
@@ -703,6 +715,8 @@ export const AttachedJobSchema = z.object({
     wakeOnTerminal: z.boolean().optional(),
     /** Optional prescription text appended to the hub wake message. */
     wakePrompt: z.string().max(2000).optional(),
+    /** In list / primary projections, the newest heartbeat across running jobs. */
+    latestRunningHeartbeatAt: z.number().optional(),
     heartbeatAt: z.number(),
     startedAt: z.number(),
     updatedAt: z.number()
@@ -887,7 +901,12 @@ export const MachineHealthSchema = z.object({
     load1m: z.number().nonnegative().optional(),
     cpuPercent: z.number().min(0).max(100).optional(),
     memoryPercent: z.number().min(0).max(100).optional(),
-    uptimeSeconds: z.number().nonnegative().optional()
+    uptimeSeconds: z.number().nonnegative().optional(),
+    /** Filesystem holding the runner user's home (where workspaces/uploads live), like `df`. */
+    diskTotalBytes: z.number().nonnegative().optional(),
+    diskUsedBytes: z.number().nonnegative().optional(),
+    /** Space available to unprivileged users (`df` "Avail"). */
+    diskAvailableBytes: z.number().nonnegative().optional()
 }).strict()
 
 export type MachineHealth = z.infer<typeof MachineHealthSchema>

@@ -451,7 +451,7 @@ func toolCardPresentation(_ tool: ChatToolCall, basePath: String?) -> ToolCardPr
         )
 
     case "CodexPatch":
-        let files = input?[chatKey: "changes"]?.chatObject.map { Array($0.keys).sorted() } ?? []
+        let files = codexPatchFiles(input).map(\.path)
         let subtitle = files.first.map { first -> String in
             let display = chatBasename(chatDisplayPath(first, basePath: basePath))
             return files.count > 1 ? "\(display) (+\(files.count - 1))" : display

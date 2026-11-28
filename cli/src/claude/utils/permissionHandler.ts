@@ -117,8 +117,21 @@ function buildRequestUserInputUpdatedInput(input: unknown, answers: unknown): Re
     };
 }
 
+// Backstop for tool calls whose result never shows up in the stream.
+const MAX_TRACKED_TOOL_CALLS = 1000;
+
+function isExitPlanModeToolName(name: string): boolean {
+    return name === 'exit_plan_mode' || name === 'ExitPlanMode';
+}
+
 export class PermissionHandler extends BasePermissionHandler<PermissionResponse, PermissionResult> {
+    // Tool calls that have not produced a result yet. Finished calls are
+    // dropped in onMessage(); keeping them would retain every tool input
+    // (file contents for Write/Edit) for the lifetime of the session.
     private toolCalls: { id: string, name: string, input: any, used: boolean }[] = [];
+    // Outlives the toolCalls entry: isAborted() is asked about a call only
+    // after its tool_result has already dropped it.
+    private exitPlanModeToolCallIds = new Set<string>();
     private responses = new Map<string, PermissionResponse>();
     private session: Session;
     private allowedTools = new Set<string>();
@@ -261,7 +274,7 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
                 }
                 // Check prefix matches
                 for (const prefix of this.allowedBashPrefixes) {
-                    if (inputObj.command.startsWith(prefix)) {
+                    if (prefix.length > 0 && inputObj.command.startsWith(prefix)) {
                         return { behavior: 'allow', updatedInput: input as Record<string, unknown> };
                     }
                 }
@@ -374,6 +387,9 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
         // Check if it's a prefix pattern (ends with :*)
         if (command.endsWith(':*')) {
             const prefix = command.slice(0, -2); // Remove :*
+            if (prefix.length === 0) {
+                return;
+            }
             this.allowedBashPrefixes.add(prefix);
         } else {
             // Literal match
@@ -416,6 +432,12 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
                             input: block.input,
                             used: false
                         });
+                        if (isExitPlanModeToolName(block.name!)) {
+                            this.exitPlanModeToolCallIds.add(block.id!);
+                        }
+                        if (this.toolCalls.length > MAX_TRACKED_TOOL_CALLS) {
+                            this.toolCalls.shift();
+                        }
                     }
                 }
             }
@@ -425,14 +447,30 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
             if (userMsg.message && userMsg.message.content && Array.isArray(userMsg.message.content)) {
                 for (const block of userMsg.message.content) {
                     if (block.type === 'tool_result' && block.tool_use_id) {
-                        const toolCall = this.toolCalls.find(tc => tc.id === block.tool_use_id);
-                        if (toolCall && !toolCall.used) {
-                            toolCall.used = true;
-                        }
+                        this.forgetFinishedToolCall(block.tool_use_id);
                     }
                 }
             }
         }
+    }
+
+    /**
+     * Drops a finished tool call, plus older calls with the same name and
+     * input. resolveToolCallId() scans newest-first and stops at the first
+     * match, so those older calls could never be resolved again anyway.
+     */
+    private forgetFinishedToolCall(toolCallId: string): void {
+        const index = this.toolCalls.findIndex(tc => tc.id === toolCallId);
+        if (index === -1) {
+            return;
+        }
+        const finished = this.toolCalls[index];
+        this.toolCalls = this.toolCalls.filter((call, i) => {
+            if (i === index) {
+                return false;
+            }
+            return i > index || call.name !== finished.name || !deepEqual(call.input, finished.input);
+        });
     }
 
     /**
@@ -450,8 +488,7 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
         }
 
         // Always abort exit_plan_mode
-        const toolCall = this.toolCalls.find(tc => tc.id === toolCallId);
-        if (toolCall && (toolCall.name === 'exit_plan_mode' || toolCall.name === 'ExitPlanMode')) {
+        if (this.exitPlanModeToolCallIds.has(toolCallId)) {
             return true;
         }
 
@@ -479,6 +516,7 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
      */
     reset(): void {
         this.toolCalls = [];
+        this.exitPlanModeToolCallIds.clear();
         this.steerDenied.clear();
         this.responses.clear();
         this.allowedTools.clear();

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'bun:test'
 import {
+    INSPECT_PEER_TOOL_DESCRIPTION,
+    LIST_PEERS_TOOL_DESCRIPTION,
+    PEER_CONTACT_RULE,
+    PEER_CONTACT_SUMMARY,
+    PEER_WAKE_PARAM_DESCRIPTION,
+    SESSION_CITATION_DISABLED_STEER,
     SESSION_REFERENCE_STEER_SUFFIX,
     SPAWN_PEER_TOOL_DESCRIPTION,
     PEER_DELIVERY_MODE_DESCRIPTION,
@@ -101,10 +107,54 @@ describe('normalizeSessionIdPrefix', () => {
 })
 
 describe('buildSessionCitationSteerInstruction', () => {
-    it('guides collaboration toward auto and preserves explicit modes and retry safety', () => {
-        const text = buildSessionCitationSteerInstruction({ inspectTool: 'inspect_peer', pingTool: 'ping_peer' })
-        expect(text).toContain(PEER_DELIVERY_MODE_DESCRIPTION)
-        expect(PING_PEER_TOOL_DESCRIPTION).toContain(PEER_DELIVERY_MODE_DESCRIPTION)
+    const text = buildSessionCitationSteerInstruction({ inspectTool: 'mcp__hapi__inspect_peer' })
+
+    it('explains citations, names the inspect tool, and limits who may be messaged', () => {
+        expect(text).toContain('/sessions/<id>')
+        expect(text).toContain('not a file')
+        expect(text).toContain('mcp__hapi__inspect_peer')
+        expect(text).toContain(PEER_CONTACT_SUMMARY)
+    })
+
+    it('leaves usage rules to the tool descriptions', () => {
+        expect(text.length).toBeLessThanOrEqual(300)
+        expect(SESSION_CITATION_DISABLED_STEER.length).toBeLessThanOrEqual(300)
+        expect(text).not.toContain(PEER_CONTACT_RULE)
+        expect(text).not.toContain('deliveryMode')
+        expect(text).not.toContain('wake')
+    })
+
+    it('keeps the not-a-file guard when peer tools are disabled', () => {
+        expect(SESSION_CITATION_DISABLED_STEER).toContain('not a file')
+        expect(SESSION_CITATION_DISABLED_STEER).toContain('are disabled on this machine')
+        expect(SESSION_CITATION_DISABLED_STEER).not.toContain(PEER_CONTACT_SUMMARY)
+    })
+})
+
+describe('peer tool contracts', () => {
+    it('carries every rule the system prompt no longer repeats', () => {
+        for (const form of ['[title](/sessions/<id>)', 'See session', 'bare /sessions/<id>']) {
+            expect(INSPECT_PEER_TOOL_DESCRIPTION).toContain(form)
+            expect(PING_PEER_TOOL_DESCRIPTION).toContain(form)
+        }
+        expect(INSPECT_PEER_TOOL_DESCRIPTION).toContain('do NOT Grep, Glob, or Read')
+        for (const description of [PING_PEER_TOOL_DESCRIPTION, LIST_PEERS_TOOL_DESCRIPTION]) {
+            expect(description).toContain(PEER_CONTACT_RULE)
+        }
+        expect(PEER_CONTACT_RULE).toContain(PEER_CONTACT_SUMMARY)
+        expect(PEER_CONTACT_RULE).toContain('Never broadcast')
+        expect(PING_PEER_TOOL_DESCRIPTION).toContain('refused unless wake=true')
+        expect(PEER_WAKE_PARAM_DESCRIPTION).toContain('Set true only when the user asked')
+        expect(SPAWN_PEER_TOOL_DESCRIPTION).toContain('POST /api/machines/.../spawn')
+        expect(INSPECT_PEER_TOOL_DESCRIPTION).toContain('hapi inspect-peer')
+        expect(PING_PEER_TOOL_DESCRIPTION).toContain('hapi ping-peer')
+        expect(SPAWN_PEER_TOOL_DESCRIPTION).toContain('hapi spawn-peer')
+        expect(LIST_PEERS_TOOL_DESCRIPTION).toContain('hapi ping-peer --list')
+    })
+
+    it('keeps delivery guidance on the deliveryMode parameter only', () => {
+        const text = PEER_DELIVERY_MODE_DESCRIPTION
+        expect(PING_PEER_TOOL_DESCRIPTION).not.toContain(text)
         expect(text).toContain('auto (default)')
         expect(text).toContain('active turn when the target supports steering and is ready')
         expect(text).toContain('auto retains the same single accepted message without resending')
@@ -117,35 +167,6 @@ describe('buildSessionCitationSteerInstruction', () => {
         expect(text).toContain('Steer requires insertion')
         expect(text).toContain('does not abort the current turn or guarantee an immediate response')
         expect(text).toContain('do not resend automatically')
-        expect(text).toContain('hapi ping-peer <id> <message> --delivery-mode auto')
-    })
-
-    it('mentions both citation forms and forbids local FS search', () => {
-        const text = buildSessionCitationSteerInstruction({
-            inspectTool: 'mcp__hapi__inspect_peer',
-            pingTool: 'mcp__hapi__ping_peer',
-            listPeersTool: 'mcp__hapi__list_peers',
-        })
-        expect(text).toContain('[title](/sessions/<id>)')
-        expect(text).toContain('See session')
-        expect(text).toContain('/sessions/<id>')
-        expect(text).toContain('mcp__hapi__inspect_peer')
-        expect(text).toContain('mcp__hapi__ping_peer')
-        expect(text).toContain('mcp__hapi__list_peers')
-        expect(text.toLowerCase()).toMatch(/not.*(grep|glob|filesystem|local file)/i)
-    })
-
-    it('teaches spawn_peer for new peers with work and forbids stuffing remit into machine spawn', () => {
-        const text = buildSessionCitationSteerInstruction({
-            inspectTool: 'mcp__hapi__inspect_peer',
-            pingTool: 'mcp__hapi__ping_peer',
-            listPeersTool: 'mcp__hapi__list_peers',
-            spawnTool: 'mcp__hapi__spawn_peer',
-        })
-        expect(text).toContain('mcp__hapi__spawn_peer')
-        expect(text).toMatch(/spawn-peer|spawn_peer/)
-        expect(text.toLowerCase()).toMatch(/400|reject/)
-        expect(text.toLowerCase()).not.toMatch(/strip/)
     })
 })
 

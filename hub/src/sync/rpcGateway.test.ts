@@ -300,12 +300,11 @@ describe('RpcGateway permission RPC error surfacing (tiann/hapi#1735)', () => {
         expect(error).toBeInstanceOf(PermissionRequestNotFoundError)
     })
 
-    it('does not relabel an unrelated RPC error as PermissionRequestNotFoundError', async () => {
-        const gateway = createGatewayWithResponse('Some other failure unrelated to a missing request')
-        // Only the specific shared message is treated as "not found"; anything
-        // else on this RPC method currently resolves rather than being
-        // mislabeled — a narrower, orthogonal gap than what this PR fixes.
-        await expect(gateway.approvePermission('session-1', 'request-1')).resolves.toBeUndefined()
+    it('propagates rejected replies without reporting a stale request', async () => {
+        const message = 'Select an option offered by Cursor, or skip the question'
+        const gateway = createGatewayWithResponse(message)
+        await expect(gateway.approvePermission('session-1', 'request-1')).rejects.toThrow(message)
+        await expect(gateway.denyPermission('session-1', 'request-1')).rejects.toThrow(message)
     })
 
     it('resolves normally when the CLI accepts the answer', async () => {

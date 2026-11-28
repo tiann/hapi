@@ -1,4 +1,5 @@
 import type { ResumableSession } from '@hapi/protocol'
+import { getSessionTitle } from '@hapi/protocol/sessionTitle'
 
 export type PickerState = {
     query: string
@@ -17,7 +18,15 @@ export type PickerKey =
     | 'escape'
 
 export function getResumeSessionName(session: ResumableSession): string {
-    return session.firstUserMessage ?? session.summary ?? session.sessionId
+    return getSessionTitle({
+        id: session.sessionId,
+        metadata: {
+            name: session.name,
+            summary: session.summary === undefined ? undefined : { text: session.summary },
+            promptTitle: session.promptTitle,
+            path: session.directory
+        }
+    })
 }
 
 export function getResumeSessionState(session: ResumableSession): string {
@@ -55,6 +64,7 @@ export function filterResumeSessions(
         const fields = [
             session.name,
             session.summary,
+            session.promptTitle,
             session.firstUserMessage,
             session.sessionId,
             session.agentSessionId,

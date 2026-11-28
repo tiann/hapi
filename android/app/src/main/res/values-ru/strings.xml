@@ -113,6 +113,7 @@
     <string name="settings_category_general_summary">Внешний вид, язык и о приложении</string>
     <string name="settings_back">Назад</string>
     <string name="settings_cancel">Отмена</string>
+    <string name="settings_cursor_retry">Повторить запрос один раз при временной ошибке модели</string>
     <string name="settings_retry">Повторить</string>
     <string name="settings_load_error">Не удалось загрузить эту панель.</string>
     <string name="settings_owner_only">Эта панель доступна только владельцу хаба (пространство имён по умолчанию).</string>
@@ -164,6 +165,16 @@
 
     <!-- Usage dashboard -->
     <string name="settings_usage">Использование</string>
+    <string name="quota_title">Квоты аккаунтов CLI</string>
+    <string name="quota_empty">Нет машин онлайн с установленными аккаунтами CLI.</string>
+    <string name="quota_runner">Обновите раннер на этой машине, чтобы видеть квоты аккаунтов CLI.</string>
+    <string name="quota_remaining">Осталось %1$d%% (использовано %2$d%%)</string>
+    <string name="quota_resets">Сброс: %1$s</string>
+    <string name="quota_unauthenticated">Не выполнен вход</string>
+    <string name="quota_custom_provider">Свой эндпоинт / API-ключ</string>
+    <string name="quota_error">Квота недоступна</string>
+    <string name="quota_older_hub">Обновите хаб, чтобы увидеть квоты аккаунтов CLI.</string>
+    <string name="quota_stale">Не удалось обновить квоты. Показаны ранее полученные данные.</string>
     <string name="settings_usage_range_7d">7 дней</string>
     <string name="settings_usage_range_30d">30 дней</string>
     <string name="settings_usage_range_all">За всё время</string>
@@ -481,6 +492,7 @@
     <string name="chat_question_awaiting">Ожидание ответа</string>
     <string name="chat_question_answered">Отвечено</string>
     <string name="chat_question_handled">Вопрос обработан</string>
+    <string name="chat_question_skipped">Вопрос пропущен</string>
     <string name="chat_question_canceled">Вопрос отменён</string>
     <string name="chat_question_failed">Вопрос не выполнен</string>
     <string name="chat_question_submitting">Отправка ответа…</string>
@@ -492,6 +504,7 @@
     <string name="chat_question_optional">Необязательно</string>
     <string name="chat_question_other_answer">Другой ответ</string>
     <string name="chat_question_hide_note">Скрыть примечание</string>
+    <string name="chat_question_skip">Пропустить</string>
     <string name="chat_question_previous">Предыдущий вопрос</string>
     <string name="chat_question_submit">Отправить ответ</string>
     <string name="chat_question_next">Следующий вопрос</string>
@@ -694,6 +707,11 @@
     <string name="tool_custom_answer">Свой ответ</string>
     <string name="tool_answer_note">Примечание</string>
     <string name="chat_view_full_message">Показать сообщение целиком</string>
+    <string name="chat_translate_input_on">Переводить мои сообщения на английский</string>
+    <string name="chat_translate_input_off">Не переводить мои сообщения</string>
+    <string name="chat_translated_label">Переведено</string>
+    <string name="chat_translated_show_sent">Показать английский текст для агента</string>
+    <string name="chat_translated_show_original">Показать оригинал</string>
     <string name="chat_full_message">Сообщение целиком</string>
     <string name="chat_previous_part">Предыдущая часть</string>
     <string name="chat_next_part">Следующая часть</string>
@@ -832,4 +850,8 @@
     <string name="passkey_enter_hub">Ввести адрес хаба вручную</string>
     <string name="passkey_hub_address_required">В этом ключе доступа нет адреса хаба. Введите адрес и продолжите с ключом доступа.</string>
     <string name="passkey_error_wrong_hub">Этот ключ доступа принадлежит другому хабу. Выберите ключ для этого хаба или проверьте адрес.</string>
+    <string name="sessions_grouped">Группировать по папке проекта</string>
+    <string name="sessions_other_project">Прочее</string>
+    <string name="sessions_folder_expanded">Развёрнуто</string>
+    <string name="sessions_folder_collapsed">Свёрнуто</string>
 </resources>

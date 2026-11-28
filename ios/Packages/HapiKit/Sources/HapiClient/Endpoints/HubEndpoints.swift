@@ -29,6 +29,21 @@ extension APIClient {
         )
     }
 
+    /// `GET /api/features` — hub feature flags (input translation, ...).
+    public func features() async throws -> HubFeaturesResponse {
+        try await request(.get, "/api/features")
+    }
+
+    /// `GET /api/hub-settings` — hub-wide settings (translation default, ...).
+    public func hubSettings() async throws -> HubSettingsResponse {
+        try await request(.get, "/api/hub-settings")
+    }
+
+    public func setCursorAutoRetry(_ enabled: Bool) async throws -> HubSettingsResponse {
+        struct Update: Encodable { let autoBridgeTransientModelErrors: Bool }
+        return try await request(.put, "/api/hub-settings", body: Update(autoBridgeTransientModelErrors: enabled))
+    }
+
     /// `POST /api/visibility` — reports foreground/background transitions so
     /// the hub can suppress redundant pushes while the app is visible.
     /// `subscriptionId` comes from the SSE `connection-changed` handshake;

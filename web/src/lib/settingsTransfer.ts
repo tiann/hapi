@@ -1,5 +1,6 @@
 import { VOICE_PERSONALITY_STORAGE_KEY } from '@hapi/protocol/voice-personality'
 import { LEGACY_ELEVENLABS_VOICE_STORAGE_KEY, VOICE_BACKEND_PREFERENCE_STORAGE_KEY, VOICE_PICKER_STORAGE_KEYS } from '@hapi/protocol/voicePickerCatalog'
+import { CHAT_SHORTCUTS_STORAGE_KEY } from './chatShortcuts'
 
 /**
  * localStorage keys that hold user settings, i.e. values the user chose to
@@ -30,6 +31,7 @@ export const SETTINGS_STORAGE_KEYS: readonly string[] = [
     'hapi-session-header-metadata',
     'hapi.filePreview.markdownMode.v1',
     // Chat and composer
+    CHAT_SHORTCUTS_STORAGE_KEY,
     'hapi-composer-enter-behavior',
     'hapi-composer-toolbar-layout',
     'hapi.composer.richMentions',

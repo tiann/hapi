@@ -59,6 +59,49 @@ public struct HubHealthResponse: Codable, Equatable, Sendable {
     }
 }
 
+/// `inputTranslation` of `GET /api/features`.
+public struct InputTranslationFeature: Codable, Equatable, Sendable {
+    public var available: Bool
+
+    public init(available: Bool) {
+        self.available = available
+    }
+}
+
+/// Typed subset of `GET /api/features` — only what the app reads. Fields are
+/// optional so older hubs (and the ones natives ignore) decode cleanly.
+public struct HubFeaturesResponse: Codable, Equatable, Sendable {
+    public var inputTranslation: InputTranslationFeature?
+
+    public init(inputTranslation: InputTranslationFeature? = nil) {
+        self.inputTranslation = inputTranslation
+    }
+
+    /// The hub has a translation provider configured (missing ⇒ false).
+    public var isInputTranslationAvailable: Bool {
+        inputTranslation?.available == true
+    }
+}
+
+/// Typed subset of `GET /api/hub-settings` — only what the app reads.
+/// Readable by every namespace; missing fields (older hubs) decode as off.
+public struct HubSettingsResponse: Codable, Equatable, Sendable {
+    /// Hub-wide input-translation default for sessions without an explicit
+    /// `metadata.translateInput`.
+    public var translateInputByDefault: Bool?
+
+    public var autoBridgeTransientModelErrors: Bool?
+
+    public init(translateInputByDefault: Bool? = nil, autoBridgeTransientModelErrors: Bool? = nil) {
+        self.autoBridgeTransientModelErrors = autoBridgeTransientModelErrors
+        self.translateInputByDefault = translateInputByDefault
+    }
+
+    public var isTranslateInputByDefault: Bool {
+        translateInputByDefault == true
+    }
+}
+
 // MARK: - Envelopes
 
 /// Envelope of `GET /api/sessions`.

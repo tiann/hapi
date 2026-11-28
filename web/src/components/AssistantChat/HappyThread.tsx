@@ -40,6 +40,7 @@ import { formatSessionHeaderTimestamp } from '@/lib/sessionHeaderTimestamp'
 import { getShareTurnReasoningLabel, selectShareTurnMetadata } from '@/lib/shareTurnMetadata'
 import { useTransientScrollbar } from '@/hooks/useTransientScrollbar'
 import { queryKeys } from '@/lib/query-keys'
+import { useSessionInputTranslation } from '@/hooks/useSessionInputTranslation'
 import { useMinuteTick } from '@/hooks/useMinuteTick'
 import { matchesSearchQuery } from '@hapi/protocol'
 
@@ -721,6 +722,12 @@ export function HappyThread(props: {
     isSyncingTail: boolean
     /** Cached re-entry: rendering the persisted window while the authoritative latest-page fetch is in flight. */
     isCatchingUpFromCache?: boolean
+    /**
+     * Cached re-entry of a hydrated tail window (viewMode 'tail', no
+     * requiresLatestReset): the rendered rows are the best available tail and
+     * the initial bottom scroll must not wait for the authoritative fetch.
+     */
+    cachedTailFirstFrame?: boolean
     messagesWarning: string | null
     hasMoreMessages: boolean
     /** A context window still has messages between it and the session head. */
@@ -817,6 +824,7 @@ export function HappyThread(props: {
         retry: false,
     })
     const showSessionSummaryInChat = hubSettingsQuery.data?.sessionSummaryInChat === true
+    const inputTranslation = useSessionInputTranslation(props.api, props.session)
     const targetSearchQuery = props.initialTargetMessageQuery?.trim() ?? ''
     const initialSearchTargetId = props.initialTargetMessageId?.trim() ?? ''
     const hasSearchTarget = Boolean(initialSearchTargetId && targetSearchQuery)
@@ -856,6 +864,7 @@ export function HappyThread(props: {
     const viewportRef = useRef<HTMLDivElement | null>(null)
     useTransientScrollbar(viewportRef, 'right')
     const contentRef = useRef<HTMLDivElement | null>(null)
+    const messagesRef = useRef<HTMLDivElement | null>(null)
     const [pullToLoadState, setPullToLoadState] = useState<PullToLoadState>('idle')
     const [searchTargetRetryVersion, setSearchTargetRetryVersion] = useState(0)
     const [isLocatingSearchTarget, setIsLocatingSearchTarget] = useState(false)
@@ -908,9 +917,9 @@ export function HappyThread(props: {
     )
     const startHistoryLoadAttemptRef = useRef<(runId: number) => void>(() => {})
     const needsViewportCoverageRef = useRef<(options?: { includePreloadMargin?: boolean }) => boolean>(() => false)
-    useSelectedSessionSeen(props.sessionId,
+    const checkVisibleReceipt = useSelectedSessionSeen(props.sessionId,
         !props.isSyncingTail && !props.messagesWarning ? props.readThroughRevision : undefined,
-        props.session.readState?.version, viewportRef, contentRef)
+        props.session.readState?.version, viewportRef, messagesRef)
     const atBottomRef = useRef(true)
     const onViewModeChangeRef = useRef(props.onViewModeChange)
     const forceScrollTokenRef = useRef(props.forceScrollToken)
@@ -1740,8 +1749,9 @@ export function HappyThread(props: {
         if (viewport) {
             viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'instant' })
             lastScrollTopRef.current = viewport.scrollTop
+            checkVisibleReceipt()
         }
-    }, [])
+    }, [checkVisibleReceipt])
 
     const scrollToBottomSmooth = useCallback(() => {
         const viewport = viewportRef.current
@@ -1848,11 +1858,20 @@ export function HappyThread(props: {
     ])
 
     useLayoutEffect(() => {
+        // Cached re-entry fast path: a hydrated tail window (usable cursor
+        // kept; not a retained history window — those carry
+        // requiresLatestReset and keep the settle-first gate) already renders
+        // the best available tail rows. Land the initial bottom scroll on the
+        // first frame instead of waiting for the authoritative latest-page
+        // fetch to settle (a 350-450ms network leg), which painted the top of
+        // the window first and then jumped to the bottom. Search-target opens
+        // and history/cold windows keep the original gate below.
+        const cachedTailReady = props.cachedTailFirstFrame === true
         if (
             props.initialTargetMessageId?.trim()
             || searchTargetHistoryLockRef.current
             || initialScrollSessionRef.current === props.sessionId
-            || props.isSyncingTail
+            || (props.isSyncingTail && !cachedTailReady)
             || props.rawMessagesCount === 0
             || appliedMessagesVersion !== props.messagesVersion
             || hasBlockingScrollRestore()
@@ -1888,6 +1907,7 @@ export function HappyThread(props: {
         props.sessionId,
         props.initialTargetMessageId,
         props.isSyncingTail,
+        props.cachedTailFirstFrame,
         props.rawMessagesCount,
         props.messagesVersion,
         appliedMessagesVersion,
@@ -2565,6 +2585,71 @@ export function HappyThread(props: {
     ])
 
     useEffect(() => {
+        // Width changes (opening/resizing/closing the files panel, dragging the
+        // sidebar, resizing the window) rewrap every message, so the same
+        // scrollTop shows a different message. Row-level scroll anchoring is
+        // disabled (see index.css), and the tail-follow observer below only
+        // handles a viewport pinned to the bottom. Remember the first visible
+        // message while the user reads, and put it back after a width reflow.
+        const content = contentRef.current
+        const viewport = viewportRef.current
+        if (!content || !viewport || typeof ResizeObserver === 'undefined') {
+            return
+        }
+
+        const followingTail = () => tailScrollInProgressRef.current
+            || (autoScrollEnabledRef.current && atBottomRef.current)
+        // While the tail is followed the other observer pins the bottom, so
+        // skip the per-message scan.
+        // Besides the pixel offset, keep how far into the anchored message the
+        // viewport top sits: the message itself rewraps too, so a reader deep
+        // inside a long reply must land at the same relative spot in it.
+        const captureReadingAnchor = (): (ScrollAnchor & { height: number }) | null => {
+            if (followingTail()) return null
+            const captured = captureScrollAnchor(viewport)
+            const element = captured ? document.getElementById(captured.id) : null
+            return captured && element ? { ...captured, height: element.getBoundingClientRect().height } : null
+        }
+        let anchor = captureReadingAnchor()
+        let lastWidth = content.getBoundingClientRect().width
+        let frame: number | null = null
+        const handleScroll = () => {
+            if (frame !== null) return
+            frame = requestAnimationFrame(() => {
+                frame = null
+                // Mid-drag, the width may already have changed again: leave the
+                // pre-reflow anchor for the observer to restore first.
+                if (content.getBoundingClientRect().width !== lastWidth) return
+                anchor = captureReadingAnchor()
+            })
+        }
+        viewport.addEventListener('scroll', handleScroll, { passive: true })
+
+        const observer = new ResizeObserver(() => {
+            const width = content.getBoundingClientRect().width
+            const widthChanged = width !== lastWidth
+            lastWidth = width
+            // A settled search result keeps its history lock, and its row is
+            // the visible anchor, so it stays in view through the reflow too.
+            if (widthChanged && anchor && !followingTail() && !hasBlockingScrollRestore()) {
+                const element = document.getElementById(anchor.id)
+                const height = element?.getBoundingClientRect().height ?? 0
+                const topOffset = anchor.topOffset < 0 && anchor.height > 0 && height > 0
+                    ? anchor.topOffset * (height / anchor.height)
+                    : anchor.topOffset
+                restoreScrollAnchor(viewport, { id: anchor.id, topOffset })
+            }
+            anchor = captureReadingAnchor()
+        })
+        observer.observe(content)
+        return () => {
+            observer.disconnect()
+            viewport.removeEventListener('scroll', handleScroll)
+            if (frame !== null) cancelAnimationFrame(frame)
+        }
+    }, [hasBlockingScrollRestore])
+
+    useEffect(() => {
         const content = contentRef.current
         if (!content || typeof ResizeObserver === 'undefined') {
             return
@@ -2783,6 +2868,7 @@ export function HappyThread(props: {
             metadata: props.metadata,
             terminalToolDisplayMode,
             showSessionSummaryInChat,
+            inputTranslationEnabled: inputTranslation.enabled,
             disabled: props.disabled,
             onRefresh: props.onRefresh,
             codexPlanProposalId: props.session.active && props.session.metadata?.capabilities?.concurrentClients
@@ -2921,7 +3007,7 @@ export function HappyThread(props: {
                                     ) : null}
                                 </>
                             )}
-                            <div className="happy-thread-messages flex flex-col gap-3">
+                            <div ref={messagesRef} className="happy-thread-messages flex flex-col gap-3">
                                 <ThreadMessagesById components={THREAD_MESSAGE_COMPONENTS} />
                             </div>
                         </div>

@@ -395,6 +395,127 @@ describe('mobile initial scroll settling', () => {
     })
 })
 
+describe('cached re-entry first frame', () => {
+    function renderCacheReentryThread(initial: {
+        isSyncingTail: boolean
+        cachedTailFirstFrame?: boolean
+        isCatchingUpFromCache?: boolean
+    }) {
+        const queryClient = new QueryClient({
+            defaultOptions: { queries: { retry: false } }
+        })
+        let props = {
+            isSyncingTail: initial.isSyncingTail,
+            isCatchingUpFromCache: initial.isCatchingUpFromCache ?? false,
+            cachedTailFirstFrame: initial.cachedTailFirstFrame ?? false
+        }
+        const renderHappyThread = () => (
+            <QueryClientProvider client={queryClient}>
+                <I18nProvider>
+                    <HappyThread
+                        api={{ getHubSettings: vi.fn().mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false }) } as unknown as ApiClient}
+                        session={{ metadata: {} } as Session}
+                        sessionId="cache-reentry-session"
+                        metadata={null}
+                        disabled={false}
+                        onRefresh={vi.fn()}
+                        onViewModeChange={vi.fn()}
+                        isSyncingTail={props.isSyncingTail}
+                        isCatchingUpFromCache={props.isCatchingUpFromCache}
+                        cachedTailFirstFrame={props.cachedTailFirstFrame}
+                        messagesWarning={null}
+                        hasMoreMessages={false}
+                        isLoadingMoreMessages={false}
+                        onLoadMore={vi.fn().mockResolvedValue({ status: 'exhausted' })}
+                        onCancelLoadMore={vi.fn()}
+                        unseenCount={0}
+                        rawMessagesCount={1}
+                        normalizedMessagesCount={1}
+                        messagesVersion={1}
+                        historyVersion={0}
+                        forceScrollToken={0}
+                        outlineOpen={false}
+                        outlineItems={[]}
+                        onOutlineOpenChange={vi.fn()}
+                    />
+                </I18nProvider>
+            </QueryClientProvider>
+        )
+        const result = render(renderHappyThread())
+        const viewport = result.container.querySelector<HTMLElement>('.chat-scroll-y')
+        if (!viewport) {
+            throw new Error('Chat viewport was not rendered')
+        }
+        Object.defineProperties(viewport, {
+            scrollHeight: { configurable: true, value: 1_232 },
+            clientHeight: { configurable: true, value: 530 }
+        })
+        act(() => {
+            vi.advanceTimersByTime(0)
+        })
+        return {
+            ...result,
+            viewport,
+            rerenderThread: (next: Partial<typeof props> = {}) => {
+                props = { ...props, ...next }
+                result.rerender(renderHappyThread())
+            }
+        }
+    }
+
+    it('lands the first frame at the bottom of a hydrated tail window while the sync is still in flight', () => {
+        const { viewport } = renderCacheReentryThread({
+            // The composed isSyncingTail stays true until the authoritative
+            // latest-page fetch settles (~350-450ms network leg) and never
+            // flips in this test: the bottom scroll must not depend on it.
+            isSyncingTail: true,
+            cachedTailFirstFrame: true,
+            isCatchingUpFromCache: true
+        })
+
+        act(() => {
+            vi.advanceTimersByTime(1_800)
+        })
+
+        expect(viewport.scrollTop).toBe(viewport.scrollHeight - viewport.clientHeight)
+        expect(viewport.scrollTop).toBe(702)
+    })
+
+    it('keeps the settle-first gate for windows without the cached-tail signal', () => {
+        const { viewport } = renderCacheReentryThread({
+            isSyncingTail: true
+        })
+
+        act(() => {
+            vi.advanceTimersByTime(3_000)
+        })
+
+        // Cold window / retained history window: no rows have been committed
+        // to the tail yet, so the viewport must stay parked until the sync
+        // settles instead of painting an arbitrary position first.
+        expect(viewport.scrollTop).toBe(0)
+    })
+
+    it('scrolls to the bottom only once the sync settles without the fast path', () => {
+        const { viewport, rerenderThread } = renderCacheReentryThread({
+            isSyncingTail: true
+        })
+
+        act(() => {
+            vi.advanceTimersByTime(3_000)
+        })
+        expect(viewport.scrollTop).toBe(0)
+
+        // The authoritative fetch settles -> the original gate passes and the
+        // initial bottom scroll commits.
+        rerenderThread({ isSyncingTail: false })
+        act(() => {
+            vi.advanceTimersByTime(0)
+        })
+        expect(viewport.scrollTop).toBe(702)
+    })
+})
+
 describe('explicit tail scrolling', () => {
     it('renders the unread count inside the compact bottom control', () => {
         const { container } = renderThread(vi.fn(), 7)
@@ -470,6 +591,137 @@ describe('explicit tail scrolling', () => {
         viewport.scrollTop = 870
         fireEvent.scroll(viewport)
         expect(onViewModeChange).not.toHaveBeenCalledWith('history')
+    })
+})
+
+describe('width reflow', () => {
+    it('keeps the first visible message in place when the chat width changes', () => {
+        searchTargetTestState.renderMessages = () => (
+            <>
+                <div id="hapi-message-session:a">a</div>
+                <div id="hapi-message-session:b">b</div>
+            </>
+        )
+        const { viewport, container } = renderThread()
+        act(() => {
+            vi.advanceTimersByTime(1_800)
+        })
+        const content = container.querySelector<HTMLElement>('.chat-scroll-content')!
+        const first = container.querySelector<HTMLElement>('[id="hapi-message-session:a"]')!
+        const second = container.querySelector<HTMLElement>('[id="hapi-message-session:b"]')!
+        // Narrow layouts wrap message "a" onto more lines, pushing "b" down.
+        let width = 800
+        const firstHeight = () => (width === 800 ? 300 : 500)
+        const rect = (top: number, height: number) => ({ top, bottom: top + height, height, left: 0, right: width, width, x: 0, y: top, toJSON: () => ({}) }) as DOMRect
+        viewport.getBoundingClientRect = () => rect(0, 530)
+        content.getBoundingClientRect = () => rect(-viewport.scrollTop, 1_232)
+        first.getBoundingClientRect = () => rect(-viewport.scrollTop, firstHeight())
+        second.getBoundingClientRect = () => rect(firstHeight() - viewport.scrollTop, 400)
+
+        // Read in history: message "b" sits 50px below the viewport top.
+        viewport.scrollTop = 350
+        fireEvent.scroll(viewport)
+        act(() => {
+            vi.advanceTimersByTime(20)
+            for (const callback of resizeCallbacks) callback()
+        })
+        expect(second.getBoundingClientRect().top - viewport.getBoundingClientRect().top).toBe(-50)
+
+        width = 500
+        act(() => {
+            for (const callback of resizeCallbacks) callback()
+        })
+
+        expect(second.getBoundingClientRect().top - viewport.getBoundingClientRect().top).toBe(-50)
+        expect(viewport.scrollTop).toBe(550)
+    })
+})
+
+describe('width reflow inside a long message', () => {
+    it('keeps the same relative spot when the anchored message itself shrinks', () => {
+        searchTargetTestState.renderMessages = () => (
+            <>
+                <div id="hapi-message-session:a">a</div>
+                <div id="hapi-message-session:b">b</div>
+            </>
+        )
+        const { viewport, container } = renderThread()
+        act(() => {
+            vi.advanceTimersByTime(1_800)
+        })
+        const content = container.querySelector<HTMLElement>('.chat-scroll-content')!
+        const first = container.querySelector<HTMLElement>('[id="hapi-message-session:a"]')!
+        const second = container.querySelector<HTMLElement>('[id="hapi-message-session:b"]')!
+        // Closing the panel widens the chat: the long reply "a" shrinks from 1000px to 500px.
+        let width = 500
+        const firstHeight = () => (width === 500 ? 1_000 : 500)
+        const rect = (top: number, height: number) => ({ top, bottom: top + height, height, left: 0, right: width, width, x: 0, y: top, toJSON: () => ({}) }) as DOMRect
+        viewport.getBoundingClientRect = () => rect(0, 530)
+        content.getBoundingClientRect = () => rect(-viewport.scrollTop, 1_232)
+        first.getBoundingClientRect = () => rect(-viewport.scrollTop, firstHeight())
+        second.getBoundingClientRect = () => rect(firstHeight() - viewport.scrollTop, 400)
+
+        // 700px into "a" (70% of it).
+        viewport.scrollTop = 700
+        fireEvent.scroll(viewport)
+        act(() => {
+            vi.advanceTimersByTime(20)
+            for (const callback of resizeCallbacks) callback()
+        })
+
+        width = 800
+        act(() => {
+            for (const callback of resizeCallbacks) callback()
+        })
+
+        // Still 70% into "a", not past its end into "b".
+        expect(viewport.scrollTop).toBe(350)
+        expect(first.getBoundingClientRect().bottom).toBeGreaterThan(0)
+    })
+
+    it('keeps the pre-reflow anchor when a drag changes the width again before the scroll frame runs', () => {
+        searchTargetTestState.renderMessages = () => (
+            <>
+                <div id="hapi-message-session:a">a</div>
+                <div id="hapi-message-session:b">b</div>
+            </>
+        )
+        const { viewport, container } = renderThread()
+        act(() => {
+            vi.advanceTimersByTime(1_800)
+        })
+        const content = container.querySelector<HTMLElement>('.chat-scroll-content')!
+        const first = container.querySelector<HTMLElement>('[id="hapi-message-session:a"]')!
+        const second = container.querySelector<HTMLElement>('[id="hapi-message-session:b"]')!
+        let width = 800
+        const heights: Record<number, number> = { 800: 300, 650: 400, 500: 500 }
+        const rect = (top: number, height: number) => ({ top, bottom: top + height, height, left: 0, right: width, width, x: 0, y: top, toJSON: () => ({}) }) as DOMRect
+        viewport.getBoundingClientRect = () => rect(0, 530)
+        content.getBoundingClientRect = () => rect(-viewport.scrollTop, 1_232)
+        first.getBoundingClientRect = () => rect(-viewport.scrollTop, heights[width]!)
+        second.getBoundingClientRect = () => rect(heights[width]! - viewport.scrollTop, 400)
+
+        viewport.scrollTop = 350
+        fireEvent.scroll(viewport)
+        act(() => {
+            vi.advanceTimersByTime(20)
+            for (const callback of resizeCallbacks) callback()
+        })
+
+        // First drag step: the observer restores, and its scroll queues a frame.
+        width = 650
+        act(() => {
+            for (const callback of resizeCallbacks) callback()
+        })
+        fireEvent.scroll(viewport)
+        // Second step lands before that frame runs.
+        width = 500
+        act(() => {
+            vi.advanceTimersByTime(20)
+            for (const callback of resizeCallbacks) callback()
+        })
+
+        expect(second.getBoundingClientRect().top - viewport.getBoundingClientRect().top).toBe(-50)
     })
 })
 

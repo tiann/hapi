@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { SDKToLogConverter, convertSDKToLog } from './sdkToLogConverter'
 import type { SDKMessage, SDKUserMessage, SDKAssistantMessage, SDKSystemMessage, SDKResultMessage } from '@/claude/sdk'
-import type { ClaudePermissionMode } from '@hapi/protocol/types'
+import type { PermissionModeOf, Flavors } from '@hapi/protocol/types'
 
 describe('SDKToLogConverter', () => {
     let converter: SDKToLogConverter
@@ -297,12 +297,13 @@ describe('SDKToLogConverter', () => {
                 durationMs: 3000,
                 resultSummary: {
                     usage: sdkMessage.usage,
-                    modelUsage: sdkMessage.modelUsage,
-                    total_cost_usd: 0.05,
                     num_turns: 5,
                     duration_ms: 3000
                 }
             })
+            // No baseline yet: cumulative fields are omitted, never emitted raw.
+            expect(summaryOf(logMessage)).not.toHaveProperty('total_cost_usd')
+            expect(summaryOf(logMessage)).not.toHaveProperty('generation_ms')
 
             const following = converter.convert({
                 type: 'user',
@@ -334,17 +335,30 @@ describe('SDKToLogConverter', () => {
                 subtype: 'turn_duration',
                 durationMs: 5000,
                 resultSummary: {
-                    total_cost_usd: 0.1,
                     num_turns: 10,
                     duration_ms: 5000
                 }
             })
-            // An errored round has no meaningful generation rate.
+            // No baseline yet, and an errored round has no generation rate.
+            expect(summaryOf(logMessage)).not.toHaveProperty('total_cost_usd')
             expect(summaryOf(logMessage)).not.toHaveProperty('generation_ms')
             expect(summaryOf(logMessage)).not.toHaveProperty('generation_output_tokens')
         })
 
         it('carries the API generation time and output tokens for tok/s', () => {
+            // Establish a baseline so the measured round has a comparable value.
+            converter.convert({
+                type: 'result',
+                subtype: 'success',
+                num_turns: 1,
+                total_cost_usd: 0.01,
+                duration_ms: 1000,
+                duration_api_ms: 0,
+                is_error: false,
+                session_id: 'result-session',
+                usage: { input_tokens: 10, output_tokens: 50 }
+            } as SDKResultMessage)
+
             const sdkMessage: SDKResultMessage = {
                 type: 'result',
                 subtype: 'success',
@@ -362,8 +376,8 @@ describe('SDKToLogConverter', () => {
 
             const logMessage = converter.convert(sdkMessage)
 
-            // duration_api_ms is Claude Code's own API-active time: tool
-            // execution and permission waits are already outside it.
+            // duration_api_ms delta (2500 - 0) is Claude Code's own API-active
+            // time: tool execution and permission waits are already outside it.
             expect(summaryOf(logMessage)).toMatchObject({
                 generation_ms: 2500,
                 generation_output_tokens: 200
@@ -377,9 +391,12 @@ describe('SDKToLogConverter', () => {
             ['tokens', { usage: { input_tokens: 10, output_tokens: 0 } }],
             ['tokens', { usage: { input_tokens: 10, output_tokens: -5 } }],
             ['tokens', { usage: { input_tokens: 10, output_tokens: 2.5 } }],
-            ['tokens', {}]
+            ['tokens', { usage: undefined }]
         ])('omits the tok/s pair for a %s value that cannot produce a rate (%j)', (_label, patch) => {
-            const sdkMessage: SDKResultMessage = {
+            // A known zero baseline keeps duration and cost comparable, so only
+            // the invalid input under test suppresses the rate.
+            converter.startFreshProcessBaseline()
+            const sdkMessage = {
                 type: 'result',
                 subtype: 'success',
                 num_turns: 1,
@@ -388,6 +405,7 @@ describe('SDKToLogConverter', () => {
                 duration_api_ms: 2500,
                 is_error: false,
                 session_id: 'result-session',
+                usage: { input_tokens: 10, output_tokens: 50 },
                 ...patch
             } as SDKResultMessage
 
@@ -453,6 +471,429 @@ describe('SDKToLogConverter', () => {
                 parentUuid: firstSidechainAssistant?.uuid
             })
             expect(followingSidechainAssistant?.parentUuid).toBe(firstSidechainAssistant?.uuid)
+        })
+
+        describe('per-round cumulative fields', () => {
+            const result = (patch: Partial<SDKResultMessage>): SDKResultMessage => ({
+                type: 'result',
+                subtype: 'success',
+                num_turns: 1,
+                total_cost_usd: 0,
+                duration_ms: 1000,
+                duration_api_ms: 0,
+                is_error: false,
+                session_id: 'per-round-session',
+                ...patch
+            } as SDKResultMessage)
+
+            it('takes round tokens from the result usage, not from cumulative modelUsage', () => {
+                converter.startFreshProcessBaseline()
+                // Per-model counters may lack output tokens the round did produce.
+                const round = converter.convert(result({
+                    total_cost_usd: 0.5,
+                    duration_api_ms: 2000,
+                    usage: { input_tokens: 10, output_tokens: 40 },
+                    modelUsage: { 'claude-opus-5': { inputTokens: 10, contextWindow: 200_000 } }
+                }))
+                expect(summaryOf(round)?.usage).toEqual({ input_tokens: 10, output_tokens: 40 })
+                expect(summaryOf(round)).not.toHaveProperty('modelUsage')
+                expect(summaryOf(round)?.total_cost_usd).toBeCloseTo(0.5, 9)
+            })
+
+            it('emits per-round deltas across consecutive results from one process', () => {
+                const round1 = converter.convert(result({
+                    total_cost_usd: 1352.82,
+                    duration_ms: 23863,
+                    duration_api_ms: 72_800_000,
+                    usage: { input_tokens: 100, output_tokens: 1337 },
+                    modelUsage: {
+                        'claude-opus-5': {
+                            inputTokens: 1000,
+                            outputTokens: 6_066_204,
+                            cacheReadInputTokens: 4_512_129_003,
+                            contextWindow: 200_000
+                        }
+                    }
+                }))
+                const round2 = converter.convert(result({
+                    total_cost_usd: 1353.49,
+                    duration_ms: 38131,
+                    duration_api_ms: 72_900_000,
+                    usage: { input_tokens: 200, output_tokens: 2426 },
+                    modelUsage: {
+                        'claude-opus-5': {
+                            inputTokens: 1200,
+                            outputTokens: 6_068_630,
+                            cacheReadInputTokens: 4_515_113_260,
+                            contextWindow: 200_000
+                        }
+                    }
+                }))
+
+                // No baseline yet: omit cumulative values rather than leak a
+                // process-lifetime total.
+                expect(summaryOf(round1)).not.toHaveProperty('total_cost_usd')
+                expect(summaryOf(round1)).not.toHaveProperty('generation_ms')
+                expect(summaryOf(round1)).not.toHaveProperty('generation_output_tokens')
+
+                // Later rounds emit only the delta since the previous round.
+                expect(summaryOf(round2)?.total_cost_usd).toBeCloseTo(1353.49 - 1352.82, 9)
+                expect(summaryOf(round2)).toMatchObject({
+                    generation_ms: 100_000,
+                    generation_output_tokens: 2426,
+                    duration_ms: 38131
+                })
+            })
+
+            it('keeps the baseline across a same-id restart after a fresh launch', () => {
+                converter.startFreshProcessBaseline()
+                converter.resetParentChain()
+                converter.updateSessionId('native-1')
+                converter.convert(result({
+                    session_id: 'native-1',
+                    total_cost_usd: 1,
+                    duration_api_ms: 1000,
+                    usage: { input_tokens: 1, output_tokens: 10 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 100 } }
+                }))
+
+                converter.resetParentChain()
+                converter.updateSessionId('native-1')
+                const next = converter.convert(result({
+                    session_id: 'native-1',
+                    total_cost_usd: 1.5,
+                    duration_api_ms: 1400,
+                    usage: { input_tokens: 1, output_tokens: 20 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 150 } }
+                }))
+                expect(summaryOf(next)?.total_cost_usd).toBeCloseTo(0.5, 9)
+                expect(summaryOf(next)).toMatchObject({ generation_ms: 400, generation_output_tokens: 20 })
+            })
+
+            it('rebases a /clear result consumed for the newly bound session', () => {
+                converter.startFreshProcessBaseline()
+                converter.updateSessionId('native-1')
+                converter.convert(result({
+                    session_id: 'native-1',
+                    total_cost_usd: 1,
+                    duration_api_ms: 1000,
+                    usage: { input_tokens: 1, output_tokens: 10 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 100 } }
+                }))
+
+                converter.updateSessionId('native-2')
+                converter.consumeResultForAccounting(result({
+                    session_id: 'native-2',
+                    total_cost_usd: 1.2,
+                    duration_api_ms: 1100,
+                    usage: { input_tokens: 1, output_tokens: 1 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 120 } }
+                }))
+                const next = converter.convert(result({
+                    session_id: 'native-2',
+                    total_cost_usd: 1.7,
+                    duration_api_ms: 1600,
+                    usage: { input_tokens: 1, output_tokens: 20 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 170 } }
+                }))
+                expect(summaryOf(next)?.total_cost_usd).toBeCloseTo(0.5, 9)
+            })
+
+            it('keeps a stale-session result out of usage accounting', () => {
+                converter.startFreshProcessBaseline()
+                converter.updateSessionId('native-1')
+                converter.convert(result({
+                    session_id: 'native-1',
+                    total_cost_usd: 1,
+                    duration_api_ms: 1000,
+                    usage: { input_tokens: 1, output_tokens: 10 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 100 } }
+                }))
+                converter.updateSessionId('native-2')
+
+                const stale = converter.convert(result({
+                    session_id: 'native-2',
+                    total_cost_usd: 1.2,
+                    duration_api_ms: 1100,
+                    usage: { input_tokens: 1, output_tokens: 1 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 120 } },
+                    hapi_skip_usage: true
+                }))
+                expect(summaryOf(stale)).not.toHaveProperty('total_cost_usd')
+                expect(summaryOf(stale)).not.toHaveProperty('generation_ms')
+
+                // The first reply seeds the new session's baseline; the next reports its own delta.
+                converter.convert(result({
+                    session_id: 'native-2',
+                    total_cost_usd: 2,
+                    duration_api_ms: 2000,
+                    usage: { input_tokens: 1, output_tokens: 20 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 200 } }
+                }))
+                const next = converter.convert(result({
+                    session_id: 'native-2',
+                    total_cost_usd: 2.5,
+                    duration_api_ms: 2400,
+                    usage: { input_tokens: 1, output_tokens: 20 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 250 } }
+                }))
+                expect(summaryOf(next)?.total_cost_usd).toBeCloseTo(0.5, 9)
+            })
+
+            it('ignores results from another native session than the bound one', () => {
+                converter.startFreshProcessBaseline()
+                converter.updateSessionId('native-old')
+                converter.convert(result({
+                    session_id: 'native-old',
+                    total_cost_usd: 1,
+                    duration_api_ms: 1000,
+                    usage: { input_tokens: 1, output_tokens: 10 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 100 } }
+                }))
+                // The clear hook binds the rotated session before Claude reports the clear.
+                converter.updateSessionId('native-new')
+
+                const background = converter.convert(result({
+                    session_id: 'native-old',
+                    total_cost_usd: 1.2,
+                    duration_api_ms: 1100,
+                    usage: { input_tokens: 1, output_tokens: 5 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 120 } }
+                }))
+                expect(summaryOf(background)).not.toHaveProperty('total_cost_usd')
+                expect(summaryOf(background)).not.toHaveProperty('generation_ms')
+                converter.consumeResultForAccounting(result({
+                    session_id: 'native-old',
+                    total_cost_usd: 1.3,
+                    duration_api_ms: 1150,
+                    modelUsage: { 'claude-opus-5': { outputTokens: 130 } }
+                }))
+                converter.convert(result({
+                    session_id: 'native-old',
+                    total_cost_usd: 1.3,
+                    duration_api_ms: 1150,
+                    modelUsage: { 'claude-opus-5': { outputTokens: 130 } },
+                    hapi_skip_usage: true
+                }))
+                converter.updateSessionId('native-new')
+
+                // The rotated session has no baseline yet, so its first reply omits deltas.
+                const first = converter.convert(result({
+                    session_id: 'native-new',
+                    total_cost_usd: 1.5,
+                    duration_api_ms: 1500,
+                    usage: { input_tokens: 1, output_tokens: 20 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 150 } }
+                }))
+                expect(summaryOf(first)).not.toHaveProperty('total_cost_usd')
+                expect(summaryOf(first)).not.toHaveProperty('generation_ms')
+
+                const next = converter.convert(result({
+                    session_id: 'native-new',
+                    total_cost_usd: 1.75,
+                    duration_api_ms: 1900,
+                    usage: { input_tokens: 1, output_tokens: 20 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 170 } }
+                }))
+                expect(summaryOf(next)?.total_cost_usd).toBeCloseTo(0.25, 9)
+                expect(summaryOf(next)).toMatchObject({ generation_ms: 400, generation_output_tokens: 20 })
+            })
+
+            it('clears the baseline when the native session id changes', () => {
+                converter.startFreshProcessBaseline()
+                converter.updateSessionId('native-1')
+                converter.convert(result({
+                    session_id: 'native-1',
+                    total_cost_usd: 100,
+                    duration_api_ms: 50_000,
+                    usage: { input_tokens: 1, output_tokens: 10 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 5000 } }
+                }))
+
+                converter.resetParentChain()
+                converter.updateSessionId('native-2')
+
+                // No baseline after a new session: the first result omits all
+                // cumulative fields, even though their values look like deltas.
+                const first = converter.convert(result({
+                    session_id: 'native-2',
+                    total_cost_usd: 2,
+                    duration_api_ms: 700,
+                    usage: { input_tokens: 1, output_tokens: 20 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 300 } }
+                }))
+                expect(summaryOf(first)).not.toHaveProperty('total_cost_usd')
+                expect(summaryOf(first)).not.toHaveProperty('generation_ms')
+
+                // That first result still seeds the new baseline.
+                const second = converter.convert(result({
+                    session_id: 'native-2',
+                    total_cost_usd: 5,
+                    duration_api_ms: 1000,
+                    usage: { input_tokens: 1, output_tokens: 60 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 500 } }
+                }))
+                expect(summaryOf(second)?.total_cost_usd).toBeCloseTo(3, 9)
+                expect(summaryOf(second)).toMatchObject({
+                    generation_ms: 300,
+                    generation_output_tokens: 60
+                })
+            })
+
+            it('emits raw counters on the first result after startFreshProcessBaseline', () => {
+                converter.startFreshProcessBaseline()
+
+                const first = converter.convert(result({
+                    total_cost_usd: 0.67,
+                    duration_api_ms: 4200,
+                    usage: { input_tokens: 12, output_tokens: 240 },
+                    modelUsage: {
+                        'claude-opus-5': {
+                            inputTokens: 120,
+                            outputTokens: 240,
+                            cacheReadInputTokens: 3000,
+                            cacheCreationInputTokens: 10,
+                            webSearchRequests: 2,
+                            costUSD: 0.67,
+                            contextWindow: 200_000
+                        }
+                    }
+                }))
+
+                expect(summaryOf(first)?.total_cost_usd).toBeCloseTo(0.67, 9)
+                expect(summaryOf(first)).toMatchObject({
+                    generation_ms: 4200,
+                    generation_output_tokens: 240
+                })
+
+                const second = converter.convert(result({
+                    total_cost_usd: 0.9,
+                    duration_api_ms: 5200,
+                    usage: { input_tokens: 20, output_tokens: 300 },
+                    modelUsage: {
+                        'claude-opus-5': {
+                            inputTokens: 120,
+                            outputTokens: 330,
+                            cacheReadInputTokens: 3000,
+                            cacheCreationInputTokens: 10,
+                            webSearchRequests: 2,
+                            costUSD: 0.67
+                        }
+                    }
+                }))
+                expect(summaryOf(second)?.total_cost_usd).toBeCloseTo(0.23, 9)
+            })
+
+            it('omits cumulative fields on the first result of a resumed process', () => {
+                const first = converter.convert(result({
+                    total_cost_usd: 0.67,
+                    duration_api_ms: 4200,
+                    usage: { input_tokens: 12, output_tokens: 240 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 240, contextWindow: 200_000 } }
+                }))
+
+                expect(summaryOf(first)).not.toHaveProperty('total_cost_usd')
+                expect(summaryOf(first)).not.toHaveProperty('generation_ms')
+                expect(summaryOf(first)).not.toHaveProperty('generation_output_tokens')
+            })
+
+            it('advances the baseline for a result consumed for accounting only', () => {
+                converter.startFreshProcessBaseline()
+                converter.convert(result({
+                    total_cost_usd: 1,
+                    duration_api_ms: 1000,
+                    usage: { input_tokens: 1, output_tokens: 10 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 100 } }
+                }))
+                converter.consumeResultForAccounting(result({
+                    total_cost_usd: 3,
+                    duration_api_ms: 2500,
+                    usage: { input_tokens: 1, output_tokens: 10 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 400 } }
+                }))
+
+                const next = converter.convert(result({
+                    total_cost_usd: 3.5,
+                    duration_api_ms: 3000,
+                    usage: { input_tokens: 1, output_tokens: 20 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 450 } }
+                }))
+                expect(summaryOf(next)?.total_cost_usd).toBeCloseTo(0.5, 9)
+                expect(summaryOf(next)).toMatchObject({ generation_ms: 500, generation_output_tokens: 20 })
+            })
+
+            it('omits a backwards counter and rebases that field only', () => {
+                converter.convert(result({
+                    total_cost_usd: 10,
+                    duration_api_ms: 5000,
+                    usage: { input_tokens: 1, output_tokens: 100 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 1000 } }
+                }))
+
+                // Cost went backwards (a stale snapshot was restored); duration
+                // kept growing and still produces a delta.
+                const rebased = converter.convert(result({
+                    total_cost_usd: 5,
+                    duration_api_ms: 6000,
+                    usage: { input_tokens: 1, output_tokens: 120 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 1200 } }
+                }))
+                expect(summaryOf(rebased)).not.toHaveProperty('total_cost_usd')
+                expect(summaryOf(rebased)).toMatchObject({
+                    generation_ms: 1000,
+                    generation_output_tokens: 120
+                })
+
+                // The next round diffs against the rebased (5 / 1200) values.
+                const next = converter.convert(result({
+                    total_cost_usd: 8,
+                    duration_api_ms: 7000,
+                    usage: { input_tokens: 1, output_tokens: 150 },
+                    modelUsage: { 'claude-opus-5': { outputTokens: 1500 } }
+                }))
+                expect(summaryOf(next)?.total_cost_usd).toBeCloseTo(3, 9)
+                expect(summaryOf(next)).toMatchObject({
+                    generation_ms: 1000,
+                    generation_output_tokens: 150
+                })
+            })
+
+            it.each(['errored', 'compaction'])(
+                'advances the baseline through a %s round that emits no generation fields',
+                (kind) => {
+                    converter.convert(result({
+                        total_cost_usd: 10,
+                        duration_api_ms: 5000,
+                        usage: { input_tokens: 1, output_tokens: 100 },
+                        modelUsage: { 'claude-opus-5': { outputTokens: 1000 } }
+                    }))
+
+                    const middle = converter.convert(result({
+                        total_cost_usd: 12,
+                        duration_api_ms: 6000,
+                        usage: { input_tokens: 1, output_tokens: 120 },
+                        modelUsage: { 'claude-opus-5': { outputTokens: 1200 } },
+                        is_error: kind === 'errored',
+                        hapi_compact_turn: kind === 'compaction'
+                    }))
+                    expect(summaryOf(middle)).not.toHaveProperty('generation_ms')
+                    // Even though it emits no generation fields, its cumulative
+                    // values become the new baseline for the following round.
+                    expect(summaryOf(middle)?.total_cost_usd).toBeCloseTo(2, 9)
+
+                    const next = converter.convert(result({
+                        total_cost_usd: 15,
+                        duration_api_ms: 7000,
+                        usage: { input_tokens: 1, output_tokens: 150 },
+                        modelUsage: { 'claude-opus-5': { outputTokens: 1500 } }
+                    }))
+                    expect(summaryOf(next)?.total_cost_usd).toBeCloseTo(3, 9)
+                    expect(summaryOf(next)).toMatchObject({
+                        generation_ms: 1000,
+                        generation_output_tokens: 150
+                    })
+                }
+            )
         })
     })
 
@@ -1466,7 +1907,7 @@ describe('SDKToLogConverter', () => {
 
     describe('Tool results with mode', () => {
         it('should add mode to tool result when available in responses', () => {
-            const responses = new Map<string, { approved: boolean; mode?: ClaudePermissionMode; reason?: string }>()
+            const responses = new Map<string, { approved: boolean; mode?: PermissionModeOf<typeof Flavors.claude>; reason?: string }>()
             responses.set('tool_123', { approved: true, mode: 'acceptEdits' })
             
             const converterWithResponses = new SDKToLogConverter(context, responses)
@@ -1491,7 +1932,7 @@ describe('SDKToLogConverter', () => {
         })
 
         it('should not add mode when not in responses', () => {
-            const responses = new Map<string, { approved: boolean; mode?: ClaudePermissionMode; reason?: string }>()
+            const responses = new Map<string, { approved: boolean; mode?: PermissionModeOf<typeof Flavors.claude>; reason?: string }>()
             
             const converterWithResponses = new SDKToLogConverter(context, responses)
             
@@ -1515,7 +1956,7 @@ describe('SDKToLogConverter', () => {
         })
 
         it('should handle mixed content with tool results', () => {
-            const responses = new Map<string, { approved: boolean; mode?: ClaudePermissionMode; reason?: string }>()
+            const responses = new Map<string, { approved: boolean; mode?: PermissionModeOf<typeof Flavors.claude>; reason?: string }>()
             responses.set('tool_789', { approved: true, mode: 'bypassPermissions' })
             
             const converterWithResponses = new SDKToLogConverter(context, responses)
@@ -1543,7 +1984,7 @@ describe('SDKToLogConverter', () => {
         })
 
         it('should work with convenience function', () => {
-            const responses = new Map<string, { approved: boolean; mode?: ClaudePermissionMode; reason?: string }>()
+            const responses = new Map<string, { approved: boolean; mode?: PermissionModeOf<typeof Flavors.claude>; reason?: string }>()
             responses.set('tool_abc', { approved: false, mode: 'plan', reason: 'User rejected' })
             
             const sdkMessage: SDKUserMessage = {

@@ -15,6 +15,9 @@ import type { SessionEndReason } from '@hapi/protocol'
 import type { AccessErrorReason, AccessResult } from './types'
 import { getConfiguration } from '../../../configuration'
 import { stripExternalRefsWhenAwarenessDisabled, externalRefsInMetadataValid } from '../../../sync/externalRefsPolicy'
+import { cliMetadataWaitingValid } from '../../../sync/waitingMetadataPolicy'
+
+export { cliMetadataWaitingValid }
 
 function gateExternalRefs(metadata: unknown): unknown {
     let awarenessEnabled = false
@@ -93,7 +96,8 @@ const HUB_OWNED_METADATA_KEYS = [
     'jobsAcceptedFromSessionIds',
     'jobsTransferredToSessionId',
     'jobKeyRedirects',
-    'promptTitle'
+    'promptTitle',
+    'translateInput'
 ] as const
 
 function preserveHubOwnedMetadata(incoming: unknown, current: unknown): unknown {
@@ -342,6 +346,10 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
 
         const gatedMetadata = gateExternalRefs(metadata)
         if (!externalRefsInMetadataValid(gatedMetadata)) {
+            cb({ result: 'error' })
+            return
+        }
+        if (!cliMetadataWaitingValid(gatedMetadata)) {
             cb({ result: 'error' })
             return
         }

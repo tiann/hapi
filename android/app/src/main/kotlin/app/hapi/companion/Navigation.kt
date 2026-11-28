@@ -15,6 +15,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -245,23 +246,7 @@ fun HapiNavigation() {
         }
     }
 
-    // Last hub signed out (or roster wiped): nothing to show but pairing.
-    // Any other active-hub change invalidates an open chat (old hub's session).
-    LaunchedEffect(registryState.activeHubUrl) {
-        val activeHubUrl = registryState.activeHubUrl
-        if (activeHubUrl == null) {
-            val onPairing = navController.currentDestination
-                ?.hierarchy?.any { it.route == Routes.PAIRING } == true
-            if (!onPairing) {
-                navController.navigateClearingBackStack(Routes.PAIRING)
-            }
-        } else if (
-            navController.currentDestination?.route in
-                setOf(Routes.CHAT, Routes.FILES, Routes.FILE_VIEWER, Routes.SCRATCHLIST)
-        ) {
-            navController.popBackStack(Routes.HOME, inclusive = false)
-        }
-    }
+    HandleActiveHubNavigation(navController, registryState.activeHubUrl)
 
     // Pending payloads outlive pairing and HubGraph replacement. A target is
     // persisted before navigation, so process restoration follows the same path.
@@ -1008,6 +993,8 @@ private class SettingsViewModelHolder(
         fetchHealth = { hubGraph.session.api.health() },
         scope = scope,
         probeHealth = probeHealth,
+        fetchCursorRetry = { hubGraph.session.api.getHubSettings().autoBridgeTransientModelErrors },
+        updateCursorRetry = { hubGraph.session.api.setCursorAutoRetry(it).autoBridgeTransientModelErrors },
     )
 
     override fun onCleared() {
@@ -1041,6 +1028,7 @@ private class UsageViewModelHolder(hubGraph: HubGraph) : ViewModel() {
 
     val viewModel = UsageViewModel(
         gateway = hubGraph.session.api::getUsageSummary,
+        loadQuotas = hubGraph.session.api::getUsageQuotas,
         scope = scope,
     )
 
@@ -1138,6 +1126,44 @@ private fun NavigateHomeOnSuccess(navController: NavHostController, state: Pairi
         if (state is PairingUiState.Success) {
             graph.pairingNotice.value = null
             navController.navigateClearingBackStack(Routes.HOME)
+        }
+    }
+}
+
+private val hubScopedSessionRoutes = setOf(Routes.CHAT, Routes.FILES, Routes.FILE_VIEWER, Routes.SCRATCHLIST)
+
+@Composable
+internal fun HandleActiveHubNavigation(navController: NavHostController, activeHubUrl: String?) {
+    // Restore the Hub alongside the back stack: the effect also runs on
+    // first composition, which by itself does not indicate a Hub switch.
+    var lastHandledHubUrl by rememberSaveable { mutableStateOf(activeHubUrl) }
+    LaunchedEffect(activeHubUrl) {
+        val hubChanged = lastHandledHubUrl != activeHubUrl
+        lastHandledHubUrl = activeHubUrl
+        if (activeHubUrl == null) {
+            val onPairing = navController.currentDestination
+                ?.hierarchy?.any { it.route == Routes.PAIRING } == true
+            if (!onPairing) {
+                navController.navigateClearingBackStack(Routes.PAIRING)
+            }
+        } else if (hubChanged) {
+            val currentEntry = navController.currentBackStackEntry
+            val currentRoute = currentEntry?.destination?.route
+            if (currentRoute in hubScopedSessionRoutes) {
+                navController.popBackStack(Routes.HOME, inclusive = false)
+            } else if (
+                currentRoute == Routes.SHARE &&
+                navController.previousBackStackEntry?.destination?.route in hubScopedSessionRoutes
+            ) {
+                // The pending share lives in the inbox. Keep its picker open, but
+                // don't let Cancel or Back reveal a session from the old Hub.
+                val requestId = currentEntry?.arguments?.getString("requestId") ?: return@LaunchedEffect
+                if (!navController.popBackStack(Routes.HOME, inclusive = false)) {
+                    // A notification can open chat directly over pairing, without Home.
+                    navController.navigateClearingBackStack(Routes.HOME)
+                }
+                navController.navigate(Routes.share(requestId))
+            }
         }
     }
 }
