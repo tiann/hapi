@@ -168,10 +168,7 @@ class SessionStore(
 
     override suspend fun loadSessionDetail(sessionId: String): Session {
         val session = api.getSession(sessionId).session
-        _details.update { current -> current + (sessionId to session.copy(
-            contentRevision = listOfNotNull(current[sessionId]?.contentRevision, session.contentRevision).maxOrNull(),
-            readState = SessionReadState.merge(current[sessionId]?.readState, session.readState),
-        )) }
+        cacheDetail(session)
         return _details.value[sessionId] ?: session
     }
 
@@ -203,7 +200,7 @@ class SessionStore(
                         contentRevision = listOfNotNull(cached?.contentRevision, row.contentRevision).maxOrNull(),
                         readState = SessionReadState.merge(cached?.readState, row.readState),
                         lastUserMessageAt = maxOf(cached?.lastUserMessageAt ?: 0, row.lastUserMessageAt ?: 0).takeIf { it > 0 },
-                    )
+                    ).preserveNewerMetadata(cached)
                 })
             }
         }
@@ -377,10 +374,7 @@ class SessionStore(
         // parse, then the REST fallback.
         val full = parseFullSession(data)?.takeIf { it.id == sessionId }
         if (full != null) {
-            _details.update { current -> current + (sessionId to full.copy(
-                contentRevision = listOfNotNull(current[sessionId]?.contentRevision, full.contentRevision).maxOrNull(),
-                readState = SessionReadState.merge(current[sessionId]?.readState, full.readState),
-            )) }
+            cacheDetail(full)
             upsertSummary(full)
             return
         }
@@ -414,6 +408,24 @@ class SessionStore(
         scheduleRefresh()
     }
 
+    private fun cacheDetail(incoming: Session) {
+        _details.update { current ->
+            val cached = current[incoming.id]
+            val staleMetadata = cached != null && cached.metadataVersion > incoming.metadataVersion
+            current + (incoming.id to incoming.copy(
+                metadata = if (staleMetadata) cached?.metadata else incoming.metadata,
+                metadataVersion = maxOf(cached?.metadataVersion ?: 0, incoming.metadataVersion),
+                contentRevision = listOfNotNull(cached?.contentRevision, incoming.contentRevision).maxOrNull(),
+                readState = SessionReadState.merge(cached?.readState, incoming.readState),
+            ))
+        }
+    }
+
+    private fun SessionSummary.preserveNewerMetadata(cached: SessionSummary?): SessionSummary =
+        if (cached != null && cached.metadataVersion > metadataVersion) {
+            copy(metadata = cached.metadata, metadataVersion = cached.metadataVersion)
+        } else this
+
     private fun parseFullSession(data: JsonElement?): Session? {
         if (data == null) return null
         return try {
@@ -438,7 +450,7 @@ class SessionStore(
                 nextScheduledAt = existing?.nextScheduledAt,
                 attachedJob = existing?.attachedJob,
                 attachedJobUpdatedAt = existing?.attachedJobUpdatedAt ?: 0,
-            )
+            ).preserveNewerMetadata(existing)
             val next = list.toMutableList()
             if (index >= 0) next[index] = summary else next.add(summary)
             sortSessionSummaries(next)

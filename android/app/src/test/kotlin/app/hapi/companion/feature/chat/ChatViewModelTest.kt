@@ -30,7 +30,10 @@ import app.hapi.protocol.wire.Machine
 import app.hapi.protocol.wire.MessagesPage
 import app.hapi.protocol.wire.MessagesResponse
 import app.hapi.protocol.wire.QueuedStateResponse
+import app.hapi.protocol.wire.ModelError
+import app.hapi.protocol.wire.ModelErrorActionResponse
 import app.hapi.protocol.wire.Session
+import app.hapi.protocol.wire.SessionMetadata
 import app.hapi.protocol.wire.SessionSummary
 import app.hapi.protocol.wire.SessionSummaryMetadata
 import app.hapi.protocol.wire.SyncEvent
@@ -183,6 +186,9 @@ private open class FakeMessagesApi : ChatSessionApi {
     override suspend fun steerMessage(sessionId: String, messageId: String): SteerQueuedMessageResponse =
         SteerQueuedMessageResponse(status = "steered", localId = messageId)
     override suspend fun abortSession(sessionId: String) {}
+    override suspend fun bridgeModelError(sessionId: String, eventId: String): app.hapi.protocol.wire.ModelErrorActionResponse =
+        error("Unexpected bridge")
+    override suspend fun acknowledgeModelError(sessionId: String, eventId: String): Unit = error("Unexpected acknowledge")
     override suspend fun clearConversation(sessionId: String): ResumeSessionResponse = error("Unexpected clear")
     override suspend fun implementCodexPlan(sessionId: String, planId: String) = error("Unexpected plan implementation")
     override suspend fun getFeatures(): app.hapi.protocol.wire.FeaturesResponse =
@@ -761,5 +767,201 @@ class ChatViewModelTest {
             }
             harness.viewModel.stop()
         }
+    }
+}
+
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+class ModelErrorRecoveryTest {
+    private val event = ModelError(
+        eventId = "evt-a", kind = "transport_closed", transient = true,
+        rawSnippet = "Connection closed", atTs = 1, priorAssistantClaimsDone = false,
+    )
+
+    private fun session(
+        error: ModelError = event,
+        active: Boolean = true,
+        thinking: Boolean = false,
+        flavor: String = "cursor",
+    ) = detailSession().copy(
+        active = active, thinking = thinking,
+        metadata = SessionMetadata(path = "/repo", host = "machine", flavor = flavor, lastModelError = error),
+    )
+
+    private class Api : FakeMessagesApi() {
+        val bridges = mutableListOf<Pair<String, String>>()
+        val dismissals = mutableListOf<Pair<String, String>>()
+        val bridgeReply = CompletableDeferred<ModelErrorActionResponse>()
+        val dismissReply = CompletableDeferred<Unit>()
+
+        override suspend fun bridgeModelError(sessionId: String, eventId: String): ModelErrorActionResponse {
+            bridges += sessionId to eventId
+            return bridgeReply.await()
+        }
+
+        override suspend fun acknowledgeModelError(sessionId: String, eventId: String) {
+            dismissals += sessionId to eventId
+            dismissReply.await()
+        }
+    }
+
+    private class Fixture(scope: TestScope, initial: Session) {
+        val api = Api()
+        val store = FakeSessionStore().apply {
+            setDetail(initial)
+            detailToLoad = initial
+        }
+        val recovery = ModelErrorRecovery(SESSION_ID, api, store, scope.backgroundScope, StandardTestDispatcher(scope.testScheduler))
+    }
+
+    @Test
+    fun lostAcknowledgementResponseReconcilesAnAlreadyDismissedEvent() = runTest {
+        val f = Fixture(this, session())
+        runCurrent()
+        f.recovery.dismiss(event.eventId)
+        runCurrent()
+        f.store.detailToLoad = session(event.copy(acknowledgedAt = 2))
+        f.api.dismissReply.completeExceptionally(java.io.IOException("response lost"))
+        runCurrent()
+        assertEquals(null, f.recovery.state.value.error)
+        assertEquals(null, f.recovery.state.value.failureReason)
+        assertEquals(1, f.api.dismissals.size)
+    }
+
+    @Test
+    fun failedBridgeReadbackKeepsTheOriginalRequestFailure() = runTest {
+        val f = Fixture(this, session())
+        runCurrent()
+        f.recovery.bridge(event.eventId)
+        runCurrent()
+        f.store.failDetailLoad = true
+        f.api.bridgeReply.completeExceptionally(java.io.IOException("bridge response lost"))
+        runCurrent()
+        assertEquals("bridge response lost", f.recovery.state.value.failureReason)
+        assertEquals(event.eventId, f.recovery.state.value.error?.eventId)
+        assertEquals(1, f.api.bridges.size)
+    }
+
+    @Test
+    fun `duplicate taps submit one bridge and admission waits for readback`() = runTest {
+        val f = Fixture(this, session())
+        runCurrent()
+        f.recovery.bridge(event.eventId)
+        f.recovery.bridge(event.eventId)
+        runCurrent()
+        assertEquals(listOf(SESSION_ID to event.eventId), f.api.bridges)
+        assertTrue(f.recovery.state.value.bridging)
+
+        f.api.bridgeReply.complete(ModelErrorActionResponse(ok = true))
+        runCurrent()
+        assertTrue(f.recovery.state.value.bridging)
+        assertEquals(null, f.recovery.state.value.error?.bridgedForEventId)
+        f.recovery.bridge(event.eventId)
+        runCurrent()
+        assertEquals(1, f.api.bridges.size)
+
+        f.store.setDetail(session(event.copy(bridgedForEventId = event.eventId)))
+        runCurrent()
+        assertEquals(event.eventId, f.recovery.state.value.error?.bridgedForEventId)
+        assertTrue(!f.recovery.state.value.bridging)
+        assertTrue(!f.recovery.state.value.canBridge)
+    }
+
+    @Test
+    fun `refusal reason follows only the requested event`() = runTest {
+        val f = Fixture(this, session())
+        runCurrent()
+        f.recovery.bridge(event.eventId)
+        f.api.bridgeReply.complete(ModelErrorActionResponse(ok = false, reason = "prompt_in_flight"))
+        runCurrent()
+        assertEquals("prompt_in_flight", f.recovery.state.value.failureReason)
+        assertTrue(!f.recovery.state.value.busy)
+
+        f.store.setDetail(session(event.copy(eventId = "evt-b")))
+        runCurrent()
+        f.recovery.dismiss(event.eventId)
+        f.recovery.bridge(event.eventId)
+        runCurrent()
+        assertEquals(null, f.recovery.state.value.failureReason)
+        assertTrue(f.api.dismissals.isEmpty())
+        assertEquals(listOf(SESSION_ID to event.eventId), f.api.bridges)
+    }
+
+    @Test
+    fun `abort releases an accepted bridge without needing a disconnect`() = runTest {
+        val f = Fixture(this, session())
+        runCurrent()
+        f.recovery.bridge(event.eventId)
+        f.api.bridgeReply.complete(ModelErrorActionResponse(ok = true))
+        runCurrent()
+        assertTrue(f.recovery.state.value.bridging)
+        f.recovery.onAbort()
+        runCurrent()
+        assertTrue(!f.recovery.state.value.bridging)
+        assertTrue(f.recovery.state.value.canBridge)
+    }
+
+    @Test
+    fun `only active idle Cursor sessions with an eligible event may bridge`() = runTest {
+        val f = Fixture(this, session())
+        runCurrent()
+        assertTrue(f.recovery.state.value.canBridge)
+        for (blocked in listOf(
+            session(active = false), session(thinking = true), session(flavor = "codex"),
+            session(event.copy(transient = false)), session(event.copy(bridgeable = false)),
+            session(event.copy(supersededByUserTurn = true)), session(event.copy(retriedAndFailed = true)),
+            session(event.copy(bridgedForEventId = event.eventId)), session(event.copy(acknowledgedAt = 2)),
+        )) {
+            f.store.setDetail(blocked)
+            runCurrent()
+            assertTrue(!f.recovery.state.value.canBridge, "Unexpected bridge for $blocked")
+            f.recovery.bridge(event.eventId)
+            runCurrent()
+        }
+        assertTrue(f.api.bridges.isEmpty())
+    }
+
+    @Test
+    fun `dismissal admission with an unchanged event reports unconfirmed`() = runTest {
+        val f = Fixture(this, session())
+        runCurrent()
+        f.recovery.dismiss(event.eventId)
+        f.api.dismissReply.complete(Unit)
+        runCurrent()
+        assertEquals(event.eventId, f.recovery.state.value.error?.eventId)
+        assertEquals(app.hapi.companion.R.string.model_error_ack_unconfirmed, f.recovery.state.value.fallbackResource)
+        assertTrue(!f.recovery.state.value.busy)
+    }
+
+    @Test
+    fun `accepted bridge settles on disconnect so a reconnected session may retry`() = runTest {
+        val f = Fixture(this, session())
+        runCurrent()
+        f.recovery.bridge(event.eventId)
+        f.api.bridgeReply.complete(ModelErrorActionResponse(ok = true))
+        runCurrent()
+        f.store.setDetail(session(active = false))
+        runCurrent()
+        assertTrue(!f.recovery.state.value.bridging)
+        f.store.setDetail(session())
+        runCurrent()
+        f.recovery.bridge(event.eventId)
+        runCurrent()
+        assertEquals(listOf(SESSION_ID to event.eventId, SESSION_ID to event.eventId), f.api.bridges)
+    }
+
+    @Test
+    fun `dismissal works while inactive and uses readback for the displayed event`() = runTest {
+        val f = Fixture(this, session(active = false))
+        runCurrent()
+        f.recovery.dismiss(event.eventId)
+        f.recovery.dismiss(event.eventId)
+        runCurrent()
+        assertEquals(listOf(SESSION_ID to event.eventId), f.api.dismissals)
+        assertEquals(event.eventId, f.recovery.state.value.error?.eventId)
+        f.store.detailToLoad = session(event.copy(acknowledgedAt = 2), active = false)
+        f.api.dismissReply.complete(Unit)
+        runCurrent()
+        assertEquals(null, f.recovery.state.value.error)
+        assertTrue(!f.recovery.state.value.busy)
     }
 }

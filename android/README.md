@@ -495,6 +495,12 @@ IDs; unnamed and unknown machines are labeled. **Reset** clears the filters (not
 the order); filters are transient per home/hub and cleared when no longer valid.
 The share picker reuses the list model with the base order.
 
+An unresolved model error appears in the session list. Open the chat to see the
+error and its details. For an active, idle Cursor session, **Bridge & retry** asks the
+agent to bridge an eligible error. The banner shows recovery or failure when the
+hub reports the outcome. **Dismiss** acknowledges the displayed event, including
+in an inactive session.
+
 Each row's agent icon carries the web presence badge (one mark per state):
 solid green pulsing while working, solid blue pulsing when only background
 tasks run, a green ring when connected and waiting, and a power mark when

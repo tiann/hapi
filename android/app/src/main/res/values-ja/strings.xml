@@ -827,4 +827,19 @@
     <string name="sessions_other_project">その他</string>
     <string name="sessions_folder_expanded">展開中</string>
     <string name="sessions_folder_collapsed">折りたたみ中</string>
+    <string name="chat_model_error">モデルエラー · %1$s</string>
+    <string name="chat_model_error_recovered">直前のメッセージを再送しました · %1$s</string>
+    <string name="chat_model_error_retry_failed">再試行に失敗しました · %1$s</string>
+    <string name="chat_model_error_claimed_done">エラーの前にエージェントが完了を報告しました。作業結果を確認してください。</string>
+    <string name="chat_model_error_bridge">ブリッジして再試行</string>
+    <string name="chat_model_error_bridging">ブリッジ中…</string>
+    <string name="chat_model_error_hide_details">詳細を隠す</string>
+    <string name="model_error_action_failed">モデルエラーの状態を更新できませんでした。</string>
+    <string name="model_error_ack_unconfirmed">エラーを閉じたことを確認できませんでした。</string>
+    <string name="model_error_reason_model_error_changed">モデルエラーが変わりました。</string>
+    <string name="model_error_reason_no_model_error">現在モデルエラーはありません。</string>
+    <string name="model_error_reason_prompt_in_flight">すでに応答を生成しています。</string>
+    <string name="model_error_reason_superseded_by_newer_turn">すでに次のターンが始まりました。</string>
+    <string name="model_error_reason_not_bridgeable">このエラーはブリッジで再試行できません。</string>
+    <string name="model_error_reason_missing_last_user_message">再送できるメッセージがありません。</string>
 </resources>

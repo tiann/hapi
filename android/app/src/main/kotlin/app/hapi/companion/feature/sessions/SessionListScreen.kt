@@ -87,6 +87,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import app.hapi.companion.R
+import app.hapi.companion.feature.chat.ModelErrorStatus
+import app.hapi.companion.feature.chat.recoveryStatus
 import app.hapi.companion.ui.components.AgentFlavorIcon
 import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.protocol.wire.AttachedJob
@@ -488,7 +490,7 @@ private val PRESENCE_BLUE = Color(0xFF60A5FA)
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun SessionRow(
+internal fun SessionRow(
     row: SessionRowUi,
     onOpen: (String) -> Unit,
     onLongPress: (SessionRowUi) -> Unit,
@@ -514,6 +516,18 @@ private fun SessionRow(
         Column(modifier = Modifier.weight(1f)) {
             Column(modifier = Modifier.padding(end = 16.dp, top = 10.dp, bottom = 10.dp)) {
                 TitleLine(row)
+                summary.metadata?.lastModelError?.let { error ->
+                    val status = error.recoveryStatus
+                    if (status == ModelErrorStatus.Unrecovered || status == ModelErrorStatus.BridgeFailed) {
+                        Text(
+                            text = stringResource(status.title, error.kind),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.error,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
                 // Summary directly under the title (its prose continuation);
                 // the `project · machine` meta closes the row as a footer.
                 row.subtitle?.let { subtitle ->

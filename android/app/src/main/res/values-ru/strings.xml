@@ -841,4 +841,19 @@
     <string name="sessions_other_project">Прочее</string>
     <string name="sessions_folder_expanded">Развёрнуто</string>
     <string name="sessions_folder_collapsed">Свёрнуто</string>
+    <string name="chat_model_error">Ошибка модели · %1$s</string>
+    <string name="chat_model_error_recovered">Последнее сообщение отправлено повторно · %1$s</string>
+    <string name="chat_model_error_retry_failed">Повторная попытка не удалась · %1$s</string>
+    <string name="chat_model_error_claimed_done">Агент сообщил о завершении до ошибки. Проверьте результат.</string>
+    <string name="chat_model_error_bridge">Повторить через мост</string>
+    <string name="chat_model_error_bridging">Повтор через мост…</string>
+    <string name="chat_model_error_hide_details">Скрыть подробности</string>
+    <string name="model_error_action_failed">Не удалось обновить состояние ошибки модели.</string>
+    <string name="model_error_ack_unconfirmed">Скрытие ошибки пока не подтверждено.</string>
+    <string name="model_error_reason_model_error_changed">Ошибка модели изменилась.</string>
+    <string name="model_error_reason_no_model_error">Сейчас ошибки модели нет.</string>
+    <string name="model_error_reason_prompt_in_flight">Ответ уже формируется.</string>
+    <string name="model_error_reason_superseded_by_newer_turn">Уже начался новый ход.</string>
+    <string name="model_error_reason_not_bridgeable">Эту ошибку нельзя повторить через мост.</string>
+    <string name="model_error_reason_missing_last_user_message">Нет сообщения для повторной отправки.</string>
 </resources>

@@ -388,6 +388,7 @@ internal fun ChatScreen(
                     .fillMaxSize()
                     .padding(padding),
             ) {
+                ChatModelErrorRecovery(viewModel.modelErrorRecovery)
                 Box(modifier = Modifier.weight(1f)) {
                     when {
                         state.isInitialLoading -> InitialLoading()

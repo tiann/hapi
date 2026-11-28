@@ -238,6 +238,9 @@ private class RecordingChatApi : ChatSessionApi {
         configCalls.value = configCalls.value + "abort:$sessionId"
     }
 
+    override suspend fun bridgeModelError(sessionId: String, eventId: String): app.hapi.protocol.wire.ModelErrorActionResponse =
+        error("Unexpected bridge")
+    override suspend fun acknowledgeModelError(sessionId: String, eventId: String): Unit = error("Unexpected acknowledge")
     override suspend fun clearConversation(sessionId: String): ResumeSessionResponse = error("Unexpected clear")
 
     var featuresResult: FeaturesResponse = FeaturesResponse()
