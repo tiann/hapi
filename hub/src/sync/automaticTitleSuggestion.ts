@@ -33,7 +33,7 @@ export class AutomaticTitleSuggestionService {
         const prior = this.observedTurns.get(sessionId)
         if (prior && !prior.completed) return
         const metadata = this.sessionCache.getSession(sessionId)?.metadata
-        if (metadata?.name?.trim() || metadata?.summary?.text?.trim()
+        if (metadata?.titleLocked === true || metadata?.name?.trim() || metadata?.summary?.text?.trim()
             || metadata?.titleSuggestionAutoAttemptedAt !== undefined) return
         try {
             // Capture before assistant output can interleave with steering.
@@ -78,7 +78,7 @@ export class AutomaticTitleSuggestionService {
                     if (this.stopped) return
                     if (!this.titleSuggestionService.isConfigured()) return
                     const metadata = this.sessionCache.getSession(sessionId)?.metadata
-                    if (metadata?.name?.trim() || metadata?.summary?.text?.trim()
+                    if (metadata?.titleLocked === true || metadata?.name?.trim() || metadata?.summary?.text?.trim()
                         || metadata?.titleSuggestionAutoAttemptedAt !== undefined) return
                     if (turn?.first === false) return
                     if (!this.titleSuggestionService.hasCompletedFirstTurn(sessionId, turn?.first)) return

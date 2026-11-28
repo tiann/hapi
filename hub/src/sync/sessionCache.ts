@@ -21,6 +21,7 @@ const TURN_RECOVERY_WINDOW_MS = 10 * 60_000
 // snapshot. Cap retries so genuine concurrent contention still surfaces to the
 // HTTP caller as 409 instead of spinning forever.
 const METADATA_RETRY_ATTEMPTS = 5
+let lastForkTitleClaimAt = 0
 type RuntimeConfigKey = 'permissionMode' | 'model' | 'modelReasoningEffort' | 'effort' | 'serviceTier' | 'collaborationMode' | 'copilotAgentMode'
 
 /**
@@ -1409,7 +1410,10 @@ export class SessionCache {
             }
 
             const currentMetadata = session.metadata ?? { path: '', host: '' }
-            const newMetadata = name === undefined ? { ...currentMetadata } : { ...currentMetadata, name }
+            const { forkTitleSeed: _seed, forkTitleGenerationAttemptedAt: _attempt, ...rest } = currentMetadata
+            const newMetadata = name === undefined
+                ? { ...rest, forkTitleSeed: null, forkTitleGenerationAttemptedAt: null }
+                : { ...rest, name, forkTitleSeed: null, forkTitleGenerationAttemptedAt: null }
 
             const result = this.store.sessions.updateSessionMetadata(
                 sessionId,
@@ -1432,6 +1436,67 @@ export class SessionCache {
         }
 
         throw new Error('Session was modified concurrently. Please try again.')
+    }
+
+    /** Seed an already-bound shared child without overwriting a newer title. */
+    async seedForkTitle(sessionId: string, seed: { text: string; updatedAt: number } | undefined): Promise<void> {
+        if (!seed) return
+        for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
+            const session = this.refreshSession(sessionId)
+            const metadata = session?.metadata
+            if (!session || !metadata || metadata.name?.trim() || metadata.titleLocked === true) return
+            if (metadata.forkTitleGenerationAttemptedAt !== undefined) return
+            if (metadata.summary && (metadata.summary.text !== metadata.forkTitleSeed?.text
+                || metadata.summary.updatedAt !== metadata.forkTitleSeed?.updatedAt)) return
+            const result = this.store.sessions.updateSessionMetadata(sessionId,
+                { ...metadata, summary: seed, forkTitleSeed: seed }, session.metadataVersion, session.namespace,
+                { touchUpdatedAt: false })
+            if (result.result === 'error') return
+            if (result.result === 'success') { this.refreshSession(sessionId); return }
+        }
+    }
+
+    /** Persistent CAS claim deduplicates native readiness and REST completion. */
+    claimForkTitleGeneration(sessionId: string, expected: { text: string; updatedAt: number } | undefined): number | null {
+        for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
+            const session = this.refreshSession(sessionId)
+            const metadata = session?.metadata
+            if (!session || !metadata?.forkedFrom || metadata.forkTitleGenerationAttemptedAt !== undefined
+                || metadata.name?.trim() || metadata.titleLocked === true
+                || metadata.summary?.text !== expected?.text || metadata.summary?.updatedAt !== expected?.updatedAt
+                || metadata.forkTitleSeed?.text !== expected?.text || metadata.forkTitleSeed?.updatedAt !== expected?.updatedAt) return null
+            // Keep claim identities distinct even when a lock edit revokes
+            // one claim and a second starts in the same clock tick.
+            const claimedAt = lastForkTitleClaimAt = Math.max(Date.now(), lastForkTitleClaimAt + 1)
+            const result = this.store.sessions.updateSessionMetadata(sessionId,
+                { ...metadata, forkTitleGenerationAttemptedAt: claimedAt }, session.metadataVersion, session.namespace,
+                { touchUpdatedAt: false })
+            if (result.result === 'error') return null
+            if (result.result === 'success') { this.refreshSession(sessionId); return claimedAt }
+        }
+        return null
+    }
+
+    /** Only the same persisted claim can replace the seed after provider latency. */
+    async updateForkTitle(
+        sessionId: string, text: string, expected: { text: string; updatedAt: number } | undefined, claimedAt: number
+    ): Promise<boolean> {
+        for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
+            const session = this.refreshSession(sessionId)
+            const metadata = session?.metadata
+            if (!session || !metadata?.forkedFrom || metadata.name?.trim() || metadata.titleLocked === true
+                || metadata.forkTitleGenerationAttemptedAt !== claimedAt
+                || metadata.summary?.text !== expected?.text || metadata.summary?.updatedAt !== expected?.updatedAt
+                || metadata.forkTitleSeed?.text !== expected?.text || metadata.forkTitleSeed?.updatedAt !== expected?.updatedAt) return false
+            const { forkTitleSeed: _seed, forkTitleGenerationAttemptedAt: _attempt, ...rest } = metadata
+            const result = this.store.sessions.updateSessionMetadata(sessionId,
+                { ...rest, summary: { text, updatedAt: Date.now() }, forkTitleSeed: null,
+                    forkTitleGenerationAttemptedAt: null }, session.metadataVersion, session.namespace,
+                { touchUpdatedAt: false })
+            if (result.result === 'error') return false
+            if (result.result === 'success') { this.refreshSession(sessionId); return true }
+        }
+        return false
     }
 
     /** Hub-owned per-session toggle; written as an explicit boolean so `false` survives carry-forward. */
@@ -1555,12 +1620,15 @@ export class SessionCache {
             }
 
             const currentMetadata = session.metadata ?? { path: '', host: '' }
+            const { forkTitleSeed: _seed, forkTitleGenerationAttemptedAt: _attempt, ...rest } = currentMetadata
             const newMetadata = {
-                ...currentMetadata,
+                ...rest,
                 summary: {
                     text,
                     updatedAt: Date.now()
-                }
+                },
+                forkTitleSeed: null,
+                forkTitleGenerationAttemptedAt: null
             }
 
             const result = this.store.sessions.updateSessionMetadata(

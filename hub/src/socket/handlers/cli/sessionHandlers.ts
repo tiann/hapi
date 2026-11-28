@@ -46,10 +46,7 @@ type SessionEndPayload = {
     reason?: SessionEndReason
 }
 
-type SessionReadyPayload = {
-    sid: string
-    time: number
-}
+type SessionReadyPayload = Parameters<ClientToServerEvents['session-ready']>[0]
 
 type ResolveSessionAccess = (sessionId: string, opts?: { fresh?: boolean }) => AccessResult<StoredSession>
 
@@ -90,6 +87,8 @@ const HUB_OWNED_METADATA_KEYS = [
     'opencodeForkPending',
     'titleSuggestionAutoAttemptedAt',
     'titleSuggestionTurn',
+    'forkTitleSeed',
+    'forkTitleGenerationAttemptedAt',
     'jobsAcceptedFromSessionIds',
     'jobsTransferredToSessionId',
     'jobKeyRedirects',

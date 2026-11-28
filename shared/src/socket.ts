@@ -271,7 +271,8 @@ export interface ClientToServerEvents {
         copilotAgentMode?: CopilotAgentMode
     }) => void
   /** CLI agent finished session/load (or equivalent) and can accept prompts. */
-    'session-ready': (data: { sid: string; time: number }) => void
+    'session-ready': (data: { sid: string; time: number; nativeForkTitleReady?: boolean;
+        nativeForkHistoryPublished?: { parentId: string; nativeSessionId: string } }) => void
     'session-end': (data: { sid: string; time: number; reason?: SessionEndReason }) => void
     /**
      * Machine-scoped notice that a runner's child process for a HAPI session
