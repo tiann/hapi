@@ -1,6 +1,7 @@
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import { getReasoningStreamId, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { ApiClient } from '@/api/client'
+import { applyInvokedQueuedState, hasPendingQueuedStateReadback, readQueuedState } from './queued-state-readback'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
 import { reduceChatBlocks } from '@/chat/reducer'
 import { buildVisibleChatBlocks, isEligibleForToolGrouping } from '@/chat/toolGroups'
@@ -140,6 +141,31 @@ const sessionAccessOrder = new Map<string, true>()
 const listeners = new Map<string, Set<() => void>>()
 const tailSyncControllers = new Map<string, TailSyncController>()
 const messageWindowTargetLocks = new Set<string>()
+type HeldHistoryProbe = { wait: Promise<void>; supersede: () => void }
+type HeldQueuedVerification = {
+    api: ApiClient
+    checked: WeakSet<DecryptedMessage>
+    superseded: Promise<void>
+    supersede: () => void
+}
+type HeldHistoryNavigation = {
+    epoch: number
+    owner: symbol
+    probe?: HeldHistoryProbe
+    epochCheckPending?: boolean
+    queuedVerification?: HeldQueuedVerification
+    recovery?: { api: ApiClient; after: MessagePosition | null }
+    catchUpNeeded?: boolean
+}
+const deferredGapCursors = new Map<string, { epoch: number; after: MessagePosition }>()
+const heldHistoryWindows = new Map<string, HeldHistoryNavigation>()
+
+export type HistoryNavigationWindow = {
+    isCurrent: () => boolean
+    verify: () => Promise<boolean>
+    verifyStart: () => Promise<boolean>
+    finish: (keepHistory: boolean) => void
+}
 const appliedRewindLocalIds = new Map<string, Set<string>>()
 
 export const MAX_RETAINED_INACTIVE_WINDOWS = 12
@@ -319,7 +345,7 @@ function isEvictableInactiveWindow(sessionId: string, state: InternalState): boo
     if (tailSyncControllers.get(sessionId)?.running) {
         return false
     }
-    if (messageWindowTargetLocks.has(sessionId)) {
+    if (messageWindowTargetLocks.has(sessionId) || heldHistoryWindows.has(sessionId)) {
         return false
     }
     return !hasProtectedMessages(state.messages)
@@ -398,6 +424,7 @@ function evictExcessInactiveWindows(protectedSessionId?: string): void {
             state.olderGeneration + 1
         )
         states.delete(candidateId)
+        deferredGapCursors.delete(candidateId)
         tailSyncControllers.delete(candidateId)
         appliedRewindLocalIds.delete(candidateId)
         pendingNotifySessionIds.delete(candidateId)
@@ -1061,7 +1088,8 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
     const generation = beginTailSync(sessionId)
     try {
         const initial = getState(sessionId)
-        const initialCursor = getNewestCursor(initial)
+        const deferred = deferredGapCursors.get(sessionId)
+        const initialCursor = deferred?.epoch === initial.epoch ? deferred.after : getNewestCursor(initial)
         const preferLatestOnActivation = initial.preferLatestOnActivation
         const pendingGapRecovery = initial.pendingGapRecovery
         const canIncrement = initialCursor !== null
@@ -1339,6 +1367,7 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
 function startTailSync(sessionId: string, controller: TailSyncController): Promise<void> {
     const runningPrefersLatest = getState(sessionId).preferLatestOnActivation
     const runningPendingRecovery = getState(sessionId).pendingGapRecovery
+    const replayCursor = deferredGapCursors.get(sessionId)
     const running = runTailSync(controller.api, sessionId)
     controller.running = running
     controller.runningPrefersLatest = runningPrefersLatest
@@ -1346,6 +1375,9 @@ function startTailSync(sessionId: string, controller: TailSyncController): Promi
     const finish = () => {
         if (tailSyncControllers.get(sessionId) !== controller || controller.running !== running) {
             return
+        }
+        if (replayCursor === deferredGapCursors.get(sessionId) && !getState(sessionId).pendingGapRecovery) {
+            deferredGapCursors.delete(sessionId)
         }
         controller.running = null
         controller.runningPrefersLatest = false
@@ -1451,13 +1483,200 @@ export function activateMessageWindow(sessionId: string): void {
     }
 }
 
+function replaceHeldQueuedVerification(window: HeldHistoryNavigation, api: ApiClient): void {
+    let supersede!: () => void
+    const superseded = new Promise<void>(resolve => { supersede = resolve })
+    const previous = window.queuedVerification
+    window.queuedVerification = { api, checked: new WeakSet(), superseded, supersede }
+    previous?.supersede()
+}
+
+function releaseHeldHistory(sessionId: string, window: HeldHistoryNavigation): void {
+    heldHistoryWindows.delete(sessionId)
+    window.queuedVerification?.supersede()
+    if ((!window.probe && !window.catchUpNeeded) || !window.recovery?.after) return
+    const previous = deferredGapCursors.get(sessionId)
+    if (!previous || previous.epoch !== window.epoch || comparePosition(window.recovery.after, previous.after) < 0) {
+        deferredGapCursors.set(sessionId, { epoch: window.epoch, after: window.recovery.after })
+    }
+}
+
+async function waitForHeldHistoryProbe(window: HeldHistoryNavigation): Promise<void> {
+    while (window.probe) await window.probe.wait
+}
+
+/** Keep explicit history navigation intact across background reconciliation. */
+export function holdHistoryNavigationWindow(sessionId: string, api?: ApiClient): HistoryNavigationWindow | null {
+    const initial = getState(sessionId)
+    const epoch = initial.epoch
+    if (epoch === null) return null
+    const previous = heldHistoryWindows.get(sessionId)
+    const owner = Symbol('history-navigation')
+    // A second jump may start while the first jump's reconnect probe is
+    // pending. Transfer the lease without discarding that shared work.
+    const window: HeldHistoryNavigation = previous?.epoch === epoch ? previous : { epoch, owner }
+    window.owner = owner
+    heldHistoryWindows.set(sessionId, window)
+    const controller = tailSyncControllers.get(sessionId)
+    const pending = deferredGapCursors.get(sessionId)
+    if (controller && pending?.epoch === epoch && initial.pendingGapRecovery) {
+        window.recovery = { api: controller.api, after: pending.after }
+        window.catchUpNeeded = true
+    }
+    // Neither an unverified cache nor a window that missed SSE can prove its
+    // epoch from hasMore=false. Replace a canceled refresh with a held probe.
+    cancelTailSync(sessionId)
+    if (initial.preferLatestOnActivation || initial.pendingGapRecovery) {
+        window.epochCheckPending = true
+        const epochApi = api ?? controller?.api
+        if (epochApi) void reconcileHeldHistoryNavigation(epochApi, sessionId)
+    }
+    // The background queue readback can still be pending even if tail sync
+    // finished before the click. Don't freeze the jump at the older input.
+    if (!window.queuedVerification && api && hasPendingQueuedStateReadback(sessionId)) {
+        replaceHeldQueuedVerification(window, api)
+    }
+    const ownsHold = () => window.owner === owner && heldHistoryWindows.get(sessionId) === window
+    const isCurrent = () => ownsHold() && getState(sessionId).epoch === epoch
+    return {
+        isCurrent,
+        verify: async () => {
+            while (isCurrent()) {
+                await waitForHeldHistoryProbe(window)
+                if (!isCurrent() || window.epochCheckPending) return false
+                const verification = window.queuedVerification
+                if (!verification) return true
+                const isCurrentReadback = () => isCurrent() && window.queuedVerification === verification
+                try {
+                    await Promise.race([
+                        verifyHeldQueuedInputs(sessionId, verification, isCurrentReadback),
+                        verification.superseded
+                    ])
+                } catch {
+                    if (isCurrentReadback()) {
+                        window.catchUpNeeded = true
+                        return false
+                    }
+                }
+                if (isCurrentReadback()) return !window.epochCheckPending
+                // A newer gap superseded this readback while we were waiting.
+            }
+            return false
+        },
+        verifyStart: async () => {
+            const oldestSeq = getState(sessionId).oldestSeq
+            await waitForHeldHistoryProbe(window)
+            const state = getState(sessionId)
+            return isCurrent() && !window.epochCheckPending && !state.hasMore && state.oldestSeq === oldestSeq
+        },
+        finish: (keepHistory) => {
+            if (!ownsHold()) return
+            const finishWhenReconciled = () => {
+                if (!ownsHold() || (keepHistory && getState(sessionId).requiresLatestReset)) return
+                releaseHeldHistory(sessionId, window)
+                if (window.catchUpNeeded && window.recovery && getState(sessionId).epoch === epoch) {
+                    void recoverWindowAfterGapResume(window.recovery.api, sessionId)
+                }
+            }
+            if (window.probe) void waitForHeldHistoryProbe(window).then(finishWhenReconciled)
+            else finishWhenReconciled()
+        }
+    }
+}
+
+function reconcileHeldHistoryNavigation(api: ApiClient, sessionId: string, requireEpochCheck = false): Promise<void> | null {
+    const held = heldHistoryWindows.get(sessionId)
+    if (!held) return null
+    const previousProbe = held.probe
+    if (requireEpochCheck) {
+        // An SSE gap can hide a rewind that happened after the existing
+        // request took its snapshot. Only a request started now can verify it.
+        held.epochCheckPending = true
+    } else if (previousProbe) {
+        return previousProbe.wait
+    }
+    if (held.epochCheckPending) replaceHeldQueuedVerification(held, api)
+    const initial = getState(sessionId)
+    // Bind the reconnect to the cursor before any live SSE can advance it.
+    const recovery = held.recovery ??= { api, after: getNewestCursor(initial) }
+    recovery.api = api
+    const requestBaseline = new Map(initial.messages.map(message => [message.id, message]))
+    const isCurrent = () => heldHistoryWindows.get(sessionId) === held && held.probe === probe
+    const reset = async () => {
+        markMessageWindowForLatestReset(sessionId, getState(sessionId).messages)
+        await syncTailMessages(api, sessionId)
+    }
+    const reconcileRows = (updates: DecryptedMessage[], baseline: Map<string, DecryptedMessage>) => {
+        const byId = new Map(updates.map(message => [message.id, message]))
+        updateState(sessionId, previous => {
+            const retainedUpdates = previous.messages.flatMap(message => {
+                const refreshed = byId.get(message.id)
+                return refreshed && baseline.get(message.id) === message ? [refreshed] : []
+            })
+            return retainedUpdates.length
+                ? buildState(previous, { messages: mergeMessages(previous.messages, retainedUpdates) })
+                : previous
+        }, true)
+    }
+    let supersede!: () => void
+    const superseded = new Promise<void>(resolve => { supersede = resolve })
+    const request = api.getMessages(sessionId, { limit: PAGE_SIZE }).then(async response => {
+        if (!isCurrent()) return
+        if (response.page.epoch !== held.epoch) return reset()
+        // Refresh retained rows, never splice a disconnected latest page into
+        // the historical window. Leave the pagination cursors untouched.
+        reconcileRows(response.messages, requestBaseline)
+        const head = pagePosition(response.page.snapshotHeadAt, response.page.snapshotHeadSeq)
+        if (head && recovery.after && comparePosition(head, recovery.after) > 0) held.catchUpNeeded = true
+
+        const inLatest = new Set(response.messages.map(message => message.id))
+        const candidates = getState(sessionId).messages.filter(message => !inLatest.has(message.id) && isNonTerminalToolCallRow(message))
+            .slice(-GAP_ROW_REFRESH_LIMIT).reverse()
+        if (candidates.length > 0) {
+            const results = await Promise.allSettled(candidates.map(message => api.getMessageContext(sessionId, message.id)))
+            if (!isCurrent()) return
+            const updates: DecryptedMessage[] = []
+            for (const [index, result] of results.entries()) {
+                if (result.status !== 'fulfilled' || !result.value) {
+                    held.catchUpNeeded = true
+                    continue
+                }
+                if (result.value.page.epoch !== held.epoch) return reset()
+                const updated = result.value.messages.find(message => message.id === candidates[index].id)
+                if (updated) updates.push(updated)
+                else held.catchUpNeeded = true
+            }
+            reconcileRows(updates, new Map(candidates.map(message => [message.id, message])))
+        }
+        if (held.epochCheckPending) {
+            held.epochCheckPending = false
+            updateState(sessionId, previous => previous.preferLatestOnActivation
+                ? buildState(previous, { preferLatestOnActivation: false }) : previous)
+        }
+    }).catch(() => {
+        // Keep the visible history if the reconnect request itself fails.
+        if (isCurrent()) held.catchUpNeeded = true
+    }).finally(() => { if (held.probe === probe) held.probe = undefined })
+    const probe: HeldHistoryProbe = { wait: Promise.race([request, superseded]), supersede }
+    held.probe = probe
+    // Don't let a superseded or stalled request hold up navigation.
+    previousProbe?.supersede()
+    return probe.wait
+}
+
 export function syncTailMessages(
     api: ApiClient,
     sessionId: string,
     options: { ensureAfterCurrent?: boolean } = {}
 ): Promise<void> {
+    const heldReconciliation = reconcileHeldHistoryNavigation(api, sessionId)
+    if (heldReconciliation) return heldReconciliation
     if (messageWindowTargetLocks.has(sessionId)) {
         return Promise.resolve()
+    }
+    const deferred = deferredGapCursors.get(sessionId)
+    if (deferred?.epoch === getState(sessionId).epoch) {
+        updateState(sessionId, previous => previous.pendingGapRecovery ? previous : buildState(previous, { pendingGapRecovery: true }))
     }
     let controller = tailSyncControllers.get(sessionId)
     if (!controller) {
@@ -1524,6 +1743,9 @@ export function syncTailMessages(
  * reconnect.
  */
 export function recoverWindowAfterGapResume(api: ApiClient, sessionId: string): Promise<void> {
+    // A missed interval can hide a rewind even if the gap arrives after the jump starts.
+    const heldReconciliation = reconcileHeldHistoryNavigation(api, sessionId, true)
+    if (heldReconciliation) return heldReconciliation
     if (messageWindowTargetLocks.has(sessionId)) {
         return Promise.resolve()
     }
@@ -1535,6 +1757,12 @@ export function recoverWindowAfterGapResume(api: ApiClient, sessionId: string): 
         || previous.epoch === null
     ) {
         return syncTailMessages(api, sessionId)
+    }
+    // Keep the earliest cursor until the whole recovery succeeds. A history
+    // jump may cancel this request after SSE has already advanced the view.
+    const saved = deferredGapCursors.get(sessionId)
+    if (!saved || saved.epoch !== previous.epoch) {
+        deferredGapCursors.set(sessionId, { epoch: previous.epoch, after: getNewestCursor(previous)! })
     }
     updateState(sessionId, (current) => buildState(current, { pendingGapRecovery: true }))
     return syncTailMessages(api, sessionId)
@@ -1976,6 +2204,8 @@ export function cancelOlderMessageLoad(sessionId: string): void {
 
 export function setMessageViewMode(sessionId: string, mode: MessageViewMode): void {
     if (mode === 'tail') {
+        const held = heldHistoryWindows.get(sessionId)
+        if (held) releaseHeldHistory(sessionId, held)
         messageWindowTargetLocks.delete(sessionId)
     }
     updateState(sessionId, (previous) => {
@@ -2035,6 +2265,8 @@ export function subscribeMessageWindow(sessionId: string, listener: () => void):
 }
 
 export function clearMessageWindow(sessionId: string): void {
+    heldHistoryWindows.delete(sessionId)
+    deferredGapCursors.delete(sessionId)
     messageWindowTargetLocks.delete(sessionId)
     tailSyncControllers.delete(sessionId)
     const previous = states.get(sessionId)
@@ -2055,7 +2287,9 @@ function markMessageWindowForLatestReset(sessionId: string, messages: DecryptedM
     if (!previous) return
 
     // A rewind/invalidation is authoritative and must refresh even when a
-    // historical search target previously paused background tail sync.
+    // historical search target or jump-to-start paused background tail sync.
+    heldHistoryWindows.delete(sessionId)
+    deferredGapCursors.delete(sessionId)
     messageWindowTargetLocks.delete(sessionId)
     tailSyncControllers.delete(sessionId)
     clearPersistedState(sessionId)
@@ -2142,6 +2376,31 @@ function isQueuedReconcileCandidate(message: DecryptedMessage): boolean {
     if (!message.localId || !isQueuedForInvocation(message)) return false
     if (!optimisticMessage(message)) return true
     return message.status === 'queued' || message.status === 'sent'
+}
+
+async function verifyHeldQueuedInputs(
+    sessionId: string,
+    verification: HeldQueuedVerification,
+    isCurrent: () => boolean
+): Promise<void> {
+    while (isCurrent()) {
+        const pending = new Map(getState(sessionId).messages
+            .filter(message => typeof message.seq === 'number' && isQueuedReconcileCandidate(message)
+                && !verification.checked.has(message))
+            .map(message => [message.localId!, message]))
+        if (pending.size === 0) return
+        // The latest page does not cover every retained input. Verify only
+        // delivery for prompt navigation; queue removal and other pending
+        // transitions still belong to the ordinary reconnect handler.
+        const { invokedLocalMessages } = await readQueuedState(verification.api, sessionId, [...pending.keys()])
+        if (!isCurrent()) return
+        const current = new Map(getState(sessionId).messages.map(row => [row.localId, row]))
+        applyInvokedQueuedState(
+            invokedLocalMessages.filter(input => pending.has(input.localId) && pending.get(input.localId) === current.get(input.localId)),
+            (ids, invokedAt, steered) => markMessagesConsumed(sessionId, ids, invokedAt, steered)
+        )
+        for (const row of pending.values()) verification.checked.add(row)
+    }
 }
 
 export function getQueuedReconcileCandidateLocalIds(sessionId: string): string[] {

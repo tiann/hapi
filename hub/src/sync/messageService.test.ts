@@ -103,6 +103,27 @@ function makePublisher() {
 // Tests
 // ---------------------------------------------------------------------------
 
+describe('MessageService durable turn inputs', () => {
+    it('returns a persisted mid-turn steer in a fresh history read', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'fresh-steered-history')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'original prompt' } }, 'original')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'mid-turn correction' } }, 'steer')
+        store.recordMessagesConsumed(session.id, ['original'], 1_000, 'default')
+        store.recordMessagesConsumed(session.id, ['steer'], 1_500, 'default')
+        store.recordMessagesConsumed(session.id, ['steer'], 2_000, 'default', true)
+        const updatedAtBeforeReplay = store.sessions.getSession(session.id)?.updatedAt
+        store.recordMessagesConsumed(session.id, ['steer'], 3_000, 'default', true)
+        const service = new MessageService(store, makeIo(() => {}), makePublisher() as unknown as EventPublisher)
+
+        const history = service.getMessages(session.id)
+        expect(history.find(message => message.localId === 'original')?.steered).toBeUndefined()
+        expect(history.find(message => message.localId === 'steer')?.steered).toBe(true)
+        expect(history.find(message => message.localId === 'steer')?.invokedAt).toBe(1_500)
+        expect(store.sessions.getSession(session.id)?.updatedAt).toBe(updatedAtBeforeReplay)
+    })
+})
+
 describe('MessageService goal status filtering', () => {
     it('does not discard or replay an uncertain shared input on a not-found cancellation ACK', async () => {
         const store = makeStore()
@@ -641,6 +662,7 @@ describe('MessageService.getQueuedState', () => {
         const otherSession = makeSession(store, 'queued-state-other')
         store.messages.addMessage(session.id, 'queued', 'local-queued')
         store.messages.addMessage(session.id, 'invoked', 'local-invoked')
+        store.messages.addMessage(session.id, 'steered', 'local-steered')
         store.messages.addMessage(
             session.id,
             'future scheduled',
@@ -649,19 +671,24 @@ describe('MessageService.getQueuedState', () => {
         )
         store.messages.addMessage(otherSession.id, 'other session', 'local-other')
         store.messages.markMessagesInvoked(session.id, ['local-invoked'], 1_000)
+        store.messages.markMessagesInvoked(session.id, ['local-steered'], 1_000, true)
 
         const service = new MessageService(store, makeIo(() => {}), makePublisher() as any)
 
         expect(service.getQueuedState(session.id, [
             'local-queued',
             'local-invoked',
+            'local-steered',
             'local-absent',
             'local-future',
             'local-other'
         ])).toEqual({
             queuedLocalIds: ['local-queued', 'local-future'],
             indeterminateLocalIds: [],
-            invokedLocalMessages: [{ localId: 'local-invoked', invokedAt: 1_000 }]
+            invokedLocalMessages: [
+                { localId: 'local-invoked', invokedAt: 1_000 },
+                { localId: 'local-steered', invokedAt: 1_000, steered: true }
+            ]
         })
         expect(service.getQueuedState(session.id, [])).toEqual({
             queuedLocalIds: [],

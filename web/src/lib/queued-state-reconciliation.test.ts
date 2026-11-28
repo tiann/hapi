@@ -103,6 +103,19 @@ describe('reconcileQueuedStateAfterConnect', () => {
         )
     })
 
+    it('does not conflate steered and ordinary invocation at the same timestamp', async () => {
+        mockGetCandidates.mockReturnValueOnce(['prompt', 'correction'])
+        await reconcileQueuedStateAfterConnect(createMockApi(async () => ({
+            queuedLocalIds: [],
+            invokedLocalMessages: [
+                { localId: 'prompt', invokedAt: 1_000 },
+                { localId: 'correction', invokedAt: 1_000, steered: true }
+            ]
+        })), 'session-B')
+        expect(mockMarkMessagesConsumed).toHaveBeenCalledWith('session-B', ['prompt'], 1_000)
+        expect(mockMarkMessagesConsumed).toHaveBeenCalledWith('session-B', ['correction'], 1_000, true)
+    })
+
     it('applies authoritative invoked timestamps before reconciling absent rows', async () => {
         mockGetCandidates.mockReturnValueOnce(['local-1', 'local-2'])
         const getQueuedState = vi.fn(async () => ({
@@ -152,6 +165,26 @@ describe('reconcileQueuedStateAfterConnect', () => {
         await reconcileQueuedStateAfterConnect(createMockApi(getQueuedState), 'session-C')
 
         expect(getQueuedState).not.toHaveBeenCalled()
+        expect(mockReconcileQueuedLocalIds).not.toHaveBeenCalled()
+    })
+
+    it('clears a canceled queued row in a stable historical search window', async () => {
+        mockGetCandidates.mockReturnValueOnce(['canceled-local'])
+        vi.mocked(getMessageWindowState).mockReturnValue({ epoch: 1, requiresLatestReset: true, messages: [] } as unknown as ReturnType<typeof getMessageWindowState>)
+        await reconcileQueuedStateAfterConnect(createMockApi(), 'historical-search')
+        expect(mockReconcileQueuedLocalIds).toHaveBeenCalledWith('historical-search', ['canceled-local'], [])
+    })
+
+    it('ignores queue readback from before the message window was rewound', async () => {
+        mockGetCandidates.mockReturnValueOnce(['local-1'])
+        const store = vi.mocked(getMessageWindowState)
+        store.mockReturnValue({ epoch: 1, messages: [] } as unknown as ReturnType<typeof getMessageWindowState>)
+        const api = createMockApi(async () => {
+            store.mockReturnValue({ epoch: 2, messages: [] } as unknown as ReturnType<typeof getMessageWindowState>)
+            return { queuedLocalIds: [], invokedLocalMessages: [{ localId: 'local-1', invokedAt: 100 }] }
+        })
+        await reconcileQueuedStateAfterConnect(api, 'rewound')
+        expect(mockMarkMessagesConsumed).not.toHaveBeenCalled()
         expect(mockReconcileQueuedLocalIds).not.toHaveBeenCalled()
     })
 

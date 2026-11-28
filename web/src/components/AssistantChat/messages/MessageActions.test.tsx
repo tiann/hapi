@@ -99,6 +99,71 @@ describe('MessageActions', () => {
         expect(copy).toHaveBeenCalledWith('message body')
     })
 
+    it('renders separate icon-only navigation actions on the right side', () => {
+        const onJumpToPrompt = vi.fn()
+        const onJumpToConversationStart = vi.fn()
+        renderActions({
+            align: 'start',
+            copyText: 'message body',
+            onJumpToPrompt,
+            onJumpToConversationStart
+        })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Jump to turn input' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Jump to conversation start' }))
+
+        expect(onJumpToPrompt).toHaveBeenCalledOnce()
+        expect(onJumpToConversationStart).toHaveBeenCalledOnce()
+        expect(screen.queryByText('Jump to turn input')).toBeNull()
+        expect(screen.queryByText('Jump to conversation start')).toBeNull()
+    })
+
+    it('keeps the conversation-start action when the prompt is already visible', () => {
+        renderActions({
+            align: 'start',
+            onJumpToPrompt: vi.fn(),
+            onJumpToConversationStart: vi.fn(),
+            showPromptNavigation: false
+        })
+
+        expect(screen.queryByRole('button', { name: 'Jump to turn input' })).toBeNull()
+        expect(screen.getByRole('button', { name: 'Jump to conversation start' })).toBeInTheDocument()
+    })
+
+    it('disables the conversation-start action while history is loading', () => {
+        renderActions({
+            align: 'start',
+            onJumpToConversationStart: vi.fn(),
+            isLoadingConversationStart: true
+        })
+
+        expect(screen.getByRole('button', { name: 'Jump to conversation start' })).toHaveAttribute('aria-disabled', 'true')
+    })
+
+    it('disables the prompt action and shows progress while its history is loading', () => {
+        renderActions({
+            align: 'start',
+            onJumpToPrompt: vi.fn(),
+            isLoadingPrompt: true
+        })
+
+        expect(screen.getByRole('button', { name: 'Jump to turn input' })).toHaveAttribute('aria-disabled', 'true')
+    })
+
+    it('disables every response navigation action while another navigation is running', () => {
+        const onJumpToPrompt = vi.fn()
+        const onJumpToConversationStart = vi.fn()
+        renderActions({ align: 'start', onJumpToPrompt, onJumpToConversationStart, isNavigationInFlight: true })
+
+        for (const name of ['Jump to turn input', 'Jump to conversation start']) {
+            const button = screen.getByRole('button', { name })
+            expect(button).toHaveAttribute('aria-disabled', 'true')
+            fireEvent.click(button)
+        }
+        expect(onJumpToPrompt).not.toHaveBeenCalled()
+        expect(onJumpToConversationStart).not.toHaveBeenCalled()
+    })
+
     it('shows meaningful assistant metadata in a popover without invoke time', () => {
         renderActions({
             align: 'start',

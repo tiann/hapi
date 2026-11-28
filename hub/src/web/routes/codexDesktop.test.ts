@@ -1048,6 +1048,8 @@ describe('Codex Desktop import routes', () => {
         store.messages.addMessage(storedSession.id, { type: 'text', text: 'first stored message' }, 'stored-1')
         store.messages.addMessage(storedSession.id, { type: 'text', text: 'second stored message' }, 'stored-2')
         store.messages.addMessage(engineSession.id, { type: 'text', text: 'engine-only message' }, 'engine-1')
+        store.messages.markMessagesInvoked(engineSession.id, ['engine-1'], Date.now(), true)
+        const realtimeEvents: unknown[] = []
         const engine = {
             getSessionsByNamespace: () => [engineSession],
             transferAttachedJobs: (fromSessionId: string, toSessionId: string) => {
@@ -1056,7 +1058,7 @@ describe('Codex Desktop import routes', () => {
             deleteSession: async (sessionId: string) => {
                 store.sessions.deleteSession(sessionId, 'default')
             },
-            handleRealtimeEvent: () => {},
+            handleRealtimeEvent: (event: unknown) => { realtimeEvents.push(event) },
             recordSessionActivity: (sessionId: string, updatedAt: number) => {
                 store.sessions.touchSessionUpdatedAt(sessionId, updatedAt, 'default')
             }
@@ -1081,6 +1083,10 @@ describe('Codex Desktop import routes', () => {
             const sessions = store.sessions.getSessionsByNamespace('default')
             expect(sessions.map((session) => session.id)).toEqual([storedSession.id])
             expect(store.messages.getAllMessages(storedSession.id)).toHaveLength(3)
+            expect(store.messages.getAllMessages(storedSession.id).find(message => message.localId === 'engine-1')?.steered).toBe(true)
+            expect(realtimeEvents).toContainEqual(expect.objectContaining({
+                type: 'message-received', message: expect.objectContaining({ localId: 'engine-1', steered: true })
+            }))
         } finally {
             store.close()
         }

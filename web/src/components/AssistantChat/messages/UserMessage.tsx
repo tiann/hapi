@@ -11,6 +11,13 @@ import { MessageActions, isConversationHistoryBlocked } from '@/components/Assis
 import { useTranslation } from '@/lib/use-translation'
 import { MessageTimestamp } from '@/components/AssistantChat/messages/MessageTimestamp'
 
+export function isTurnInputMessage(
+    invokedAt: number | null | undefined,
+    status: HappyChatMessageMetadata['status']
+): boolean {
+    return invokedAt !== null && status !== 'failed'
+}
+
 export function HappyUserMessage() {
     const ctx = useHappyChatContext()
     const { t } = useTranslation()
@@ -68,6 +75,9 @@ export function HappyUserMessage() {
     const steered = useAuiState(({ message }) => (
         message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
     )?.steered === true)
+    const nativeTurnContinuation = useAuiState(({ message }) => (
+        message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
+    )?.nativeTurnContinuation === true)
     const cliText = useAuiState((s) => {
         const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
         if (custom?.kind !== 'cli-output') return ''
@@ -79,6 +89,8 @@ export function HappyUserMessage() {
             <MessagePrimitive.Root
                 id={elementId}
                 data-hapi-message-role="system-note"
+                data-hapi-system-turn={isTurnInputMessage(invokedAt, status) ? 'true' : undefined}
+                data-hapi-source-message-ids={sourceMessageIds?.join(' ') || undefined}
                 className="happy-message scroll-mt-4 px-1"
             >
                 <div className="mx-auto w-fit max-w-[92%] px-2 text-center text-xs text-[var(--app-hint)] opacity-80">
@@ -91,6 +103,8 @@ export function HappyUserMessage() {
             </MessagePrimitive.Root>
         )
     }
+
+    const isTurnInput = !steered && !nativeTurnContinuation && isTurnInputMessage(invokedAt, status)
     const canRetry = status === 'failed' && typeof localId === 'string' && Boolean(ctx.onRetryMessage)
     const onRetry = canRetry ? () => ctx.onRetryMessage!(localId) : undefined
     const showStatus = shouldShowMessageStatus(status)
@@ -136,6 +150,8 @@ export function HappyUserMessage() {
             <MessagePrimitive.Root
                 id={elementId}
                 data-hapi-message-role="user"
+                data-hapi-turn-input={isTurnInput ? 'true' : undefined}
+                tabIndex={isTurnInput ? -1 : undefined}
                 data-hapi-source-message-ids={sourceMessageIds?.join(' ') || undefined}
                 className="happy-message scroll-mt-4 px-1 min-w-0 max-w-full overflow-x-hidden"
             >
@@ -163,6 +179,8 @@ export function HappyUserMessage() {
         <MessagePrimitive.Root
             id={elementId}
             data-hapi-message-role="user"
+            data-hapi-turn-input={isTurnInput ? 'true' : undefined}
+            tabIndex={isTurnInput ? -1 : undefined}
             data-hapi-source-message-ids={sourceMessageIds?.join(' ') || undefined}
             className="happy-message flex flex-col items-end scroll-mt-4"
         >

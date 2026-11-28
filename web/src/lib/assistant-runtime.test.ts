@@ -7,8 +7,11 @@ import {
     buildSourceMessageIdsByBlock,
     findLatestCompletedBoundaryId,
     getBlockPresentationTimestamp,
-    getResponseGroupTimestamps
+    getResponseGroupTimestamps,
+    buildAssistantReplyTargets,
+    confirmedTurnContinuations
 } from './assistant-runtime'
+import { reconcileChatBlocks } from '@/chat/reconcile'
 import type { AgentEventBlock, AgentTextBlock, CliOutputBlock, ToolCallBlock, UserTextBlock } from '@/chat/types'
 import { buildVisibleChatBlocks, type ToolGroupBlock, type VisibleChatBlock } from '@/chat/toolGroups'
 
@@ -138,6 +141,17 @@ describe('assignThreadMessageIds', () => {
 })
 
 describe('buildSourceMessageIdsByBlock', () => {
+    it('keeps stable tool identities for boundary recovery', () => {
+        const single = { ...toolCall('tool-single'), sourceMessageIds: ['stored-single'] }
+        const grouped = toolGroup('tools', [toolCall('tool-a'), { ...toolCall('tool-b'), sourceMessageIds: ['stored-b'] }])
+        const sourceIdsByBlock = buildSourceMessageIdsByBlock([single, grouped])
+        const replyIdsByBlock = buildSourceMessageIdsByBlock([single, grouped], true)
+        expect(sourceIdsByBlock.get(single)).toEqual([])
+        expect(sourceIdsByBlock.get(grouped)).toEqual([])
+        expect(replyIdsByBlock.get(single)).toEqual(['tool-single', 'stored-single', 'tool-a', 'tool-b', 'stored-b'])
+        expect(replyIdsByBlock.get(grouped)).toEqual(['tool-single', 'stored-single', 'tool-a', 'tool-b', 'stored-b'])
+    })
+
     it('keeps a raw search-hit id on the first card of a joined assistant group', () => {
         const firstTool = toolCall('tool-1')
         const target = agentText('raw-target:0', {
@@ -301,6 +315,134 @@ describe('message presentation timestamps', () => {
 
         expect(getBlockPresentationTimestamp(group)).toBe(300)
         expect(getResponseGroupTimestamps([group]).get(group)).toBe(300)
+    })
+})
+
+describe('buildAssistantReplyTargets', () => {
+    it('maps each assistant response to the latest real user message across system events', () => {
+        const blocks = assignThreadMessageIds([
+            userText('first'),
+            agentText('answer-1'),
+            agentEvent('ready', { type: 'ready' }),
+            agentText('answer-2'),
+            userText('second'),
+            toolCall('tool'),
+            agentText('answer-3')
+        ])
+
+        expect([...buildAssistantReplyTargets(blocks)]).toEqual([
+            ['agent-text:answer-1', 'user-text:first'],
+            ['agent-text:answer-2', 'user-text:first'],
+            ['tool-call:tool', 'user-text:second'],
+            ['agent-text:answer-3', 'user-text:second']
+        ])
+    })
+
+    it('marks an invoked system wake as a response with no operator input', () => {
+        const blocks = assignThreadMessageIds([
+            userText('first'), agentText('first-reply'),
+            userText('pending-wake', { invokedAt: null, status: 'queued', meta: { sentFrom: 'hapi-system' } }),
+            agentText('still-first-turn'),
+            userText('wake', { invokedAt: 2_000, meta: { sentFrom: 'hapi-system' } }),
+            agentText('wake-reply'),
+            userText('next'), agentText('next-reply')
+        ])
+        expect([...buildAssistantReplyTargets(blocks)]).toEqual([
+            ['agent-text:first-reply', 'user-text:first'],
+            ['agent-text:still-first-turn', 'user-text:first'],
+            ['agent-text:wake-reply', null],
+            ['agent-text:next-reply', 'user-text:next']
+        ])
+    })
+
+    it('does not invent a target when loaded history starts with an assistant response', () => {
+        const blocks = assignThreadMessageIds([agentText('answer')])
+        expect(buildAssistantReplyTargets(blocks).size).toBe(0)
+    })
+
+    it('uses user-role CLI output as the next assistant response target', () => {
+        const blocks = assignThreadMessageIds([
+            userText('prompt'),
+            agentText('answer'),
+            cliOutput('command', 'user'),
+            cliOutput('command-output', 'assistant')
+        ])
+
+        expect([...buildAssistantReplyTargets(blocks)]).toContainEqual([
+            'cli-output:command-output',
+            'cli-output:command'
+        ])
+    })
+
+    it('uses the initiating prompt for a mid-turn steer loaded from durable history', () => {
+        const blocks = assignThreadMessageIds([
+            userText('original', { invokedAt: 1_000 }),
+            userText('correction', { invokedAt: 2_000, steered: true }),
+            agentText('answer', { invokedAt: 3_000 })
+        ])
+        expect(buildAssistantReplyTargets(blocks).get('agent-text:answer')).toBe('user-text:original')
+    })
+
+    it.each(['codex', 'claude'] as const)('uses the first proven %s batch input, not a later member with the same invocation time', flavor => {
+        const continuations = confirmedTurnContinuations({ path: '/test', host: 'local', flavor,
+            ...(flavor === 'codex' ? { capabilities: { concurrentClients: true } } : {}),
+            conversationHistoryTurns: { first: 'turn', last: 'turn', separate: 'next' },
+            conversationHistoryPoints: { first: true, separate: true }
+        })
+        const first = userText('msg-first', { invokedAt: 1_000, localId: 'first' })
+        const last = userText('msg-last', { invokedAt: 1_000, localId: 'last' })
+        const answer = agentText('answer')
+        const next = userText('msg-next', { invokedAt: 1_000, localId: 'separate' })
+        expect(buildAssistantReplyTargets(assignThreadMessageIds([first, last, answer]), continuations).get('agent-text:answer'))
+            .toBe('user-text:msg-first')
+        expect(buildAssistantReplyTargets(assignThreadMessageIds([last, answer]), continuations).has('agent-text:answer')).toBe(false)
+        expect(buildAssistantReplyTargets(assignThreadMessageIds([first, last, next, answer]), continuations).get('agent-text:answer'))
+            .toBe('user-text:msg-next')
+    })
+
+    it.each([true, false])('distinguishes a mid-turn steer from a new follow-up input (steered=%s)', steered => {
+        const blocks = assignThreadMessageIds([
+            userText('original', { invokedAt: 1_000 }),
+            agentText('first-answer'),
+            userText('pickup', { invokedAt: 2_000, steered }),
+            agentText('second-answer')
+        ])
+        const targets = buildAssistantReplyTargets(blocks)
+        expect(targets.get('agent-text:first-answer')).toBe('user-text:original')
+        expect(targets.get('agent-text:second-answer')).toBe(steered ? 'user-text:original' : 'user-text:pickup')
+    })
+
+    it('retargets a reply when a late acknowledgement adds only the steered flag', () => {
+        const prompt = userText('prompt', { invokedAt: 1_000 })
+        const steer = userText('correction', { invokedAt: 2_000 })
+        const answer = agentText('answer', { invokedAt: 3_000 })
+        const before = reconcileChatBlocks([prompt, steer, answer], new Map())
+        expect(buildAssistantReplyTargets(assignThreadMessageIds(buildVisibleChatBlocks(before.blocks, { hasMoreMessages: false })))
+            .get('agent-text:answer')).toBe('user-text:correction')
+
+        const after = reconcileChatBlocks([prompt, { ...steer, steered: true }, answer], before.byId)
+        expect(buildAssistantReplyTargets(assignThreadMessageIds(buildVisibleChatBlocks(after.blocks, { hasMoreMessages: false })))
+            .get('agent-text:answer')).toBe('user-text:prompt')
+    })
+
+    it('keeps queued, failed, and steered user rows from becoming response targets', () => {
+        const blocks = assignThreadMessageIds([
+            userText('prompt', { invokedAt: 1_000 }),
+            agentText('answer-1'),
+            userText('queued', { invokedAt: null, status: 'queued' }),
+            agentText('answer-2'),
+            userText('failed', { invokedAt: null, status: 'failed' }),
+            agentText('answer-3'),
+            userText('steer', { invokedAt: 2_000, steered: true }),
+            agentText('answer-4')
+        ])
+
+        expect([...buildAssistantReplyTargets(blocks)]).toEqual([
+            ['agent-text:answer-1', 'user-text:prompt'],
+            ['agent-text:answer-2', 'user-text:prompt'],
+            ['agent-text:answer-3', 'user-text:prompt'],
+            ['agent-text:answer-4', 'user-text:prompt']
+        ])
     })
 })
 

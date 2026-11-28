@@ -48,6 +48,7 @@ export type HappyChatMessageMetadata = {
     attachments?: AttachmentMetadata[]
     invokedAt?: number | null
     steered?: boolean
+    nativeTurnContinuation?: boolean
     durationMs?: number
     usage?: UsageData
     model?: string | null
@@ -59,8 +60,11 @@ export type HappyChatMessageMetadata = {
      * per-message footer is rendered unchanged.
      */
     turnCount?: number
+    /** Operator prompt ID, null for an invoked system turn, or absent if not loaded. */
+    replyToMessageId?: string | null
     /** Raw HAPI message ids represented by this rendered assistant-ui card. */
     sourceMessageIds?: string[]
+    replySourceMessageIds?: string[]
 }
 
 export type HappyRuntimeExtras = Readonly<{
@@ -370,6 +374,72 @@ export type BlockWithThreadMessageId = {
 }
 
 /**
+ * Associate every assistant-role block with the latest invoked turn. System turns have no operator prompt.
+ * The converter may join adjacent assistant blocks into one card and keeps
+ * metadata from its first block, so assigning the target to every block keeps
+ * the relationship intact regardless of where a joined response starts.
+ */
+const NO_TURN_CONTINUATIONS: ReadonlyMap<string, string> = new Map()
+
+export function confirmedTurnContinuations(metadata: Session['metadata']): ReadonlyMap<string, string> {
+    if (!metadata || (metadata.flavor !== 'claude'
+        && !(metadata.flavor === 'codex' && metadata.capabilities?.concurrentClients === true))) {
+        return NO_TURN_CONTINUATIONS
+    }
+    const continuations = new Map<string, string>()
+    const turns = metadata.conversationHistoryTurns ?? {}
+    const firstByTurn = new Map<string, string | null>()
+    for (const [localId, isBoundary] of Object.entries(metadata.conversationHistoryPoints ?? {})) {
+        const turnId = turns[localId]
+        if (!isBoundary || !turnId) continue
+        // An ambiguous turn boundary is not enough evidence to group rows.
+        firstByTurn.set(turnId, firstByTurn.has(turnId) ? null : localId)
+    }
+    for (const [localId, turnId] of Object.entries(turns)) {
+        const first = firstByTurn.get(turnId)
+        if (first && first !== localId) continuations.set(localId, first)
+    }
+    return continuations.size ? continuations : NO_TURN_CONTINUATIONS
+}
+
+export function buildAssistantReplyTargets(
+    blocks: readonly BlockWithThreadMessageId[],
+    turnContinuations?: ReadonlyMap<string, string>
+): Map<string, string | null> {
+    const targets = new Map<string, string | null>()
+    let latestUserMessageId: string | null | undefined
+    const inputsByLocalId = new Map<string, string>()
+
+    for (const { block, threadMessageId } of blocks) {
+        const role = visibleBlockRole(block)
+        if (role === 'user') {
+            const isPending = block.invokedAt === null
+            const isFailedOrSteered = block.kind === 'user-text' && (block.status === 'failed' || block.steered === true)
+            if (!isPending && !isFailedOrSteered) {
+                const localId = block.kind === 'user-text' ? block.localId : null
+                const first = localId ? turnContinuations?.get(localId) : undefined
+                if (first) {
+                    // Undefined leaves the footer available to page back to
+                    // the boundary instead of pointing at the later member.
+                    latestUserMessageId = inputsByLocalId.get(first)
+                } else {
+                    latestUserMessageId = block.kind === 'user-text' && isSystemNoteMeta(block.meta) ? null : threadMessageId
+                    if (localId && latestUserMessageId && turnContinuations?.size) {
+                        inputsByLocalId.set(localId, latestUserMessageId)
+                    }
+                }
+            }
+            continue
+        }
+        if (role === 'assistant' && latestUserMessageId !== undefined) {
+            targets.set(threadMessageId, latestUserMessageId)
+        }
+    }
+
+    return targets
+}
+
+/**
  * Stable, unique IDs for assistant-ui's linear MessageRepository.
  * Uses `${kind}:${block.id}`; suffixes `~1`, `~2`, … when the same kind+id
  * appears more than once (should be rare — indicates duplicate hub rows or
@@ -406,7 +476,7 @@ export function assignThreadMessageIds(
     return assignThreadMessageIdsWithStableWrappers(blocks, new WeakMap())
 }
 
-function getSourceMessageIdsForBlock(block: VisibleChatBlock): string[] {
+function getSourceMessageIdsForBlock(block: VisibleChatBlock, includeToolIdentities = false): string[] {
     if (
         block.kind === 'agent-text'
         || block.kind === 'agent-reasoning'
@@ -431,9 +501,11 @@ function getSourceMessageIdsForBlock(block: VisibleChatBlock): string[] {
         return [block.id]
     }
 
-    // Tool-call ids are native tool ids rather than HAPI message ids. A
-    // neighboring text/reasoning block still contributes its source id to an
-    // assistant-ui joined card, which covers the common search-hit path.
+    if (includeToolIdentities && block.kind === 'tool-call') return [block.id, ...(block.sourceMessageIds ?? [])]
+    if (includeToolIdentities && block.kind === 'tool-group') {
+        return block.tools.flatMap(tool => [tool.id, ...(tool.sourceMessageIds ?? [])])
+    }
+
     return []
 }
 
@@ -489,14 +561,15 @@ function mergeUniqueMessageIds(target: string[], ids: readonly string[]): void {
  * a search hit can still locate the card after the join.
  */
 export function buildSourceMessageIdsByBlock(
-    blocks: readonly VisibleChatBlock[]
+    blocks: readonly VisibleChatBlock[],
+    includeToolIdentities = false
 ): Map<VisibleChatBlock, string[]> {
     const sourceIdsByBlock = new Map<VisibleChatBlock, string[]>()
 
     for (let index = 0; index < blocks.length; index += 1) {
         const block = blocks[index]
         if (visibleBlockRole(block) !== 'assistant') {
-            sourceIdsByBlock.set(block, getSourceMessageIdsForBlock(block))
+            sourceIdsByBlock.set(block, getSourceMessageIdsForBlock(block, includeToolIdentities))
             continue
         }
 
@@ -509,7 +582,7 @@ export function buildSourceMessageIdsByBlock(
 
         const sourceIds: string[] = []
         for (const groupBlock of group) {
-            mergeUniqueMessageIds(sourceIds, getSourceMessageIdsForBlock(groupBlock))
+            mergeUniqueMessageIds(sourceIds, getSourceMessageIdsForBlock(groupBlock, includeToolIdentities))
         }
         for (const groupBlock of group) {
             sourceIdsByBlock.set(groupBlock, sourceIds)
@@ -1035,6 +1108,10 @@ export function useHappyRuntime(props: {
         () => buildSourceMessageIdsByBlock(props.blocks),
         [props.blocks]
     )
+    const replySourceMessageIdsByBlock = useMemo(
+        () => buildSourceMessageIdsByBlock(props.blocks, true),
+        [props.blocks]
+    )
 
     const aggregates = useMemo(
         () => aggregateResponseGroups(props.blocks),
@@ -1045,6 +1122,15 @@ export function useHappyRuntime(props: {
         [props.blocks]
     )
 
+    const turnContinuations = useMemo(
+        () => confirmedTurnContinuations(props.session.metadata),
+        [props.session.metadata]
+    )
+    const replyTargets = useMemo(
+        () => buildAssistantReplyTargets(blocksWithThreadIds, turnContinuations),
+        [blocksWithThreadIds, turnContinuations]
+    )
+
     const convertBlock = useCallback(
         ({ block, threadMessageId }: BlockWithThreadMessageId): ThreadMessageLike => {
             const message = toThreadMessageLike(
@@ -1053,8 +1139,13 @@ export function useHappyRuntime(props: {
                 responseGroupTimestamps.get(block) ?? getBlockPresentationTimestamp(block)
             )
             const aggregate = aggregates.get(block.id)
+            const replyToMessageId = replyTargets.get(threadMessageId)
             const sourceMessageIds = sourceMessageIdsByBlock.get(block)
-            if (!aggregate && (!sourceMessageIds || sourceMessageIds.length === 0)) return message
+            const replySourceMessageIds = replySourceMessageIdsByBlock.get(block)
+            const nativeTurnContinuation = block.kind === 'user-text' && block.localId != null && turnContinuations.has(block.localId)
+            if (!aggregate && replyToMessageId === undefined && !nativeTurnContinuation
+                && (!sourceMessageIds || sourceMessageIds.length === 0)
+                && (!replySourceMessageIds || replySourceMessageIds.length === 0)) return message
             const existing = message.metadata?.custom as HappyChatMessageMetadata | undefined
             return {
                 ...message,
@@ -1070,12 +1161,15 @@ export function useHappyRuntime(props: {
                             turnCount: aggregate.turnCount,
                             roundSummary: aggregate.roundSummary
                         } : {}),
-                        ...(sourceMessageIds && sourceMessageIds.length > 0 ? { sourceMessageIds } : {})
+                        replyToMessageId,
+                        ...(nativeTurnContinuation ? { nativeTurnContinuation: true } : {}),
+                        ...(sourceMessageIds && sourceMessageIds.length > 0 ? { sourceMessageIds } : {}),
+                        ...(replySourceMessageIds && replySourceMessageIds.length > 0 ? { replySourceMessageIds } : {})
                     } satisfies HappyChatMessageMetadata
                 }
             }
         },
-        [aggregates, responseGroupTimestamps, sourceMessageIdsByBlock]
+        [aggregates, replyTargets, responseGroupTimestamps, sourceMessageIdsByBlock, replySourceMessageIdsByBlock, turnContinuations]
     )
 
     // Use cached message converter for performance optimization

@@ -332,6 +332,8 @@ export type AgentEventBlock = {
 export type ToolCallBlock = {
     kind: 'tool-call'
     id: string
+    /** Stored rows represented by this tool, distinct from its native call id. */
+    sourceMessageIds?: string[]
     localId: string | null
     createdAt: number
     invokedAt?: number | null

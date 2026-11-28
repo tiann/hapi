@@ -125,7 +125,7 @@ export class PiSteerDispatcher {
                 });
 
                 if (this.stopped) return;
-                if (active.entry.localId) this.options.session.emitMessagesConsumed([active.entry.localId]);
+                if (active.entry.localId) this.options.session.emitMessagesConsumed([active.entry.localId], { steered: true });
             }, { poisonOnError: (error) => error instanceof PiRpcTimeoutError });
         } catch (error) {
             // Transport teardown rejects outstanding RPCs. Its cleanup owns the

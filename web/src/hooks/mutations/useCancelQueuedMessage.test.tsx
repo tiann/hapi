@@ -115,7 +115,7 @@ describe('useCancelQueuedMessage', () => {
         const api = {
             cancelMessage: vi.fn().mockResolvedValue({ status: 'busy', localId: 'local-1' }),
             getQueuedState: vi.fn().mockResolvedValue({
-                invokedLocalMessages: [{ localId: 'local-1', invokedAt: 42 }],
+                invokedLocalMessages: [{ localId: 'local-1', invokedAt: 42, steered: true }],
                 queuedLocalIds: [],
             }),
         } as unknown as ApiClient
@@ -139,6 +139,7 @@ describe('useCancelQueuedMessage', () => {
                 id: 'server-message-id',
                 localId: 'local-1',
                 invokedAt: 42,
+                steered: true,
             }),
         })
         await waitFor(() => {
@@ -147,6 +148,7 @@ describe('useCancelQueuedMessage', () => {
                 localId: 'local-1',
                 status: 'sent',
                 invokedAt: 42,
+                steered: true,
             }))
         })
         // Hidden hold restored before getQueuedState, then sent after synthetic invoked.

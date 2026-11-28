@@ -111,7 +111,7 @@ describe('opencode fork-at-message exclusive boundary', () => {
         engine.handleSessionAlive({ sid: source.id, time: Date.now(), mode: 'remote' })
         for (const id of ['first', 'second']) {
             store.messages.addMessage(source.id, { role: 'user', content: id }, id)
-            store.messages.markMessagesInvoked(source.id, [id], Date.now())
+            store.messages.markMessagesInvoked(source.id, [id], Date.now(), id === 'first')
         }
         const checkpoint = source.metadata!.opencodeHistoryCheckpoint!
         const indexes = source.metadata!.conversationHistoryIndexes!
@@ -149,6 +149,7 @@ describe('opencode fork-at-message exclusive boundary', () => {
             const copiedUsers = store.messages.getAllMessages(result.sessionId)
                 .filter(row => (row.content as { role?: string } | null)?.role === 'user').map(row => row.localId)
             expect(copiedUsers).toEqual(['first'])
+            expect(store.messages.getAllMessages(result.sessionId)[0]?.steered).toBe(true)
             const nativeBeforePrevious = checkpoint.userMessageIds[indexes.second - 1]
             expect(nativeBeforePrevious).toBe('n_first')
             const child = engine.getSession(result.sessionId)

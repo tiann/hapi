@@ -31,6 +31,7 @@ import {
     subscribeMessageWindow,
     syncTailMessages,
     recoverWindowAfterGapResume,
+    holdHistoryNavigationWindow,
     updateMessageStatus,
 } from '@/lib/message-window-store'
 
@@ -663,6 +664,23 @@ it('fetches one older context page before first paint when the cold page is tool
 
         expect(getMessageWindowState(id).messages.map((message) => message.id)).toEqual(['latest'])
         expect(getMessageWindowState(id).isSyncingTail).toBe(false)
+    })
+
+    it('does not verify a complete cached history when the activation probe fails', async () => {
+        const id = sessionId('cached-history-jump-offline')
+        const cached = makeAgentMessage({ id: 'cached', seq: 1, at: 100 })
+        await syncTailMessages(createApi(async () => latestResponse([cached], { epoch: 1 })), id)
+        activateMessageWindow(id)
+        const probe = deferred<MessagesResponse>()
+        const api = createApi(async () => probe.promise)
+        const held = holdHistoryNavigationWindow(id, api)!
+        const verifying = held.verifyStart()
+        probe.reject(new Error('offline'))
+        expect(await verifying).toBe(false)
+        expect(await held.verify()).toBe(false)
+        expect(getMessageWindowState(id).messages).toEqual([cached])
+        expect(getMessageWindowState(id).preferLatestOnActivation).toBe(true)
+        held.finish(false)
     })
 
     it('renders a persisted window immediately, then requests a small latest tail on re-entry', async () => {
@@ -2890,6 +2908,346 @@ describe('gap recovery', () => {
     function mergedContentOf(state: ReturnType<typeof getMessageWindowState>): unknown {
         return state.messages.find(message => message.id === 'call-row')?.content
     }
+
+    it.each([false, true])('refreshes a retained tool during a same-epoch jump (outside latest page=%s)', async outsidePage => {
+        const id = sessionId('gap-held-tool-refresh')
+        const oldest = makeAgentMessage({ id: 'oldest', seq: 1, at: 100 })
+        const running = toolCallRow('tool', 2, 200, 'in_progress')
+        const completed = toolCallRow('tool', 2, 200, 'completed')
+        const newTail = makeAgentMessage({ id: 'tail', seq: 3, at: 300 })
+        let initial = true
+        const api = createApi(async () => initial ? latestResponse([oldest, running], { epoch: 1 })
+            : latestResponse(outsidePage ? [newTail] : [completed, newTail], { epoch: 1 }),
+        async () => contextResponse([completed], {
+            epoch: 1, targetMessageId: completed.id, nextBeforeAt: 200, nextBeforeSeq: 2,
+            snapshotHeadAt: 300, snapshotHeadSeq: 3
+        }))
+        await syncTailMessages(api, id)
+        setMessageViewMode(id, 'history')
+        const navigation = holdHistoryNavigationWindow(id)!
+        initial = false
+        await recoverWindowAfterGapResume(api, id)
+        expect(await navigation.verifyStart()).toBe(true)
+        expect(getMessageWindowState(id).messages).toEqual([oldest, completed])
+        expect(getMessageWindowState(id).requiresLatestReset).toBe(false)
+    })
+
+    it('retries a failed retained-tool refresh even when the server head did not advance', async () => {
+        const id = sessionId('gap-hold-refresh-retry')
+        const oldest = makeAgentMessage({ id: 'oldest', seq: 1, at: 100 })
+        const running = toolCallRow('tool', 2, 200, 'in_progress')
+        const completed = toolCallRow('tool', 2, 200, 'completed')
+        const tail = makeAgentMessage({ id: 'tail', seq: 3, at: 300 })
+        const context = vi.fn().mockRejectedValueOnce(new Error('temporary failure')).mockResolvedValue(contextResponse([completed], {
+            epoch: 1, targetMessageId: completed.id, nextBeforeAt: 200, nextBeforeSeq: 2,
+            snapshotHeadAt: 300, snapshotHeadSeq: 3
+        }))
+        let initial = true
+        const api = createApi(async (_id, query) => {
+            if (query.afterAt !== undefined) return afterResponse([], {
+                epoch: 1, nextAfterAt: 300, nextAfterSeq: 3, snapshotHeadAt: 300, snapshotHeadSeq: 3
+            })
+            return latestResponse(initial ? [oldest, running, tail] : [tail], { epoch: 1, nextBeforeAt: 300, nextBeforeSeq: 3 })
+        }, context)
+        await syncTailMessages(api, id)
+        initial = false
+        setMessageViewMode(id, 'history')
+        const held = holdHistoryNavigationWindow(id)!
+        await recoverWindowAfterGapResume(api, id)
+        expect(context).toHaveBeenCalledTimes(1)
+        held.finish(true)
+        await syncTailMessages(api, id)
+        expect(context).toHaveBeenCalledTimes(2)
+        expect(getMessageWindowState(id).messages).toEqual([oldest, completed, tail])
+    })
+
+    it('passes the pending reconnect probe from a failed jump to a second jump', async () => {
+        const id = sessionId('gap-second-jump')
+        const initial = makeAgentMessage({ id: '20', seq: 20, at: 2_000 })
+        const missed = makeAgentMessage({ id: '21', seq: 21, at: 2_100 })
+        const pending = deferred<MessagesResponse>()
+        let calls = 0
+        const after: Array<number | null | undefined> = []
+        const api = createApi(async (_id, query) => {
+            if (++calls === 1) return latestResponse([initial], { epoch: 1 })
+            if (calls === 2) return pending.promise
+            if (query.afterAt !== undefined) {
+                after.push(query.afterSeq)
+                return afterResponse([missed], { epoch: 1, nextAfterSeq: 21, nextAfterAt: 2_100,
+                    snapshotHeadSeq: 21, snapshotHeadAt: 2_100 })
+            }
+            return latestResponse([initial, missed], { epoch: 1 })
+        })
+        await syncTailMessages(api, id)
+        setMessageViewMode(id, 'history')
+        const first = holdHistoryNavigationWindow(id)!
+        const reconnect = recoverWindowAfterGapResume(api, id)
+        first.finish(false)
+        const second = holdHistoryNavigationWindow(id)!
+        const verified = vi.fn()
+        const verifying = second.verify().then(verified)
+        await Promise.resolve()
+        expect(verified).not.toHaveBeenCalled()
+        pending.resolve(latestResponse([missed], { epoch: 1 }))
+        await Promise.all([reconnect, verifying])
+        expect(verified).toHaveBeenCalledWith(true)
+        expect(after).toEqual([])
+        second.finish(true)
+        await vi.waitFor(() => expect(getMessageWindowState(id).messages.map(row => row.id)).toEqual(['20', '21']))
+        expect(after).toEqual([20])
+    })
+
+    it('resumes a contiguous gap when navigation fails before the held probe returns', async () => {
+        const id = sessionId('gap-failed-navigation')
+        const initial = makeAgentMessage({ id: '20', seq: 20, at: 2_000 })
+        const missed = makeAgentMessage({ id: '21', seq: 21, at: 2_100 })
+        const pending = deferred<MessagesResponse>()
+        let calls = 0
+        const cursors: Array<number | null | undefined> = []
+        const api = createApi(async (_id, query) => {
+            if (++calls === 1) return latestResponse([initial], { epoch: 1 })
+            if (calls === 2) return pending.promise
+            if (query.afterAt !== undefined) {
+                cursors.push(query.afterSeq)
+                return afterResponse([missed], { epoch: 1, nextAfterSeq: 21, nextAfterAt: 2_100,
+                    snapshotHeadSeq: 21, snapshotHeadAt: 2_100 })
+            }
+            return latestResponse([initial, missed], { epoch: 1 })
+        })
+        await syncTailMessages(api, id)
+        setMessageViewMode(id, 'history')
+        const held = holdHistoryNavigationWindow(id)!
+        const reconnect = recoverWindowAfterGapResume(api, id)
+        held.finish(false)
+        expect(cursors).toEqual([])
+        pending.resolve(latestResponse([missed], { epoch: 1 }))
+        await reconnect
+        await vi.waitFor(() => expect(getMessageWindowState(id).messages.map(row => row.id)).toEqual(['20', '21']))
+        expect(cursors).toEqual([20])
+    })
+
+    it.each([true, false])('uses only a probe started after an SSE gap (older response first: %s)', async oldFirst => {
+        const id = sessionId('jump-post-gap-epoch')
+        const cached = makeAgentMessage({ id: 'before-rewind', seq: 1, at: 100 })
+        const current = makeAgentMessage({ id: 'after-rewind', seq: 2, at: 200 })
+        const beforeGap = deferred<MessagesResponse>()
+        const afterGap = deferred<MessagesResponse>()
+        const rewindResponse = latestResponse([current], { epoch: 2 })
+        const getMessages = vi.fn(async () => rewindResponse)
+            .mockResolvedValueOnce(latestResponse([cached], { epoch: 1 }))
+            .mockImplementationOnce(() => beforeGap.promise)
+            .mockImplementationOnce(() => afterGap.promise)
+        const api = createApi(getMessages)
+        await syncTailMessages(api, id)
+        activateMessageWindow(id)
+        const held = holdHistoryNavigationWindow(id, api)!
+        const confirmed = vi.fn()
+        const verifying = held.verifyStart().then(result => { confirmed(result); return result })
+        const gap = recoverWindowAfterGapResume(api, id)
+        expect(getMessages).toHaveBeenCalledTimes(3)
+        if (oldFirst) {
+            beforeGap.resolve(latestResponse([cached], { epoch: 1 }))
+            await new Promise<void>(resolve => setTimeout(resolve, 0))
+            expect(confirmed).not.toHaveBeenCalled()
+        }
+        afterGap.resolve(rewindResponse)
+        await gap
+        expect(await verifying).toBe(false)
+        if (!oldFirst) beforeGap.resolve(latestResponse([cached], { epoch: 1 }))
+        await beforeGap.promise
+        expect(getMessageWindowState(id).messages).toEqual([current])
+    })
+
+    it('verifies a held prompt jump only after reading back retained queued inputs outside the latest page', async () => {
+        const id = sessionId('jump-waits-for-queued-readback')
+        const earlier = makeUserMessage({ id: 'earlier', seq: 1, invokedAt: 100 })
+        const queued = makeUserMessage({ id: 'queued', seq: 2, localId: 'queued-local', createdAt: 200, invokedAt: null, status: 'queued' })
+        const reply = makeAgentMessage({ id: 'reply', seq: 203, at: 300 })
+        const readback = deferred<Awaited<ReturnType<ApiClient['getQueuedState']>>>()
+        const api = createApi(vi.fn(async () => latestResponse([reply], { epoch: 1 }))
+            .mockResolvedValueOnce(latestResponse([earlier, queued, reply], { epoch: 1 })))
+        api.getQueuedState = vi.fn(() => readback.promise)
+        await syncTailMessages(api, id)
+        const held = holdHistoryNavigationWindow(id)!
+        const reconnect = recoverWindowAfterGapResume(api, id)
+        const verified = vi.fn()
+        const verifying = held.verify().then(verified)
+        await vi.waitFor(() => expect(api.getQueuedState).toHaveBeenCalledWith(id, ['queued-local']))
+        expect(verified).not.toHaveBeenCalled()
+        readback.resolve({ queuedLocalIds: [], invokedLocalMessages: [{ localId: 'queued-local', invokedAt: 250 }] })
+        await reconnect
+        await verifying
+        expect(verified).toHaveBeenCalledWith(true)
+        expect(getMessageWindowState(id).messages.find(row => row.id === queued.id)?.invokedAt).toBe(250)
+    })
+
+    it('does not wait for or apply a queued readback from before a newer SSE gap', async () => {
+        const id = sessionId('jump-supersedes-queued-readback')
+        const queued = makeUserMessage({ id: 'queued', seq: 1, localId: 'local', createdAt: 100, invokedAt: null })
+        const reply = makeAgentMessage({ id: 'reply', seq: 204, at: 300 })
+        const stale = deferred<Awaited<ReturnType<ApiClient['getQueuedState']>>>()
+        const api = createApi(vi.fn(async () => latestResponse([reply], { epoch: 1 }))
+            .mockResolvedValueOnce(latestResponse([queued, reply], { epoch: 1 })))
+        const read = vi.fn(async () => ({ queuedLocalIds: ['local'], invokedLocalMessages: [] as Awaited<ReturnType<ApiClient['getQueuedState']>>['invokedLocalMessages'] }))
+            .mockImplementationOnce(() => stale.promise)
+        api.getQueuedState = read
+        await syncTailMessages(api, id)
+        const held = holdHistoryNavigationWindow(id)!
+        await recoverWindowAfterGapResume(api, id)
+        const verifying = held.verify()
+        await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1))
+        await recoverWindowAfterGapResume(api, id)
+        expect(await verifying).toBe(true)
+        expect(read).toHaveBeenCalledTimes(2)
+        stale.resolve({ queuedLocalIds: [], invokedLocalMessages: [{ localId: 'local', invokedAt: 110 }] })
+        await new Promise<void>(resolve => setTimeout(resolve, 0))
+        expect(getMessageWindowState(id).messages.find(row => row.id === queued.id)?.invokedAt).toBeNull()
+    })
+
+    it('does not confirm a jump when a reconnect probe started during settlement fails', async () => {
+        const id = sessionId('jump-settles-during-failed-gap-probe')
+        const cached = makeAgentMessage({ id: 'before-rewind', seq: 1, at: 100 })
+        const pending = deferred<MessagesResponse>()
+        const getMessages = vi.fn(async () => pending.promise)
+        getMessages.mockResolvedValueOnce(latestResponse([cached], { epoch: 1 }))
+        const api = createApi(getMessages)
+        await syncTailMessages(api, id)
+        const held = holdHistoryNavigationWindow(id)!
+        const gap = recoverWindowAfterGapResume(api, id)
+        const verifying = held.verifyStart()
+        pending.reject(new Error('offline'))
+        await gap
+        expect(await verifying).toBe(false)
+        expect(await held.verify()).toBe(false)
+        expect(getMessageWindowState(id).messages).toEqual([cached])
+        held.finish(false)
+    })
+
+    it('does not confirm stale history when a jump interrupts gap recovery', async () => {
+        const id = sessionId('jump-interrupts-gap-after-rewind')
+        const cached = makeAgentMessage({ id: 'before-rewind', seq: 1, at: 100 })
+        const current = makeAgentMessage({ id: 'after-rewind', seq: 2, at: 200 })
+        const gapResponse = deferred<MessagesResponse>()
+        const epochResponse = deferred<MessagesResponse>()
+        const getMessages = vi.fn(async (_id: string, query: { afterAt?: number }) =>
+            query.afterAt !== undefined ? gapResponse.promise : epochResponse.promise)
+        getMessages.mockResolvedValueOnce(latestResponse([cached], { epoch: 1 }))
+        const api = createApi(getMessages)
+        await syncTailMessages(api, id)
+        const reconnect = recoverWindowAfterGapResume(api, id)
+        expect(getMessageWindowState(id).hasMore).toBe(false)
+        const held = holdHistoryNavigationWindow(id, api)!
+        const verifying = held.verifyStart()
+        const rewound = latestResponse([current], { epoch: 2 })
+        epochResponse.resolve(rewound)
+        gapResponse.resolve(rewound)
+        expect(await verifying).toBe(false)
+        await reconnect
+        expect(getMessageWindowState(id).messages).toEqual([current])
+    })
+
+    it('transfers an in-flight gap cursor to a navigation before cancelling the request', async () => {
+        const id = sessionId('gap-hold-inflight-cursor')
+        const initial = makeAgentMessage({ id: '20', seq: 20, at: 2_000 })
+        const missed = makeAgentMessage({ id: '21', seq: 21, at: 2_100 })
+        const live = makeAgentMessage({ id: '22', seq: 22, at: 2_200 })
+        const pending = deferred<MessagesResponse>()
+        const cursors: (number | null)[] = []
+        let seeded = false
+        const api = createApi(async (_id, query) => {
+            if (query.afterAt !== undefined) {
+                cursors.push(query.afterSeq ?? null)
+                if (cursors.length === 1) return pending.promise
+                const catchUpRows = query.afterSeq === 20 ? [missed, live] : []
+                return afterResponse(catchUpRows, { epoch: 1, nextAfterAt: 2_200, nextAfterSeq: 22,
+                    snapshotHeadAt: 2_200, snapshotHeadSeq: 22 })
+            }
+            if (!seeded) {
+                seeded = true
+                return latestResponse([initial], { epoch: 1 })
+            }
+            return latestResponse([live], { epoch: 1 })
+        })
+        await syncTailMessages(api, id)
+        const reconnect = recoverWindowAfterGapResume(api, id)
+        expect(cursors).toEqual([20])
+        setMessageViewMode(id, 'history')
+        const held = holdHistoryNavigationWindow(id)!
+        ingestIncomingMessages(id, [live])
+        pending.resolve(afterResponse([missed, live], { epoch: 1, nextAfterAt: 2_200, nextAfterSeq: 22,
+            snapshotHeadAt: 2_200, snapshotHeadSeq: 22 }))
+        await reconnect
+        expect(await held.verify()).toBe(true)
+        held.finish(true)
+        await syncTailMessages(api, id)
+        expect(cursors).toEqual([20, 20])
+        expect(getMessageWindowState(id).messages.map(message => message.id)).toEqual(['20', '21', '22'])
+    })
+
+    it('catches up from the pre-probe cursor even when live SSE advances the tail first', async () => {
+        const id = sessionId('gap-hold-sse-advance')
+        const initial = makeAgentMessage({ id: '20', seq: 20, at: 2_000 })
+        const missed = makeAgentMessage({ id: '21', seq: 21, at: 2_100 })
+        const live = makeAgentMessage({ id: '22', seq: 22, at: 2_200 })
+        const probe = deferred<MessagesResponse>()
+        const catchUp = deferred<number | null>()
+        let calls = 0
+        const api = createApi(async (_id, query) => {
+            if (++calls === 1) return latestResponse([initial], { epoch: 1 })
+            if (calls === 2) return probe.promise
+            if (query.afterAt !== undefined) {
+                catchUp.resolve(query.afterSeq ?? null)
+                return afterResponse([missed, live], { epoch: 1, nextAfterAt: 2_200, nextAfterSeq: 22,
+                    snapshotHeadAt: 2_200, snapshotHeadSeq: 22 })
+            }
+            return latestResponse([initial, missed, live], { epoch: 1 })
+        })
+        await syncTailMessages(api, id)
+        setMessageViewMode(id, 'history')
+        const lease = holdHistoryNavigationWindow(id)!
+        const gap = recoverWindowAfterGapResume(api, id)
+        ingestIncomingMessages(id, [live])
+        probe.resolve(latestResponse([live], { epoch: 1 }))
+        await gap
+        lease.finish(true)
+        await syncTailMessages(api, id)
+        expect(await Promise.race([catchUp.promise, Promise.resolve(null)])).toBe(20)
+        expect(getMessageWindowState(id).messages.map(message => message.id)).toEqual(['20', '21', '22'])
+    })
+
+    it.each([false, true])('waits for a pending epoch probe before confirming history start (reset=%s)', async reset => {
+        const id = sessionId('gap-during-start-settlement')
+        const old = makeAgentMessage({ id: 'oldest', seq: 1, at: 1_000 })
+        const latest = makeAgentMessage({ id: 'latest', seq: 2, at: 2_000 })
+        const probe = deferred<MessagesResponse>()
+        let probeNext = false
+        const getMessages = vi.fn(async () => {
+            if (probeNext) {
+                probeNext = false
+                return probe.promise
+            }
+            return latestResponse(reset ? [latest] : [old], { epoch: reset ? 2 : 1 })
+        })
+        const api = createApi(getMessages)
+        getMessages.mockResolvedValueOnce(latestResponse([old], { epoch: 1 }))
+        await syncTailMessages(api, id)
+        setMessageViewMode(id, 'history')
+        const navigation = holdHistoryNavigationWindow(id)!
+        expect(navigation.isCurrent()).toBe(true)
+        probeNext = true
+        const gap = recoverWindowAfterGapResume(api, id)
+        const completed = vi.fn()
+        const verification = navigation.verifyStart().then(completed)
+        await Promise.resolve()
+        expect(completed).not.toHaveBeenCalled()
+
+        probe.resolve(latestResponse([latest], { epoch: reset ? 2 : 1 }))
+        await Promise.all([gap, verification])
+        expect(completed).toHaveBeenCalledWith(!reset)
+        expect(getMessageWindowState(id).messages.map(row => row.id)).toEqual([reset ? 'latest' : 'oldest'])
+        navigation.finish(true)
+        expect(navigation.isCurrent()).toBe(false)
+    })
 
     it('replaces a merged row with its current content after a gap resume', async () => {
         const id = sessionId('gap-recovery')

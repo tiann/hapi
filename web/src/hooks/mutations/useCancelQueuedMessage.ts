@@ -76,6 +76,7 @@ export function useCancelQueuedMessage(api: ApiClient | null) {
                                 content: input.snapshot.content,
                                 createdAt: input.snapshot.createdAt,
                                 invokedAt: invoked.invokedAt,
+                                ...(invoked.steered ? { steered: true } : {}),
                             },
                         }
                     }
@@ -114,7 +115,7 @@ export function useCancelQueuedMessage(api: ApiClient | null) {
                         const state = await api.getQueuedState(input.sessionId, [input.localId])
                         const invoked = state.invokedLocalMessages.find((item) => item.localId === input.localId)
                         if (invoked) {
-                            markMessagesConsumed(input.sessionId, [input.localId], invoked.invokedAt)
+                            markMessagesConsumed(input.sessionId, [input.localId], invoked.invokedAt, invoked.steered)
                         }
                     } catch {
                         // SSE / the next reconnect will reconcile the held row.
@@ -134,6 +135,7 @@ export function useCancelQueuedMessage(api: ApiClient | null) {
                     content: result.message.content,
                     createdAt: result.message.createdAt,
                     invokedAt: result.message.invokedAt,
+                    ...(result.message.steered ? { steered: true } : {}),
                     status: 'sent',
                 })
             }

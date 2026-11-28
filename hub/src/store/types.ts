@@ -56,6 +56,8 @@ export type StoredMessage = {
     localId: string | null
     invokedAt: number | null
     scheduledAt: number | null
+    /** Durable mid-turn delivery marker used by reply navigation after reload. */
+    steered?: boolean
     /** Omitted for ordinary queued/delivered rows; set when steer outcome is unknown. */
     deliveryState?: MessageDeliveryState
 }

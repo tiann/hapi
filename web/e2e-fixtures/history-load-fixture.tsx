@@ -15,8 +15,9 @@ import { isQueuedForInvocation } from '../src/lib/messages'
 import { useHappyRuntime } from '../src/lib/assistant-runtime'
 import { HappyThread } from '../src/components/AssistantChat/HappyThread'
 import type { ChatBlock } from '../src/chat/types'
-import { getMessageWindowState } from '../src/lib/message-window-store'
+import { getMessageWindowState, ingestIncomingMessages, recoverWindowAfterGapResume } from '../src/lib/message-window-store'
 import { buildConversationOutline } from '../src/chat/outline'
+import { filterConciseChatBlocks } from '../src/chat/conciseView'
 
 // Drives the real message-window store + chat pipeline + HappyThread against a
 // fake paginated message API, so e2e tests can exercise older-history loading
@@ -31,10 +32,18 @@ const SWITCH_TOTAL_MESSAGES = 220
 const BASE_AT = 1_700_000_000_000
 
 type Probe = {
+    appendReply: () => void
     requests: { sessionId?: string; direction: string; beforeSeq: number | null; limit: number | undefined; at: number }[]
     loadMore: () => Promise<unknown>
     refetch: () => Promise<void>
+    gap: (nextEpoch?: number) => Promise<void>
+    failNextLatest: () => void
+    setEpoch: (epoch: number) => void
+    confirmSteer: () => Promise<void>
+    confirmConsumed: () => Promise<void>
     releaseLatest: () => void
+    releaseQueuedReadback: () => void
+    queuedReadbackIds: string[]
     holdBefore: () => void
     releaseBefore: () => void
     windowState: () => {
@@ -42,6 +51,7 @@ type Probe = {
         oldestSeq: number | null
         newestSeq: number | null
         isLoadingMore: boolean
+        isSyncingTail: boolean
     }
 }
 
@@ -54,15 +64,39 @@ declare global {
 let releaseLatestResponse = () => {}
 let latestResponseGate: Promise<void> | null = null
 let beforeResponseGate: Promise<void> | null = null
+let releaseQueuedReadback = () => {}
 let releaseBeforeResponse = () => {}
 
 let currentActiveSessionId = SESSION_ID
+let failNextLatest = false
 
 window.__probe = {
+    appendReply: () => ingestIncomingMessages(SESSION_ID, Array.from({ length: 25 }, (_, index) =>
+        createFixtureMessage(4 + index, {
+            role: 'agent',
+            content: { type: 'codex', data: { type: 'message', message: `New reply line ${index + 1}\n\nFollow-up content.` } },
+        }),
+    )),
     requests: [],
     loadMore: async () => {},
     refetch: async () => {},
+    gap: async (nextEpoch) => {
+        if (nextEpoch !== undefined) fixtureEpoch = nextEpoch
+        await recoverWindowAfterGapResume(fakeApi, currentActiveSessionId)
+    },
+    failNextLatest: () => { failNextLatest = true },
+    setEpoch: epoch => { fixtureEpoch = epoch },
+    confirmConsumed: async () => {
+        fixtureConsumed = true
+        await recoverWindowAfterGapResume(fakeApi, currentActiveSessionId)
+    },
+    confirmSteer: async () => {
+        fixtureSteerConfirmed = true
+        await recoverWindowAfterGapResume(fakeApi, currentActiveSessionId)
+    },
     releaseLatest: () => releaseLatestResponse(),
+    releaseQueuedReadback: () => releaseQueuedReadback(),
+    queuedReadbackIds: [],
     holdBefore: () => {
         beforeResponseGate = new Promise<void>((resolve) => {
             releaseBeforeResponse = resolve
@@ -78,7 +112,8 @@ window.__probe = {
             messageCount: state.messages.length,
             oldestSeq: state.oldestSeq,
             newestSeq: state.newestSeq,
-            isLoadingMore: state.isLoadingMore
+            isLoadingMore: state.isLoadingMore,
+            isSyncingTail: state.isSyncingTail
         }
     }
 }
@@ -114,6 +149,7 @@ const navigationMedia = fixtureParams.has('navigationMedia')
 const sessionSwitch = fixtureParams.has('sessionSwitch')
 const shortPages = fixtureParams.has('shortPages')
 const failBeforeCount = Number(fixtureParams.get('failBefore') ?? '0')
+const failBeforeSeq = Number(fixtureParams.get('failBeforeSeq') ?? '0')
 const filteredOlder = fixtureParams.has('filteredOlder')
 const epochBump = fixtureParams.has('epochBump')
 const coldInitial = fixtureParams.has('coldInitial')
@@ -246,14 +282,105 @@ const sessionMessagesById: Record<string, DecryptedMessage[]> = sessionSwitch
     }
     : {}
 
-const allMessages: DecryptedMessage[] = Array.from({ length: TOTAL_MESSAGES }, (_, index) => {
+const jumpStartGap = fixtureParams.has('jumpStartGap')
+const promptJumpGap = jumpStartGap && fixtureParams.has('promptJumpGap')
+const loadedPromptPreload = fixtureParams.has('loadedPromptPreload')
+const lateSteerJump = fixtureParams.has('lateSteerJump')
+const lateConsumeJump = fixtureParams.has('lateConsumeJump')
+const delayedQueuedReadback = fixtureParams.has('delayedQueuedReadback')
+const queuedReadbackGate = delayedQueuedReadback ? new Promise<void>(resolve => { releaseQueuedReadback = resolve }) : null
+let fixtureConsumed = false
+const batchedReply = fixtureParams.has('batchedReply')
+const claudeBatch = fixtureParams.get('provider') === 'claude'
+const lateClaudeFollowUp = fixtureParams.has('lateClaudeFollowUp')
+let fixtureEpoch = 1
+let fixtureSteerConfirmed = false
+const rekeyReply = fixtureParams.has('rekeyReply')
+if (rekeyReply) window.__probe.holdBefore()
+const conciseLongTurn = fixtureParams.has('conciseLongTurn')
+const cachedComplete = fixtureParams.has('cachedComplete')
+const allMessages: DecryptedMessage[] = conciseLongTurn ? Array.from({ length: TOTAL_MESSAGES }, (_, index) => {
+    const seq = index + 1
+    if (seq === 1) return createFixtureMessage(seq, { role: 'user', content: { type: 'text', text: 'Prompt before the hidden tool output' } })
+    if (seq === 21 && fixtureParams.has('conciseJobWake')) {
+        return createFixtureMessage(seq, {
+            role: 'user', content: { type: 'text', text: 'Job wake before the hidden tool output' }, meta: { sentFrom: 'hapi-system' }
+        })
+    }
+    if (seq === TOTAL_MESSAGES) {
+        if (fixtureParams.has('conciseToolReply')) {
+            return createFixtureMessage(seq, {
+                role: 'agent', content: { type: 'codex', data: { type: 'tool-call', callId: 'native-plan-id', name: 'ExitPlanMode', input: { plan: 'Plan after a long turn' } } }
+            })
+        }
+        return createFixtureMessage(seq, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Concise reply after a long turn' } } })
+    }
+    return createFixtureMessage(seq, {
+        role: 'agent',
+        content: { type: 'codex', data: seq % 2 === 0
+            ? { type: 'tool-call', callId: `hidden-${seq}`, name: 'Read', input: { file_path: `/tmp/hidden-${seq}.txt` } }
+            : { type: 'tool-call-result', callId: `hidden-${seq - 1}`, output: 'ok' } }
+    })
+}) : cachedComplete ? Array.from({ length: 30 }, (_, index) => index === 29
+    ? createFixtureMessage(index + 1, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Cached reply before rewind' } } })
+    : createFixtureMessage(index + 1, { role: 'user', content: { type: 'text', text: `Cached prompt ${index + 1}` } })
+) : rekeyReply ? [
+    createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'Prompt from the older page' } }),
+    createFixtureMessage(2, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Earlier part of the reply' } } }),
+    createFixtureMessage(3, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Last part of the reply' } } }),
+] : lateClaudeFollowUp ? [
+    createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'Original Claude input' } }),
+    createFixtureMessage(2, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Original Claude reply' } } }),
+    { ...createFixtureMessage(3, { role: 'user', content: { type: 'text', text: 'Follow-up input picked up after the result' } }), localId: 'late-steer' },
+    createFixtureMessage(4, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Claude follow-up reply' } } }),
+] : batchedReply ? [
+    { ...createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'First accepted batch member' } }), localId: 'batch-first' },
+    { ...createFixtureMessage(2, { role: 'user', content: { type: 'text', text: 'Last accepted batch member' } }), localId: 'batch-last' },
+    createFixtureMessage(3, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Reply to the accepted batch' } } }),
+] : delayedQueuedReadback ? [
+    fixtureParams.has('onlyQueuedInput')
+        ? createFixtureMessage(1, { role: 'agent', content: { type: 'output', data: { isMeta: true } } })
+        : createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'Earlier valid input' } }),
+    { ...createFixtureMessage(2, { role: 'user', content: { type: 'text', text: 'Newly confirmed input' } }), localId: 'queued-before-latest', invokedAt: null, status: 'queued' },
+    ...Array.from({ length: 201 }, (_, index) => createFixtureMessage(index + 3, { role: 'agent', content: { type: 'output', data: { isMeta: true } } })),
+    createFixtureMessage(204, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Reply after delayed acknowledgement' } } }),
+] : lateConsumeJump ? [
+    createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'Earlier valid input' } }),
+    { ...createFixtureMessage(2, { role: 'user', content: { type: 'text', text: 'Newly confirmed input' } }), invokedAt: null },
+    createFixtureMessage(3, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Reply after delayed acknowledgement' } } }),
+] : lateSteerJump ? [
+    createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'Original fixture prompt' } }),
+    createFixtureMessage(2, { role: 'user', content: { type: 'text', text: 'Unconfirmed correction' } }),
+    createFixtureMessage(3, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Reply with late steer' } } }),
+] : loadedPromptPreload ? [
+    createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'History before loaded prompt' } }),
+    createFixtureMessage(2, { role: 'user', content: { type: 'text', text: 'Already loaded prompt' } }),
+    createFixtureMessage(3, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Reply to loaded prompt' } } }),
+] : fixtureParams.has('jumpStartShort') ? [
+    createFixtureMessage(1, { role: 'user', content: { type: 'text', text: 'Short chat prompt' } }),
+    createFixtureMessage(2, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'First short reply' } } }),
+    ...(fixtureParams.has('steer') ? [
+        { ...createFixtureMessage(3, { role: 'user', content: { type: 'text', text: 'Mid-turn steer' } }), steered: true },
+    ] : []),
+    ...(fixtureParams.has('outlineResize') ? [
+        createFixtureMessage(3, { role: 'user', content: { type: 'text', text: 'Prompt near the end' } }),
+    ] : []),
+    ...(fixtureParams.has('jobWake') ? [
+        createFixtureMessage(3, { role: 'user', content: { type: 'text', text: 'A job woke the agent' }, meta: { sentFrom: 'hapi-system' } }),
+        createFixtureMessage(4, { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Job-wake reply' } } }),
+    ] : []),
+] : Array.from({ length: TOTAL_MESSAGES }, (_, index) => {
     const seq = index + 1
     const filtered = filteredOlder && seq <= TOTAL_MESSAGES - 200
     return {
         id: `m-${seq}`,
         seq,
         localId: null,
-        content: navigationMedia && seq % 50 === 0 && seq < TOTAL_MESSAGES
+        content: jumpStartGap && seq === TOTAL_MESSAGES
+            ? { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Latest fixture reply' } } }
+            : promptJumpGap && seq > 1
+            ? { role: 'agent', content: { type: 'codex', data: { type: 'message', message: `Older answer segment ${seq}` } } }
+            : navigationMedia && seq % 50 === 0 && seq < TOTAL_MESSAGES
             ? {
                 role: 'agent',
                 content: {
@@ -270,7 +397,7 @@ const allMessages: DecryptedMessage[] = Array.from({ length: TOTAL_MESSAGES }, (
 })
 
 if (cachedReentry) {
-    const cachedMessages = allMessages.slice(-200)
+    const cachedMessages = allMessages.slice(fixtureParams.has('cachedJump') ? -1 : -200)
     const cachedOldest = cachedMessages[0]
     const cachedNewest = cachedMessages.at(-1)
     if (!cachedOldest || !cachedNewest) throw new Error('Expected cached fixture messages')
@@ -278,7 +405,7 @@ if (cachedReentry) {
     const newestPosition = positionOf(cachedNewest)
     sessionStorage.setItem(`hapi:message-window:v2:${SESSION_ID}`, JSON.stringify({
         messages: cachedMessages,
-        hasMore: true,
+        hasMore: !cachedComplete,
         oldestPositionAt: oldestPosition.at,
         oldestPositionSeq: oldestPosition.seq,
         newestPositionAt: newestPosition.at,
@@ -313,6 +440,21 @@ function pageFrom(messages: DecryptedMessage[], overrides: Partial<MessagesRespo
 const fakeApi = {
     getHubSettings: async () => ({ sessionSummaryInChat: false }),
     getMachines: async () => ({ machines: [] }),
+    getQueuedState: async (_sessionId: string, localIds: string[]) => {
+        window.__probe.queuedReadbackIds.push(...localIds)
+        await queuedReadbackGate
+        const invoked = delayedQueuedReadback && localIds.includes('queued-before-latest')
+        return {
+            queuedLocalIds: localIds.filter(id => !invoked || id !== 'queued-before-latest'),
+            invokedLocalMessages: invoked ? [{ localId: 'queued-before-latest', invokedAt: BASE_AT + 2 }] : []
+        }
+    },
+    searchSessionContentMatches: async () => ({
+        matches: [{ messageId: 'm-3', role: 'assistant', seq: 3, createdAt: BASE_AT + 3,
+            snippet: 'Last part of the reply', truncated: false }],
+        total: 1,
+        hasPotentiallyIncompleteResults: false
+    }),
     getGeneratedImageBlob: async () => new Blob(['<svg xmlns="http://www.w3.org/2000/svg" width="240" height="160"><rect width="240" height="160" fill="lightblue"/></svg>'], { type: 'image/svg+xml' }),
     getMessages: async (requestedSessionId: string, query: {
         limit?: number
@@ -328,7 +470,10 @@ const fakeApi = {
         let direction = 'latest'
         if (query.beforeSeq != null || query.beforeAt != null) direction = 'before'
         else if (query.afterSeq != null || query.afterAt != null) direction = 'after'
-        const limit = direction === 'latest' && !coldInitial && !cachedReentry && !sessionSwitch ? 200 : requestedLimit
+        const limit = direction === 'latest' && (loadedPromptPreload || batchedReply) ? 2
+            : direction === 'latest' && rekeyReply ? 1
+            : direction === 'latest' && !coldInitial && !cachedReentry && !sessionSwitch ? 200 : requestedLimit
+        if (jumpStartGap && direction === 'before' && query.beforeSeq === 201 && query.beforeSeq !== failBeforeSeq && !beforeResponseGate) window.__probe.holdBefore()
         const responseGate = direction === 'before' ? beforeResponseGate : null
         window.__probe.requests.push({
             sessionId: requestedSessionId,
@@ -348,10 +493,14 @@ const fakeApi = {
         if (direction === 'latest' && latestResponseGate) {
             await latestResponseGate
         }
+        if (direction === 'latest' && failNextLatest) {
+            failNextLatest = false
+            throw new Error('fixture: forced latest-page failure')
+        }
 
         if (direction === 'before') {
             beforeAttempts += 1
-            if (beforeAttempts <= failBeforeCount) {
+            if (beforeAttempts <= failBeforeCount || query.beforeSeq === failBeforeSeq) {
                 throw new Error('fixture: forced before-page failure')
             }
             const cursorAt = query.beforeAt ?? Number.POSITIVE_INFINITY
@@ -367,7 +516,7 @@ const fakeApi = {
                 page: pageFrom(pageMessages, {
                     direction: 'before',
                     limit,
-                    epoch: epochBump ? 2 : 1,
+                    epoch: epochBump ? 2 : fixtureEpoch,
                     hasMore: older.length > pageMessages.length,
                     nextBeforeSeq: oldest?.seq ?? null,
                     nextBeforeAt: oldest ? positionOf(oldest).at : null,
@@ -379,7 +528,33 @@ const fakeApi = {
             }
         }
 
-        const pageMessages = sourceMessages.slice(-limit)
+        if (direction === 'after' && delayedQueuedReadback) {
+            // Reconnect catch-up must not replace the fixture window with the
+            // latest page or silently evict the just-confirmed older input.
+            const cursorAt = query.afterAt ?? Number.NEGATIVE_INFINITY
+            const cursorSeq = query.afterSeq ?? Number.NEGATIVE_INFINITY
+            const newer = sourceMessages.filter(message => {
+                const position = positionOf(message)
+                return position.at > cursorAt || (position.at === cursorAt && position.seq > cursorSeq)
+            })
+            const pageMessages = newer.slice(0, limit)
+            const head = sourceMessages.at(-1)
+            return { messages: pageMessages, page: pageFrom(pageMessages, {
+                direction: 'after', limit, epoch: fixtureEpoch, hasMore: newer.length > pageMessages.length,
+                nextBeforeAt: null, nextBeforeSeq: null,
+                nextAfterAt: pageMessages.length ? positionOf(pageMessages.at(-1)!).at : query.afterAt ?? null,
+                nextAfterSeq: pageMessages.at(-1)?.seq ?? query.afterSeq ?? null,
+                snapshotHeadSeq: head?.seq ?? null,
+                snapshotHeadAt: head ? positionOf(head).at : null
+            }) }
+        }
+
+        const latestMessages = cachedComplete && fixtureEpoch === 2
+            ? [createFixtureMessage(31, { role: 'user', content: { type: 'text', text: 'Current history after rewind' } })]
+            : sourceMessages
+        const pageMessages = latestMessages.slice(-limit).map(message =>
+            message.id === 'm-2' && fixtureConsumed ? { ...message, invokedAt: BASE_AT + 2 }
+                : message.id === 'm-2' && fixtureSteerConfirmed ? { ...message, steered: true } : message)
         // After an epoch bump the "rewritten" tail renders taller rows, so
         // the reset changes content height — this is what re-fires the
         // ResizeObserver coverage re-check in the epoch-reset scenario.
@@ -397,8 +572,9 @@ const fakeApi = {
             page: pageFrom(pageMessages, {
                 direction: 'latest',
                 limit,
-                reset: true,
-                hasMore: sourceMessages.length > pageMessages.length
+                epoch: fixtureEpoch,
+                reset: !delayedQueuedReadback,
+                hasMore: latestMessages.length > pageMessages.length
             })
         }
     }
@@ -409,7 +585,11 @@ const fakeSession = {
     active: true,
     thinking: false,
     agentState: null,
-    metadata: { path: '/tmp/fixture', host: 'fixture' }
+    metadata: { path: '/tmp/fixture', host: 'fixture', ...(batchedReply ? {
+        ...(claudeBatch ? { flavor: 'claude' } : { flavor: 'codex', capabilities: { concurrentClients: true } }),
+        conversationHistoryTurns: { 'batch-first': 'native-turn', 'batch-last': 'native-turn' },
+        conversationHistoryPoints: { 'batch-first': true }
+    } : lateClaudeFollowUp ? { flavor: 'claude' } : {}) }
 } as unknown as Session
 
 const noopSend = () => {}
@@ -459,7 +639,7 @@ function FixtureThreadSession(props: { activeSessionId: string }) {
     )
     blocksByIdRef.current = reconciled.byId
     const visibleBlocks = useMemo(
-        () => buildVisibleChatBlocks(reconciled.blocks, { hasMoreMessages: hasMore }),
+        () => buildVisibleChatBlocks(conciseLongTurn ? filterConciseChatBlocks(reconciled.blocks) : reconciled.blocks, { hasMoreMessages: hasMore }),
         [reconciled.blocks, hasMore]
     )
 
@@ -475,6 +655,7 @@ function FixtureThreadSession(props: { activeSessionId: string }) {
 
     return (
         <AssistantRuntimeProvider runtime={runtime}>
+            {(loadedPromptPreload || lateSteerJump || lateConsumeJump || delayedQueuedReadback || batchedReply || lateClaudeFollowUp) && <style>{'[data-hapi-message-role="assistant"] { min-height: 1800px; }'}</style>}
             {navigationShell ? (
                 <header data-testid="navigation-header" className="flex h-[76px] shrink-0 items-center p-3">
                     <button type="button" onClick={() => setOutlineOpen(true)}>Open history</button>
@@ -507,6 +688,10 @@ function FixtureThreadSession(props: { activeSessionId: string }) {
                 outlineOpen={navigationShell && outlineOpen}
                 outlineItems={navigationShell ? buildConversationOutline(reconciled.blocks) : []}
                 onOutlineOpenChange={setOutlineOpen}
+                initialTargetMessageId={fixtureParams.get('target') ?? undefined}
+                initialTargetMessageQuery={fixtureParams.get('targetQuery') ?? undefined}
+                searchRequestId={fixtureParams.has('target') ? 1 : 0}
+                targetHighlightKind={fixtureParams.has('target') ? 'search' : undefined}
             />
             {navigationShell ? (
                 <footer data-testid="navigation-composer" className={`h-[150px] shrink-0 p-3 ${outlineOpen ? 'max-sm:hidden' : ''}`}>

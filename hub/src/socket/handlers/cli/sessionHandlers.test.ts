@@ -49,6 +49,20 @@ it('does not rebroadcast stored messages and retains repeated consumption acknow
     store.close()
 })
 
+it('persists the steered consumption flag for later history readers', () => {
+    const store = new Store(':memory:')
+    const session = store.sessions.getOrCreateSession('steered-history', {}, null, 'default')
+    const socket = new FakeSocket()
+    registerSessionHandlers(socket as unknown as CliSocketWithData, {
+        store, resolveSessionAccess: () => ({ ok: true, value: session }), emitAccessError() {}, onWebappEvent() {}
+    })
+    socket.trigger('message', { sid: session.id, localId: 'steer-1', message: { role: 'user', content: { type: 'text', text: 'correction' } } })
+    socket.trigger('messages-consumed', { sid: session.id, localIds: ['steer-1'], steered: true })
+
+    expect(store.messages.getAllMessages(session.id)[0]?.steered).toBe(true)
+    store.close()
+})
+
 function redundantGoalStatusContent(message: string): unknown {
     return {
         role: 'agent',

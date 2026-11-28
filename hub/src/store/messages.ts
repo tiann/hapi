@@ -120,14 +120,15 @@ function toStoredMessage(row: DbMessageRow): StoredMessage {
         localId: row.local_id,
         invokedAt: row.invoked_at ?? null,
         scheduledAt: row.scheduled_at ?? null,
-        ...(row.delivery_state && row.delivery_state !== 'queued' ? { deliveryState: 'indeterminate' as const } : {}),
+        ...(row.delivery_state === 'steered' ? { steered: true as const } : {}),
+        ...(row.delivery_state && row.delivery_state !== 'queued' && row.delivery_state !== 'steered' ? { deliveryState: 'indeterminate' as const } : {}),
         ...(row.delivery_state === 'dispatching' ? { deliveryPending: true as const } : {})
     }
 }
 
 export type CopyStoredMessageInput = Pick<
     StoredMessage,
-    'content' | 'createdAt' | 'localId' | 'invokedAt' | 'scheduledAt' | 'deliveryState'
+    'content' | 'createdAt' | 'localId' | 'invokedAt' | 'scheduledAt' | 'deliveryState' | 'steered'
 >
 
 export function addMessage(
@@ -753,7 +754,7 @@ export function copyMessageToSession(
             local_id: localId ?? null,
             invoked_at: invokedAt ?? null,
             scheduled_at: message.scheduledAt ?? null,
-            delivery_state: message.deliveryState ?? 'queued'
+            delivery_state: message.steered ? 'steered' : message.deliveryState ?? 'queued'
         })
         indexMessageContent(db, {
             id,
@@ -824,7 +825,7 @@ export function copyMessagesToSession(
                 local_id: localId ?? null,
                 invoked_at: invokedAt ?? null,
                 scheduled_at: message.scheduledAt ?? null,
-                delivery_state: message.deliveryState ?? 'queued'
+                delivery_state: message.steered ? 'steered' : message.deliveryState ?? 'queued'
             })
             indexMessageContent(db, {
                 id,
@@ -1598,18 +1599,19 @@ export function markMessagesInvoked(
     db: Database,
     sessionId: string,
     localIds: string[],
-    invokedAt: number
+    invokedAt: number,
+    steered = false
 ): number {
     if (localIds.length === 0) return 0
     return runInTransaction(db, () => {
         const placeholders = localIds.map(() => '?').join(', ')
         const changes = prepareCached(db,
             `UPDATE messages
-             SET invoked_at = ?, delivery_state = 'queued'
+             SET invoked_at = COALESCE(invoked_at, ?), delivery_state = ?
              WHERE session_id = ?
                AND local_id IN (${placeholders})
-               AND invoked_at IS NULL`
-        ).run(invokedAt, sessionId, ...localIds).changes
+               ${steered ? "AND delivery_state IS NOT 'steered'" : 'AND invoked_at IS NULL'}`
+        ).run(invokedAt, steered ? 'steered' : 'queued', sessionId, ...localIds).changes
         if (changes > 0) {
             const rows = prepareCached(db, `
                 SELECT id, session_id, content, created_at, seq, invoked_at

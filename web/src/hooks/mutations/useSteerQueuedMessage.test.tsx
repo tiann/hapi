@@ -68,9 +68,9 @@ describe('Steer REST and SSE ordering', () => {
     })
 
     it('reconciles a missed consumed SSE from authoritative invoked readback', async () => {
-        const hook = setup(undefined, vi.fn().mockResolvedValue({ queuedLocalIds: [], indeterminateLocalIds: [], invokedLocalMessages: [{ localId: 'local-id', invokedAt: 2000 }] }))
+        const hook = setup(undefined, vi.fn().mockResolvedValue({ queuedLocalIds: [], indeterminateLocalIds: [], invokedLocalMessages: [{ localId: 'local-id', invokedAt: 2000, steered: true }] }))
         await act(async () => { await hook.result.current.mutateAsync(input) })
-        expect(message()).toMatchObject({ invokedAt: 2000, status: 'sent' })
+        expect(message()).toMatchObject({ invokedAt: 2000, status: 'sent', steered: true })
         expect(message().deliveryPending).toBeUndefined()
     })
 

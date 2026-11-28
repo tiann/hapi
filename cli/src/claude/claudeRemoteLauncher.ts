@@ -256,8 +256,8 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     return { steered: false, error: 'Active turn changed' };
                 }
                 permissionHandler.denyPendingForSteer();
-                void delivery.delivered.then(async (delivered) => {
-                    if (delivered) {
+                void delivery.delivered.then(async (pickup) => {
+                    if (pickup !== 'undelivered') {
                         // Agent output preceding the pickup is already in the
                         // outgoing queue; send it first so the steered row is
                         // stamped after it, not above it.
@@ -268,7 +268,8 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         // once Claude echoes pickup; publish history locators
                         // and run rewind branch proof then.
                         recordHistoryPoint(localId, delivery.uuid);
-                        session.client.emitMessagesConsumed([localId], { steered: true });
+                        if (pickup === 'mid-turn') session.client.emitMessagesConsumed([localId], { steered: true });
+                        else session.client.emitMessagesConsumed([localId]);
                         return;
                     }
                     session.client.discardPendingHubPromptEcho(localId);
@@ -650,6 +651,19 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             // and the web can show the per-message affordances.
                             const localId = inFlightMessage?.items.find((item) => item.localId)?.localId;
                             recordHistoryPoint(localId, nativePromptUuid);
+                        },
+                        onInputAccepted: (nativePromptUuid: string) => {
+                            const localIds = inFlightMessage?.items.flatMap(item => item.localId ? [item.localId] : []) ?? [];
+                            if (localIds.length < 2) return;
+                            // Only the first member is a rewind boundary. All
+                            // confirmed members belong to that one native input.
+                            session.client.updateMetadata(metadata => ({
+                                ...metadata,
+                                conversationHistoryTurns: {
+                                    ...metadata?.conversationHistoryTurns,
+                                    ...Object.fromEntries(localIds.map(localId => [localId, nativePromptUuid]))
+                                }
+                            }));
                         },
                         onInputUndelivered: restoreInFlightMessage,
                         nextMessage: async (correlatesResults, streamSignal) => {

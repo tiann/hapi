@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import { MessageQueue2 } from '@/utils/MessageQueue2'
 import type { EnhancedMode } from './loop'
+import type { ClaudeSteerPickup } from './claudeRemote'
 
 // Drives the launcher's steer-queued-message RPC against a scripted
 // claudeRemote(): one plain turn that exposes a steer target until the test
@@ -9,7 +10,7 @@ import type { EnhancedMode } from './loop'
 const harness = vi.hoisted(() => ({
     steered: [] as string[],
     steerUuids: [] as string[],
-    deliveries: [] as Array<(delivered: boolean) => void>,
+    deliveries: [] as Array<(delivery: ClaudeSteerPickup) => void>,
     endTurn: null as (() => void) | null,
     signal: null as AbortSignal | null,
     denyPendingForSteer: vi.fn()
@@ -27,7 +28,7 @@ vi.mock('./claudeRemote', () => ({
                 const uuid = `steer-uuid-${harness.steered.length + 1}`
                 harness.steered.push(message)
                 harness.steerUuids.push(uuid)
-                return { uuid, delivered: new Promise<boolean>((resolve) => harness.deliveries.push(resolve)) }
+                return { uuid, delivered: new Promise<ClaudeSteerPickup>((resolve) => harness.deliveries.push(resolve)) }
             }
         })
         await new Promise<void>((resolve) => {
@@ -36,7 +37,7 @@ vi.mock('./claudeRemote', () => ({
         })
         open = false
         opts.onSteerTargetChange(null)
-        for (const resolve of harness.deliveries.splice(0)) resolve(false)
+        for (const resolve of harness.deliveries.splice(0)) resolve('undelivered')
     }
 }))
 
@@ -169,12 +170,26 @@ describe('claudeRemoteLauncher steer', () => {
             expect(client.getMetadata().conversationHistoryPoints).toBeUndefined()
             expect(onNativeInputSubmitted).not.toHaveBeenCalled()
 
-            harness.deliveries[0]!(true)
+            harness.deliveries[0]!('mid-turn')
             await vi.waitFor(() => expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['steer-1'], { steered: true }))
             expect(queue.cancelByLocalId('steer-1')).toBe('consumed')
             expect(client.getMetadata().conversationHistoryPoints).toEqual({ 'steer-1': true })
             expect(client.getMetadata().conversationHistoryEntryIds).toEqual({ 'steer-1': harness.steerUuids[0] })
             expect(onNativeInputSubmitted).toHaveBeenCalledWith(harness.steerUuids[0])
+        } finally {
+            await stop()
+        }
+    })
+
+    it('acknowledges a late steer as ordinary input when it starts a follow-up turn', async () => {
+        const { client, queue, steer, stop } = await startTurn()
+        try {
+            queue.push('Start a follow-up', DEFAULT_MODE, 'late-steer')
+            await expect(steer('late-steer')).resolves.toEqual({ steered: true })
+            harness.deliveries[0]!('follow-up')
+            await vi.waitFor(() => expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['late-steer']))
+            expect(client.emitMessagesConsumed).not.toHaveBeenCalledWith(['late-steer'], { steered: true })
+            expect(client.getMetadata().conversationHistoryEntryIds).toEqual({ 'late-steer': harness.steerUuids[0] })
         } finally {
             await stop()
         }
@@ -221,7 +236,7 @@ describe('claudeRemoteLauncher steer', () => {
             queue.push('Also run lint', DEFAULT_MODE, 'steer-1')
             await expect(steer('steer-1')).resolves.toEqual({ steered: true })
 
-            harness.deliveries[0]!(false)
+            harness.deliveries[0]!('undelivered')
             await vi.waitFor(() => expect(client.setSteerDeliveryState).toHaveBeenCalledWith(['steer-1'], 'queued'))
             expect(queue.pendingLocalIds()).toContain('steer-1')
             expect(client.discardPendingHubPromptEcho).toHaveBeenCalledWith('steer-1')
