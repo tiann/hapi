@@ -2864,3 +2864,89 @@ describe('sessions routes', () => {
     })
 
 })
+
+describe('per-flavor model and effort config gates', () => {
+    type ConfigOp = 'model' | 'modelReasoningEffort' | 'effort'
+    type SessionState = 'remote' | 'local' | 'local-shared' | 'shared' | 'inactive'
+    type Expected = { status: number; error?: string }
+
+    const ROUTES: Record<ConfigOp, string> = {
+        model: '/model',
+        modelReasoningEffort: '/model-reasoning-effort',
+        effort: '/effort'
+    }
+    const BODIES: Record<ConfigOp, Record<string, unknown>> = {
+        model: { model: 'test-model' },
+        modelReasoningEffort: { modelReasoningEffort: 'high' },
+        effort: { effort: 'high' }
+    }
+    const FLAVORS = [
+        'agy', 'claude', 'codex', 'dsh', 'copilot', 'cursor',
+        'gemini', 'grok', 'kimi', 'opencode', 'pi', 'unknown', null
+    ] as const
+    const MODEL_CHANGE = new Set<string | null>([
+        'agy', 'claude', 'codex', 'dsh', 'copilot', 'cursor', 'gemini', 'grok', 'kimi', 'opencode', 'pi', null
+    ])
+    const EFFORT = new Set<string | null>([
+        'agy', 'claude', 'copilot', 'grok', 'kimi', 'pi', null
+    ])
+    const MRE = new Set<string | null>(['codex', 'opencode', 'dsh'])
+    const MODEL_LOCAL_MESSAGES: Record<string, string> = {
+        codex: 'Model selection can only be changed for remote Codex sessions',
+        cursor: 'Model selection can only be changed for remote Cursor sessions',
+        grok: 'Model selection can only be changed for remote Grok sessions'
+    }
+
+    function expected(flavor: string | null, op: ConfigOp, state: SessionState): Expected {
+        if (state === 'inactive') return { status: 409, error: 'Session is inactive' }
+        const local = state === 'local'
+        if (op === 'model') {
+            if (!MODEL_CHANGE.has(flavor)) return { status: 400, error: 'Model selection is not supported for this session' }
+            const message = local ? MODEL_LOCAL_MESSAGES[flavor ?? ''] : undefined
+            return message ? { status: 409, error: message } : { status: 200 }
+        }
+        if (op === 'modelReasoningEffort') {
+            if (!MRE.has(flavor)) return { status: 400, error: 'Model reasoning effort is only supported for Codex, OpenCode, and DSH sessions' }
+            return local
+                ? { status: 409, error: 'Model reasoning effort can only be changed for remote sessions' }
+                : { status: 200 }
+        }
+        if (!EFFORT.has(flavor)) return { status: 400, error: 'Effort selection is not supported for this session type' }
+        return local && flavor === 'grok'
+            ? { status: 409, error: 'Effort can only be changed for remote Grok sessions' }
+            : { status: 200 }
+    }
+
+    function makeSession(flavor: string | null, state: SessionState): Session {
+        const controlledByUser = state === 'local' || state === 'local-shared'
+        const concurrentClients = state === 'local-shared' || state === 'shared'
+        return createSession({
+            active: state !== 'inactive',
+            metadata: { path: '/tmp/project', host: 'localhost', flavor },
+            agentState: { controlledByUser, requests: {}, completedRequests: {} },
+            ...(concurrentClients ? { metadata: { path: '/tmp/project', host: 'localhost', flavor, capabilities: { concurrentClients: true } } } : {})
+        })
+    }
+
+    for (const op of ['model', 'modelReasoningEffort', 'effort'] as const) {
+        for (const state of ['remote', 'local', 'local-shared', 'shared', 'inactive'] as const) {
+            it(`${op} / ${state}: pins status, message and apply call for every flavor`, async () => {
+                for (const flavor of FLAVORS) {
+                    const { app, applySessionConfigCalls } = createApp(makeSession(flavor, state))
+                    const response = await app.request(`/api/sessions/session-1${ROUTES[op]}`, {
+                        method: 'POST',
+                        headers: { 'content-type': 'application/json' },
+                        body: JSON.stringify(BODIES[op])
+                    })
+                    const want = expected(flavor, op, state)
+                    expect(response.status, `${op} flavor=${flavor} state=${state}`).toBe(want.status)
+                    const body = await response.json() as { error?: string; code?: string }
+                    if (want.error) expect(body.error, `${op} flavor=${flavor} state=${state}`).toBe(want.error)
+                    expect(applySessionConfigCalls, `${op} flavor=${flavor} state=${state}`).toEqual(
+                        want.status === 200 ? [['session-1', BODIES[op]]] : []
+                    )
+                }
+            })
+        }
+    }
+})

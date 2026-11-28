@@ -14,6 +14,7 @@ import {
     cursorVariantLabel,
     cursorVaryingWireParamKeys,
     formatCursorModelPickerLabel,
+    getCursorReasoningOptions,
     parseCursorWireParams,
     resolveCursorBaseKey,
     resolveCursorVariantOptions
@@ -26,6 +27,16 @@ const acpModels = [
     { modelId: 'claude-opus-4-8[thinking=true,context=300k,effort=high,fast=false]', name: 'Claude Opus 4.8' },
     { modelId: 'claude-opus-4-8[thinking=true,context=300k,effort=low,fast=false]', name: 'Claude Opus 4.8' },
 ] as const
+
+describe('Cursor reasoning shortcuts', () => {
+    it.each([
+        ['model[reasoning=high,fast=false]', 'model[reasoning=low,fast=false]', 'model[reasoning=extra-high,fast=false]', 'model[reasoning=medium,fast=true]'],
+        ['model-high', 'model-low', 'model-extra-high', 'model-medium-fast'],
+    ])('orders reasoning levels around %s and keeps other settings', (current, lower, higher, differentSpeed) => {
+        const options = [current, higher, differentSpeed, lower].map((value) => ({ value }))
+        expect(getCursorReasoningOptions(options, current).map((option) => option.value)).toEqual([lower, current, higher])
+    })
+})
 
 describe('raw Cursor ACP model splitting', () => {
     it('splits wire ids into raw base and variant parts', () => {

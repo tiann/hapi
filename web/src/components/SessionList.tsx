@@ -2011,9 +2011,8 @@ export function SessionList(props: {
 
     // Date, scratchlist, active, and working are transient; unread uses the
     // upstream view store. showActiveOnly is deliberately independent of
-    // listView.status (persisted, backs the Settings "Active sessions only"
-    // toggle) — #2002 wants a temporary scan, not another write path onto
-    // that saved preference.
+    // the saved Show choice (listView.status) so it can be used for a
+    // temporary scan (#2002).
     const [showScratchlistOnly, setShowScratchlistOnly] = useState(false)
     const [showActiveOnly, setShowActiveOnly] = useState(false)
     const [showWorkingOnly, setShowWorkingOnly] = useState(false)
@@ -2463,9 +2462,7 @@ export function SessionList(props: {
             ? filterUnreadSessionsOnly(visibleSessions, isSessionUnread, selectedSessionId)
             : visibleSessions
         // Active and Working are AND-composed with the other lenses (#2002).
-        // Both are ephemeral, independent of the persisted listView.status
-        // ("Active sessions only" in Settings) — a temporary scan should not
-        // read or write that saved preference.
+        // These temporary filters leave the saved Show choice intact.
         if (showActiveOnly) {
             filtered = filterActiveSessionsOnly(filtered, selectedSessionId)
         }

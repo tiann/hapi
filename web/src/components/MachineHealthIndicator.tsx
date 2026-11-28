@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { HoverTooltip } from '@/components/HoverTooltip'
 import {
     MACHINE_HEALTH_BAR_FILL_CLASS,
+    formatStorageBytes,
     type MachineHealthMetricPresentation,
     type MachineHealthPresentation
 } from '@/lib/machineHealth'
@@ -9,7 +10,7 @@ import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/use-translation'
 
 function TooltipMetricStat(props: {
-    metric: MachineHealthMetricPresentation
+    metric: Pick<MachineHealthMetricPresentation, 'percent' | 'tone'>
     label: string
 }) {
     return (
@@ -118,6 +119,21 @@ export function MachineHealthTooltipBody(props: {
                         label={t(`machine.health.metric.${metric.id}`, { n: metric.percent })}
                     />
                 ))}
+                {presentation.disk ? (
+                    <span className="block" data-testid="machine-health-disk">
+                        <TooltipMetricStat
+                            metric={presentation.disk}
+                            label={t('machine.health.metric.disk')}
+                        />
+                        <span className="block pl-[3.75rem] pt-0.5 text-[11px] tabular-nums text-[var(--app-hint)]">
+                            {t('machine.health.tooltip.diskDetail', {
+                                used: formatStorageBytes(presentation.disk.usedBytes),
+                                total: formatStorageBytes(presentation.disk.totalBytes),
+                                available: formatStorageBytes(presentation.disk.availableBytes),
+                            })}
+                        </span>
+                    </span>
+                ) : null}
                 {presentation.loadDetail ? (
                     <span className="grid grid-cols-[3.75rem_1fr] items-center gap-x-1 whitespace-nowrap text-[var(--app-hint)]">
                         <span>{t('machine.health.tooltip.loadShort')}</span>

@@ -594,6 +594,137 @@ describe('explicit tail scrolling', () => {
     })
 })
 
+describe('width reflow', () => {
+    it('keeps the first visible message in place when the chat width changes', () => {
+        searchTargetTestState.renderMessages = () => (
+            <>
+                <div id="hapi-message-session:a">a</div>
+                <div id="hapi-message-session:b">b</div>
+            </>
+        )
+        const { viewport, container } = renderThread()
+        act(() => {
+            vi.advanceTimersByTime(1_800)
+        })
+        const content = container.querySelector<HTMLElement>('.chat-scroll-content')!
+        const first = container.querySelector<HTMLElement>('[id="hapi-message-session:a"]')!
+        const second = container.querySelector<HTMLElement>('[id="hapi-message-session:b"]')!
+        // Narrow layouts wrap message "a" onto more lines, pushing "b" down.
+        let width = 800
+        const firstHeight = () => (width === 800 ? 300 : 500)
+        const rect = (top: number, height: number) => ({ top, bottom: top + height, height, left: 0, right: width, width, x: 0, y: top, toJSON: () => ({}) }) as DOMRect
+        viewport.getBoundingClientRect = () => rect(0, 530)
+        content.getBoundingClientRect = () => rect(-viewport.scrollTop, 1_232)
+        first.getBoundingClientRect = () => rect(-viewport.scrollTop, firstHeight())
+        second.getBoundingClientRect = () => rect(firstHeight() - viewport.scrollTop, 400)
+
+        // Read in history: message "b" sits 50px below the viewport top.
+        viewport.scrollTop = 350
+        fireEvent.scroll(viewport)
+        act(() => {
+            vi.advanceTimersByTime(20)
+            for (const callback of resizeCallbacks) callback()
+        })
+        expect(second.getBoundingClientRect().top - viewport.getBoundingClientRect().top).toBe(-50)
+
+        width = 500
+        act(() => {
+            for (const callback of resizeCallbacks) callback()
+        })
+
+        expect(second.getBoundingClientRect().top - viewport.getBoundingClientRect().top).toBe(-50)
+        expect(viewport.scrollTop).toBe(550)
+    })
+})
+
+describe('width reflow inside a long message', () => {
+    it('keeps the same relative spot when the anchored message itself shrinks', () => {
+        searchTargetTestState.renderMessages = () => (
+            <>
+                <div id="hapi-message-session:a">a</div>
+                <div id="hapi-message-session:b">b</div>
+            </>
+        )
+        const { viewport, container } = renderThread()
+        act(() => {
+            vi.advanceTimersByTime(1_800)
+        })
+        const content = container.querySelector<HTMLElement>('.chat-scroll-content')!
+        const first = container.querySelector<HTMLElement>('[id="hapi-message-session:a"]')!
+        const second = container.querySelector<HTMLElement>('[id="hapi-message-session:b"]')!
+        // Closing the panel widens the chat: the long reply "a" shrinks from 1000px to 500px.
+        let width = 500
+        const firstHeight = () => (width === 500 ? 1_000 : 500)
+        const rect = (top: number, height: number) => ({ top, bottom: top + height, height, left: 0, right: width, width, x: 0, y: top, toJSON: () => ({}) }) as DOMRect
+        viewport.getBoundingClientRect = () => rect(0, 530)
+        content.getBoundingClientRect = () => rect(-viewport.scrollTop, 1_232)
+        first.getBoundingClientRect = () => rect(-viewport.scrollTop, firstHeight())
+        second.getBoundingClientRect = () => rect(firstHeight() - viewport.scrollTop, 400)
+
+        // 700px into "a" (70% of it).
+        viewport.scrollTop = 700
+        fireEvent.scroll(viewport)
+        act(() => {
+            vi.advanceTimersByTime(20)
+            for (const callback of resizeCallbacks) callback()
+        })
+
+        width = 800
+        act(() => {
+            for (const callback of resizeCallbacks) callback()
+        })
+
+        // Still 70% into "a", not past its end into "b".
+        expect(viewport.scrollTop).toBe(350)
+        expect(first.getBoundingClientRect().bottom).toBeGreaterThan(0)
+    })
+
+    it('keeps the pre-reflow anchor when a drag changes the width again before the scroll frame runs', () => {
+        searchTargetTestState.renderMessages = () => (
+            <>
+                <div id="hapi-message-session:a">a</div>
+                <div id="hapi-message-session:b">b</div>
+            </>
+        )
+        const { viewport, container } = renderThread()
+        act(() => {
+            vi.advanceTimersByTime(1_800)
+        })
+        const content = container.querySelector<HTMLElement>('.chat-scroll-content')!
+        const first = container.querySelector<HTMLElement>('[id="hapi-message-session:a"]')!
+        const second = container.querySelector<HTMLElement>('[id="hapi-message-session:b"]')!
+        let width = 800
+        const heights: Record<number, number> = { 800: 300, 650: 400, 500: 500 }
+        const rect = (top: number, height: number) => ({ top, bottom: top + height, height, left: 0, right: width, width, x: 0, y: top, toJSON: () => ({}) }) as DOMRect
+        viewport.getBoundingClientRect = () => rect(0, 530)
+        content.getBoundingClientRect = () => rect(-viewport.scrollTop, 1_232)
+        first.getBoundingClientRect = () => rect(-viewport.scrollTop, heights[width]!)
+        second.getBoundingClientRect = () => rect(heights[width]! - viewport.scrollTop, 400)
+
+        viewport.scrollTop = 350
+        fireEvent.scroll(viewport)
+        act(() => {
+            vi.advanceTimersByTime(20)
+            for (const callback of resizeCallbacks) callback()
+        })
+
+        // First drag step: the observer restores, and its scroll queues a frame.
+        width = 650
+        act(() => {
+            for (const callback of resizeCallbacks) callback()
+        })
+        fireEvent.scroll(viewport)
+        // Second step lands before that frame runs.
+        width = 500
+        act(() => {
+            vi.advanceTimersByTime(20)
+            for (const callback of resizeCallbacks) callback()
+        })
+
+        expect(second.getBoundingClientRect().top - viewport.getBoundingClientRect().top).toBe(-50)
+    })
+})
+
 describe('search target loading', () => {
     it('keeps both navigation arrows active for a single result and re-jumps to it', async () => {
         const onLoadMessageContext = vi.fn().mockResolvedValue(true)

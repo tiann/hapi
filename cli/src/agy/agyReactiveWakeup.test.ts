@@ -28,6 +28,26 @@ import {
     type AgyTranscriptStep
 } from './agyReactiveWakeup';
 
+const wakeupMcpBridgeHarness = vi.hoisted(() => ({
+    stop: vi.fn(),
+    mcpServers: {
+        hapi: {
+            command: 'hapi',
+            args: ['mcp', '--url', 'http://127.0.0.1:0/mcp']
+        }
+    }
+}));
+
+vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({
+    buildHapiMcpBridge: vi.fn(async () => ({
+        server: {
+            url: 'http://127.0.0.1:0/mcp',
+            stop: wakeupMcpBridgeHarness.stop
+        },
+        mcpServers: wakeupMcpBridgeHarness.mcpServers
+    }))
+}));
+
 vi.mock('node:fs', async (load) => {
     const fs = await load<typeof import('node:fs')>();
     return { ...fs, watch: vi.fn(fs.watch) };
@@ -67,6 +87,7 @@ function writeTranscript(
 class WakeupTestBackend {
     readonly prompts: PromptContent[][] = [];
     readonly resumeCalls: string[] = [];
+    readonly resumeConfigs: Array<{ sessionId: string; cwd: string; mcpServers: unknown[] }> = [];
     readonly cancelCalls: string[] = [];
     readonly setModeCalls: string[] = [];
     readonly permissionResponses: unknown[] = [];
@@ -94,8 +115,9 @@ class WakeupTestBackend {
     async newSession(): Promise<string> {
         return this.sessionIdToCreate;
     }
-    async resumeSession(config: { sessionId: string }): Promise<string> {
+    async resumeSession(config: { sessionId: string; cwd: string; mcpServers: unknown[] }): Promise<string> {
         this.resumeCalls.push(config.sessionId);
+        this.resumeConfigs.push(config);
         return config.sessionId;
     }
     getSessionModelsMetadata() {
@@ -4064,6 +4086,74 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
 
         const allMessages = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
         expect(allMessages.filter((msg) => (msg as { type?: string }).type === 'tool-call')).toEqual([]);
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('passes wired HAPI MCP servers to resumeSession during advanceBackendCursor', async () => {
+        const backend = new WakeupTestBackend();
+        const { session, queue, client } = makeHarness('always-proceed');
+
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'Initial turn done.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'first' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Initial turn done.' }
+            ]);
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 40
+        });
+        const runPromise = launcher.launch();
+
+        queue.push('first', { permissionMode: 'always-proceed' }, 'msg-1');
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+
+        client.sendSessionEvent.mockClear();
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 2,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: '<SYSTEM_MESSAGE>ping</SYSTEM_MESSAGE>'
+                }),
+                JSON.stringify({
+                    step_index: 3,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    content: 'Handled.'
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+
+        expect(backend.resumeConfigs[0]).toMatchObject({
+            sessionId: backend.sessionIdToCreate,
+            mcpServers: [{
+                name: 'hapi',
+                command: 'hapi',
+                args: ['mcp', '--url', 'http://127.0.0.1:0/mcp'],
+                env: []
+            }]
+        });
 
         queue.close();
         await runPromise;

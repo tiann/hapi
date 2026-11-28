@@ -346,8 +346,10 @@ export const MetadataSchema = z.object({
     // at least the safeguards reversible idle reconcile already uses).
     idleReconcileExempt: z.boolean().optional(),
     // Externally blocked work distinct from turn-scoped `thinking` (#2020):
-    // waiting on CI, a vendor, or a peer reply. Hub-visible so Archive cannot
-    // treat the row as an idle ghost between polls. CLI may set/clear.
+    // waiting on CI, a vendor, or a peer reply. Hub-visible so keepalive-idle
+    // reconcile (and any future destroy-state callers) cannot treat the row as
+    // an idle ghost between polls. Set/clear via MCP `session_waiting` or
+    // CLI update-metadata (`ApiSession.setWaiting` / `clearWaiting`).
     waiting: z.object({
         since: z.number(),
         reason: z.string().optional(),
@@ -937,7 +939,12 @@ export const MachineHealthSchema = z.object({
     load1m: z.number().nonnegative().optional(),
     cpuPercent: z.number().min(0).max(100).optional(),
     memoryPercent: z.number().min(0).max(100).optional(),
-    uptimeSeconds: z.number().nonnegative().optional()
+    uptimeSeconds: z.number().nonnegative().optional(),
+    /** Filesystem holding the runner user's home (where workspaces/uploads live), like `df`. */
+    diskTotalBytes: z.number().nonnegative().optional(),
+    diskUsedBytes: z.number().nonnegative().optional(),
+    /** Space available to unprivileged users (`df` "Avail"). */
+    diskAvailableBytes: z.number().nonnegative().optional()
 }).strict()
 
 export type MachineHealth = z.infer<typeof MachineHealthSchema>

@@ -154,6 +154,31 @@ describe('AcpPermissionHandler auto-approval rules', () => {
         const update = client.updateAgentState.mock.calls[0]![0] as (state: object) => { requests: Record<string, unknown> }
         expect(update({}).requests['perm-1']).toBeDefined()
     })
+
+    it('evaluates resolveAutoApproval below requiresUser and falls back to autoApprovalRules when null', async () => {
+        const { backend, request } = setup('request-review', {
+            autoApprovalRules: { alwaysToolNameHints: [], alwaysToolIdHints: [] },
+            resolveAutoApproval: (req) => req.id === 'perm-allow' ? 'approved' : null
+        })
+
+        request({ ...commandRequest, id: 'perm-allow' })
+        await vi.waitFor(() => expect(backend.respondToPermission).toHaveBeenCalledWith(
+            'acp-1',
+            expect.objectContaining({ id: 'perm-allow' }),
+            { outcome: 'selected', optionId: 'allow' }
+        ))
+
+        backend.respondToPermission.mockClear()
+        request({ ...commandRequest, id: 'perm-ask' })
+        expect(backend.respondToPermission).not.toHaveBeenCalled()
+
+        const gated = setup('request-review', {
+            requiresUser: () => true,
+            resolveAutoApproval: () => 'approved'
+        })
+        gated.request(commandRequest)
+        expect(gated.backend.respondToPermission).not.toHaveBeenCalled()
+    })
 })
 
 describe('AcpPermissionHandler questions for the user', () => {

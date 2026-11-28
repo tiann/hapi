@@ -1,6 +1,7 @@
 import { execSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
-import { availableParallelism, cpus, freemem, loadavg, platform, totalmem, uptime } from 'node:os'
+import { statfs } from 'node:fs/promises'
+import { availableParallelism, cpus, freemem, homedir, loadavg, platform, totalmem, uptime } from 'node:os'
 import type { MachineHealth } from '@hapi/protocol/types'
 import { MachineHealthSchema } from '@hapi/protocol/schemas'
 
@@ -176,11 +177,68 @@ function computeUptimeSeconds(): number | undefined {
     return Math.floor(seconds)
 }
 
+type DiskUsage = { diskTotalBytes: number; diskUsedBytes: number; diskAvailableBytes: number }
+
+/** `df`-style numbers from statfs block counts. Testable without a filesystem. */
+export function diskUsageFromStatfs(stats: { bsize: number; blocks: number; bfree: number; bavail: number }): DiskUsage | undefined {
+    const { bsize, blocks, bfree, bavail } = stats
+    if (![bsize, blocks, bfree, bavail].every((value) => Number.isFinite(value) && value >= 0) || bsize <= 0 || blocks <= 0) {
+        return undefined
+    }
+    return {
+        diskTotalBytes: blocks * bsize,
+        diskUsedBytes: Math.max(0, blocks - bfree) * bsize,
+        diskAvailableBytes: Math.min(bavail, blocks) * bsize,
+    }
+}
+
+/** A disk reading older than this is dropped rather than reported as current. */
+const DISK_USAGE_MAX_AGE_MS = 10 * 60 * 1000
+
+let latestDiskUsage: { value: DiskUsage; at: number } | null = null
+let diskUsageRefresh: Promise<void> | null = null
+
+/**
+ * Re-read storage on the filesystem holding the runner user's home directory —
+ * where workspaces normally land. Asynchronous with at most one lookup in
+ * flight, so a hung (e.g. network) home mount never blocks the heartbeat.
+ */
+export function refreshDiskUsage(): Promise<void> {
+    if (diskUsageRefresh) return diskUsageRefresh
+    diskUsageRefresh = (async () => {
+        try {
+            const stats = await statfs(homedir())
+            const value = diskUsageFromStatfs({
+                bsize: Number(stats.bsize),
+                blocks: Number(stats.blocks),
+                bfree: Number(stats.bfree),
+                bavail: Number(stats.bavail),
+            })
+            latestDiskUsage = value ? { value, at: Date.now() } : null
+        } catch {
+            latestDiskUsage = null
+        } finally {
+            diskUsageRefresh = null
+        }
+    })()
+    return diskUsageRefresh
+}
+
+/** Latest completed reading (omitted until one exists); kicks off the next one. */
+function computeDiskUsage(): DiskUsage | undefined {
+    void refreshDiskUsage()
+    if (!latestDiskUsage || Date.now() - latestDiskUsage.at > DISK_USAGE_MAX_AGE_MS) {
+        return undefined
+    }
+    return latestDiskUsage.value
+}
+
 export function collectMachineHealth(now: number = Date.now()): MachineHealth {
     const cpuCount = availableParallelism()
     const memoryPercent = computeMemoryPercent()
     const uptimeSeconds = computeUptimeSeconds()
     const load1m = isUnixLikeLoadPlatform() ? loadavg()[0] : undefined
+    const disk = computeDiskUsage()
 
     const cpuSnapshot = sumCpuTimes()
     let cpuPercent: number | undefined
@@ -197,7 +255,8 @@ export function collectMachineHealth(now: number = Date.now()): MachineHealth {
         ...(load1m !== undefined ? { load1m } : {}),
         ...(cpuPercent !== undefined ? { cpuPercent } : {}),
         ...(memoryPercent !== undefined ? { memoryPercent } : {}),
-        ...(uptimeSeconds !== undefined ? { uptimeSeconds } : {})
+        ...(uptimeSeconds !== undefined ? { uptimeSeconds } : {}),
+        ...(disk ?? {})
     }
 
     const parsed = MachineHealthSchema.safeParse(health)
@@ -210,4 +269,6 @@ export function collectMachineHealth(now: number = Date.now()): MachineHealth {
 /** Test helper */
 export function resetMachineHealthSamplerForTests(): void {
     previousCpuSnapshot = null
+    latestDiskUsage = null
+    diskUsageRefresh = null
 }

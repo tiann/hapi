@@ -3153,6 +3153,63 @@ describe('AcpSdkBackend num_turns extraction (google-antigravity/antigravity-cli
     });
 });
 
+describe('AcpSdkBackend _meta and Antigravity systemPrompt.append capability', () => {
+    it('detects _meta.antigravity.systemPrompt.append on initializeResult', () => {
+        const backend = new AcpSdkBackend({ command: 'agy', args: ['acp'] });
+        const internal = backend as unknown as {
+            initializeResult: {
+                protocolVersion: number;
+                agentCapabilities?: { _meta?: Record<string, unknown> };
+            } | null;
+        };
+
+        expect(backend.supportsAntigravitySystemPromptAppend()).toBe(false);
+
+        internal.initializeResult = {
+            protocolVersion: 1,
+            agentCapabilities: { _meta: { antigravity: { systemPrompt: { append: true } } } }
+        };
+        expect(backend.supportsAntigravitySystemPromptAppend()).toBe(true);
+
+        internal.initializeResult = {
+            protocolVersion: 1,
+            agentCapabilities: { _meta: { antigravity: { systemPrompt: { append: false } } } }
+        };
+        expect(backend.supportsAntigravitySystemPromptAppend()).toBe(false);
+    });
+
+    it('forwards meta as _meta on newSession, loadSession, and resumeSession only when provided', async () => {
+        const backend = new AcpSdkBackend({ command: 'agy', args: ['acp'] });
+        const calls: Array<{ method: string; params: unknown }> = [];
+        const internal = backend as unknown as {
+            transport: {
+                sendRequest: (method: string, params: unknown) => Promise<unknown>;
+                close: () => Promise<void>;
+            } | null;
+        };
+        internal.transport = {
+            sendRequest: async (method, params) => {
+                calls.push({ method, params });
+                return { sessionId: 'ses-1' };
+            },
+            close: async () => {}
+        };
+
+        const meta = { antigravity: { systemPrompt: { append: 'Use HAPI tools.' } } };
+        await backend.newSession({ cwd: '/tmp/p', mcpServers: [], meta });
+        await backend.loadSession({ sessionId: 'ses-1', cwd: '/tmp/p', mcpServers: [], meta });
+        await backend.resumeSession({ sessionId: 'ses-1', cwd: '/tmp/p', mcpServers: [], meta });
+        await backend.newSession({ cwd: '/tmp/p', mcpServers: [] });
+
+        expect(calls).toEqual([
+            { method: 'session/new', params: { cwd: '/tmp/p', mcpServers: [], _meta: meta } },
+            { method: 'session/load', params: { sessionId: 'ses-1', cwd: '/tmp/p', mcpServers: [], _meta: meta } },
+            { method: 'session/resume', params: { sessionId: 'ses-1', cwd: '/tmp/p', mcpServers: [], _meta: meta } },
+            { method: 'session/new', params: { cwd: '/tmp/p', mcpServers: [] } }
+        ]);
+    });
+});
+
 describe('AcpSdkBackend agentInfo.version and flushPendingMessageBuffers', () => {
     it('captures agentInfo.version from initialize and flushes pending message buffers on demand', async () => {
         const backend = new AcpSdkBackend({

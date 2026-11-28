@@ -44,6 +44,11 @@ import {
   SESSION_JOB_TOOL_NAME,
   sessionJobInputSchema,
 } from '@/modules/sessionJob/sessionJobMcp';
+import {
+  SESSION_WAITING_TOOL_DESCRIPTION,
+  SESSION_WAITING_TOOL_NAME,
+  sessionWaitingInputSchema,
+} from '@/modules/sessionWaiting/sessionWaitingMcp';
 
 const DEFAULT_TOOL_NAMES = [
   'change_title',
@@ -57,6 +62,7 @@ const DEFAULT_TOOL_NAMES = [
   'spawn_peer',
   'archive_peer',
   SESSION_JOB_TOOL_NAME,
+  SESSION_WAITING_TOOL_NAME,
 ];
 
 function parseArgs(argv: string[]): { url: string | null; toolNames: Set<string> } {
@@ -330,6 +336,34 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
                 {
                   type: 'text' as const,
                   text: `Failed to run session_job: ${error instanceof Error ? error.message : String(error)}`,
+                },
+              ],
+              isError: true,
+            };
+          }
+        }
+      );
+    }
+
+    if (toolNames.has(SESSION_WAITING_TOOL_NAME)) {
+      server.registerTool<any, any>(
+        SESSION_WAITING_TOOL_NAME,
+        {
+          description: SESSION_WAITING_TOOL_DESCRIPTION,
+          title: 'Session Waiting (External Block)',
+          inputSchema: sessionWaitingInputSchema,
+        },
+        async (args: Record<string, unknown>) => {
+          try {
+            const client = await ensureHttpClient();
+            const response = await client.callTool({ name: SESSION_WAITING_TOOL_NAME, arguments: args });
+            return response as any;
+          } catch (error) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Failed to run session_waiting: ${error instanceof Error ? error.message : String(error)}`,
                 },
               ],
               isError: true,

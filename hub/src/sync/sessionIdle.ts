@@ -82,6 +82,9 @@ export function hasLiveWork(session: Session): boolean {
     // agent is blocked on, not an abandoned socket.
     const requests = session.agentState?.requests
     if (requests && Object.keys(requests).length > 0) return true
+    // Externally blocked work distinct from turn-scoped thinking (#2020).
+    const waiting = session.metadata?.waiting
+    if (waiting && typeof waiting === 'object') return true
     return false
 }
 

@@ -5,7 +5,6 @@ import { getColorThemeOptions, getColorThemePreview, useColorTheme, type ColorTh
 import { getFontScaleOptions, useFontScale } from '@/hooks/useFontScale'
 import { getTerminalFontSizeOptions, useTerminalFontSize } from '@/hooks/useTerminalFontSize'
 import { getSessionListStatusModeOptions, useSessionListStatusMode } from '@/hooks/useSessionListStatusMode'
-import { useShowActiveSessionsOnly } from '@/hooks/useShowActiveSessionsOnly'
 import { isIndicatorSmoothingEnabled, setIndicatorSmoothing } from '@/hooks/useLowRateAnimation'
 import { useKeepUnreadSessionsVisible } from '@/hooks/useKeepUnreadSessionsVisible'
 import { usePinInProgressSessions } from '@/hooks/usePinInProgressSessions'
@@ -140,7 +139,6 @@ export default function SettingsDisplayPage() {
     const { fontScale, setFontScale } = useFontScale()
     const { terminalFontSize, setTerminalFontSize } = useTerminalFontSize()
     const { sessionListStatusMode, setSessionListStatusMode } = useSessionListStatusMode()
-    const { showActiveSessionsOnly, setShowActiveSessionsOnly } = useShowActiveSessionsOnly()
     const { pinInProgressMode, setPinInProgressMode } = usePinInProgressSessions()
     const { keepUnreadSessionsVisible, setKeepUnreadSessionsVisible } = useKeepUnreadSessionsVisible()
     const { appBadgeEnabled, setAppBadgeEnabled } = useAppBadgePreference()
@@ -181,7 +179,6 @@ export default function SettingsDisplayPage() {
 
             <SettingsSection title={t('settings.display.sessions')}>
                 <SessionPreviewLimitControl />
-                <SettingsSwitch label={t('settings.display.activeSessionsOnly')} description={t('settings.display.activeSessionsOnly.desc')} checked={showActiveSessionsOnly} onChange={setShowActiveSessionsOnly} />
                 <SettingsChoiceGroup
                     label={t('settings.display.pinInProgressSessions')}
                     description={t('settings.display.pinInProgressSessions.desc')}
