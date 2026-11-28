@@ -310,7 +310,8 @@ export const MetadataSchema = z.object({
     // Externally blocked work distinct from turn-scoped `thinking` (#2020):
     // waiting on CI, a vendor, or a peer reply. Hub-visible so keepalive-idle
     // reconcile (and any future destroy-state callers) cannot treat the row as
-    // an idle ghost between polls. CLI may set/clear.
+    // an idle ghost between polls. Set/clear via MCP `session_waiting` or
+    // CLI update-metadata (`ApiSession.setWaiting` / `clearWaiting`).
     waiting: z.object({
         since: z.number(),
         reason: z.string().optional(),

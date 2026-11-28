@@ -220,6 +220,7 @@ Client rules:
 - Treat both `running` and `idle` as "a CLI still owns this session". Comparing against the `'running'` literal makes an `idle` session read as a dead row.
 - Surface `idle` distinctly from `active`-and-recently-working, so an operator can tell a busy fleet from a pile of keep-alive zombies (web: the `idle` bucket in `SessionList`).
 - Sessions that are meant to sit quiet indefinitely can set `metadata.idleReconcileExempt: true` to opt out of reconciliation entirely.
+- Externally blocked work (CI, vendor, peer reply) can set `metadata.waiting: { since, reason? }` via MCP `session_waiting` (or CLI `update-metadata`) so keepalive-idle reconcile does not treat the row as a zombie; clear it when the wait ends. Malformed `waiting` patches are rejected at ingress without wiping the rest of metadata.
 
 ---
 

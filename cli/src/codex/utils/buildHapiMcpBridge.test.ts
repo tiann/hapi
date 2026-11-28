@@ -12,8 +12,8 @@ vi.mock('@/claude/utils/startHappyServer', () => ({
     startHappyServer: vi.fn(async (_client: unknown, options: { skillLookup?: unknown; enabledTools?: string[] }) => {
         harness.startOptions = options
         const defaultTools = options.skillLookup
-            ? ['change_title', 'link_pr', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer', 'session_job', 'skill_lookup']
-            : ['change_title', 'link_pr', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer', 'session_job']
+            ? ['change_title', 'link_pr', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer', 'session_job', 'session_waiting', 'skill_lookup']
+            : ['change_title', 'link_pr', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer', 'session_job', 'session_waiting']
         const toolNames = options.enabledTools
             ? defaultTools.filter((name) => options.enabledTools!.includes(name))
             : defaultTools
@@ -78,7 +78,7 @@ describe('buildHapiMcpBridge skill lookup config', () => {
             '--url',
             'http://127.0.0.1:43006/',
             '--tools',
-            'change_title,link_pr,display_image,display_video,display_media,list_peers,ping_peer,inspect_peer,spawn_peer,session_job,skill_lookup',
+            'change_title,link_pr,display_image,display_video,display_media,list_peers,ping_peer,inspect_peer,spawn_peer,session_job,session_waiting,skill_lookup',
             '--hapi-session-id',
             'hub-session-1',
         ])
@@ -90,6 +90,7 @@ describe('buildHapiMcpBridge skill lookup config', () => {
             change_title: { approval_mode: 'approve' },
             list_peers: { approval_mode: 'approve' },
             session_job: { approval_mode: 'approve' },
+            session_waiting: { approval_mode: 'approve' },
             skill_lookup: { approval_mode: 'approve' }
         })
     })
@@ -112,7 +113,7 @@ describe('buildHapiMcpBridge skill lookup config', () => {
             '--url',
             'http://127.0.0.1:43006/',
             '--tools',
-            'change_title,link_pr,display_image,display_video,display_media,list_peers,ping_peer,inspect_peer,spawn_peer,session_job',
+            'change_title,link_pr,display_image,display_video,display_media,list_peers,ping_peer,inspect_peer,spawn_peer,session_job,session_waiting',
             '--hapi-session-id',
             'hub-session-1',
         ])
@@ -123,7 +124,8 @@ describe('buildHapiMcpBridge skill lookup config', () => {
             display_media: { approval_mode: 'prompt' },
             change_title: { approval_mode: 'approve' },
             list_peers: { approval_mode: 'approve' },
-            session_job: { approval_mode: 'approve' }
+            session_job: { approval_mode: 'approve' },
+            session_waiting: { approval_mode: 'approve' }
         })
     })
 

@@ -1453,6 +1453,27 @@ if (isReconnect) {
         })
     }
 
+    /**
+     * Stamp metadata.waiting for externally blocked work (#2020 / #2616).
+     * Prefer MCP `session_waiting` action=set from agent turns; this helper
+     * is the same versioned update-metadata path for launchers/scripts.
+     */
+    setWaiting(reason?: string, options?: { signal?: AbortSignal }): void {
+        const trimmed = reason?.trim()
+        this.updateMetadata((metadata) => ({
+            ...metadata,
+            waiting: {
+                since: Date.now(),
+                ...(trimmed ? { reason: trimmed } : {}),
+            },
+        }), options)
+    }
+
+    /** Clear metadata.waiting when an external wait ends or is cancelled. */
+    clearWaiting(options?: { signal?: AbortSignal }): void {
+        this.updateMetadata((metadata) => ({ ...metadata, waiting: null }), options)
+    }
+
     updateMetadata(handler: (metadata: Metadata) => Metadata, options?: { signal?: AbortSignal }): void {
         const signal = options?.signal
         if (signal?.aborted) return
