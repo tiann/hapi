@@ -5,7 +5,6 @@ import { sessionIsUnread } from '@/lib/sessionAttention'
 import {
     computeOpenSessionTickRatio,
     deduplicateSessionsByAgentId,
-    expandSelectedSessionCollapseOverrides,
     groupSessionsByDirectory,
     filterActiveSessionsOnly,
     filterScratchlistSessionsOnly,
@@ -832,32 +831,6 @@ describe('getPreviousSessionVisibleCount', () => {
 
     it('uses a minimum batch size of one', () => {
         expect(getPreviousSessionVisibleCount(5, 0)).toBe(4)
-    })
-})
-
-describe('expandSelectedSessionCollapseOverrides', () => {
-    it('expands the collapsed project group, but preserves session preview folding', () => {
-        const overrides = new Map<string, boolean>([
-            ['machine-1::/work/hapi', true],
-            ['sessions::machine-1::/work/hapi', true]
-        ])
-
-        const result = expandSelectedSessionCollapseOverrides(overrides, {
-            key: 'machine-1::/work/hapi'
-        })
-
-        expect(result.get('machine-1::/work/hapi')).toBe(false)
-        expect(result.get('sessions::machine-1::/work/hapi')).toBe(true)
-    })
-
-    it('leaves missing session preview override unset', () => {
-        const overrides = new Map<string, boolean>()
-
-        const result = expandSelectedSessionCollapseOverrides(overrides, {
-            key: 'machine-1::/work/hapi'
-        })
-
-        expect(result.has('sessions::machine-1::/work/hapi')).toBe(false)
     })
 })
 

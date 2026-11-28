@@ -12,6 +12,7 @@ import {
     sortSessionsBySearchRelevance,
 } from '@/lib/sessionListSearch'
 import { useLongPress } from '@/hooks/useLongPress'
+import { useProjectGroupCollapse } from '@/hooks/useProjectGroupCollapse'
 import { useLowRateAnimation } from '@/hooks/useLowRateAnimation'
 import { usePlatform } from '@/hooks/usePlatform'
 import { sessionArchiveMutationKey, sessionPinMutationKey, useSessionActions } from '@/hooks/mutations/useSessionActions'
@@ -615,15 +616,6 @@ export function groupSessionsByDirectory(
                 { key: b.key, order: b.latestOrderAt }
             )
         })
-}
-
-
-function readClosedProjects(storageKey: string | null): Set<string> {
-    if (!storageKey) return new Set()
-    try {
-        const stored: unknown = JSON.parse(localStorage.getItem(storageKey) ?? '[]')
-        return new Set(Array.isArray(stored) ? stored.filter((key): key is string => typeof key === 'string') : [])
-    } catch { return new Set() }
 }
 
 export function expandSelectedSessionCollapseOverrides(
@@ -2030,6 +2022,7 @@ export function SessionList(props: {
     machineLabelsById?: Record<string, string>
     machinesById?: Record<string, Machine>
     selectedSessionId?: string | null
+    collapseStorageKey?: string | null
 }) {
     const { t } = useTranslation()
     const {
@@ -2618,20 +2611,17 @@ export function SessionList(props: {
         const visibleKeys = new Set(groups.map((group) => group.key))
         return allDirectoryGroups.filter((group) => !visibleKeys.has(group.key))
     }, [groups, allDirectoryGroups, effectivePinInProgressMode])
-    // Save explicit folds only, never temporary search expansion or inferred liveness.
+    const collapseStorageKey = props.collapseStorageKey ?? null
     const identity = api?.getReadStateScope?.()
-    const foldKey = identity ? `hapi.closed-projects.v1:${identity}` : null
-    const [foldRevision, setFoldRevision] = useState(0)
-    const savedFolds = useMemo(() => readClosedProjects(foldKey), [foldKey, foldRevision])
-    const [collapseOverrides, setCollapseOverrides] = useState<Map<string, boolean>>(
-        () => new Map()
-    )
+    const legacyFoldKey = identity && props.collapseStorageKey !== null ? `hapi.closed-projects.v1:${identity}` : null
+    const { collapseOverrides, setManualCollapse, revealGroup } = useProjectGroupCollapse(collapseStorageKey, legacyFoldKey)
     const [filterCollapseOverrides, setFilterCollapseOverrides] = useState<Map<string, boolean>>(
         () => new Map()
     )
     const [runningSectionCollapsed, setRunningSectionCollapsed] = useState(false)
     const [pinnedSectionCollapsed, setPinnedSectionCollapsed] = useState(false)
     const autoExpandedSelectedSessionKeyRef = useRef<string | null>(null)
+    const autoExpandedFilterSelectedSessionKeyRef = useRef<string | null>(null)
     const previousSelection = useRef(selectedSessionId)
     const groupOverrides = ephemeralFilter ? filterCollapseOverrides : collapseOverrides
     const isGroupCollapsed = (group: SessionGroup): boolean => {
@@ -2640,7 +2630,6 @@ export function SessionList(props: {
         // Keep matching groups open by default while filtering. Explicit
         // header clicks use a temporary override for the active filter.
         if (ephemeralFilter) return false
-        if (savedFolds.has(group.key)) return true
         // Archived-only would otherwise collapse every group (none has an
         // active session), hiding exactly what was asked for.
         if (listView.status === 'archived') return false
@@ -2653,25 +2642,20 @@ export function SessionList(props: {
     }
 
     const toggleGroup = (groupKey: string, isCollapsed: boolean) => {
-        if (foldKey && !ephemeralFilter) {
-            const closed = readClosedProjects(foldKey)
-            if (isCollapsed) closed.delete(groupKey)
-            else closed.add(groupKey)
-            try {
-                localStorage.setItem(foldKey, JSON.stringify([...closed]))
-                setFoldRevision(n => n + 1)
-            } catch { /* in-memory override still works */ }
+        if (ephemeralFilter) {
+            setFilterCollapseOverrides(prev => {
+                const next = new Map(prev)
+                next.set(groupKey, !isCollapsed)
+                return next
+            })
+            return
         }
-        const setOverrides = ephemeralFilter ? setFilterCollapseOverrides : setCollapseOverrides
-        setOverrides(prev => {
-            const next = new Map(prev)
-            next.set(groupKey, !isCollapsed)
-            return next
-        })
+        setManualCollapse(groupKey, !isCollapsed)
     }
 
     useEffect(() => {
         if (ephemeralFilter) return
+        autoExpandedFilterSelectedSessionKeyRef.current = null
         setFilterCollapseOverrides(prev => prev.size === 0 ? prev : new Map())
     }, [ephemeralFilter])
 
@@ -3013,6 +2997,7 @@ export function SessionList(props: {
     // session) reopens a path the user just collapsed.
     useEffect(() => {
         if (!selectedSessionId) {
+            autoExpandedFilterSelectedSessionKeyRef.current = null
             autoExpandedSelectedSessionKeyRef.current = null
             previousSelection.current = selectedSessionId
             return
@@ -3029,20 +3014,28 @@ export function SessionList(props: {
             // Selecting a row in a floating bucket is real navigation now,
             // not a second navigation when the job expires and the row moves.
             if (machineFilteredSessions.some(s => s.id === selectedSessionId)) previousSelection.current = selectedSessionId
-            if (!isFiltering) autoExpandedSelectedSessionKeyRef.current = null
+            if (ephemeralFilter) autoExpandedFilterSelectedSessionKeyRef.current = null
+            else autoExpandedSelectedSessionKeyRef.current = null
             return
         }
 
-        const autoExpandKey = `${selectedSessionId}::${group.key}`
+        if (ephemeralFilter) {
+            const filterAutoExpandKey = `${selectedSessionId}::${group.key}`
+            if (autoExpandedFilterSelectedSessionKeyRef.current === filterAutoExpandKey) return
+            autoExpandedFilterSelectedSessionKeyRef.current = filterAutoExpandKey
+            setFilterCollapseOverrides(prev => expandSelectedSessionCollapseOverrides(prev, group))
+            return
+        }
+
+        const autoExpandKey = JSON.stringify([collapseStorageKey, selectedSessionId, group.key])
         if (autoExpandedSelectedSessionKeyRef.current === autoExpandKey) return
         autoExpandedSelectedSessionKeyRef.current = autoExpandKey
 
         const movedWithoutNavigation = previousSelection.current === selectedSessionId
         previousSelection.current = selectedSessionId
-        if (movedWithoutNavigation && (groupOverrides.get(group.key) === true || (!ephemeralFilter && savedFolds.has(group.key)))) return
-        const setOverrides = ephemeralFilter ? setFilterCollapseOverrides : setCollapseOverrides
-        setOverrides(prev => expandSelectedSessionCollapseOverrides(prev, group))
-    }, [selectedSessionId, groups, machineFilteredSessions, isFiltering, ephemeralFilter, savedFolds, groupOverrides])
+        if (movedWithoutNavigation && collapseOverrides.get(group.key) === true) return
+        revealGroup(group.key)
+    }, [selectedSessionId, groups, machineFilteredSessions, ephemeralFilter, collapseStorageKey, collapseOverrides, revealGroup])
 
     // Keep a keyboard-unpinned row reachable when it moves into a collapsed or
     // truncated destination section, or fall back to a visible row if removed.
@@ -3083,8 +3076,11 @@ export function SessionList(props: {
             let expanding = false
             if (collapsed) {
                 expanding = true
-                const setOverrides = ephemeralFilter ? setFilterCollapseOverrides : setCollapseOverrides
-                setOverrides((prev) => expandSelectedSessionCollapseOverrides(prev, targetGroup))
+                if (ephemeralFilter) {
+                    setFilterCollapseOverrides((prev) => expandSelectedSessionCollapseOverrides(prev, targetGroup))
+                } else {
+                    revealGroup(targetGroup.key)
+                }
             }
 
             const targetIndex = targetGroup.sessions.findIndex((session) => session.id === target.sessionId)
@@ -3123,29 +3119,8 @@ export function SessionList(props: {
     }, [
         globalPinnedSessions, runningSessions, groups, runningSectionCollapsed,
         collapseOverrides, filterCollapseOverrides, sessionVisibleCounts,
-        isFiltering, ephemeralFilter, selectedSessionId, sessionPreviewLimit, previewIsUnread,
+        isFiltering, ephemeralFilter, selectedSessionId, sessionPreviewLimit, previewIsUnread, revealGroup,
     ])
-
-    // Clean up stale collapse overrides
-    useEffect(() => {
-        setCollapseOverrides(prev => {
-            if (prev.size === 0) return prev
-            const next = new Map(prev)
-            const knownKeys = new Set<string>()
-            for (const g of allGroups) {
-                knownKeys.add(g.key)
-                knownKeys.add(`sessions::${g.key}`)
-            }
-            let changed = false
-            for (const key of next.keys()) {
-                if (!knownKeys.has(key)) {
-                    next.delete(key)
-                    changed = true
-                }
-            }
-            return changed ? next : prev
-        })
-    }, [allGroups])
 
     // Clean up reveal caps for groups that no longer exist.
     useEffect(() => {
