@@ -20,6 +20,8 @@ import { retargetSharePendingTransfer } from '@/lib/sharePendingState'
 import { getSessionModelLabel } from '@/lib/sessionModelLabel'
 import { useTranslation } from '@/lib/use-translation'
 import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
+import { IssueRefChip } from '@/components/IssueRefChip'
+import { getLinkedGithubIssue, type BoardItemMatch } from '@/lib/externalRefs'
 import { isFastServiceTier } from '@/components/AssistantChat/codexFastMode'
 import { getSessionTitle } from '@/lib/sessionTitle'
 import { getSessionProjectLabel, getSessionProjectPath } from '@/lib/sessionProjectLabel'
@@ -189,6 +191,9 @@ export function SessionHeader(props: {
     reopenHint?: string
     onSessionDeleted?: () => void
     onSessionReopened?: (newSessionId: string) => void | Promise<void>
+    /** The board item (if any) this session's linked GitHub issue is tracked on. */
+    linkedIssueBoardMatch?: BoardItemMatch | null
+    onOpenBoardItem?: (match: BoardItemMatch) => void
 }) {
     const { t, locale } = useTranslation()
     const queryClient = useQueryClient()
@@ -251,6 +256,7 @@ export function SessionHeader(props: {
         fastMode: headerMetadata.fastMode && showFastBadge,
     })
     const showMobileMetadata = (headerMetadata.agent && agentLabel !== null) || mobileSecondary !== null
+    const linkedIssue = getLinkedGithubIssue(session.metadata)
 
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
@@ -467,8 +473,16 @@ export function SessionHeader(props: {
 
                     {/* Session info - two lines: title and path */}
                     <div className="min-w-0 flex-1">
-                        <div className="truncate font-semibold">
-                            {title}
+                        <div className="flex min-w-0 items-center gap-1.5">
+                            <span className="min-w-0 flex-1 truncate font-semibold">{title}</span>
+                            {linkedIssue ? (
+                                <IssueRefChip
+                                    ref={linkedIssue}
+                                    className="h-5"
+                                    boardMatch={props.linkedIssueBoardMatch}
+                                    onOpenBoardItem={props.onOpenBoardItem}
+                                />
+                            ) : null}
                         </div>
                         {showMobileMetadata ? (
                             <div className="flex min-w-0 flex-nowrap items-center gap-2 overflow-hidden text-xs text-[var(--app-hint)] sm:hidden">

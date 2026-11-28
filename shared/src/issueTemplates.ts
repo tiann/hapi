@@ -1,0 +1,314 @@
+/**
+ * GitHub issue-forms domain (hapi#238 Boards "create a card"). Types +
+ * answer-to-markdown formatting live here so the web preview (what the user
+ * sees before submitting) and the hub's actual issue-create body (what
+ * GitHub really stores) can never drift apart — both call `formatIssueBody`.
+ *
+ * YAML/frontmatter parsing is deliberately NOT here: it only ever runs
+ * hub-side (hub fetches the raw template files; web only ever receives
+ * already-parsed JSON over the wire), so it lives in
+ * `hub/src/web/routes/issueTemplateParser.ts` instead of pulling a YAML
+ * dependency into the web bundle for code the browser never calls.
+ *
+ * GitHub's own issue-forms rendering has no dedicated "create from
+ * template" REST/GraphQL endpoint — it's purely a web-UI convention: parse
+ * the YAML, render a form, format answers into markdown, then call the
+ * exact same issue-create path any other issue goes through. Replicating
+ * "just like GitHub does" means replicating that formatting convention
+ * ourselves (operator decision, hapi#238): each non-markdown field renders
+ * as `### <label>\n\n<answer>`, in body order, with `_No response_` for an
+ * unanswered optional field — confirmed against GitHub's own documented
+ * issue-forms behavior.
+ */
+
+export type IssueFormMarkdownField = {
+    kind: 'markdown'
+    value: string
+}
+
+export type IssueFormInputField = {
+    kind: 'input'
+    id: string
+    label: string
+    description?: string
+    placeholder?: string
+    value?: string
+    required: boolean
+    /** `validations.min_length` — GitHub enforces this as an HTML `minlength`, so it still applies to a non-empty optional answer, just not to a blank one. */
+    minLength?: number
+}
+
+export type IssueFormTextareaField = {
+    kind: 'textarea'
+    id: string
+    label: string
+    description?: string
+    placeholder?: string
+    value?: string
+    /** Optional code-fence language (`attributes.render` in the YAML) — e.g. `shell`. */
+    render?: string
+    required: boolean
+    /** `validations.min_length` — GitHub enforces this as an HTML `minlength`, so it still applies to a non-empty optional answer, just not to a blank one. */
+    minLength?: number
+}
+
+export type IssueFormDropdownField = {
+    kind: 'dropdown'
+    id: string
+    label: string
+    description?: string
+    options: string[]
+    multiple: boolean
+    /**
+     * Index into `options` pre-selected by the template — applies
+     * regardless of `multiple` (bot review, tiann/hapi#2147, follow-up):
+     * GitHub's own schema defines only a single preselected index either
+     * way, never scoped to single-select in the docs.
+     */
+    defaultIndex?: number
+    required: boolean
+}
+
+export type IssueFormCheckboxOption = {
+    label: string
+    required: boolean
+}
+
+export type IssueFormCheckboxesField = {
+    kind: 'checkboxes'
+    id: string
+    label: string
+    description?: string
+    options: IssueFormCheckboxOption[]
+    /** `validations.required` on the GROUP itself (review finding,
+     *  tiann/hapi#2147, follow-up) — GitHub's own form schema documents
+     *  this as distinct from any individual option's own `required`: it
+     *  blocks submission until at least one box is checked, even when no
+     *  single option is itself required. */
+    required: boolean
+}
+
+export type IssueFormField =
+    | IssueFormMarkdownField
+    | IssueFormInputField
+    | IssueFormTextareaField
+    | IssueFormDropdownField
+    | IssueFormCheckboxesField
+
+/** The user's answer to one non-markdown field, keyed by the field's `id`. */
+export type IssueFormAnswer =
+    | { kind: 'input'; id: string; value: string }
+    | { kind: 'textarea'; id: string; value: string }
+    | { kind: 'dropdown'; id: string; selected: string[] }
+    | { kind: 'checkboxes'; id: string; checked: string[] }
+
+export type IssueTemplateBase = {
+    /** The template's filename — stable identity within a repo, unique per fetch. */
+    id: string
+    name: string
+    description?: string
+    /** `title:` in the YAML / frontmatter — prefixed onto the user's own title. */
+    titlePrefix?: string
+    labels: string[]
+    assignees: string[]
+    /**
+     * Hash of the template's raw file content (review finding, hapi#238) —
+     * echoed back on submit so the hub can reject a stale submission built
+     * against an since-edited template (a maintainer adding a required
+     * field, or changing labels, between the picker fetching templates and
+     * the user submitting) instead of silently filing the old shape.
+     */
+    revision: string
+}
+
+/** A `.yml`/`.yaml` issue form — structured fields, rendered as a dynamic form. */
+export type StructuredIssueTemplate = IssueTemplateBase & {
+    kind: 'form'
+    fields: IssueFormField[]
+}
+
+/** A legacy `.md` template (YAML frontmatter + free-text body) — no structured fields. */
+export type LegacyIssueTemplate = IssueTemplateBase & {
+    kind: 'legacy'
+    /** Frontmatter-stripped body, used to pre-fill a single free-text textarea. */
+    body: string
+}
+
+/**
+ * A template whose body uses a form feature this UI doesn't render (operator
+ * decision, hapi#238: fails loudly — the whole template is excluded from the
+ * picker with `reason` shown, never rendered with one field silently
+ * dropped). Carries only enough identity to list-and-explain, not create.
+ */
+export type UnsupportedIssueTemplate = {
+    id: string
+    name: string
+    kind: 'unsupported'
+    reason: string
+    /**
+     * Whether GitHub's own chooser would still recognize this as a
+     * template despite HAPI not rendering it — true only for a feature
+     * HAPI deliberately doesn't submit (`type`, `projects`), false for
+     * anything genuinely malformed (bad YAML, missing body/label/options,
+     * an unrecognized field type). Review finding (tiann/hapi#2147,
+     * follow-up): a repo whose only local file is malformed must not
+     * count as having local template coverage for `.github` inheritance
+     * purposes — GitHub itself would still fall back to the owner's
+     * defaults for that repo.
+     */
+    githubValid: boolean
+}
+
+export type IssueTemplate = StructuredIssueTemplate | LegacyIssueTemplate | UnsupportedIssueTemplate
+
+export function isUsableIssueTemplate(
+    template: IssueTemplate
+): template is StructuredIssueTemplate | LegacyIssueTemplate {
+    return template.kind !== 'unsupported'
+}
+
+/**
+ * The answers a field's own template-declared defaults already represent
+ * before the user has touched anything — an input/textarea's `value:` and a
+ * dropdown's `defaultIndex:`. Without this, `IssueFormFieldView` shows the
+ * prefilled value on screen, but it's invisible to both the dialog's
+ * required-field check and `formatIssueBody` below ("_No response_") until
+ * the user explicitly edits that field — accepting a sensible default
+ * should count as answering it. Checkboxes have no analogous "pre-checked"
+ * concept in the issue-forms schema, so there's nothing to seed for that kind.
+ *
+ * `defaultIndex` applies regardless of `multiple` (bot review,
+ * tiann/hapi#2147, follow-up) — GitHub's own documented schema defines
+ * `default` as "Index of the preselected option in the options array" with
+ * no stated restriction to single-select, and no documented validation
+ * error forbids combining it with `multiple: true`. This used to be gated
+ * on `!field.multiple`, silently dropping a multi-select dropdown's
+ * declared default — the same prefill-loss class as the input/textarea
+ * case above, one field shape over. GitHub's schema only ever defines a
+ * single preselected index either way (not an array of them), so a
+ * multi-select default still only ever seeds the one option this does.
+ */
+export function initialAnswersForFields(fields: IssueFormField[]): IssueFormAnswer[] {
+    const answers: IssueFormAnswer[] = []
+    for (const field of fields) {
+        if ((field.kind === 'input' || field.kind === 'textarea') && field.value) {
+            answers.push({ kind: field.kind, id: field.id, value: field.value })
+        } else if (field.kind === 'dropdown' && field.defaultIndex !== undefined) {
+            const option = field.options[field.defaultIndex]
+            if (option !== undefined) {
+                answers.push({ kind: 'dropdown', id: field.id, selected: [option] })
+            }
+        }
+    }
+    return answers
+}
+
+/**
+ * Mirrors GitHub's own issue-forms client-side validation (required fields,
+ * `min_length`, required checkbox options, required dropdown selection).
+ * The web dialog uses this to disable its own submit button; the hub uses
+ * it as a hard gate before filing, so a submission that bypasses the
+ * dialog (bug, or a non-browser caller) can't reach GitHub with something a
+ * real issue form would have rejected (review finding, tiann/hapi#2147,
+ * round 10) — one validator, not two copies that could drift.
+ */
+export function validateIssueFormAnswers(
+    fields: IssueFormField[], answers: IssueFormAnswer[]
+): { valid: true } | { valid: false; fieldLabel: string } {
+    const answerById = new Map(answers.map(answer => [answer.id, answer]))
+    for (const field of fields) {
+        if (field.kind === 'markdown') continue
+        const answer = answerById.get(field.id)
+        if (field.kind === 'checkboxes') {
+            const checked = answer && answer.kind === 'checkboxes' ? answer.checked : []
+            // Mirrors the dropdown check below: a submitted value must be
+            // one of the field's own declared options, not an arbitrary
+            // string (review finding, tiann/hapi#2147, follow-up). Checked
+            // before the required checks below — a `checked` array full of
+            // undeclared values could otherwise satisfy the group-required
+            // check purely by being non-empty, while formatIssueBody then
+            // renders every real option as unchecked (none of them match),
+            // filing an issue whose required group reads as unanswered.
+            if (!checked.every(value => field.options.some(option => option.label === value))) {
+                return { valid: false, fieldLabel: field.label }
+            }
+            // Group-level `validations.required` (review finding,
+            // tiann/hapi#2147, follow-up) — distinct from any individual
+            // option's own `required`: GitHub's own form schema blocks
+            // submission until at least one box is checked, even when no
+            // single option is itself marked required.
+            if (field.required && checked.length === 0) {
+                return { valid: false, fieldLabel: field.label }
+            }
+            if (!field.options.every(option => !option.required || checked.includes(option.label))) {
+                return { valid: false, fieldLabel: field.label }
+            }
+            continue
+        }
+        if (field.kind === 'input' || field.kind === 'textarea') {
+            const raw = answer && answer.kind === field.kind ? answer.value.trim() : ''
+            if (!field.required && raw.length === 0) continue
+            if (raw.length < (field.minLength ?? (field.required ? 1 : 0))) {
+                return { valid: false, fieldLabel: field.label }
+            }
+            continue
+        }
+        // dropdown — validated even when optional and unanswered is fine
+        // (review finding, tiann/hapi#2147, round 13): the old check only
+        // confirmed a required dropdown had *some* selection, never that
+        // the selection was one of the field's own declared options or
+        // respected single-select cardinality, so a client bypassing the
+        // dialog could submit an undeclared value or multiple values for
+        // a single-select field and have it written straight into the
+        // issue body.
+        const selected = answer && answer.kind === 'dropdown' ? answer.selected : []
+        if (field.required && selected.length === 0) {
+            return { valid: false, fieldLabel: field.label }
+        }
+        if (!field.multiple && selected.length > 1) {
+            return { valid: false, fieldLabel: field.label }
+        }
+        if (!selected.every(value => field.options.includes(value))) {
+            return { valid: false, fieldLabel: field.label }
+        }
+    }
+    return { valid: true }
+}
+
+/**
+ * Formats a structured template's answers into the markdown body GitHub's
+ * own issue-forms UI would produce. `markdown`-kind fields are instructional
+ * only (no answer) and are skipped, matching GitHub's own behavior.
+ */
+export function formatIssueBody(fields: IssueFormField[], answers: IssueFormAnswer[]): string {
+    const answerById = new Map(answers.map(answer => [answer.id, answer]))
+    const sections: string[] = []
+
+    for (const field of fields) {
+        if (field.kind === 'markdown') continue
+
+        const answer = answerById.get(field.id)
+        let valueText: string
+
+        if (field.kind === 'input' || field.kind === 'textarea') {
+            const raw = answer && answer.kind === field.kind ? answer.value.trim() : ''
+            if (!raw) {
+                valueText = '_No response_'
+            } else if (field.kind === 'textarea' && field.render) {
+                valueText = `\`\`\`${field.render}\n${raw}\n\`\`\``
+            } else {
+                valueText = raw
+            }
+        } else if (field.kind === 'dropdown') {
+            const selected = answer && answer.kind === 'dropdown' ? answer.selected : []
+            valueText = selected.length > 0 ? selected.join(', ') : '_No response_'
+        } else {
+            const checked = answer && answer.kind === 'checkboxes' ? new Set(answer.checked) : new Set<string>()
+            valueText = field.options.map(option => `- [${checked.has(option.label) ? 'x' : ' '}] ${option.label}`).join('\n')
+        }
+
+        sections.push(`### ${field.label}\n\n${valueText}`)
+    }
+
+    return sections.join('\n\n')
+}

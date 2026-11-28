@@ -26,6 +26,7 @@ const NOT_SETTINGS_KEYS = new Set([
     'hapi-recent-skills',
     'hapi:recentPaths',
     'hapi:lastMachineId',
+    'hapi-board-selection',
     'hapi:newSession:agent',
     'hapi:newSession:yolo',
     'hapi:newSession:launchSettings:v1',
@@ -44,6 +45,7 @@ const NOT_SETTINGS_KEYS = new Set([
     'hapi-mention-inactive-collapsed',
     'hapi-session-list-machine-filter',
     'hapi.scratchlist-collapsed.v1.',
+    'hapi.boardGroupCollapsed.v2.',
     // Onboarding and dismissals
     'hapi.nativeAppPromo.v1',
     'hapi.fue.v1.',

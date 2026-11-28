@@ -46,7 +46,7 @@ describe('ExternalRefSchema', () => {
             estateCode: 'babysit.green'
         })
         expect(parsed.success).toBe(true)
-        if (parsed.success) {
+        if (parsed.success && parsed.data.kind === 'github_pr') {
             expect(parsed.data.merge).toBe('clean')
             expect(parsed.data.estateCode).toBe('babysit.green')
         }
@@ -129,11 +129,15 @@ describe('MetadataSchema.externalRefs', () => {
         }
     })
 
-    it('rejects malformed externalRefs entries', () => {
-        expect(MetadataSchema.safeParse({
+    it('drops a malformed externalRefs entry instead of rejecting the whole object', () => {
+        const parsed = MetadataSchema.safeParse({
             ...base,
             externalRefs: [{ kind: 'github_pr', repo: 'x', number: 1 }]
-        }).success).toBe(false)
+        })
+        expect(parsed.success).toBe(true)
+        if (parsed.success) {
+            expect(parsed.data.externalRefs).toEqual([])
+        }
     })
 
     it('rejects more than one primary GitHub PR', () => {
@@ -251,6 +255,21 @@ describe('parseGithubPrInput', () => {
             repo: 'lockhouse/lockhouse',
             number: 42,
             url: 'https://lhs.ghe.com/lockhouse/lockhouse/pull/42'
+        })
+    })
+
+    // Review finding (hapi#2147, follow-up on the port-stripping identity
+    // bug): the URL was rebuilt from `url.hostname`, discarding a
+    // non-default port before the identity helpers ever saw it — every
+    // entry point that reaches this parser (LinkPrDialog, `hapi link-pr`,
+    // MCP `link_pr`) stored the port-stripped URL regardless of the
+    // identity fix.
+    it('preserves a non-default port when parsing a GHES PR URL', () => {
+        expect(parseGithubPrInput('https://tenant.ghe.com:8443/acme/repo/pull/7')).toEqual({
+            ok: true,
+            repo: 'acme/repo',
+            number: 7,
+            url: 'https://tenant.ghe.com:8443/acme/repo/pull/7'
         })
     })
 })
@@ -411,8 +430,38 @@ describe('upsertGithubPrIntoExternalRefs', () => {
         expect(next).toEqual(expect.arrayContaining([github, ghes]))
         // Cached health must not bleed across hosts.
         const ghesStored = next.find((ref) => ref.url.includes('acme.ghe.com'))
-        expect(ghesStored?.checks).toBe('fail')
-        expect(ghesStored?.statusCheckedAt).toBe(200)
+        expect(ghesStored && 'checks' in ghesStored ? ghesStored.checks : undefined).toBe('fail')
+        expect(ghesStored && 'statusCheckedAt' in ghesStored ? ghesStored.statusCheckedAt : undefined).toBe(200)
+    })
+
+    // Review finding (hapi#2147): host identity was derived via `.hostname`,
+    // which strips the port — two distinct GHE instances on the same
+    // hostname but different ports collapsed onto one identity, so linking
+    // the second silently replaced the first instead of coexisting like the
+    // different-hosts case above.
+    it('treats same repo#N on different ports of the same host as distinct identities', () => {
+        const port8443 = buildGithubPrExternalRef({
+            repo: 'acme/repo',
+            number: 7,
+            host: 'ghe.example:8443',
+            role: 'secondary',
+            checks: 'pass',
+            statusCheckedAt: 100
+        })
+        const port9443 = buildGithubPrExternalRef({
+            repo: 'acme/repo',
+            number: 7,
+            host: 'ghe.example:9443',
+            role: 'secondary',
+            checks: 'fail',
+            statusCheckedAt: 200
+        })
+        const next = upsertGithubPrIntoExternalRefs([port8443], port9443)
+        expect(next).toHaveLength(2)
+        expect(next).toEqual(expect.arrayContaining([port8443, port9443]))
+        const port9443Stored = next.find((ref) => ref.url.includes(':9443'))
+        expect(port9443Stored && 'checks' in port9443Stored ? port9443Stored.checks : undefined).toBe('fail')
+        expect(port9443Stored && 'statusCheckedAt' in port9443Stored ? port9443Stored.statusCheckedAt : undefined).toBe(200)
     })
 })
 

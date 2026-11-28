@@ -109,6 +109,19 @@ describe('session row hover unpin', () => {
         expect(screen.queryByRole('button', { name: 'Archive' })).toBeNull()
     })
 
+    it('reserves the two-button action-group width on a pinned active row showing both Unpin and Archive', () => {
+        renderList(
+            [makeSession({ id: 'pinned-active', active: true, pinned: true })],
+            {}
+        )
+
+        expect(screen.getByRole('button', { name: 'Unpin' })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Archive' })).toBeInTheDocument()
+        const row = screen.getByRole('button', { name: 'Unpin' }).closest('[data-quick-action-count]')
+        expect(row).toHaveAttribute('data-quick-action-count', '2')
+        expect(row).toHaveStyle({ paddingRight: 'var(--session-row-action-span)' })
+    })
+
     it('shows no Unpin button for unpinned rows', () => {
         renderList(
             [
@@ -409,7 +422,7 @@ describe('session row hover unpin', () => {
         expect(screen.getByTitle('/work/quiet')).toHaveAttribute('aria-expanded', 'true')
         const unreadRow = document.querySelector<HTMLElement>('[data-session-row-id="unread-project-pin"]')
         expect(unreadRow).not.toBeNull()
-        const unreadPreviewButton = unreadRow!.querySelector<HTMLButtonElement>('button[data-session-scroll-anchor]')
+        const unreadPreviewButton = unreadRow!.querySelector<HTMLElement>('[role="button"], button')
         expect(unreadPreviewButton).not.toBeNull()
         // No ancestor panel of the row is folding closed, so it stays visible.
         expect(unreadRow!.closest('.collapsible-panel:not([data-open])')).toBeNull()

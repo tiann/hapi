@@ -15,6 +15,8 @@ function makeSession(overrides: Partial<Session> = {}): Session {
     return {
         id: 'session-1',
         namespace: 'default',
+        seq: 1,
+        createdAt: 500,
         active: true,
         activeAt: 1000,
         updatedAt: 2000,

@@ -13,7 +13,7 @@ import { readTitleProviderConfig } from '../sync/titleSuggestion'
 import { createQwenProxyWebSocketHandler } from './qwenProxyHandler'
 import { decodeVoiceSystemPromptParam } from '../voiceSystemPromptParam'
 import type { SyncEngine } from '../sync/syncEngine'
-import { createAuthMiddleware, type WebAppEnv } from './middleware/auth'
+import { createAuthMiddleware, jwtPayloadSchema, type WebAppEnv } from './middleware/auth'
 import { createAuthRoutes } from './routes/auth'
 import { createBindRoutes } from './routes/bind'
 import {
@@ -42,6 +42,7 @@ import { createDevicesRoutes } from './routes/devices'
 import { createVoiceRoutes } from './routes/voice'
 import { createHubSettingsRoutes } from './routes/hubSettings'
 import { createWorkGraphRoutes } from './routes/workGraph'
+import { createBoardRoutes } from './routes/todoBoard'
 import type { SSEManager } from '../sse/sseManager'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
 import type { Server as BunServer, ServerWebSocket } from 'bun'
@@ -241,6 +242,28 @@ function withVaryAcceptEncoding(response: Response): Response {
     }
 }
 
+/**
+ * Gate for the voice WebSocket proxies — signature + expiry alone aren't
+ * enough (bot review, tiann/hapi#2147, follow-up): ANY token signed with
+ * this same secret and HS256 passes that, including ones never meant to
+ * grant API access at all, like the board-item recovery token returned
+ * directly in a web API JSON response body on every partial create-card
+ * failure — far more casually exposed than a real session credential.
+ * Requiring the real web-session claim shape (`uid`/`ns`) here is the
+ * same proof `createAuthMiddleware` already requires for every other API
+ * route; a passkey-session token (`typ`/`cid`/`ns`, no `uid`) or a board
+ * recovery token (`typ`/`boardId`/`repo`/`url`/`assignees`, no `uid`)
+ * both fail it the same way a forged token would.
+ */
+export async function isValidWebSessionJwt(token: string, jwtSecret: Uint8Array): Promise<boolean> {
+    try {
+        const verified = await jwtVerify(token, jwtSecret, { algorithms: ['HS256'] })
+        return jwtPayloadSchema.safeParse(verified.payload).success
+    } catch {
+        return false
+    }
+}
+
 export function getStaticCacheHeaders(requestPath: string, options?: { spaFallback?: boolean }): Record<string, string> {
     if (!options?.spaFallback && requestPath === '/sw.js') {
         return {
@@ -430,6 +453,7 @@ export function createWebApp(options: {
     app.route('/api', createVoiceRoutes({ dataDir: configuration.dataDir }))
     // Path is intentionally NOT `/api/events` — that route is the SSE stream.
     app.route('/api', createWorkGraphRoutes(options.store))
+    app.route('/api', createBoardRoutes(configuration.dataDir, options.jwtSecret))
 
     // Skip static serving in relay mode, show helpful message on root
     if (options.relayMode) {
@@ -667,9 +691,7 @@ export async function startWebServer(options: {
                 if (!token) {
                     return new Response('Missing authorization token', { status: 401 })
                 }
-                try {
-                    await jwtVerify(token, options.jwtSecret, { algorithms: ['HS256'] })
-                } catch {
+                if (!await isValidWebSessionJwt(token, options.jwtSecret)) {
                     return new Response('Invalid token', { status: 401 })
                 }
             }

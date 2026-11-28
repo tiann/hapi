@@ -3,6 +3,8 @@ import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffec
 import * as Popover from '@radix-ui/react-popover'
 import { SessionListScrollAnchor } from './SessionListScrollAnchor'
 import type { SessionContentSearchResponse, SessionSummary } from '@/types/api'
+import type { ExternalRef } from '@hapi/protocol/types'
+import { SESSION_LIFECYCLE_IDLE } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
 import {
     buildSessionSearchScoreIndex,
@@ -152,6 +154,8 @@ import {
     resolveGithubPrChipDisplay
 } from '@hapi/protocol'
 import { formatGithubPrChipDetailParts, SessionPrChip } from '@/components/SessionPrChip'
+import { IssueRefChip } from '@/components/IssueRefChip'
+import { getLinkedGithubIssue, type BoardItemMatch } from '@/lib/externalRefs'
 import { useScratchlistSessionIds } from '@/hooks/queries/useScratchlistSessionIds'
 import { CalendarIcon, formatDateValue, parseLocalDate, SessionDateRangePicker } from '@/components/SessionDateFilter'
 import { Spinner } from '@/components/Spinner'
@@ -198,7 +202,7 @@ export type SessionToolbarExtra = {
 
 export { getWorktreeSessionLabel } from '@/lib/sessionWorktreeLabel'
 
-type SessionGroup = {
+export type SessionGroup = {
     key: string
     directory: string
     displayName: string
@@ -1389,6 +1393,8 @@ type SessionItemProps = {
     targetMessageId?: string
     targetMessageQuery?: string
     lastSeenVersion: number
+    getBoardMatchForIssue?: (ref: ExternalRef) => BoardItemMatch | null
+    onOpenBoardItem?: (match: BoardItemMatch) => void
     /** Stopped rows show the stop time they are ordered by (Active first). */
     showStoppedTime?: boolean
 }
@@ -1422,6 +1428,8 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
         targetMessageId,
         targetMessageQuery,
         lastSeenVersion,
+        getBoardMatchForIssue,
+        onOpenBoardItem,
         showStoppedTime = false
     } = props
     const { haptic } = usePlatform()
@@ -1441,7 +1449,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
     const forkFlowOpen = forkFlow.flowOpen
     const pendingRequestPressedRef = useRef(false)
     const rowRef = useRef<HTMLDivElement>(null)
-    const rowButtonRef = useRef<HTMLButtonElement>(null)
+    const rowButtonRef = useRef<HTMLDivElement>(null)
     const quickUnpinFocusRef = useContext(QuickUnpinFocusContext)
     const panelOpen = useContext(CollapsiblePanelOpenContext)
     const {
@@ -1646,7 +1654,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
         threshold: 500
     })
 
-    const handleRowKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    const handleRowKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
         if (event.target !== event.currentTarget || !selected) return
         const pendingRequestId = s.pendingRequests?.[0]?.id
         if (!pendingRequestId || (event.key !== 'Enter' && event.key !== ' ')) return
@@ -1681,26 +1689,91 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
         Boolean(attention),
         hasScheduleTooltip
     )
+    const linkedIssue = getLinkedGithubIssue(s.metadata)
+    const linkedIssueBoardMatch = linkedIssue ? getBoardMatchForIssue?.(linkedIssue) ?? null : null
     return (
         <>
+            {/* The issue chip renders as a sibling of the role="button" div,
+                not a descendant — WAI-ARIA disallows a focusable descendant
+                of a button role (hiding-semantics guidance), which a merely
+                non-native `<button>` tag doesn't exempt. Two prior fixes here
+                addressed the *native*-button keyboard-trap case (switching
+                `<button>` to `<div role="button">`) but left this ARIA
+                validity gap open (hapi#238 Codex review, third pass). The
+                chip no longer needs its own stopPropagation handlers now
+                that it's outside the row's long-press-bound element.
+                Visible side effect, not just internal restructuring: the
+                chip moves from inline-beside-the-title (inside
+                SessionRowSummary's own layout) to the row's trailing edge,
+                top-aligned — true DOM sibling-hood and "still sitting
+                exactly where it used to, mid-title-row" aren't both
+                achievable without SessionRowSummary exposing its title row
+                as a separate slot, which is more surface area than this fix
+                warrants. The quick-archive button (upstream) is a sibling
+                here too, for the same reason. */}
+            {/* `session-list-item` and `data-session-scroll-anchor` must stay
+                on this same outer element — SessionListScrollAnchor queries
+                by the attribute, then checks the class on that SAME element
+                to decide a row (vs. a group header) tolerates being
+                partially scrolled off the viewport top and still anchoring.
+                Splitting them across the outer/inner divs silently broke
+                that distinction for every session row. `session-list-row`
+                (upstream, quick-archive hover/focus CSS) lives on the same
+                element too, not a separate wrapper — its own `:hover >
+                .session-list-item` rule becomes a no-op here, but the plain
+                `.session-list-item:hover` rule already covers it since the
+                quick-archive button is a descendant of this element.
+                Right padding grows to reserve the archive button's own
+                footprint (not the `session-row-trailing`/visibility:hidden
+                trick SessionRowSummary's own non-interactive trailing
+                cluster uses) whenever a quick-archive button can appear —
+                the issue/PR chips are real links, and hiding them on
+                hover/focus to avoid the overlap made them unreachable
+                exactly when a pointer or keyboard user was approaching the
+                row to use them (bot review, hapi#2147, second pass). */}
+            {/* Naming convention (review finding, hapi#2147, third pass —
+                four separate bugs across JS and CSS all traced back to this
+                same split before this comment existed): focus concerns
+                target `.session-row-control` (the inner role="button" div
+                below); row concerns — scroll anchoring, hover/quick-action
+                CSS, data attributes — target `.session-list-item` (the
+                outer div). `session-list-item` has no relationship to focus
+                despite its name being the only one historically in scope at
+                this call site; reaching for it to mean "the focusable
+                element" has been the actual root cause every time. */}
             <div
                 ref={rowRef}
-                className="session-list-row relative flex w-full items-start rounded-lg transition-colors"
+                data-session-scroll-anchor
                 data-session-row-id={s.id}
+                className={`session-list-item session-list-row relative flex w-full items-start gap-1 rounded-lg py-2 pl-2.5 pr-2 transition-colors ${selected ? 'bg-[var(--app-secondary-bg)]' : ''}`}
+                style={hasQuickAction ? { paddingRight: 'var(--session-row-action-span)' } : undefined}
                 data-quick-action-count={quickActionCount > 0 ? quickActionCount : undefined}
                 data-quick-action-pending={quickArchivePending || quickUnpinPending ? '' : undefined}
             >
-                <button
+                <div
+                    role="button"
+                    tabIndex={0}
                     ref={rowButtonRef}
-                    type="button"
                     {...longPressHandlers}
-                    onKeyDown={handleRowKeyDown}
+                    onKeyDown={(event) => {
+                        // handleRowKeyDown only preventDefaults in its own
+                        // narrow case (selected row, pending request, Enter/
+                        // Space) — otherwise it's a no-op, so falling through
+                        // to longPressHandlers.onKeyDown is safe and keeps
+                        // this a real <div role="button">'s only path to
+                        // keyboard activation (unlike a native <button>,
+                        // this div gets no browser-synthesized click on
+                        // Enter/Space, so overriding rather than composing
+                        // the hook's own onKeyDown would silently break
+                        // keyboard selection for every ordinary row).
+                        handleRowKeyDown(event)
+                        if (!event.defaultPrevented) longPressHandlers.onKeyDown(event)
+                    }}
                     onPointerDownCapture={(event) => {
                         pendingRequestPressedRef.current = event.target instanceof Element
                             && event.target.closest('[data-session-pending-request-id]') !== null
                     }}
-                    data-session-scroll-anchor
-                    className="session-list-item group/session-row flex min-w-0 flex-1 flex-col gap-1 py-2 pl-2.5 pr-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none rounded-lg"
+                    className="session-row-control group/session-row flex min-w-0 flex-1 flex-col gap-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none rounded-lg cursor-pointer"
                     style={{ WebkitTouchCallout: 'none' }}
                     aria-current={selected ? 'page' : undefined}
                     aria-describedby={describedBy}
@@ -1721,12 +1794,21 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                         inRunningSection={inRunningSection}
                         projectLabel={projectLabel}
                         machineLabel={machineLabel}
+                        showIssueChip={false}
                         contentSnippet={contentSnippet}
                         contentSearchTruncated={contentSearchTruncated}
                         trailingClassName={hasQuickAction ? 'session-row-trailing' : undefined}
                         showStoppedTime={showStoppedTime}
                     />
-                </button>
+                </div>
+                {linkedIssue ? (
+                    <IssueRefChip
+                        ref={linkedIssue}
+                        className="mt-0.5 shrink-0"
+                        boardMatch={linkedIssueBoardMatch}
+                        onOpenBoardItem={onOpenBoardItem}
+                    />
+                ) : null}
                 {githubPrAwarenessEnabled && primaryPrRef ? (
                     <div
                         data-testid="session-pr-chip-wrap"
@@ -1977,6 +2059,9 @@ export function SessionList(props: {
     machineLabelsById?: Record<string, string>
     machinesById?: Record<string, Machine>
     selectedSessionId?: string | null
+    /** The board item (if any) a session's linked GitHub issue is tracked on — null/absent when Boards isn't configured or the issue isn't on any board. */
+    getBoardMatchForIssue?: (ref: ExternalRef) => BoardItemMatch | null
+    onOpenBoardItem?: (match: BoardItemMatch) => void
 }) {
     const { t } = useTranslation()
     const {
@@ -2768,6 +2853,8 @@ export function SessionList(props: {
                                             targetMessageId={contentTargetMessageIdBySessionId.get(s.id)}
                                             targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
                                             lastSeenVersion={lastSeenVersion}
+                                            getBoardMatchForIssue={props.getBoardMatchForIssue}
+                                            onOpenBoardItem={props.onOpenBoardItem}
                                             showStoppedTime={stoppedTimeShown}
                                         />
                                     ))}
@@ -2847,6 +2934,8 @@ export function SessionList(props: {
             targetMessageId={contentTargetMessageIdBySessionId.get(s.id)}
             targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
             lastSeenVersion={lastSeenVersion}
+            getBoardMatchForIssue={props.getBoardMatchForIssue}
+            onOpenBoardItem={props.onOpenBoardItem}
             showStoppedTime={stoppedTimeShown}
         />
     )
@@ -3059,8 +3148,21 @@ export function SessionList(props: {
             const findVisible = (selector: string) =>
                 Array.from(container?.querySelectorAll<HTMLElement>(selector) ?? [])
                     .find((el) => !el.closest('.collapsible-panel:not([data-open])'))
-            const fallback = findVisible('button[data-session-scroll-anchor]')
+            // Prefer a session row over a project-group header when both
+            // carry data-session-scroll-anchor — the row's outer element is
+            // a <div role="button"> (not a native <button>; see the ARIA
+            // comment where this row renders), so `session-list-item` is
+            // the distinguishing marker rather than the tag name. Either
+            // match is a non-focusable wrapper div (the scroll anchor and
+            // the actual interactive element are different nodes here,
+            // unlike upstream's single native <button>), so drill down to
+            // the focusable role="button" descendant before focusing it.
+            const candidate = findVisible('.session-list-item[data-session-scroll-anchor]')
+                ?? findVisible('[data-session-scroll-anchor]')
                 ?? findVisible('[role="button"], button')
+            const fallback = candidate && !candidate.matches('[role="button"], button')
+                ? (candidate.querySelector<HTMLElement>('[role="button"], button') ?? candidate)
+                : candidate
             fallback?.focus({ preventScroll: true })
         }
         quickUnpinFocusRef.current = null
@@ -3642,6 +3744,8 @@ export function SessionList(props: {
                                             targetMessageId={contentTargetMessageIdBySessionId.get(s.id)}
                                             targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
                                             lastSeenVersion={lastSeenVersion}
+                                            getBoardMatchForIssue={props.getBoardMatchForIssue}
+                                            onOpenBoardItem={props.onOpenBoardItem}
                                             showStoppedTime={stoppedTimeShown}
                                         />
                                     ))}

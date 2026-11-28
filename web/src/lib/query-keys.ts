@@ -5,6 +5,17 @@ export const queryKeys = {
     messages: (sessionId: string) => ['messages', sessionId] as const,
     sessionContentSearch: (sessionId: string, query: string) => ['session-content-search', sessionId, query] as const,
     machines: ['machines'] as const,
+    boards: ['boards'] as const,
+    boardItems: (boardId: string) => ['board-items', boardId] as const,
+    // Prefix-only, for invalidating every configured board's items cache at
+    // once (useBoardItemActions, Codex review hapi#238) — the same issue can
+    // be a member of more than one board (e.g. an unfiltered project and one
+    // of its saved views), so a write started from board A must not leave
+    // board B's cache silently stale, with no polling to ever self-correct.
+    boardItemsAll: ['board-items'] as const,
+    boardAssignableUsers: (boardId: string, url: string, search: string) => ['board-assignable-users', boardId, url, search] as const,
+    boardItemComments: (boardId: string, url: string) => ['board-item-comments', boardId, url] as const,
+    issueTemplates: (boardId: string, repo: string) => ['issue-templates', boardId, repo] as const,
     sqliteStorage: ['sqlite-storage'] as const,
     hubSettings: ['hub-settings'] as const,
     passkeys: ['passkeys'] as const,

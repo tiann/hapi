@@ -1,0 +1,1010 @@
+import { describe, expect, it } from 'bun:test'
+import { hasRequiredLegacyTemplateFrontmatter, parseIssueFormYaml, parseIssueTemplateConfig, parseLegacyIssueTemplate } from './issueTemplateParser'
+
+describe('parseIssueFormYaml', () => {
+    // Regression (bot review, tiann/hapi#2147, follow-up): `parseDocument`
+    // itself never throws (malformed YAML surfaces in `.errors` instead),
+    // but its own `.toJS()` conversion step CAN throw independently of
+    // `.errors` — confirmed directly: an anchor/alias expansion deep
+    // enough to look like a resource-exhaustion attack throws "Excessive
+    // alias count..." from `.toJS()` with `.errors` still empty. The
+    // plain `parse()` this parser used before wrapped both the parse and
+    // the convert step in one call, so the surrounding try/catch already
+    // covered this; splitting the two steps dropped that coverage for
+    // the convert half, which would otherwise crash whatever caller is
+    // listing every template in a repo over one malformed file.
+    it('is unsupported, not throwing, when the YAML itself parses but toJS() throws', () => {
+        const yaml = `
+a: &a ["x","x","x","x","x","x","x","x","x"]
+b: &b [*a,*a,*a,*a,*a,*a,*a,*a,*a]
+c: &c [*b,*b,*b,*b,*b,*b,*b,*b,*b]
+d: &d [*c,*c,*c,*c,*c,*c,*c,*c,*c]
+e: [*d,*d,*d,*d,*d,*d,*d,*d,*d]
+`
+        const template = parseIssueFormYaml('x.yml', yaml)
+        expect(template.kind).toBe('unsupported')
+        expect(template.kind === 'unsupported' && template.githubValid).toBe(false)
+    })
+
+    it('parses a real-shaped bug-report form with every supported field kind', () => {
+        const yaml = `
+name: Bug report
+description: File a bug report
+title: "[Bug]: "
+labels: ["bug", "triage"]
+assignees:
+  - octocat
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for taking the time to fill this out!
+  - type: input
+    id: contact
+    attributes:
+      label: Contact Details
+      placeholder: ex. email@example.com
+    validations:
+      required: false
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      render: shell
+    validations:
+      required: true
+  - type: dropdown
+    id: version
+    attributes:
+      label: Version
+      options:
+        - "1.0.2"
+        - "1.0.3"
+      default: 0
+    validations:
+      required: true
+  - type: dropdown
+    id: browsers
+    attributes:
+      label: Browsers
+      multiple: true
+      options: [Firefox, Chrome, Safari]
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Code of Conduct
+      options:
+        - label: I agree to follow this project's Code of Conduct
+          required: true
+`
+        const template = parseIssueFormYaml('bug_report.yml', yaml)
+        expect(template.kind).toBe('form')
+        if (template.kind !== 'form') return
+        expect(template.name).toBe('Bug report')
+        expect(template.titlePrefix).toBe('[Bug]: ')
+        expect(template.labels).toEqual(['bug', 'triage'])
+        expect(template.assignees).toEqual(['octocat'])
+        expect(template.fields).toHaveLength(6)
+        expect(template.fields[0]).toEqual({ kind: 'markdown', value: 'Thanks for taking the time to fill this out!' })
+        expect(template.fields[1]).toMatchObject({ kind: 'input', id: 'contact', label: 'Contact Details', required: false })
+        expect(template.fields[2]).toMatchObject({ kind: 'textarea', id: 'what-happened', render: 'shell', required: true })
+        expect(template.fields[3]).toMatchObject({ kind: 'dropdown', id: 'version', multiple: false, defaultIndex: 0, required: true })
+        expect(template.fields[4]).toMatchObject({ kind: 'dropdown', id: 'browsers', multiple: true, required: false })
+        expect(template.fields[5]).toMatchObject({
+            kind: 'checkboxes',
+            id: 'terms',
+            required: false,
+            options: [{ label: 'I agree to follow this project\'s Code of Conduct', required: true }]
+        })
+    })
+
+    // Review finding (tiann/hapi#2147, follow-up): GitHub's own form
+    // schema documents a GROUP-level `validations.required` for
+    // checkboxes, distinct from any individual option's own `required` —
+    // the parser was only ever capturing the per-option one.
+    it('captures validations.required on the checkbox group itself, distinct from per-option required', () => {
+        const yaml = `
+name: Bug report
+description: File a bug report
+body:
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Code of Conduct
+      options:
+        - label: Just an optional note
+    validations:
+      required: true
+`
+        const template = parseIssueFormYaml('bug_report.yml', yaml)
+        expect(template.kind).toBe('form')
+        if (template.kind !== 'form') return
+        expect(template.fields[0]).toMatchObject({
+            kind: 'checkboxes',
+            required: true,
+            options: [{ label: 'Just an optional note', required: false }]
+        })
+    })
+
+    // Review finding: GitHub's issue-form schema allows labels/assignees as
+    // either a YAML list (covered above) or a comma-delimited string, same
+    // as the legacy .md frontmatter shorthand parseLegacyIssueTemplate
+    // already supports — the structured parser used the stricter array-only
+    // helper for these two fields and silently dropped a template's labels
+    // and assignees whenever either was written as a plain string.
+    it('supports a comma-delimited string form of labels/assignees too', () => {
+        const yaml = `
+name: Bug report
+description: File a bug report
+labels: bug, needs-triage
+assignees: octocat
+body:
+  - type: markdown
+    attributes:
+      value: Thanks!
+  - type: input
+    attributes:
+      label: Contact Details
+`
+        const template = parseIssueFormYaml('bug_report.yml', yaml)
+        expect(template.kind).toBe('form')
+        if (template.kind !== 'form') return
+        expect(template.labels).toEqual(['bug', 'needs-triage'])
+        expect(template.assignees).toEqual(['octocat'])
+    })
+
+    it('marks the whole template unsupported for an unrecognized body-element type, not just drops that field', () => {
+        const yaml = `
+name: Weird form
+description: A form with an unsupported field
+body:
+  - type: input
+    id: known
+    attributes:
+      label: Known field
+  - type: some-future-field-type
+    id: unknown
+    attributes:
+      label: Unknown field
+`
+        const template = parseIssueFormYaml('weird.yml', yaml)
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.reason).toContain('some-future-field-type')
+    })
+
+    it('marks the whole template unsupported for a top-level type declaration, not silently dropped', () => {
+        const yaml = `
+name: Bug report
+description: File a bug report
+type: Bug
+body:
+  - type: input
+    id: contact
+    attributes:
+      label: Contact Details
+`
+        const template = parseIssueFormYaml('typed.yml', yaml)
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.reason).toContain('type')
+    })
+
+    it('marks the whole template unsupported for a top-level projects declaration, not silently dropped', () => {
+        const yaml = `
+name: Bug report
+description: File a bug report
+projects: ["acme/2"]
+body:
+  - type: input
+    id: contact
+    attributes:
+      label: Contact Details
+`
+        const template = parseIssueFormYaml('projected.yml', yaml)
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.reason).toContain('projects')
+    })
+
+    it('is unsupported for invalid YAML', () => {
+        const template = parseIssueFormYaml('broken.yml', ': : not yaml {{{')
+        expect(template.kind).toBe('unsupported')
+    })
+
+    it('is unsupported when body is missing or empty', () => {
+        expect(parseIssueFormYaml('no-body.yml', 'name: No Body\ndescription: No Body').kind).toBe('unsupported')
+        expect(parseIssueFormYaml('empty-body.yml', 'name: Empty\ndescription: Empty\nbody: []').kind).toBe('unsupported')
+    })
+
+    it('is unsupported when a non-markdown field is missing a label', () => {
+        const missingLabel = parseIssueFormYaml('x.yml', 'name: Bug\ndescription: Bug\nbody:\n  - type: input\n    id: field\n    attributes: {}')
+        expect(missingLabel.kind).toBe('unsupported')
+    })
+
+    // GitHub's own validation-errors doc documents this as "Body[i]: label
+    // contains forbidden word," disclosing exactly one example ("password")
+    // on an input/textarea label (bot review, tiann/hapi#2147, follow-up).
+    // A miss here is silent, not visible: `gh issue create --title --body`
+    // never re-validates against the originating .yml, so this has to be
+    // caught at parse time, same as every other template-validity rule.
+    it('is unsupported when an input field label contains the forbidden word "password"', () => {
+        const template = parseIssueFormYaml('x.yml', 'name: Bug\ndescription: Bug\nbody:\n  - type: input\n    id: field\n    attributes:\n      label: Account Password')
+        expect(template.kind).toBe('unsupported')
+    })
+
+    it('is unsupported when a textarea field label contains the forbidden word, case-insensitively', () => {
+        const template = parseIssueFormYaml('x.yml', 'name: Bug\ndescription: Bug\nbody:\n  - type: textarea\n    id: field\n    attributes:\n      label: Your PASSWORD here')
+        expect(template.kind).toBe('unsupported')
+    })
+
+    it('does not reject a dropdown/checkboxes label containing the forbidden word — GitHub documents the rule as input/textarea-only', () => {
+        const dropdown = parseIssueFormYaml('x.yml', 'name: Bug\ndescription: Bug\nbody:\n  - type: dropdown\n    id: field\n    attributes:\n      label: Password strength\n      options:\n        - Weak\n        - Strong')
+        expect(dropdown.kind).toBe('form')
+    })
+
+    it('does not reject an ordinary label that merely shares a prefix with the forbidden word', () => {
+        const template = parseIssueFormYaml('x.yml', 'name: Bug\ndescription: Bug\nbody:\n  - type: input\n    id: field\n    attributes:\n      label: Pass/Fail Result')
+        expect(template.kind).toBe('form')
+    })
+
+    // GitHub's issue-forms schema makes `id` optional (the field's rendered
+    // issue-body section is keyed by label, never id) — a field without one
+    // is still a valid, GitHub-accepted form, so it gets a generated id
+    // rather than rejecting the whole template (review finding).
+    it('generates a stable slug id for a field missing one, instead of rejecting the template', () => {
+        const template = parseIssueFormYaml('x.yml', 'name: Bug\ndescription: Bug\nbody:\n  - type: input\n    attributes:\n      label: Contact Details')
+        expect(template.kind).toBe('form')
+        if (template.kind !== 'form') return
+        expect(template.fields).toEqual([{
+            kind: 'input', id: 'contact-details', label: 'Contact Details', description: undefined,
+            placeholder: undefined, value: undefined, required: false, minLength: undefined
+        }])
+    })
+
+    // GitHub documents this exact scenario as its own validation error,
+    // "Labels are too similar" (bot review, tiann/hapi#2147, follow-up),
+    // confirmed directly against GitHub's docs — its own example pairs an
+    // idless field against another field's *explicit* id and rejects the
+    // whole form, even though the labels themselves are different strings
+    // (distinct from "Body must have unique labels" above, which is about
+    // literal label-text equality). This parser's own `generateFieldId`
+    // used to paper over the identical-reference collision with a numeric
+    // suffix (`name-us-2`) instead of rejecting, silently accepting a form
+    // GitHub itself rejects outright — same "wrongly counts as local
+    // .github coverage" bug as every other duplicate-identifier check here.
+    it('is genuinely invalid when an idless field\'s label generates the same reference as another field\'s id', () => {
+        const yaml = `
+name: Bug
+description: Bug
+body:
+  - type: input
+    attributes:
+      label: Name (US)
+  - type: input
+    id: name-us
+    attributes:
+      label: Something Else
+`
+        const template = parseIssueFormYaml('x.yml', yaml)
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+        expect(template.reason).toContain('Name (US)')
+    })
+
+    // Same rule, the other pairing: two idless fields whose DIFFERENT
+    // labels both generate the same reference. Deliberately NOT an
+    // underscore here (bot review, tiann/hapi#2147, follow-up) — GitHub's
+    // own `parameterize` preserves underscores distinctly from the
+    // separator dash, so "Name (US)" and "Name_US" do NOT actually
+    // collide under real GitHub behavior (see the underscore-preserving
+    // test below); using two different non-alphanumeric separator
+    // sequences that both collapse to the same dash keeps this test
+    // genuinely testing a real collision.
+    it('is genuinely invalid when two idless fields\' different labels generate the same reference', () => {
+        const yaml = `
+name: Bug
+description: Bug
+body:
+  - type: input
+    attributes:
+      label: Name (US)
+  - type: input
+    attributes:
+      label: Name - US
+`
+        const template = parseIssueFormYaml('x.yml', yaml)
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+        expect(template.reason).toContain('Name - US')
+    })
+
+    // Regression (bot review, tiann/hapi#2147, follow-up): GitHub's own
+    // docs (Rails' `parameterize`) explicitly preserve underscores as
+    // distinct from the separator dash — "Jolie__" stays "jolie__", not
+    // collapsed or stripped like a run of dashes would be. The previous
+    // version of this parser's `slugify` replaced ANY non-alphanumeric
+    // character with a dash, silently turning an underscore into one too,
+    // so "Name_US" and "Name-US" wrongly collided here even though GitHub
+    // itself would see them as two distinct references.
+    it('does not falsely collide an underscored label with a dashed one', () => {
+        const yaml = `
+name: Bug
+description: Bug
+body:
+  - type: input
+    attributes:
+      label: Name_US
+  - type: input
+    attributes:
+      label: Name-US
+`
+        const template = parseIssueFormYaml('x.yml', yaml)
+        expect(template.kind).toBe('form')
+    })
+
+    // Regression (Meta review, tiann/hapi#2147, follow-up): GitHub's own
+    // "Labels are too similar" mechanism (Rails' `parameterize`)
+    // transliterates accented Latin characters before slugifying
+    // ("Café" -> "cafe"), not just strips them. Missing that step meant
+    // this parser silently missed a real collision an accented label
+    // creates against its unaccented counterpart.
+    it('is genuinely invalid when an accented label collides with its unaccented counterpart', () => {
+        const yaml = `
+name: Bug
+description: Bug
+body:
+  - type: input
+    attributes:
+      label: Café
+  - type: input
+    attributes:
+      label: Cafe
+`
+        const template = parseIssueFormYaml('x.yml', yaml)
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+    })
+
+    // The other direction (Meta review, tiann/hapi#2147, follow-up): a
+    // naive strip-non-ASCII approach (no transliteration) makes "Café"
+    // and "Caf" collide ("café" and "caf" both reduce to "caf" once the
+    // accented é is simply deleted), but Rails' real transliteration
+    // keeps them distinct ("cafe" vs "caf") — GitHub would accept this
+    // form. Rejecting it would be a false reject, the worse direction:
+    // it blocks a legitimately valid, non-English template outright.
+    it('does not falsely collide an accented label with an unrelated short label', () => {
+        const yaml = `
+name: Bug
+description: Bug
+body:
+  - type: input
+    attributes:
+      label: Café
+  - type: input
+    attributes:
+      label: Caf
+`
+        const template = parseIssueFormYaml('x.yml', yaml)
+        expect(template.kind).toBe('form')
+    })
+
+    // Regression (bot review, tiann/hapi#2147, follow-up): GitHub's own
+    // documented rule is "Body must have unique labels" for fields with
+    // no distinguishing id — this parser's generateFieldId used to paper
+    // over exactly this case with a numeric suffix, silently accepting a
+    // form GitHub itself rejects outright.
+    it('is genuinely invalid when two fields with no explicit id share the same label', () => {
+        const yaml = `
+name: Bug
+description: Bug
+body:
+  - type: input
+    attributes:
+      label: Name
+  - type: input
+    attributes:
+      label: Name
+`
+        const template = parseIssueFormYaml('x.yml', yaml)
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+        expect(template.reason).toContain('Name')
+    })
+
+    // GitHub's own escape hatch: supplying an explicit id on at least one
+    // of two identically-labeled fields is a valid, documented way to
+    // keep them distinct — must not be caught by the check above.
+    it('allows two fields with the same label when at least one has an explicit id', () => {
+        const yaml = `
+name: Bug
+description: Bug
+body:
+  - type: input
+    attributes:
+      label: Name
+  - type: input
+    id: name_2
+    attributes:
+      label: Name
+`
+        const template = parseIssueFormYaml('x.yml', yaml)
+        expect(template.kind).toBe('form')
+    })
+
+    it('parses validations.min_length for input/textarea fields', () => {
+        const yaml = `
+name: Bug
+description: Bug
+body:
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true
+      min_length: 100
+`
+        const template = parseIssueFormYaml('x.yml', yaml)
+        expect(template.kind).toBe('form')
+        if (template.kind !== 'form') return
+        const field = template.fields[0]
+        expect(field?.kind === 'textarea' && field.minLength).toBe(100)
+    })
+
+    it('is unsupported when a dropdown or checkboxes field has no options', () => {
+        const dropdown = parseIssueFormYaml('x.yml', 'name: Bug\ndescription: Bug\nbody:\n  - type: dropdown\n    id: d\n    attributes:\n      label: D\n      options: []')
+        expect(dropdown.kind).toBe('unsupported')
+        const checkboxes = parseIssueFormYaml('x.yml', 'name: Bug\ndescription: Bug\nbody:\n  - type: checkboxes\n    id: c\n    attributes:\n      label: C\n      options: []')
+        expect(checkboxes.kind).toBe('unsupported')
+    })
+
+    // Review finding (tiann/hapi#2147): GitHub requires `name` on an issue
+    // form — a file missing it used to fall back to the filename and be
+    // accepted as usable, even though GitHub's own chooser would never
+    // have offered it, letting it wrongly suppress .github inheritance.
+    it('is unsupported when name is missing, rather than falling back to the filename', () => {
+        const template = parseIssueFormYaml('x.yml', 'body:\n  - type: markdown\n    attributes:\n      value: Hi')
+        expect(template.kind).toBe('unsupported')
+        expect(template.kind === 'unsupported' && template.githubValid).toBe(false)
+    })
+
+    // Not on GitHub's own syntax/validation-errors doc pages (checked
+    // directly), but confirmed real via GitHub's own in-editor error,
+    // quoted verbatim in multiple independent real-world repos: "Name is
+    // too short (minimum is 3 characters)" (bot review, tiann/hapi#2147,
+    // follow-up) — a 2-character name (including non-Latin scripts, where
+    // this has actually bitten people) is rejected; 3 passes.
+    it('is unsupported when name is shorter than 3 characters', () => {
+        const template = parseIssueFormYaml('x.yml', 'name: Bg\ndescription: Bug\nbody:\n  - type: textarea\n    attributes:\n      label: What happened?')
+        expect(template.kind).toBe('unsupported')
+        expect(template.kind === 'unsupported' && template.githubValid).toBe(false)
+    })
+
+    it('is unsupported for a 2-character non-Latin name — length, not Latin-script assumptions', () => {
+        const template = parseIssueFormYaml('x.yml', 'name: 버그\ndescription: Bug\nbody:\n  - type: textarea\n    attributes:\n      label: What happened?')
+        expect(template.kind).toBe('unsupported')
+    })
+
+    it('a name of exactly 3 characters meets the minimum and is not rejected on length', () => {
+        const template = parseIssueFormYaml('x.yml', 'name: Bug\ndescription: Bug\nbody:\n  - type: textarea\n    attributes:\n      label: What happened?')
+        expect(template.kind).toBe('form')
+    })
+
+    // Regression (Meta review, tiann/hapi#2147, follow-up): GitHub's own
+    // top-level syntax table documents exactly eight permitted keys
+    // (name/description/body/assignees/labels/title/type/projects) and
+    // rejects a form with any other top-level key outright — nothing
+    // here ever checked for this. The same mechanism also closes
+    // GitHub's separate "Forbidden keys" rule (y/yes/true/off/...): a
+    // key outside the permitted set is rejected regardless of what it
+    // looks like, with no separate boolean-ish-name list to maintain.
+    it('is genuinely invalid when the template has an unexpected top-level key', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nhello: world\nbody:\n  - type: input\n    attributes:\n      label: Contact'
+        )
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+        expect(template.reason).toContain('hello')
+    })
+
+    // Review finding (tiann/hapi#2147): `description` is required alongside
+    // `name` per GitHub's own top-level syntax table — a form missing it
+    // used to be accepted as usable anyway.
+    it('is unsupported when description is missing', () => {
+        const template = parseIssueFormYaml('x.yml', 'name: Bug\nbody:\n  - type: input\n    attributes:\n      label: Contact')
+        expect(template.kind).toBe('unsupported')
+        expect(template.kind === 'unsupported' && template.githubValid).toBe(false)
+    })
+
+    // Regression (Meta review, tiann/hapi#2147, follow-up): GitHub's own
+    // docs state this explicitly — "Empty strings, or strings consisting
+    // of only whitespaces, are also not permissible when the field
+    // expects a string" — for both a top-level key and a field's label.
+    // A bare truthiness check only ever caught an empty string, not a
+    // whitespace-only one, which is truthy in JS.
+    it('is unsupported when description is only whitespace', () => {
+        const template = parseIssueFormYaml('x.yml', 'name: Bug\ndescription: "   "\nbody:\n  - type: input\n    attributes:\n      label: Contact')
+        expect(template.kind).toBe('unsupported')
+        expect(template.kind === 'unsupported' && template.githubValid).toBe(false)
+    })
+
+    it('is unsupported when a field label is only whitespace', () => {
+        const template = parseIssueFormYaml('x.yml', 'name: Bug\ndescription: Bug\nbody:\n  - type: input\n    attributes:\n      label: "   "')
+        expect(template.kind).toBe('unsupported')
+        expect(template.kind === 'unsupported' && template.githubValid).toBe(false)
+    })
+
+    // Review finding (tiann/hapi#2147): GitHub's own docs document "Body
+    // must contain at least one non-markdown field" as a validation error —
+    // markdown elements are static text, never submitted, so a body made
+    // of only markdown collects no input at all.
+    it('is unsupported when the body contains only markdown elements', () => {
+        const template = parseIssueFormYaml('x.yml', 'name: Bug\ndescription: Bug\nbody:\n  - type: markdown\n    attributes:\n      value: Hi\n  - type: markdown\n    attributes:\n      value: There')
+        expect(template.kind).toBe('unsupported')
+        expect(template.kind === 'unsupported' && template.githubValid).toBe(false)
+    })
+
+    // Review finding (tiann/hapi#2147, follow-up): `upload` is a real,
+    // GitHub-recognized field type — unlike a genuinely malformed or
+    // unrecognized one, GitHub's own chooser still offers a form that
+    // uses it, so it must count as githubValid: true for .github
+    // inheritance-coverage purposes, even though Boards itself can't
+    // render a file picker and still excludes the template from filing.
+    it('is unsupported but githubValid when the body uses an upload field', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: upload\n    id: screenshots\n    attributes:\n      label: Screenshots'
+        )
+        expect(template.kind).toBe('unsupported')
+        expect(template.kind === 'unsupported' && template.githubValid).toBe(true)
+    })
+
+    // Regression (bot review, tiann/hapi#2147, follow-up): an upload field
+    // still has to satisfy the same "every non-markdown field needs a
+    // label" baseline every other field type is held to — a label-less
+    // one is genuinely malformed, not a form GitHub's own chooser would
+    // ever offer, so it must not get the upload type's githubValid: true
+    // treatment.
+    it('is genuinely invalid (githubValid: false), not merely unsupported, when an upload field has no label', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: upload\n    id: screenshots\n    attributes: {}'
+        )
+        expect(template.kind).toBe('unsupported')
+        expect(template.kind === 'unsupported' && template.githubValid).toBe(false)
+    })
+
+    // Regression (bot review, tiann/hapi#2147, follow-up): the upload
+    // field used to return githubValid: true immediately, before the
+    // parser ever reached a later field in the same body — so a
+    // genuinely malformed field AFTER a well-formed upload field was
+    // never caught, and the template wrongly counted as local .github
+    // inheritance coverage despite being something GitHub's own chooser
+    // would reject outright.
+    it('is genuinely invalid, not githubValid, when a well-formed upload field is followed by a malformed one', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: upload\n    id: screenshots\n    attributes:\n      label: Screenshots\n  - type: input\n    id: contact\n    attributes: {}'
+        )
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+        expect(template.reason).toContain('label')
+    })
+
+    // Same bug, top-level variant (bot review, tiann/hapi#2147,
+    // follow-up): the top-level type:/projects: branches had the same
+    // early-return shape as the field-level upload case above.
+    it('is genuinely invalid, not githubValid, when a top-level type: is followed by a malformed field', () => {
+        const yaml = `
+name: Bug report
+description: File a bug report
+type: Bug
+body:
+  - type: input
+    id: contact
+    attributes: {}
+`
+        const template = parseIssueFormYaml('typed-then-broken.yml', yaml)
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+        expect(template.reason).toContain('label')
+    })
+
+    // Regression (bot review, tiann/hapi#2147, follow-up): markdown's own
+    // `attributes.value` was never validated at all — a form with a valid
+    // input field alongside a markdown block missing it used to come back
+    // githubValid: true (the empty-string fallback made it look like a
+    // normal, usable field), even though GitHub itself rejects a form
+    // missing this. Wrongly counted as local .github-inheritance coverage.
+    it('is genuinely invalid when a markdown field is missing its required value', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: markdown\n    attributes: {}\n  - type: input\n    id: contact\n    attributes:\n      label: Contact'
+        )
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+        expect(template.reason).toContain('value')
+    })
+
+    // Regression (bot review, tiann/hapi#2147, follow-up): GitHub
+    // documents this as its own validation error, "Body[i]: `x` is not a
+    // permitted attribute" — an unrecognized key inside a field's
+    // `attributes:` block invalidates the whole form. This parser read
+    // only the attributes it knew about and silently ignored anything
+    // extra, which could let a malformed template still count as usable.
+    it('is genuinely invalid when a field has an attribute key GitHub does not recognize', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: markdown\n    attributes:\n      x: "a random key!"\n      value: Hi\n  - type: input\n    id: contact\n    attributes:\n      label: Contact'
+        )
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+        expect(template.reason).toContain('x')
+    })
+
+    // Regression (bot review, tiann/hapi#2147, follow-up): a sibling rule
+    // to the attribute-key check above, one level shallower — GitHub
+    // documents "Body[i]: `x` is not a permitted key" for an unexpected
+    // key at the SAME indentation level as `type` and `attributes`
+    // (confirmed directly against GitHub's own example: `x: woof` sitting
+    // beside `type: markdown`), not nested inside `attributes:`.
+    it('is genuinely invalid when a field has an unexpected key at the same level as type', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: markdown\n    x: woof\n    attributes:\n      value: Hi\n  - type: input\n    id: contact\n    attributes:\n      label: Contact'
+        )
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+        expect(template.reason).toContain('x')
+    })
+
+    // Regression (bot review, tiann/hapi#2147, follow-up): two fields
+    // explicitly declaring the same id used to both parse successfully,
+    // each keeping its own `fieldId = explicitFieldId` — generateFieldId's
+    // own collision check never runs for an explicit id at all. Since both
+    // the dialog and the hub key answers by id, the second field's answer
+    // would silently overwrite the first's, letting one value satisfy two
+    // different required fields. GitHub itself rejects a form with
+    // duplicate ids outright.
+    it('is genuinely invalid when two fields declare the same explicit id', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: input\n    id: contact\n    attributes:\n      label: Email\n  - type: input\n    id: contact\n    attributes:\n      label: Phone'
+        )
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+        expect(template.reason).toContain('contact')
+    })
+
+    // Regression (bot review, tiann/hapi#2147, follow-up): GitHub's own
+    // form-schema syntax table restricts an explicit `id` to "alpha-numeric
+    // characters, `-`, and `_`" — a stricter set than this parser (or the
+    // dialog) ever checked. An id with a space or other punctuation is
+    // itself malformed, a form GitHub's own chooser would reject outright,
+    // not merely a valid-but-unsupported one.
+    it('is genuinely invalid when an explicit id uses a character outside letters, numbers, - and _', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: input\n    id: "my id!"\n    attributes:\n      label: Contact'
+        )
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+        expect(template.reason).toContain('my id!')
+    })
+
+    // Regression (bot review, tiann/hapi#2147, follow-up): a dropdown's
+    // own choices were never checked for duplicates — only an empty
+    // options list was rejected. GitHub requires a dropdown's choices to
+    // be distinct.
+    it('is genuinely invalid when a dropdown field has duplicate options', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: dropdown\n    id: severity\n    attributes:\n      label: Severity\n      options:\n        - Low\n        - High\n        - Low'
+        )
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+        expect(template.reason).toContain('Severity')
+    })
+
+    // Regression (Meta review, tiann/hapi#2147, follow-up): GitHub
+    // documents this as its own validation error — an unquoted option
+    // like `true`/`false` parses as a YAML Boolean, not a string, and the
+    // old `asStringArray(attrs.options)` call silently filtered it out of
+    // the array instead of rejecting the template. A two-option dropdown
+    // with one Boolean-coerced option used to quietly become a
+    // one-option dropdown that still passed every check below.
+    it('is genuinely invalid when a dropdown option parses as a YAML boolean', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: dropdown\n    id: pie\n    attributes:\n      label: Pie?\n      options:\n        - Steak\n        - true'
+        )
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+    })
+
+    // Regression (bot review, tiann/hapi#2147, follow-up): this
+    // codebase's own `yaml` dependency only coerces literal `true`/
+    // `false` to a non-string — it leaves GitHub's own cited example,
+    // bare `Yes`, as a plain string, identical to a legitimately quoted
+    // `"Yes"`. GitHub's own backend parser coerces `yes`/`no`/`on`/`off`
+    // too (any case), so this parser has to read the CST's quote style
+    // to tell the two apart, not just the already-resolved JS value.
+    it('is genuinely invalid when a dropdown option is an unquoted GitHub-boolean word this parser\'s own yaml library leaves as a string', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: dropdown\n    id: pie\n    attributes:\n      label: Pie?\n      options:\n        - Steak\n        - Yes'
+        )
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+    })
+
+    // A quoted "Yes" is exactly what GitHub's own docs say fixes the
+    // error above — must not be caught by the same check.
+    it('allows a dropdown option that is a quoted GitHub-boolean word', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: dropdown\n    id: pie\n    attributes:\n      label: Pie?\n      options:\n        - Steak\n        - "Yes"'
+        )
+        expect(template.kind).toBe('form')
+    })
+
+    // Same mechanism, applied to the field label itself rather than a
+    // dropdown option (bot review, tiann/hapi#2147, follow-up) — an
+    // unquoted `label: Yes` is a plain string to this parser's own `yaml`
+    // dependency but a Boolean to GitHub's backend, which requires every
+    // label to be a string and rejects the whole form over it.
+    it('is genuinely invalid when a field label is an unquoted GitHub-boolean word', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: input\n    id: confirm\n    attributes:\n      label: Yes'
+        )
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+    })
+
+    it('allows a field label that is a quoted GitHub-boolean word', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: input\n    id: confirm\n    attributes:\n      label: "Yes"'
+        )
+        expect(template.kind).toBe('form')
+    })
+
+    it('allows an ordinary field label that merely contains a GitHub-boolean word as a substring', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: input\n    id: confirm\n    attributes:\n      label: Yesterday\'s date'
+        )
+        expect(template.kind).toBe('form')
+    })
+
+    // Regression (Meta review, tiann/hapi#2147, follow-up): "None" is a
+    // reserved word GitHub auto-populates as the non-choice option on an
+    // optional dropdown — GitHub's own documented example rejects a
+    // dropdown that declares it explicitly.
+    it('is genuinely invalid when a dropdown declares the reserved option "None"', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: dropdown\n    id: pie\n    attributes:\n      label: Pie?\n      options:\n        - Steak\n        - None'
+        )
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+        expect(template.reason).toContain('None')
+    })
+
+    // Regression (bot review, tiann/hapi#2147, follow-up): GitHub's own
+    // form-schema syntax table states this as part of `default`'s own
+    // description — "When a default option is specified, you cannot
+    // include 'None' or 'n/a' as options." Unlike "None", this is
+    // conditional on a default being declared at all.
+    it('is genuinely invalid when a dropdown combines a default with "n/a"', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: dropdown\n    id: pie\n    attributes:\n      label: Pie?\n      options:\n        - Steak\n        - n/a\n      default: 0'
+        )
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+    })
+
+    // Without a default, "n/a" is just an ordinary option label — the
+    // restriction is specifically about combining it with a default.
+    it('allows a dropdown with "n/a" as an option when there is no default', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: dropdown\n    id: pie\n    attributes:\n      label: Pie?\n      options:\n        - Steak\n        - n/a'
+        )
+        expect(template.kind).toBe('form')
+    })
+
+    // Regression (Meta review, tiann/hapi#2147, follow-up): checkboxes'
+    // own option labels were never checked for duplicates either — the
+    // direct structural sibling of the dropdown-options check above.
+    // GitHub requires checkbox option labels to be distinct too.
+    it('is genuinely invalid when a checkboxes field has duplicate option labels', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: checkboxes\n    id: terms\n    attributes:\n      label: Terms\n      options:\n        - label: I agree\n        - label: I agree'
+        )
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+        expect(template.reason).toContain('Terms')
+    })
+
+    // Regression (Meta review, tiann/hapi#2147, follow-up): GitHub's own
+    // docs state the "Checkboxes must have unique labels" rule is
+    // broader than within-one-field — a checkbox option's label must be
+    // unique among its peers AND among other input types, confirmed
+    // directly via GitHub's own example (a checkbox option labelled
+    // "Name" against an unrelated textarea also labelled "Name" is
+    // rejected). Checkbox options can never carry their own `id`, so
+    // there's no escape hatch the way two top-level fields have.
+    it('is genuinely invalid when a checkbox option\'s label collides with an unrelated field\'s label', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: textarea\n    attributes:\n      label: Name\n  - type: checkboxes\n    id: opts\n    attributes:\n      label: Options\n      options:\n        - label: Name'
+        )
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+    })
+})
+
+describe('parseLegacyIssueTemplate', () => {
+    it('splits frontmatter from body and supports comma-separated labels/assignees', () => {
+        const markdown = `---
+name: Feature request
+about: Suggest a new feature
+title: "[Feature] "
+labels: enhancement, needs-triage
+assignees: octocat, hubot
+---
+**Is your feature request related to a problem?**
+
+A clear description.
+`
+        const template = parseLegacyIssueTemplate('feature_request.md', markdown)
+        expect(template.kind).toBe('legacy')
+        if (template.kind !== 'legacy') return
+        expect(template.name).toBe('Feature request')
+        expect(template.description).toBe('Suggest a new feature')
+        expect(template.titlePrefix).toBe('[Feature] ')
+        expect(template.labels).toEqual(['enhancement', 'needs-triage'])
+        expect(template.assignees).toEqual(['octocat', 'hubot'])
+        expect(template.body).toContain('Is your feature request related to a problem?')
+        expect(template.body).not.toContain('---')
+    })
+
+    it('supports a YAML-list form of labels/assignees too', () => {
+        const markdown = `---
+name: Bug
+labels:
+  - bug
+assignees:
+  - octocat
+---
+Body text.
+`
+        const template = parseLegacyIssueTemplate('bug.md', markdown)
+        if (template.kind !== 'legacy') throw new Error('expected legacy')
+        expect(template.labels).toEqual(['bug'])
+        expect(template.assignees).toEqual(['octocat'])
+    })
+
+    it('treats a file with no frontmatter as a plain body with no metadata', () => {
+        const template = parseLegacyIssueTemplate('plain.md', 'Just some text, no frontmatter.')
+        if (template.kind !== 'legacy') throw new Error('expected legacy')
+        expect(template.name).toBe('plain.md')
+        expect(template.body).toBe('Just some text, no frontmatter.')
+        expect(template.labels).toEqual([])
+    })
+
+    // Regression (bot review, hapi#238): a declared `type:` used to be
+    // silently dropped, filing an untyped issue despite the template's own
+    // frontmatter. Mirrors the YAML form path's existing "fail loudly"
+    // handling of the same unsupported feature.
+    it('marks a template declaring an issue type as unsupported instead of silently dropping it', () => {
+        const markdown = `---
+name: Bug
+type: Bug
+---
+Body text.
+`
+        const template = parseLegacyIssueTemplate('bug.md', markdown)
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.reason).toContain('type')
+    })
+})
+
+describe('hasRequiredLegacyTemplateFrontmatter', () => {
+    it('accepts frontmatter with a name, even without about — about is a real-world convention, not a confirmed GitHub requirement', () => {
+        expect(hasRequiredLegacyTemplateFrontmatter('---\nname: Bug\n---\nBody text')).toBe(true)
+    })
+
+    it('rejects a file with no frontmatter at all', () => {
+        expect(hasRequiredLegacyTemplateFrontmatter('Just some ordinary notes, no frontmatter at all.')).toBe(false)
+    })
+
+    it('rejects frontmatter missing name', () => {
+        expect(hasRequiredLegacyTemplateFrontmatter('---\nabout: Suggest a new feature\n---\nBody text')).toBe(false)
+    })
+
+    it('rejects malformed frontmatter', () => {
+        expect(hasRequiredLegacyTemplateFrontmatter('---\n: : not yaml {{{\n---\nBody text')).toBe(false)
+    })
+})
+
+describe('parseIssueTemplateConfig', () => {
+    it('reads blank_issues_enabled: false', () => {
+        expect(parseIssueTemplateConfig('blank_issues_enabled: false').blankIssuesEnabled).toBe(false)
+    })
+
+    it('defaults to allowed when the key is absent or the file is malformed', () => {
+        expect(parseIssueTemplateConfig('contact_links: []').blankIssuesEnabled).toBe(true)
+        expect(parseIssueTemplateConfig(': : not yaml {{{').blankIssuesEnabled).toBe(true)
+    })
+
+    // valid distinguishes "parsed, nothing relevant in it" from "did not
+    // parse at all" (review finding, tiann/hapi#2147, follow-up) — the
+    // fail-open blankIssuesEnabled default is right either way, but only
+    // the former is a real local override for inheritance-eligibility purposes.
+    it('reports valid: false only for a genuine parse failure, not an absent key', () => {
+        expect(parseIssueTemplateConfig('contact_links: []').valid).toBe(true)
+        expect(parseIssueTemplateConfig(': : not yaml {{{').valid).toBe(false)
+    })
+
+    // A scalar or sequence parses without throwing, so the try/catch alone
+    // isn't enough (review finding, tiann/hapi#2147, follow-up) — asRecord
+    // silently coerces either into {}, which would otherwise read as "an
+    // empty-but-valid config."
+    it('reports valid: false for a syntactically valid scalar or sequence, not just a parse failure', () => {
+        expect(parseIssueTemplateConfig('true').valid).toBe(false)
+        expect(parseIssueTemplateConfig('- a\n- b\n').valid).toBe(false)
+    })
+})
+
+// Regression (bot review, hapi#238, follow-up): templateId alone only
+// proves a template still exists, not that its content hasn't changed.
+describe('template revision', () => {
+    it('stays stable for identical content and changes when the form content changes', () => {
+        const yaml = 'name: Bug\ndescription: Bug\nbody:\n  - type: input\n    attributes:\n      label: Hi\n'
+        const editedYaml = 'name: Bug\ndescription: Bug\nbody:\n  - type: input\n    attributes:\n      label: Hi (edited)\n'
+        const first = parseIssueFormYaml('bug.yml', yaml)
+        const same = parseIssueFormYaml('bug.yml', yaml)
+        const edited = parseIssueFormYaml('bug.yml', editedYaml)
+        if (first.kind !== 'form' || same.kind !== 'form' || edited.kind !== 'form') throw new Error('expected form')
+        expect(same.revision).toBe(first.revision)
+        expect(edited.revision).not.toBe(first.revision)
+    })
+
+    it('stays stable for identical content and changes when the legacy template content changes', () => {
+        const markdown = '---\nname: Bug\n---\nOriginal body.\n'
+        const edited = '---\nname: Bug\n---\nEdited body.\n'
+        const first = parseLegacyIssueTemplate('bug.md', markdown)
+        const same = parseLegacyIssueTemplate('bug.md', markdown)
+        const changed = parseLegacyIssueTemplate('bug.md', edited)
+        if (first.kind !== 'legacy' || same.kind !== 'legacy' || changed.kind !== 'legacy') throw new Error('expected legacy')
+        expect(same.revision).toBe(first.revision)
+        expect(changed.revision).not.toBe(first.revision)
+    })
+})

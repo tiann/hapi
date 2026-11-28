@@ -104,10 +104,71 @@ describe('SessionList PR chip', () => {
         expect(onSelect).not.toHaveBeenCalled()
 
         // Attention/schedule HoverTooltips use group-focus-visible/session-row;
-        // the named group must sit on the focusable row button, not a wrapper div.
+        // the named group must sit on the focusable row element itself (a
+        // `<div role="button">`, not a native `<button>` — ARIA disallows a
+        // focusable descendant of a button role, which the sibling PR/issue
+        // chips are now rendered as), not its wrapper div.
         const rowButton = screen.getByRole('button', { name: /PR linked session/i })
         expect(rowButton.className.split(/\s+/)).toContain('group/session-row')
-        expect(rowButton.closest('div')?.className.split(/\s+/)).not.toContain('group/session-row')
+        expect(rowButton.parentElement?.className.split(/\s+/)).not.toContain('group/session-row')
+    })
+
+    // Review finding: linkPrOpen was absent from overlayOpen, so a session
+    // group's CollapsiblePanel released its mount hold and unmounted
+    // LinkPrDialog (discarding whatever the operator had typed) the moment
+    // the group collapsed while the dialog was still open.
+    it('keeps a collapsing row mounted while its Link PR dialog is open', () => {
+        render(
+            <QueryClientProvider
+                client={new QueryClient({
+                    defaultOptions: {
+                        queries: { retry: false },
+                        mutations: { retry: false }
+                    }
+                })}
+            >
+                <ToastProvider>
+                    <I18nProvider>
+                        <SessionList
+                            sessions={[makeSession({
+                                id: 'session-link-pr',
+                                updatedAt: 100,
+                                metadata: { path: '/work/link-pr-demo', name: 'Needs a PR link', flavor: 'codex' }
+                            })]}
+                            selectedSessionId={null}
+                            onSelect={vi.fn()}
+                            onNewSession={vi.fn()}
+                            onRefresh={vi.fn()}
+                            isLoading={false}
+                            renderHeader={false}
+                            api={null}
+                        />
+                    </I18nProvider>
+                </ToastProvider>
+            </QueryClientProvider>
+        )
+
+        const header = screen.getByTitle('/work/link-pr-demo')
+        fireEvent.click(header)
+        fireEvent.contextMenu(screen.getByRole('button', { name: /Needs a PR link/ }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Link pull request…' }))
+        expect(screen.getByRole('dialog', { name: 'Link pull request' })).toBeInTheDocument()
+
+        fireEvent.click(header)
+        // Each row now has its own CollapsiblePanel (upstream #2434: rows
+        // render once each, no longer a separate peek list) — a decorative
+        // spacer panel (open={anyRowOpen}) precedes it in DOM order, so a
+        // bare `.collapsible-panel` query would settle the wrong one and
+        // leave this row's own panel permanently unsettled. Target the row's
+        // own panel via its row-id, which is still in the hold-open'd tree.
+        const row = document.querySelector('[data-session-row-id="session-link-pr"]')!
+        const panel = row.closest('.collapsible-panel')!
+        fireEvent.transitionEnd(panel)
+        expect(screen.getByRole('dialog', { name: 'Link pull request' })).toBeInTheDocument()
+
+        fireEvent.keyDown(screen.getByRole('dialog', { name: 'Link pull request' }), { key: 'Escape' })
+        expect(screen.queryByRole('dialog', { name: 'Link pull request' })).toBeNull()
+        expect(screen.queryByRole('button', { name: /Needs a PR link/ })).toBeNull()
     })
 
     it('reserves PR chip padding for two quick actions on a pinned active row', async () => {

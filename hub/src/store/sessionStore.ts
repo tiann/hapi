@@ -74,6 +74,7 @@ export class SessionStore {
         options?: {
             touchUpdatedAt?: boolean
             allowUnarchive?: boolean
+            replaceExternalRefs?: boolean
             allowTitleUpdate?: boolean
             preservePreallocation?: boolean
             titleLocked?: boolean

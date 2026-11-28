@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import type {
     ClaudeLocalSessionWithMessages,
-    CodexLocalSessionWithMessages,
     OpencodeLocalSessionWithMessages,
     PiLocalSessionWithMessages
 } from './apiTypes'
@@ -11,7 +10,8 @@ import {
     claudeToTranscript,
     codexToTranscript,
     opencodeToTranscript,
-    piToTranscript
+    piToTranscript,
+    type CodexLocalSessionWithMessages
 } from './localTranscript'
 
 const piSession: PiLocalSessionWithMessages = {

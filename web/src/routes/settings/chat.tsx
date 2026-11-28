@@ -16,7 +16,7 @@ import {
     type ChatSurfaceColorPreset,
 } from '@/hooks/useChatSurfaceColors'
 import { SettingsChoiceGroup, SettingsFieldLabel, SettingsPageContent, SettingsSection, SettingsSwitch } from '@/components/settings/SettingsPrimitives'
-import { getNamespaceFromToken } from '@/components/settings/SettingsNav'
+import { isOwnerNamespace } from '@/lib/namespace'
 import { ComposerToolbarLayoutControl } from '@/components/settings/ComposerToolbarLayoutControl'
 import { ToolCardDisplayModePreview } from '@/components/settings/ToolCardDisplayModePreview'
 import { queryKeys } from '@/lib/query-keys'
@@ -56,7 +56,7 @@ function ChatSurfaceColorControl(props: {
 export default function SettingsChatPage() {
     const { t } = useTranslation()
     const { api, token } = useAppContext()
-    const isOwner = Boolean(token) && getNamespaceFromToken(token) === 'default'
+    const isOwner = isOwnerNamespace(token)
     const queryClient = useQueryClient()
     const { composerEnterBehavior, setComposerEnterBehavior } = useComposerEnterBehavior()
     const { toolCardDisplayMode, setToolCardDisplayMode } = useToolCardDisplayMode()

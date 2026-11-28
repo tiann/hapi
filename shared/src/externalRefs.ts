@@ -85,7 +85,14 @@ export function parseGithubPrInput(raw: string): ParseGithubPrInputResult {
         repo: repoParsed.data,
         number,
         // Preserve GHES / custom host — do not rewrite to github.com.
-        url: githubPrUrl(repoParsed.data, number, url.hostname)
+        // `.host` (not `.hostname`): a port-qualified GHES URL
+        // (https://tenant.ghe.com:8443/...) would otherwise be rebuilt
+        // without the port, silently rewriting it to the default :443 —
+        // every entry point that reaches this parser (LinkPrDialog, `hapi
+        // link-pr`, MCP `link_pr`) stores that rewritten URL, and the port
+        // is gone before the identity helpers below ever see it (review
+        // finding, hapi#2147 — a follow-up on the same port-stripping bug).
+        url: githubPrUrl(repoParsed.data, number, url.host)
     }
 }
 

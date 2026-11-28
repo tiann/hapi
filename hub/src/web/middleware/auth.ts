@@ -9,7 +9,19 @@ export type WebAppEnv = {
     }
 }
 
-const jwtPayloadSchema = z.object({
+// Exported for the voice WebSocket gate (bot review, tiann/hapi#2147,
+// follow-up) — any token signed with the same jwtSecret and HS256
+// verifies successfully regardless of *what* it's actually for (a
+// passkey-session token, or the newer board-item recovery token, carry
+// their own distinct claim shapes, no `uid`). That gate only ever
+// checked signature + expiry, so a board recovery token — returned
+// directly in a web API JSON response body on every partial create-card
+// failure, far more casually exposed than a session credential — could
+// pass it and reach a configured voice provider through the hub.
+// Requiring this exact shape is what actually proves "this is a real
+// web session," the same proof `createAuthMiddleware` below already
+// requires for every other API route.
+export const jwtPayloadSchema = z.object({
     uid: z.number(),
     ns: z.string()
 })

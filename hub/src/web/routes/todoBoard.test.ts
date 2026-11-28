@@ -1,0 +1,3156 @@
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'bun:test'
+import { createHash } from 'node:crypto'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { Hono } from 'hono'
+import { SignJWT } from 'jose'
+import type { BoardItemsResponse, BoardsResponse } from '@hapi/protocol'
+import type { WebAppEnv } from '../middleware/auth'
+import { createBoardRoutes, CreateIssueAssigneesFailedError, fetchAllItemComments, fetchAllProjectItems, GhGraphqlNotFoundError, isGhVersionBelow, makeBoardId, parseGhVersion, parseProjectUrl, parseValidatedItemUrl, PROJECT_QUERY, PROJECT_QUERY_FILTERED, resolveProjectView } from './todoBoard'
+import { signBoardItemRecoveryToken, verifyBoardItemRecoveryToken } from '../authTokens'
+
+const ENV_KEYS = [
+    'HAPI_BOARD_HOST',
+    'HAPI_BOARD_OWNER',
+    'HAPI_BOARD_NUMBER',
+    'HAPI_BOARD_STATUS_FIELD',
+    'HAPI_BOARD_DONE_VALUES',
+    'HAPI_BOARD_LABEL',
+    'HAPI_BOARD_ALLOWED_HOSTS',
+    'HAPI_BOARD_ALLOW_INTERNAL_GITHUB_FALLBACK'
+] as const
+
+// A dev machine actually configured to use this feature plausibly has one or
+// more of these set in its shell already — snapshot and clear them once for
+// the whole suite, then restore the caller's original values afterward,
+// rather than unconditionally deleting them after every test (which would
+// permanently wipe a value this process never set in the first place).
+const originalEnv = new Map<string, string | undefined>()
+
+beforeAll(() => {
+    for (const key of ENV_KEYS) {
+        originalEnv.set(key, process.env[key])
+        delete process.env[key]
+    }
+})
+
+afterAll(() => {
+    for (const key of ENV_KEYS) {
+        const value = originalEnv.get(key)
+        if (value === undefined) {
+            delete process.env[key]
+        } else {
+            process.env[key] = value
+        }
+    }
+})
+
+const directories: string[] = []
+
+afterEach(async () => {
+    for (const key of ENV_KEYS) {
+        delete process.env[key]
+    }
+    await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true })))
+})
+
+const TEST_JWT_SECRET = new TextEncoder().encode('todo-board-test-secret')
+
+const UNUSED_ACTIONS: Parameters<typeof createBoardRoutes>[5] = {
+    close: async () => { throw new Error('close action not mocked for this test') },
+    reopen: async () => { throw new Error('reopen action not mocked for this test') },
+    comment: async () => { throw new Error('comment action not mocked for this test') },
+    edit: async () => { throw new Error('edit action not mocked for this test') },
+    setStatus: async () => { throw new Error('setStatus action not mocked for this test') },
+    setAssignees: async () => { throw new Error('setAssignees action not mocked for this test') },
+    createIssue: async () => { throw new Error('createIssue action not mocked for this test') },
+    addItemToProject: async () => { throw new Error('addItemToProject action not mocked for this test') }
+}
+
+// Matches whichever board is asking — the safe default for tests that
+// exercise close/reopen/comment/status success paths and don't care about
+// membership verification specifically (that gets its own dedicated
+// describe block). Echoes the target's own owner/number back so it always
+// satisfies isMemberOfProject's comparison, regardless of which board/env
+// config a given test uses.
+const ALWAYS_MEMBER: Parameters<typeof createBoardRoutes>[6] = (target) => ({
+    data: { resource: { projectItems: { nodes: [{ project: { number: target.projectNumber, owner: { login: target.ownerLogin } } }] } } }
+})
+
+async function createApp(
+    runGraphql: Parameters<typeof createBoardRoutes>[2],
+    runGraphqlTitle?: Parameters<typeof createBoardRoutes>[3],
+    namespace = 'default',
+    runGraphqlView?: Parameters<typeof createBoardRoutes>[4],
+    actions?: Parameters<typeof createBoardRoutes>[5],
+    runGraphqlMembership?: Parameters<typeof createBoardRoutes>[6],
+    runGraphqlAssignableUsers?: Parameters<typeof createBoardRoutes>[7],
+    runGraphqlIssueTemplateDir?: Parameters<typeof createBoardRoutes>[8],
+    runGraphqlComments?: Parameters<typeof createBoardRoutes>[9],
+    runGraphqlPlanningStatuses?: Parameters<typeof createBoardRoutes>[10]
+) {
+    const dataDir = await mkdtemp(join(tmpdir(), 'hapi-todo-board-'))
+    directories.push(dataDir)
+    const app = new Hono<WebAppEnv>()
+    app.use('*', async (c, next) => {
+        c.set('namespace', namespace)
+        await next()
+    })
+    // Default the title/view lookups to 404-shaped responses (not the real
+    // `gh` CLI) so items-focused tests that never add a board don't
+    // accidentally make a network call just because they didn't pass a mock.
+    app.route('/api', createBoardRoutes(
+        dataDir,
+        TEST_JWT_SECRET,
+        runGraphql,
+        runGraphqlTitle ?? (() => ({ data: { repositoryOwner: {} } })),
+        runGraphqlView ?? (() => ({ data: { repositoryOwner: {} } })),
+        actions ?? UNUSED_ACTIONS,
+        runGraphqlMembership ?? ALWAYS_MEMBER,
+        runGraphqlAssignableUsers ?? (() => ({ data: { repository: { assignableUsers: { nodes: [] } } } })),
+        runGraphqlIssueTemplateDir ?? (() => ({ data: { repository: { isBlankIssuesEnabled: true, issueTemplateDir: null } } })),
+        runGraphqlComments ?? (() => ({ data: { resource: { comments: { nodes: [] } } } })),
+        runGraphqlPlanningStatuses ?? (() => ({ data: { repository: { planningStatuses: { nodes: [] } } } }))
+    ))
+    return app
+}
+
+describe('makeBoardId', () => {
+    it('does not collide when a component contains the join separator', () => {
+        // host="github.com::evil" + owner="foo" vs. host="github.com" +
+        // owner="evil::foo" would naively both join to the same string —
+        // percent-encoding each component first prevents that.
+        const idA = makeBoardId('github.com::evil', 'foo', 1)
+        const idB = makeBoardId('github.com', 'evil::foo', 1)
+        expect(idA).not.toBe(idB)
+    })
+
+    it('still produces the plain, readable id for normal inputs', () => {
+        expect(makeBoardId('github.com', 'heavygee', 6)).toBe('github.com::heavygee::6')
+    })
+
+    it('appends a distinct view segment so the project and a view onto it can both be stored', () => {
+        const plainId = makeBoardId('github.com', 'heavygee', 6)
+        const viewId = makeBoardId('github.com', 'heavygee', 6, 8)
+        expect(viewId).not.toBe(plainId)
+        expect(viewId).toBe('github.com::heavygee::6::view::8')
+    })
+
+    it('normalizes host and owner casing — GitHub hostnames and owner logins are case-insensitive (Codex review)', () => {
+        expect(makeBoardId('GitHub.com', 'HeavyGee', 6)).toBe(makeBoardId('github.com', 'heavygee', 6))
+        expect(makeBoardId('GitHub.com', 'HeavyGee', 6)).toBe('github.com::heavygee::6')
+    })
+})
+
+describe('parseProjectUrl', () => {
+    it('parses a github.com user project URL', () => {
+        expect(parseProjectUrl('https://github.com/users/heavygee/projects/6')).toEqual({
+            host: 'github.com', ownerLogin: 'heavygee', projectNumber: 6
+        })
+    })
+
+    it('parses an org project URL, a trailing slash, and a bare host (no scheme)', () => {
+        expect(parseProjectUrl('https://github.com/orgs/acme/projects/42/')).toEqual({
+            host: 'github.com', ownerLogin: 'acme', projectNumber: 42
+        })
+        expect(parseProjectUrl('github.com/users/heavygee/projects/6')).toEqual({
+            host: 'github.com', ownerLogin: 'heavygee', projectNumber: 6
+        })
+    })
+
+    it('parses a GHE host', () => {
+        expect(parseProjectUrl('https://lhs.ghe.com/orgs/lockhouse/projects/3')).toEqual({
+            host: 'lhs.ghe.com', ownerLogin: 'lockhouse', projectNumber: 3
+        })
+    })
+
+    it('parses a trailing /views/<n> as a restrictive view onto the same project', () => {
+        expect(parseProjectUrl('https://lhs.ghe.com/orgs/lockhouse/projects/3/views/8')).toEqual({
+            host: 'lhs.ghe.com', ownerLogin: 'lockhouse', projectNumber: 3, viewNumber: 8
+        })
+    })
+
+    it('parses a view URL with a trailing slash or query/hash', () => {
+        expect(parseProjectUrl('https://github.com/users/heavygee/projects/6/views/1/')).toEqual({
+            host: 'github.com', ownerLogin: 'heavygee', projectNumber: 6, viewNumber: 1
+        })
+        expect(parseProjectUrl('https://github.com/users/heavygee/projects/6/views/1?pane=info')).toEqual({
+            host: 'github.com', ownerLogin: 'heavygee', projectNumber: 6, viewNumber: 1
+        })
+    })
+
+    it('rejects an invalid view number the same way it rejects an invalid project number', () => {
+        expect(parseProjectUrl('https://github.com/users/heavygee/projects/6/views/0')).toBeNull()
+        expect(parseProjectUrl('https://github.com/users/heavygee/projects/6/views/not-a-number')).toBeNull()
+    })
+
+    it('does not mistake an unrelated trailing path that merely starts with "views" for a view segment', () => {
+        // The "/views" rejection must be boundary-aware — otherwise a
+        // trailing path like "/viewsomething" (which happens to start with
+        // the same five letters) would be wrongly rejected as a malformed
+        // view segment instead of accepted as ordinary trailing junk.
+        expect(parseProjectUrl('https://github.com/users/heavygee/projects/6/viewsomething')).toEqual({
+            host: 'github.com', ownerLogin: 'heavygee', projectNumber: 6
+        })
+    })
+
+    it('rejects anything that is not a recognizable Projects v2 URL', () => {
+        expect(parseProjectUrl('https://github.com/heavygee/hapi')).toBeNull()
+        expect(parseProjectUrl('not a url at all')).toBeNull()
+        expect(parseProjectUrl('https://github.com/users/heavygee/projects/not-a-number')).toBeNull()
+    })
+
+    it('rejects a project number that is not a valid GraphQL Int', () => {
+        // $number: Int! is a non-fractional signed 32-bit value — anything
+        // else always fails the subsequent gh api call, so reject it here.
+        expect(parseProjectUrl('https://github.com/users/heavygee/projects/1.5')).toBeNull()
+        expect(parseProjectUrl('https://github.com/users/heavygee/projects/0')).toBeNull()
+        expect(parseProjectUrl('https://github.com/users/heavygee/projects/99999999999')).toBeNull()
+    })
+})
+
+describe('owner-only namespace restriction', () => {
+    it('rejects every board route for a non-default namespace', async () => {
+        const app = await createApp(() => ({ data: {} }), undefined, 'some-other-namespace')
+
+        const list = await app.request('/api/todo-boards')
+        expect(list.status).toBe(403)
+
+        const add = await app.request('/api/todo-boards', { method: 'POST', body: JSON.stringify({ url: 'https://github.com/users/heavygee/projects/6' }) })
+        expect(add.status).toBe(403)
+
+        const del = await app.request('/api/todo-boards/github.com%3A%3Aheavygee%3A%3A6', { method: 'DELETE' })
+        expect(del.status).toBe(403)
+
+        const items = await app.request('/api/todo-boards/github.com%3A%3Aheavygee%3A%3A6/items')
+        expect(items.status).toBe(403)
+    })
+})
+
+describe('GET /api/todo-boards', () => {
+    it('returns an empty list when genuinely unconfigured — no silent demo-board default (hapi#238)', async () => {
+        const app = await createApp(() => ({ data: {} }))
+        const response = await app.request('/api/todo-boards')
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ boards: [] })
+    })
+
+    it('reads the board from env when configured', async () => {
+        process.env.HAPI_BOARD_OWNER = 'acme'
+        process.env.HAPI_BOARD_NUMBER = '42'
+        const app = await createApp(() => ({ data: {} }))
+        const response = await app.request('/api/todo-boards')
+        expect(await response.json()).toEqual({ boards: [{ id: 'github.com::acme::42', label: 'acme/42' }] })
+    })
+
+    it('treats a non-numeric board number with no owner set as unconfigured — never invents an owner/project (hapi#238)', async () => {
+        process.env.HAPI_BOARD_NUMBER = 'not-a-number'
+        const app = await createApp(() => ({ data: {} }))
+        const response = await app.request('/api/todo-boards')
+        expect(await response.json()).toEqual({ boards: [] })
+    })
+
+    it('treats a fractional board number with no owner set as unconfigured — never invents an owner/project (hapi#238)', async () => {
+        process.env.HAPI_BOARD_NUMBER = '1.5'
+        const app = await createApp(() => ({ data: {} }))
+        const response = await app.request('/api/todo-boards')
+        expect(await response.json()).toEqual({ boards: [] })
+    })
+
+    it('treats an owner with no valid number as unconfigured — a partial HAPI_BOARD_* set must never fall back to a hardcoded owner/project (hapi#238)', async () => {
+        // Regression guard: this used to silently fall back to a hardcoded
+        // heavygee/6 board for *any* missing field, so an operator who set
+        // only HAPI_BOARD_OWNER (or mistyped HAPI_BOARD_NUMBER) would
+        // unknowingly load someone else's project. Owner and number must
+        // both be valid together, or there is no env-seeded board at all.
+        process.env.HAPI_BOARD_OWNER = 'acme'
+        const app = await createApp(() => ({ data: {} }))
+        const response = await app.request('/api/todo-boards')
+        expect(await response.json()).toEqual({ boards: [] })
+    })
+})
+
+describe('POST /api/todo-boards', () => {
+    it('rejects a missing or unparsable url', async () => {
+        const app = await createApp(() => ({ data: {} }))
+        const missing = await app.request('/api/todo-boards', { method: 'POST', body: JSON.stringify({}) })
+        expect(missing.status).toBe(400)
+        const bad = await app.request('/api/todo-boards', {
+            method: 'POST',
+            body: JSON.stringify({ url: 'not a project url' })
+        })
+        expect(bad.status).toBe(400)
+    })
+
+    it('rejects a non-string url with 400, not a 500 from an uncaught TypeError', async () => {
+        const app = await createApp(() => ({ data: {} }))
+        const response = await app.request('/api/todo-boards', {
+            method: 'POST',
+            body: JSON.stringify({ url: 123 })
+        })
+        expect(response.status).toBe(400)
+    })
+
+    it('404s when the project does not resolve', async () => {
+        const app = await createApp(() => ({ data: {} }), () => ({ data: { repositoryOwner: {} } }))
+        const response = await app.request('/api/todo-boards', {
+            method: 'POST',
+            body: JSON.stringify({ url: 'https://github.com/users/nobody/projects/1' })
+        })
+        expect(response.status).toBe(404)
+    })
+
+    it('rejects a board host outside the default allowlist (github.com only)', async () => {
+        // A POST-supplied host reaches `gh api --hostname <host>`, which
+        // resolves that host's credentials (including any enterprise
+        // token) — without an allowlist, an attacker-controlled host in
+        // the URL could make the hub leak its own token to it.
+        const app = await createApp(() => ({ data: {} }), () => ({ data: { repositoryOwner: { projectV2: { title: 'x' } } } }))
+        const response = await app.request('/api/todo-boards', {
+            method: 'POST',
+            body: JSON.stringify({ url: 'https://attacker.example/orgs/acme/projects/9' })
+        })
+        expect(response.status).toBe(400)
+    })
+
+    it('allows an explicitly-configured host via HAPI_BOARD_ALLOWED_HOSTS', async () => {
+        process.env.HAPI_BOARD_ALLOWED_HOSTS = 'github.com,lhs.ghe.com'
+        const app = await createApp(() => ({ data: {} }), () => ({ data: { repositoryOwner: { projectV2: { title: 'Lockhouse TODO' } } } }))
+        const response = await app.request('/api/todo-boards', {
+            method: 'POST',
+            body: JSON.stringify({ url: 'https://lhs.ghe.com/orgs/lockhouse/projects/3' })
+        })
+        expect(response.status).toBe(200)
+    })
+
+    it('adds a board to a genuinely empty list, using the project title as the label', async () => {
+        const app = await createApp(() => ({ data: {} }), () => ({ data: { repositoryOwner: { projectV2: { title: 'Acme Roadmap' } } } }))
+        const response = await app.request('/api/todo-boards', {
+            method: 'POST',
+            body: JSON.stringify({ url: 'https://github.com/orgs/acme/projects/9' })
+        })
+        expect(response.status).toBe(200)
+        const body = await response.json() as BoardsResponse
+        expect(body.boards).toEqual([
+            { id: 'github.com::acme::9', label: 'Acme Roadmap' }
+        ])
+    })
+
+    it('adds a board, keeping the env-configured one in the list (add, not replace)', async () => {
+        process.env.HAPI_BOARD_OWNER = 'heavygee'
+        process.env.HAPI_BOARD_NUMBER = '6'
+        const app = await createApp(() => ({ data: {} }), () => ({ data: { repositoryOwner: { projectV2: { title: 'Acme Roadmap' } } } }))
+        const response = await app.request('/api/todo-boards', {
+            method: 'POST',
+            body: JSON.stringify({ url: 'https://github.com/orgs/acme/projects/9' })
+        })
+        expect(response.status).toBe(200)
+        const body = await response.json() as BoardsResponse
+        expect(body.boards).toEqual([
+            { id: 'github.com::heavygee::6', label: 'heavygee/6' },
+            { id: 'github.com::acme::9', label: 'Acme Roadmap' }
+        ])
+    })
+
+    it('adds a view-scoped board as a distinct board, labeled with the view name', async () => {
+        const app = await createApp(
+            () => ({ data: {} }),
+            () => { throw new Error('should not use the plain title lookup for a view URL') },
+            'default',
+            () => ({ data: { repositoryOwner: { projectV2: { title: 'Acme Roadmap', view: { name: 'Sprint board' } } } } })
+        )
+        const response = await app.request('/api/todo-boards', {
+            method: 'POST',
+            body: JSON.stringify({ url: 'https://github.com/orgs/acme/projects/9/views/8' })
+        })
+        expect(response.status).toBe(200)
+        const body = await response.json() as BoardsResponse
+        expect(body.boards).toEqual([
+            { id: 'github.com::acme::9::view::8', label: 'Acme Roadmap · Sprint board' }
+        ])
+    })
+
+    it('falls back to a generic "View N" label when the view has no name', async () => {
+        const app = await createApp(
+            () => ({ data: {} }),
+            undefined,
+            'default',
+            () => ({ data: { repositoryOwner: { projectV2: { title: 'Acme Roadmap', view: {} } } } })
+        )
+        const response = await app.request('/api/todo-boards', {
+            method: 'POST',
+            body: JSON.stringify({ url: 'https://github.com/orgs/acme/projects/9/views/8' })
+        })
+        const body = await response.json() as BoardsResponse
+        expect(body.boards.find(b => b.id === 'github.com::acme::9::view::8')?.label).toBe('Acme Roadmap · View 8')
+    })
+
+    it('404s when the view number does not exist on the project', async () => {
+        const app = await createApp(
+            () => ({ data: {} }),
+            undefined,
+            'default',
+            () => ({ data: { repositoryOwner: { projectV2: { title: 'Acme Roadmap', view: null } } } })
+        )
+        const response = await app.request('/api/todo-boards', {
+            method: 'POST',
+            body: JSON.stringify({ url: 'https://github.com/orgs/acme/projects/9/views/999' })
+        })
+        expect(response.status).toBe(404)
+    })
+
+    it('allows adding both the plain project and a view onto it, as two separate boards', async () => {
+        const app = await createApp(
+            () => ({ data: {} }),
+            () => ({ data: { repositoryOwner: { projectV2: { title: 'Acme Roadmap' } } } }),
+            'default',
+            () => ({ data: { repositoryOwner: { projectV2: { title: 'Acme Roadmap', view: { name: 'Sprint board' } } } } })
+        )
+        await app.request('/api/todo-boards', { method: 'POST', body: JSON.stringify({ url: 'https://github.com/orgs/acme/projects/9' }) })
+        const response = await app.request('/api/todo-boards', { method: 'POST', body: JSON.stringify({ url: 'https://github.com/orgs/acme/projects/9/views/8' }) })
+        const body = await response.json() as BoardsResponse
+        expect(body.boards.map(b => b.id)).toEqual(['github.com::acme::9', 'github.com::acme::9::view::8'])
+    })
+
+    it('validates via the lightweight title-only query, never the full items query', async () => {
+        const itemsQuery = () => { throw new Error('should not call the heavy items query to add a board') }
+        const app = await createApp(itemsQuery, () => ({ data: { repositoryOwner: { projectV2: { title: 'Acme Roadmap' } } } }))
+        const response = await app.request('/api/todo-boards', {
+            method: 'POST',
+            body: JSON.stringify({ url: 'https://github.com/orgs/acme/projects/9' })
+        })
+        expect(response.status).toBe(200)
+    })
+
+    it('is idempotent for the same board added twice', async () => {
+        const app = await createApp(() => ({ data: {} }), () => ({ data: { repositoryOwner: { projectV2: { title: 'Acme Roadmap' } } } }))
+        await app.request('/api/todo-boards', {
+            method: 'POST',
+            body: JSON.stringify({ url: 'https://github.com/orgs/acme/projects/9' })
+        })
+        const second = await app.request('/api/todo-boards', {
+            method: 'POST',
+            body: JSON.stringify({ url: 'https://github.com/orgs/acme/projects/9' })
+        })
+        const body = await second.json() as BoardsResponse
+        expect(body.boards).toHaveLength(1)
+    })
+
+    it('is idempotent across different casing of the same host/owner (Codex review)', async () => {
+        const app = await createApp(() => ({ data: {} }), () => ({ data: { repositoryOwner: { projectV2: { title: 'Acme Roadmap' } } } }))
+        await app.request('/api/todo-boards', {
+            method: 'POST',
+            body: JSON.stringify({ url: 'https://github.com/orgs/acme/projects/9' })
+        })
+        const second = await app.request('/api/todo-boards', {
+            method: 'POST',
+            body: JSON.stringify({ url: 'https://GitHub.com/orgs/Acme/projects/9' })
+        })
+        const body = await second.json() as BoardsResponse
+        expect(body.boards).toHaveLength(1)
+    })
+})
+
+describe('DELETE /api/todo-boards/:id', () => {
+    it('removes one board, keeping the rest of the list', async () => {
+        const app = await createApp(() => ({ data: {} }), () => ({ data: { repositoryOwner: { projectV2: { title: 'Acme Roadmap' } } } }))
+        await app.request('/api/todo-boards', {
+            method: 'POST',
+            body: JSON.stringify({ url: 'https://github.com/orgs/acme/projects/9' })
+        })
+        await app.request('/api/todo-boards', {
+            method: 'POST',
+            body: JSON.stringify({ url: 'https://github.com/orgs/other/projects/1' })
+        })
+        const response = await app.request('/api/todo-boards/github.com%3A%3Aacme%3A%3A9', { method: 'DELETE' })
+        const body = await response.json() as BoardsResponse
+        expect(body.boards).toEqual([{ id: 'github.com::other::1', label: 'Acme Roadmap' }])
+    })
+
+    it('removing the last board leaves the list genuinely empty when nothing is env-configured (hapi#238)', async () => {
+        const app = await createApp(() => ({ data: {} }), () => ({ data: { repositoryOwner: { projectV2: { title: 'Acme Roadmap' } } } }))
+        await app.request('/api/todo-boards', {
+            method: 'POST',
+            body: JSON.stringify({ url: 'https://github.com/orgs/acme/projects/9' })
+        })
+        const response = await app.request('/api/todo-boards/github.com%3A%3Aacme%3A%3A9', { method: 'DELETE' })
+        const body = await response.json() as BoardsResponse
+        expect(body.boards).toEqual([])
+    })
+
+    it('removing the last board re-seeds the env-configured default instead of leaving it empty, when one is actually set', async () => {
+        process.env.HAPI_BOARD_OWNER = 'heavygee'
+        process.env.HAPI_BOARD_NUMBER = '6'
+        const app = await createApp(() => ({ data: {} }), () => ({ data: { repositoryOwner: { projectV2: { title: 'Acme Roadmap' } } } }))
+        await app.request('/api/todo-boards', {
+            method: 'POST',
+            body: JSON.stringify({ url: 'https://github.com/orgs/acme/projects/9' })
+        })
+        const response = await app.request('/api/todo-boards/github.com%3A%3Aacme%3A%3A9', { method: 'DELETE' })
+        const body = await response.json() as BoardsResponse
+        expect(body.boards).toEqual([{ id: 'github.com::heavygee::6', label: 'heavygee/6' }])
+    })
+
+    it('is a no-op for an id that does not exist', async () => {
+        const app = await createApp(() => ({ data: {} }))
+        const response = await app.request('/api/todo-boards/unknown', { method: 'DELETE' })
+        const body = await response.json() as BoardsResponse
+        expect(body.boards).toEqual([])
+    })
+})
+
+describe('parseValidatedItemUrl', () => {
+    const board = { host: 'github.com' }
+
+    it('accepts a well-formed issue URL on the board\'s own host', () => {
+        expect(parseValidatedItemUrl('https://github.com/acme/widgets/issues/12', board)).toEqual({
+            url: 'https://github.com/acme/widgets/issues/12',
+            isPullRequest: false,
+            owner: 'acme',
+            repo: 'widgets'
+        })
+    })
+
+    it('accepts a well-formed pull-request URL', () => {
+        expect(parseValidatedItemUrl('https://github.com/acme/widgets/pull/9', board)).toEqual({
+            url: 'https://github.com/acme/widgets/pull/9',
+            isPullRequest: true,
+            owner: 'acme',
+            repo: 'widgets'
+        })
+    })
+
+    it('rejects a URL on a different host — the SSRF-class case', () => {
+        // The whole point of this check: a JWT caller supplying this URL
+        // must not make the hub shell out `gh issue close` against an
+        // arbitrary attacker-controlled host. GH_HOST does not protect
+        // against this — gh dials the URL's own embedded host regardless —
+        // so this check is the sole defense, not defense-in-depth.
+        expect(parseValidatedItemUrl('https://attacker.example/acme/widgets/issues/12', board)).toBeNull()
+    })
+
+    it('rejects a non-https scheme even on the right host/path', () => {
+        expect(parseValidatedItemUrl('http://github.com/acme/widgets/issues/12', board)).toBeNull()
+        expect(parseValidatedItemUrl('file://github.com/acme/widgets/issues/12', board)).toBeNull()
+    })
+
+    it('matches host case-insensitively, normalizing the host in the rebuilt URL', () => {
+        expect(parseValidatedItemUrl('https://GitHub.com/acme/widgets/issues/12', board)).toEqual({
+            url: 'https://github.com/acme/widgets/issues/12',
+            isPullRequest: false,
+            owner: 'acme',
+            repo: 'widgets'
+        })
+    })
+
+    it('rebuilds a canonical URL rather than passing the raw input through', () => {
+        // Trailing slash and query/fragment noise must not survive into the
+        // string handed to `gh` — it's rebuilt from validated path parts.
+        expect(parseValidatedItemUrl('https://github.com/acme/widgets/issues/12/?foo=bar#x', board)).toEqual({
+            url: 'https://github.com/acme/widgets/issues/12',
+            isPullRequest: false,
+            owner: 'acme',
+            repo: 'widgets'
+        })
+    })
+
+    it('rejects a non-issue, non-pull path on the right host', () => {
+        expect(parseValidatedItemUrl('https://github.com/acme/widgets', board)).toBeNull()
+        expect(parseValidatedItemUrl('https://github.com/acme/widgets/discussions/1', board)).toBeNull()
+    })
+
+    it('rejects a malformed URL instead of throwing', () => {
+        expect(parseValidatedItemUrl('not a url', board)).toBeNull()
+    })
+
+    it('preserves a non-default port — a GHE board on a custom port must not reject every write (Codex review)', () => {
+        const portedBoard = { host: 'ghe.example:8443' }
+        expect(parseValidatedItemUrl('https://ghe.example:8443/acme/widgets/issues/12', portedBoard)).toEqual({
+            url: 'https://ghe.example:8443/acme/widgets/issues/12',
+            isPullRequest: false,
+            owner: 'acme',
+            repo: 'widgets'
+        })
+        // Same hostname, different (or default/missing) port must still be rejected.
+        expect(parseValidatedItemUrl('https://ghe.example/acme/widgets/issues/12', portedBoard)).toBeNull()
+        expect(parseValidatedItemUrl('https://ghe.example:9999/acme/widgets/issues/12', portedBoard)).toBeNull()
+    })
+
+    it('normalizes an explicit default HTTPS port before comparing hosts (Codex review)', () => {
+        // A board added from a URL that explicitly includes :443 stores
+        // board.host verbatim as "ghe.example:443" (parseProjectUrl's regex
+        // doesn't normalize), but WHATWG URL.host always strips an explicit
+        // default port — so an item URL on that same host never carries
+        // :443 once parsed, and the two sides never matched without this fix.
+        const explicitDefaultPortBoard = { host: 'ghe.example:443' }
+        expect(parseValidatedItemUrl('https://ghe.example/acme/widgets/issues/12', explicitDefaultPortBoard)).toEqual({
+            url: 'https://ghe.example/acme/widgets/issues/12',
+            isPullRequest: false,
+            owner: 'acme',
+            repo: 'widgets'
+        })
+        expect(parseValidatedItemUrl('https://ghe.example:443/acme/widgets/issues/12', explicitDefaultPortBoard)).toEqual({
+            url: 'https://ghe.example/acme/widgets/issues/12',
+            isPullRequest: false,
+            owner: 'acme',
+            repo: 'widgets'
+        })
+        // A genuinely different host must still be rejected.
+        expect(parseValidatedItemUrl('https://attacker.example/acme/widgets/issues/12', explicitDefaultPortBoard)).toBeNull()
+    })
+})
+
+describe('resolveProjectView', () => {
+    it('returns the title, view name, and trimmed filter on success', () => {
+        const result = resolveProjectView({ data: { repositoryOwner: { projectV2: { title: 'Acme Roadmap', view: { name: 'Sprint board', filter: ' status:"Done" ' } } } } }, 8)
+        expect(result).toEqual({ ok: true, title: 'Acme Roadmap', viewName: 'Sprint board', itemsFilter: 'status:"Done"' })
+    })
+
+    it('treats an empty or whitespace-only filter the same as no filter', () => {
+        expect(resolveProjectView({ data: { repositoryOwner: { projectV2: { title: 'Acme Roadmap', view: { filter: '' } } } } }, 8)).toMatchObject({ ok: true, itemsFilter: undefined })
+        expect(resolveProjectView({ data: { repositoryOwner: { projectV2: { title: 'Acme Roadmap', view: { filter: '   ' } } } } }, 8)).toMatchObject({ ok: true, itemsFilter: undefined })
+        expect(resolveProjectView({ data: { repositoryOwner: { projectV2: { title: 'Acme Roadmap', view: { filter: null } } } } }, 8)).toMatchObject({ ok: true, itemsFilter: undefined })
+    })
+
+    it('fails distinctly for a missing project vs. a missing view, both as "not found"', () => {
+        const missingProject = resolveProjectView({ data: { repositoryOwner: {} } }, 8)
+        expect(missingProject).toEqual({ ok: false, error: 'Project not found, or not accessible with the current gh auth' })
+
+        const missingView = resolveProjectView({ data: { repositoryOwner: { projectV2: { title: 'Acme Roadmap', view: null } } } }, 8)
+        expect(missingView).toEqual({ ok: false, error: 'View 8 not found on this project' })
+    })
+
+    it('surfaces top-level GraphQL errors without a "not found" message', () => {
+        const result = resolveProjectView({ errors: [{ message: 'Could not resolve to a ProjectV2Owner' }] }, 8)
+        expect(result).toEqual({ ok: false, error: 'Could not resolve to a ProjectV2Owner' })
+    })
+})
+
+describe('fetchAllProjectItems (operator-reported dogfood bug: #431 missing after manual refresh)', () => {
+    // Lockhouse Work has well over 100 items — items(first: 100) with no
+    // pagination silently dropped everything past page 1, so a card moved
+    // into a tracked status (or any item past that boundary) never appeared
+    // no matter how many times "refresh" was pressed, since refresh re-ran
+    // the exact same first-100 query rather than a real re-fetch of the
+    // whole board.
+    function page(nodeIds: string[], hasNextPage: boolean, endCursor: string | null = null): string {
+        return JSON.stringify({
+            data: {
+                repositoryOwner: {
+                    projectV2: {
+                        title: 'Lockhouse Work',
+                        items: {
+                            nodes: nodeIds.map(id => ({ id, content: null })),
+                            pageInfo: { hasNextPage, endCursor }
+                        }
+                    }
+                }
+            }
+        })
+    }
+
+    it('returns a single page unchanged when there is nothing more to fetch', async () => {
+        const execPage = async () => page(['a', 'b'], false)
+        const result = await fetchAllProjectItems(execPage)
+        expect(result.data?.repositoryOwner?.projectV2?.items?.nodes).toEqual([{ id: 'a', content: null }, { id: 'b', content: null }])
+    })
+
+    it('follows pageInfo.endCursor across pages and merges every item into one list', async () => {
+        const calls: Array<string | undefined> = []
+        const execPage = async (after: string | undefined) => {
+            calls.push(after)
+            if (after === undefined) return page(['a', 'b'], true, 'cursor-1')
+            if (after === 'cursor-1') return page(['c'], true, 'cursor-2')
+            return page(['d'], false)
+        }
+        const result = await fetchAllProjectItems(execPage)
+        expect(result.data?.repositoryOwner?.projectV2?.items?.nodes).toEqual([{ id: 'a', content: null }, { id: 'b', content: null }, { id: 'c', content: null }, { id: 'd', content: null }])
+        expect(calls).toEqual([undefined, 'cursor-1', 'cursor-2'])
+    })
+
+    it('stops at the page cap instead of looping forever on a pathological board', async () => {
+        let calls = 0
+        const execPage = async () => {
+            calls += 1
+            return page([`item-${calls}`], true, `cursor-${calls}`)
+        }
+        const result = await fetchAllProjectItems(execPage)
+        expect(calls).toBe(20)
+        expect(result.data?.repositoryOwner?.projectV2?.items?.nodes?.length).toBe(20)
+    })
+
+    it('returns top-level errors from the first page immediately, without paginating further', async () => {
+        let calls = 0
+        const execPage = async () => {
+            calls += 1
+            return JSON.stringify({ errors: [{ message: 'Could not resolve to a ProjectV2Owner' }] })
+        }
+        const result = await fetchAllProjectItems(execPage)
+        expect(result.errors).toEqual([{ message: 'Could not resolve to a ProjectV2Owner' }])
+        expect(calls).toBe(1)
+    })
+
+    it('returns errors surfaced on a later page without silently dropping them', async () => {
+        const execPage = async (after: string | undefined) => {
+            if (after === undefined) return page(['a'], true, 'cursor-1')
+            return JSON.stringify({ errors: [{ message: 'rate limited' }] })
+        }
+        const result = await fetchAllProjectItems(execPage)
+        expect(result.errors).toEqual([{ message: 'rate limited' }])
+    })
+})
+
+// "Every status/column is shown" was never a stated requirement for this
+// feature (confirmed against the original design doc and hapi#235's own
+// scope — both require status to be the grouping axis, shown verbatim, with
+// done items folded to the bottom rather than removed; neither says
+// anything about completeness across statuses). The behavior itself is real
+// and already covered by BoardList.test.ts (web) and the item-mapping test
+// above (hub) proving items of every status survive the response. What
+// neither of those tests covers is the *request* itself — operator ruling:
+// lock in, at the query-construction level, that the plain/unfiltered board
+// path never asks GitHub for a subset of items in the first place.
+describe('PROJECT_QUERY (unfiltered board path sends no item/status predicate)', () => {
+    it('does not include an items query/filter argument', () => {
+        expect(PROJECT_QUERY).not.toMatch(/items\([^)]*query:/)
+        expect(PROJECT_QUERY).not.toContain('itemsFilter')
+    })
+
+    it('contrasts with PROJECT_QUERY_FILTERED, which deliberately does carry one — proving the assertion above is actually meaningful, not just an accident of unrelated wording', () => {
+        expect(PROJECT_QUERY_FILTERED).toMatch(/items\([^)]*query:\s*\$itemsFilter/)
+        expect(PROJECT_QUERY_FILTERED).toContain('itemsFilter')
+    })
+})
+
+describe('fetchAllItemComments (Codex review, hapi#238: comments(last: 100) silently dropped older comments)', () => {
+    function page(ids: string[], hasNextPage: boolean, endCursor: string | null = null): string {
+        const comments = { nodes: ids.map(id => ({ id })), pageInfo: { hasNextPage, endCursor } }
+        return JSON.stringify({ data: { resource: { comments } } })
+    }
+
+    it('returns a single page unchanged when there is nothing more to fetch', async () => {
+        const execPage = async () => page(['a', 'b'], false)
+        const result = await fetchAllItemComments(execPage)
+        expect(result.data?.resource?.comments?.nodes?.map(n => n?.id)).toEqual(['a', 'b'])
+    })
+
+    it('follows pageInfo.endCursor across pages and merges every comment into one list, oldest first', async () => {
+        const calls: Array<string | undefined> = []
+        const execPage = async (after: string | undefined) => {
+            calls.push(after)
+            if (after === undefined) return page(['a', 'b'], true, 'cursor-1')
+            if (after === 'cursor-1') return page(['c'], true, 'cursor-2')
+            return page(['d'], false)
+        }
+        const result = await fetchAllItemComments(execPage)
+        expect(result.data?.resource?.comments?.nodes?.map(n => n?.id)).toEqual(['a', 'b', 'c', 'd'])
+        expect(calls).toEqual([undefined, 'cursor-1', 'cursor-2'])
+    })
+
+    it('stops at the page cap instead of looping forever on a pathological thread', async () => {
+        let calls = 0
+        const execPage = async () => {
+            calls += 1
+            return page([`comment-${calls}`], true, `cursor-${calls}`)
+        }
+        const result = await fetchAllItemComments(execPage)
+        expect(calls).toBe(10)
+        expect(result.data?.resource?.comments?.nodes?.length).toBe(10)
+    })
+
+    it('returns top-level errors from the first page immediately, without paginating further', async () => {
+        let calls = 0
+        const execPage = async () => {
+            calls += 1
+            return JSON.stringify({ errors: [{ message: 'Could not resolve to a ProjectItem' }] })
+        }
+        const result = await fetchAllItemComments(execPage)
+        expect(result.errors).toEqual([{ message: 'Could not resolve to a ProjectItem' }])
+        expect(calls).toBe(1)
+    })
+
+    it('returns errors surfaced on a later page without silently dropping them', async () => {
+        const execPage = async (after: string | undefined) => {
+            if (after === undefined) return page(['a'], true, 'cursor-1')
+            return JSON.stringify({ errors: [{ message: 'rate limited' }] })
+        }
+        const result = await fetchAllItemComments(execPage)
+        expect(result.errors).toEqual([{ message: 'rate limited' }])
+    })
+})
+
+describe('GET /api/todo-boards/:id/items', () => {
+    // Every test below targets the default heavygee/6 board by id without
+    // adding it via POST first — env-configure it explicitly (hapi#238: an
+    // unconfigured board list is now genuinely empty, not the hardcoded demo
+    // board, so these tests must opt in instead of relying on the old
+    // silent default).
+    beforeEach(() => {
+        process.env.HAPI_BOARD_OWNER = 'heavygee'
+        process.env.HAPI_BOARD_NUMBER = '6'
+    })
+
+    it('404s for an unknown board id', async () => {
+        const app = await createApp(() => ({ data: {} }))
+        const response = await app.request('/api/todo-boards/unknown/items')
+        expect(response.status).toBe(404)
+    })
+
+    it('maps gh graphql items, status order, done values, body, and the richer item fields', async () => {
+        const app = await createApp(() => ({
+            data: {
+                repositoryOwner: {
+                    projectV2: {
+                        field: { options: [{ name: 'Todo' }, { name: 'In Progress' }, { name: 'Done' }] },
+                        items: {
+                            nodes: [
+                                {
+                                    id: 'item-1',
+                                    content: {
+                                        __typename: 'Issue',
+                                        title: 'Fix the thing',
+                                        number: 12,
+                                        url: 'https://github.com/acme/widgets/issues/12',
+                                        state: 'OPEN',
+                                        updatedAt: '2026-10-06T12:00:00Z',
+                                        createdAt: '2026-10-01T09:00:00Z',
+                                        closedAt: null,
+                                        body: 'Some **markdown** body.',
+                                        repository: { nameWithOwner: 'acme/widgets' },
+                                        author: { login: 'octocat', avatarUrl: 'https://example.com/octocat.png' },
+                                        assignees: { nodes: [{ login: 'hubot', avatarUrl: 'https://example.com/hubot.png' }, null] },
+                                        labels: { nodes: [{ name: 'bug', color: 'ff0000' }, null] },
+                                        milestone: { title: 'v1.0', dueOn: '2026-12-01' }
+                                    },
+                                    fieldValueByName: { name: 'In Progress' },
+                                    fieldValues: {
+                                        nodes: [
+                                            { __typename: 'ProjectV2ItemFieldSingleSelectValue', name: 'In Progress', field: { name: 'Status' } },
+                                            { __typename: 'ProjectV2ItemFieldSingleSelectValue', name: 'High', field: { name: 'Priority' } },
+                                            { __typename: 'ProjectV2ItemFieldNumberValue', number: 3, field: { name: 'Points' } },
+                                            { __typename: 'ProjectV2ItemFieldTextValue', text: '', field: { name: 'Empty text field' } },
+                                            null
+                                        ]
+                                    }
+                                },
+                                {
+                                    id: 'item-2',
+                                    content: { __typename: 'DraftIssue', title: 'Untracked idea' },
+                                    fieldValueByName: null
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        }))
+
+        const response = await app.request('/api/todo-boards/github.com%3A%3Aheavygee%3A%3A6/items')
+        expect(response.status).toBe(200)
+        const body = await response.json() as BoardItemsResponse
+        expect(body.board).toEqual({ id: 'github.com::heavygee::6', label: 'heavygee/6' })
+        expect(body.statusOrder).toEqual(['Todo', 'In Progress', 'Done'])
+        expect(body.doneValues).toEqual(['Done'])
+        expect(body.items).toEqual([
+            {
+                id: 'item-1',
+                title: 'Fix the thing',
+                url: 'https://github.com/acme/widgets/issues/12',
+                number: 12,
+                repo: 'acme/widgets',
+                state: 'OPEN',
+                status: 'In Progress',
+                updatedAt: '2026-10-06T12:00:00Z',
+                createdAt: '2026-10-01T09:00:00Z',
+                closedAt: null,
+                body: 'Some **markdown** body.',
+                isPullRequest: false,
+                author: { login: 'octocat', avatarUrl: 'https://example.com/octocat.png' },
+                assignees: [{ login: 'hubot', avatarUrl: 'https://example.com/hubot.png' }],
+                labels: [{ name: 'bug', color: 'ff0000' }],
+                milestone: { title: 'v1.0', dueOn: '2026-12-01' },
+                // Status is excluded (already surfaced via `status`); the
+                // empty-string text value is excluded as not worth rendering.
+                customFields: [
+                    { name: 'Priority', value: 'High' },
+                    { name: 'Points', value: '3' }
+                ]
+            },
+            {
+                id: 'item-2',
+                title: 'Untracked idea',
+                url: null,
+                number: null,
+                repo: null,
+                state: null,
+                status: null,
+                updatedAt: null,
+                createdAt: null,
+                closedAt: null,
+                body: null,
+                isPullRequest: false,
+                author: null,
+                assignees: [],
+                labels: [],
+                milestone: null,
+                customFields: []
+            }
+        ])
+    })
+
+    it('marks a PullRequest item as isPullRequest', async () => {
+        const app = await createApp(() => ({
+            data: {
+                repositoryOwner: {
+                    projectV2: {
+                        field: { options: [] },
+                        items: { nodes: [{ id: 'item-pr', content: { __typename: 'PullRequest', title: 'Bump deps', url: 'https://github.com/acme/widgets/pull/9' }, fieldValueByName: null }] }
+                    }
+                }
+            }
+        }))
+        const response = await app.request('/api/todo-boards/github.com%3A%3Aheavygee%3A%3A6/items')
+        const body = await response.json() as BoardItemsResponse
+        expect(body.items[0]?.isPullRequest).toBe(true)
+    })
+
+    it('applies HAPI_BOARD_DONE_VALUES as a comma-separated override', async () => {
+        process.env.HAPI_BOARD_DONE_VALUES = 'Done, Archived'
+        const app = await createApp(() => ({ data: { repositoryOwner: { projectV2: { field: { options: [] }, items: { nodes: [] } } } } }))
+        const response = await app.request('/api/todo-boards/github.com%3A%3Aheavygee%3A%3A6/items')
+        const body = await response.json() as BoardItemsResponse
+        expect(body.doneValues).toEqual(['Done', 'Archived'])
+    })
+
+    it('surfaces gh CLI failures as a 502 with the error message', async () => {
+        const app = await createApp(() => {
+            throw new Error('gh CLI not available: spawn gh ENOENT')
+        })
+        const response = await app.request('/api/todo-boards/github.com%3A%3Aheavygee%3A%3A6/items')
+        expect(response.status).toBe(502)
+        expect(await response.json()).toEqual({ error: 'gh CLI not available: spawn gh ENOENT' })
+    })
+
+    it('surfaces gh graphql errors array as a 502', async () => {
+        const app = await createApp(() => ({ errors: [{ message: 'Could not resolve to a ProjectV2Owner' }] }))
+        const response = await app.request('/api/todo-boards/github.com%3A%3Aheavygee%3A%3A6/items')
+        expect(response.status).toBe(502)
+        expect(await response.json()).toEqual({ error: 'Could not resolve to a ProjectV2Owner' })
+    })
+
+    it('404s when the configured project is missing or inaccessible (no top-level error)', async () => {
+        // GitHub can return `projectV2: null` without a top-level GraphQL
+        // error (owner exists, project number doesn't or isn't visible) —
+        // without this check the route would 200 with an empty board.
+        const app = await createApp(() => ({ data: { repositoryOwner: {} } }))
+        const response = await app.request('/api/todo-boards/github.com%3A%3Aheavygee%3A%3A6/items')
+        expect(response.status).toBe(404)
+    })
+
+    it('502s when the configured status field name does not exist at all (field: null)', async () => {
+        const app = await createApp(() => ({ data: { repositoryOwner: { projectV2: { field: null, items: { nodes: [] } } } } }))
+        const response = await app.request('/api/todo-boards/github.com%3A%3Aheavygee%3A%3A6/items')
+        expect(response.status).toBe(502)
+    })
+
+    it('502s when the configured status field exists but is not a single-select (field: {})', async () => {
+        // The inline fragment `... on ProjectV2SingleSelectField { options { name } }`
+        // only contributes `options` when the concrete type matches — a
+        // same-named field of a different type comes back as a truthy empty
+        // object, not null.
+        const app = await createApp(() => ({ data: { repositoryOwner: { projectV2: { field: {}, items: { nodes: [] } } } } }))
+        const response = await app.request('/api/todo-boards/github.com%3A%3Aheavygee%3A%3A6/items')
+        expect(response.status).toBe(502)
+    })
+
+    it('skips a null entry in the items nodes array instead of throwing', async () => {
+        const app = await createApp(() => ({
+            data: {
+                repositoryOwner: {
+                    projectV2: {
+                        field: { options: [{ name: 'Done' }] },
+                        items: { nodes: [null, { id: 'item-1', content: { __typename: 'DraftIssue', title: 'Still here' } }] }
+                    }
+                }
+            }
+        }))
+        const response = await app.request('/api/todo-boards/github.com%3A%3Aheavygee%3A%3A6/items')
+        expect(response.status).toBe(200)
+        const body = await response.json() as BoardItemsResponse
+        expect(body.items).toHaveLength(1)
+        expect(body.items[0]?.title).toBe('Still here')
+    })
+
+    it('maps a "not found" error from a view-scoped board\'s filter resolution to 404, not 502', async () => {
+        // Simulates what the real runGhGraphql throws (via resolveProjectView)
+        // when a stored view-scoped board's view or project has since been
+        // deleted/renamed/access-revoked — should 404 the same way the
+        // plain-project "projectV2: null" case does above, not fall through
+        // to the generic 502 catch-all (which the existing "gh CLI not
+        // available" test above already covers for non-"not found" errors).
+        const app = await createApp(() => { throw new Error('View 8 not found on this project') })
+        const response = await app.request('/api/todo-boards/github.com%3A%3Aheavygee%3A%3A6/items')
+        expect(response.status).toBe(404)
+    })
+})
+
+const DEFAULT_BOARD_ID = 'github.com::heavygee::6'
+const VALID_ITEM_URL = 'https://github.com/heavygee/hapi-demo-board/issues/1'
+
+// Shared by every write route via requireBoardAndValidUrl — exercised once
+// here through `close` rather than duplicated across all four routes.
+describe('write-target project membership verification', () => {
+    // Most tests below target DEFAULT_BOARD_ID directly without adding it
+    // via POST first (hapi#238: see the beforeEach doc comment in the
+    // "GET .../items" describe block above for why this is needed now).
+    beforeEach(() => {
+        process.env.HAPI_BOARD_OWNER = 'heavygee'
+        process.env.HAPI_BOARD_NUMBER = '6'
+    })
+
+    it('rejects a same-host, well-formed URL that is not actually on this board\'s project', async () => {
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, () => ({
+            data: { resource: { projectItems: { nodes: [] } } }
+        }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/close`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL })
+        })
+        expect(response.status).toBe(400)
+    })
+
+    it('rejects when the URL is on a different project under the same owner', async () => {
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, () => ({
+            data: { resource: { projectItems: { nodes: [{ project: { number: 999, owner: { login: 'heavygee' } } }] } } }
+        }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/close`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL })
+        })
+        expect(response.status).toBe(400)
+    })
+
+    it('allows the write when the membership check confirms the item is on this project', async () => {
+        const calls: unknown[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            close: async (target, comment) => { calls.push([target, comment]) }
+        }, () => ({
+            data: { resource: { projectItems: { nodes: [{ project: { number: 6, owner: { login: 'heavygee' } } }] } } }
+        }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/close`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL })
+        })
+        expect(response.status).toBe(200)
+        expect(calls).toHaveLength(1)
+    })
+
+    it('matches the owner login case-insensitively', async () => {
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            close: async () => {}
+        }, () => ({
+            data: { resource: { projectItems: { nodes: [{ project: { number: 6, owner: { login: 'HeavyGee' } } }] } } }
+        }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/close`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL })
+        })
+        expect(response.status).toBe(200)
+    })
+
+    it('surfaces a failed membership lookup as a 502, not a silent pass-through', async () => {
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, () => {
+            throw new Error('gh api graphql failed: rate limited')
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/close`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL })
+        })
+        expect(response.status).toBe(502)
+    })
+
+    it('surfaces a GraphQL-level error in a parseable membership response as a 502, not a misleading 400 (Codex review)', async () => {
+        // A partial-data response (scope/resolver failure) can still parse
+        // fine while carrying an `errors` array and an empty `projectItems` —
+        // that must not read identically to "genuinely not a member".
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, () => ({
+            data: { resource: { projectItems: { nodes: [] } } },
+            errors: [{ message: 'Resource not accessible by integration' }]
+        }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/close`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL })
+        })
+        expect(response.status).toBe(502)
+        const body = await response.json() as { error: string }
+        expect(body.error).toContain('Resource not accessible by integration')
+    })
+
+    it('rejects a write to an item that is on the project but hidden by the board\'s view filter (Codex review)', async () => {
+        // Project membership alone isn't enough for a view-scoped board — the
+        // whole point of adding one is to restrict exposure to the view's
+        // filtered subset, so a write must also be checked against it.
+        const viewItemsResponse = {
+            data: { repositoryOwner: { projectV2: { items: { nodes: [
+                { id: 'item-1', content: { __typename: 'Issue', url: 'https://github.com/acme/widgets/issues/1', title: 'Visible' } }
+            ] } } } }
+        }
+        const app = await createApp(
+            () => viewItemsResponse,
+            () => ({ data: { repositoryOwner: { projectV2: { title: 'Acme Roadmap' } } } }),
+            'default',
+            () => ({ data: { repositoryOwner: { projectV2: { title: 'Acme Roadmap', view: { name: 'Sprint board' } } } } }),
+            { ...UNUSED_ACTIONS, close: async () => {} }
+        )
+        await app.request('/api/todo-boards', { method: 'POST', body: JSON.stringify({ url: 'https://github.com/orgs/acme/projects/9/views/8' }) })
+
+        // Item #1 is in the view's filtered items — write succeeds.
+        const visible = await app.request('/api/todo-boards/github.com%3A%3Aacme%3A%3A9%3A%3Aview%3A%3A8/items/close', {
+            method: 'POST',
+            body: JSON.stringify({ url: 'https://github.com/acme/widgets/issues/1' })
+        })
+        expect(visible.status).toBe(200)
+
+        // Item #2 is on the same project (membership check alone would pass
+        // it) but absent from the view's filtered items — write rejected.
+        const hidden = await app.request('/api/todo-boards/github.com%3A%3Aacme%3A%3A9%3A%3Aview%3A%3A8/items/close', {
+            method: 'POST',
+            body: JSON.stringify({ url: 'https://github.com/acme/widgets/issues/2' })
+        })
+        expect(hidden.status).toBe(400)
+    })
+})
+
+describe('POST /api/todo-boards/:id/items/close', () => {
+    beforeEach(() => {
+        process.env.HAPI_BOARD_OWNER = 'heavygee'
+        process.env.HAPI_BOARD_NUMBER = '6'
+    })
+
+    it('closes via the close action and reports success', async () => {
+        const calls: unknown[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            close: async (target, comment) => { calls.push([target, comment]) }
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/close`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, comment: 'done' })
+        })
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([[{ host: 'github.com', url: VALID_ITEM_URL, isPullRequest: false }, 'done']])
+    })
+
+    it('rejects an item URL that does not belong to the board', async () => {
+        const app = await createApp(() => ({ data: {} }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/close`, {
+            method: 'POST',
+            body: JSON.stringify({ url: 'https://attacker.example/a/b/issues/1' })
+        })
+        expect(response.status).toBe(400)
+    })
+
+    it('404s for an unknown board', async () => {
+        const app = await createApp(() => ({ data: {} }))
+        const response = await app.request('/api/todo-boards/unknown/items/close', {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL })
+        })
+        expect(response.status).toBe(404)
+    })
+
+    it('403s for a non-default namespace', async () => {
+        const app = await createApp(() => ({ data: {} }), undefined, 'some-other-namespace')
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/close`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL })
+        })
+        expect(response.status).toBe(403)
+    })
+
+    it('surfaces a failed gh invocation as a 502, not a silently-swallowed success', async () => {
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            close: async () => { throw new Error('gh issue close failed: already closed') }
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/close`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL })
+        })
+        expect(response.status).toBe(502)
+    })
+})
+
+describe('POST /api/todo-boards/:id/items/reopen', () => {
+    beforeEach(() => {
+        process.env.HAPI_BOARD_OWNER = 'heavygee'
+        process.env.HAPI_BOARD_NUMBER = '6'
+    })
+
+    it('reopens via the reopen action, deriving isPullRequest from the URL (not part of the request body)', async () => {
+        const calls: unknown[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            reopen: async (target, comment) => { calls.push([target, comment]) }
+        })
+        // isPullRequest is deliberately not a client-supplied field at all —
+        // the server derives it from the validated URL path, so a /pull/ URL
+        // must come back as isPullRequest: true without the client ever
+        // asserting that itself.
+        const pullUrl = 'https://github.com/heavygee/hapi-demo-board/pull/1'
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/reopen`, {
+            method: 'POST',
+            body: JSON.stringify({ url: pullUrl })
+        })
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([[{ host: 'github.com', url: pullUrl, isPullRequest: true }, undefined]])
+    })
+})
+
+describe('POST /api/todo-boards/:id/items/comment', () => {
+    beforeEach(() => {
+        process.env.HAPI_BOARD_OWNER = 'heavygee'
+        process.env.HAPI_BOARD_NUMBER = '6'
+    })
+
+    it('comments via the comment action', async () => {
+        const calls: unknown[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            comment: async (target, body) => { calls.push([target, body]) }
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/comment`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, body: 'Looks good' })
+        })
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([[{ host: 'github.com', url: VALID_ITEM_URL, isPullRequest: false }, 'Looks good']])
+    })
+
+    it('rejects an empty comment body', async () => {
+        const app = await createApp(() => ({ data: {} }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/comment`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, body: '' })
+        })
+        expect(response.status).toBe(400)
+    })
+})
+
+describe('POST /api/todo-boards/:id/items/edit', () => {
+    beforeEach(() => {
+        process.env.HAPI_BOARD_OWNER = 'heavygee'
+        process.env.HAPI_BOARD_NUMBER = '6'
+    })
+
+    it('edits the title via the edit action', async () => {
+        const calls: unknown[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            edit: async (target, fields) => { calls.push([target, fields]) }
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/edit`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, title: 'New title' })
+        })
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([[
+            { host: 'github.com', url: VALID_ITEM_URL, isPullRequest: false },
+            { title: 'New title', body: undefined }
+        ]])
+    })
+
+    it('edits the body via the edit action, including clearing it to an empty string', async () => {
+        const calls: unknown[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            edit: async (target, fields) => { calls.push([target, fields]) }
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/edit`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, body: '' })
+        })
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([[
+            { host: 'github.com', url: VALID_ITEM_URL, isPullRequest: false },
+            { title: undefined, body: '' }
+        ]])
+    })
+
+    it('edits both title and body in one call', async () => {
+        const calls: unknown[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            edit: async (target, fields) => { calls.push([target, fields]) }
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/edit`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, title: 'New title', body: 'New body' })
+        })
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([[
+            { host: 'github.com', url: VALID_ITEM_URL, isPullRequest: false },
+            { title: 'New title', body: 'New body' }
+        ]])
+    })
+
+    it('rejects a request with neither title nor body', async () => {
+        const app = await createApp(() => ({ data: {} }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/edit`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL })
+        })
+        expect(response.status).toBe(400)
+    })
+
+    it('rejects an empty title (title is a label, not clearable)', async () => {
+        const app = await createApp(() => ({ data: {} }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/edit`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, title: '' })
+        })
+        expect(response.status).toBe(400)
+    })
+
+    it('404s for an unknown board', async () => {
+        const app = await createApp(() => ({ data: {} }))
+        const response = await app.request('/api/todo-boards/unknown/items/edit', {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, title: 'New title' })
+        })
+        expect(response.status).toBe(404)
+    })
+
+    it('403s for a non-default namespace', async () => {
+        const app = await createApp(() => ({ data: {} }), undefined, 'some-other-namespace')
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/edit`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, title: 'New title' })
+        })
+        expect(response.status).toBe(403)
+    })
+
+    it('rejects an item URL that is not a member of this board\'s project — same gate as every write action', async () => {
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, undefined, () => ({
+            data: { resource: { projectItems: { nodes: [] } } }
+        }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/edit`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, title: 'New title' })
+        })
+        expect(response.status).toBe(400)
+    })
+
+    it('surfaces a failed gh invocation as a 502, not a silently-swallowed success', async () => {
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            edit: async () => { throw new Error('gh issue edit failed') }
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/edit`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, title: 'New title' })
+        })
+        expect(response.status).toBe(502)
+    })
+})
+
+describe('POST /api/todo-boards/:id/items/status', () => {
+    beforeEach(() => {
+        process.env.HAPI_BOARD_OWNER = 'heavygee'
+        process.env.HAPI_BOARD_NUMBER = '6'
+    })
+
+    it('sets status via the setStatus action, resolving project number/owner/field from the board', async () => {
+        const calls: unknown[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            setStatus: async (target) => { calls.push(target) }
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/status`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, status: 'Done' })
+        })
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([{
+            host: 'github.com',
+            ownerLogin: 'heavygee',
+            projectNumber: 6,
+            url: VALID_ITEM_URL,
+            fieldName: 'Status',
+            status: 'Done'
+        }])
+    })
+
+    it('rejects a missing status value', async () => {
+        const app = await createApp(() => ({ data: {} }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/status`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL })
+        })
+        expect(response.status).toBe(400)
+    })
+
+    it('clears status via status: null, resolving to the setStatus action with status null (Codex review)', async () => {
+        const calls: unknown[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            setStatus: async (target) => { calls.push(target) }
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/status`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, status: null })
+        })
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([{
+            host: 'github.com',
+            ownerLogin: 'heavygee',
+            projectNumber: 6,
+            url: VALID_ITEM_URL,
+            fieldName: 'Status',
+            status: null
+        }])
+    })
+
+    // GitHub's 2026-11-23 native issue-statuses preview: a Project status
+    // write whose value name matches a CLOSED-category native status closes
+    // the real issue as a GitHub-side effect — confirmed live against
+    // heavygee/hapi-demo-board (assessment session, 2026-11-26). These guard
+    // the 409-before-write behavior that stops that from happening silently.
+    it('409s instead of calling setStatus when the target status resolves to a CLOSED native status', async () => {
+        const calls: unknown[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            setStatus: async (target) => { calls.push(target) }
+        }, undefined, undefined, undefined, undefined, () => ({
+            data: { repository: { planningStatuses: { nodes: [
+                { name: 'Todo', category: { state: 'OPEN' } },
+                { name: 'Done', category: { state: 'CLOSED' } }
+            ] } } }
+        }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/status`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, status: 'Done' })
+        })
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({
+            error: 'Setting status to "Done" will also close this issue on GitHub (native status "Done")',
+            requiresConfirmation: true,
+            nativeStatusName: 'Done'
+        })
+        expect(calls).toEqual([])
+    })
+
+    it('matches a closing native status case-insensitively (confirmed live: "In Progress" synced to native "In progress")', async () => {
+        const calls: unknown[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            setStatus: async (target) => { calls.push(target) }
+        }, undefined, undefined, undefined, undefined, () => ({
+            data: { repository: { planningStatuses: { nodes: [
+                { name: 'Not planned', category: { state: 'CLOSED' } }
+            ] } } }
+        }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/status`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, status: 'NOT PLANNED' })
+        })
+        expect(response.status).toBe(409)
+        expect(calls).toEqual([])
+    })
+
+    it('proceeds with setStatus once the caller resubmits with confirmCloses: true', async () => {
+        const calls: unknown[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            setStatus: async (target) => { calls.push(target) }
+        }, undefined, undefined, undefined, undefined, () => ({
+            data: { repository: { planningStatuses: { nodes: [
+                { name: 'Done', category: { state: 'CLOSED' } }
+            ] } } }
+        }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/status`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, status: 'Done', confirmCloses: true })
+        })
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([{
+            host: 'github.com',
+            ownerLogin: 'heavygee',
+            projectNumber: 6,
+            url: VALID_ITEM_URL,
+            fieldName: 'Status',
+            status: 'Done'
+        }])
+    })
+
+    it('proceeds with setStatus when the target status does not match any CLOSED native status', async () => {
+        const calls: unknown[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            setStatus: async (target) => { calls.push(target) }
+        }, undefined, undefined, undefined, undefined, () => ({
+            data: { repository: { planningStatuses: { nodes: [
+                { name: 'Todo', category: { state: 'OPEN' } },
+                { name: 'Done', category: { state: 'CLOSED' } }
+            ] } } }
+        }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/status`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, status: 'Todo' })
+        })
+        expect(response.status).toBe(200)
+        expect(calls.length).toBe(1)
+    })
+
+    it('fails open (proceeds with setStatus) when the native-status lookup errors, same as the gh-version probe above', async () => {
+        const calls: unknown[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            setStatus: async (target) => { calls.push(target) }
+        }, undefined, undefined, undefined, undefined, () => {
+            throw new Error('network blip')
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/status`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, status: 'Done' })
+        })
+        expect(response.status).toBe(200)
+        expect(calls.length).toBe(1)
+    })
+
+    it('fails open when the lookup returns a GraphQL-level error', async () => {
+        const calls: unknown[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            setStatus: async (target) => { calls.push(target) }
+        }, undefined, undefined, undefined, undefined, () => ({
+            errors: [{ message: 'Field \'planningStatuses\' doesn\'t exist on type \'Repository\'' }]
+        }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/status`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, status: 'Done' })
+        })
+        expect(response.status).toBe(200)
+        expect(calls.length).toBe(1)
+    })
+
+    it('never checks native status at all when clearing (status: null) — nothing to match against', async () => {
+        const planningStatusCalls: unknown[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            setStatus: async () => {}
+        }, undefined, undefined, undefined, undefined, (target) => {
+            planningStatusCalls.push(target)
+            return { data: { repository: { planningStatuses: { nodes: [] } } } }
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/status`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, status: null })
+        })
+        expect(response.status).toBe(200)
+        expect(planningStatusCalls).toEqual([])
+    })
+})
+
+describe('GET /api/todo-boards/:id/items/assignable-users', () => {
+    beforeEach(() => {
+        process.env.HAPI_BOARD_OWNER = 'heavygee'
+        process.env.HAPI_BOARD_NUMBER = '6'
+    })
+
+    it('fetches assignable users scoped to the item\'s own repo, not the board\'s project owner', async () => {
+        const calls: unknown[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, undefined, undefined, (target) => {
+            calls.push(target)
+            return {
+                data: {
+                    repository: {
+                        assignableUsers: {
+                            nodes: [
+                                { login: 'alice', avatarUrl: 'https://example.com/alice.png', name: 'Alice A' },
+                                { login: 'bob', avatarUrl: 'https://example.com/bob.png', name: null }
+                            ]
+                        }
+                    }
+                }
+            }
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/assignable-users?url=${encodeURIComponent(VALID_ITEM_URL)}`)
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            users: [
+                { login: 'alice', avatarUrl: 'https://example.com/alice.png', name: 'Alice A' },
+                { login: 'bob', avatarUrl: 'https://example.com/bob.png', name: null }
+            ]
+        })
+        expect(calls).toEqual([{ host: 'github.com', owner: 'heavygee', repo: 'hapi-demo-board' }])
+    })
+
+    it('forwards a trimmed search term as the GraphQL query filter (Codex review: a page with no pagination needed server-side search)', async () => {
+        const calls: unknown[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, undefined, undefined, (target) => {
+            calls.push(target)
+            return { data: { repository: { assignableUsers: { nodes: [] } } } }
+        })
+        const response = await app.request(
+            `/api/todo-boards/${DEFAULT_BOARD_ID}/items/assignable-users?url=${encodeURIComponent(VALID_ITEM_URL)}&search=${encodeURIComponent('  alice  ')}`
+        )
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([{ host: 'github.com', owner: 'heavygee', repo: 'hapi-demo-board', query: 'alice' }])
+    })
+
+    it('omits the query filter entirely for a blank/whitespace-only search term', async () => {
+        const calls: unknown[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, undefined, undefined, (target) => {
+            calls.push(target)
+            return { data: { repository: { assignableUsers: { nodes: [] } } } }
+        })
+        const response = await app.request(
+            `/api/todo-boards/${DEFAULT_BOARD_ID}/items/assignable-users?url=${encodeURIComponent(VALID_ITEM_URL)}&search=${encodeURIComponent('   ')}`
+        )
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([{ host: 'github.com', owner: 'heavygee', repo: 'hapi-demo-board', query: undefined }])
+    })
+
+    it('rejects a missing url query parameter', async () => {
+        const app = await createApp(() => ({ data: {} }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/assignable-users`)
+        expect(response.status).toBe(400)
+    })
+
+    it('404s for an unknown board', async () => {
+        const app = await createApp(() => ({ data: {} }))
+        const response = await app.request(`/api/todo-boards/unknown/items/assignable-users?url=${encodeURIComponent(VALID_ITEM_URL)}`)
+        expect(response.status).toBe(404)
+    })
+
+    it('403s for a non-default namespace', async () => {
+        const app = await createApp(() => ({ data: {} }), undefined, 'some-other-namespace')
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/assignable-users?url=${encodeURIComponent(VALID_ITEM_URL)}`)
+        expect(response.status).toBe(403)
+    })
+
+    it('rejects an item URL that is not a member of this board\'s project — same gate as every write action', async () => {
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, undefined, () => ({
+            data: { resource: { projectItems: { nodes: [] } } }
+        }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/assignable-users?url=${encodeURIComponent(VALID_ITEM_URL)}`)
+        expect(response.status).toBe(400)
+    })
+
+    it('surfaces a GraphQL-level error as a 502', async () => {
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, undefined, undefined, () => ({
+            errors: [{ message: 'boom' }]
+        }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/assignable-users?url=${encodeURIComponent(VALID_ITEM_URL)}`)
+        expect(response.status).toBe(502)
+    })
+})
+
+describe('GET /api/todo-boards/:id/items/comments', () => {
+    beforeEach(() => {
+        process.env.HAPI_BOARD_OWNER = 'heavygee'
+        process.env.HAPI_BOARD_NUMBER = '6'
+    })
+
+    const makeCommentNode = (overrides: Partial<{
+        id: string
+        author: { login: string; avatarUrl: string } | null
+        authorAssociation: string
+        body: string
+        createdAt: string
+        url: string
+        isMinimized: boolean
+        minimizedReason: string | null
+    }> = {}) => ({
+        id: 'IC_1',
+        author: { login: 'octocat', avatarUrl: 'https://example.com/octocat.png' },
+        authorAssociation: 'MEMBER',
+        body: 'Looks good to me',
+        createdAt: '2026-10-27T00:00:00Z',
+        url: 'https://github.com/heavygee/hapi-demo-board/issues/1#issuecomment-1',
+        isMinimized: false,
+        minimizedReason: null,
+        ...overrides
+    })
+
+    it('fetches comments for the item via a single resource(url:) query, scoped by host + url only', async () => {
+        const calls: unknown[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, undefined, undefined, undefined, undefined, (target) => {
+            calls.push(target)
+            return { data: { resource: { comments: { nodes: [makeCommentNode()] } } } }
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/comments?url=${encodeURIComponent(VALID_ITEM_URL)}`)
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            comments: [{
+                id: 'IC_1',
+                author: { login: 'octocat', avatarUrl: 'https://example.com/octocat.png' },
+                authorAssociation: 'MEMBER',
+                body: 'Looks good to me',
+                createdAt: '2026-10-27T00:00:00Z',
+                url: 'https://github.com/heavygee/hapi-demo-board/issues/1#issuecomment-1',
+                isMinimized: false,
+                minimizedReason: null
+            }]
+        })
+        expect(calls).toEqual([{ host: 'github.com', url: VALID_ITEM_URL }])
+    })
+
+    // Same resource(url:) + inline-fragment shape works unchanged for a PR —
+    // no isPullRequest branching needed, unlike a number-keyed
+    // issue(number:)/pullRequest(number:) pair would require.
+    it('reads comments for a PR item the same way, via the PullRequest fragment', async () => {
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, undefined, undefined, undefined, undefined, () => ({
+            data: { resource: { comments: { nodes: [makeCommentNode({ id: 'IC_pr' })] } } }
+        }))
+        const pullUrl = 'https://github.com/heavygee/hapi-demo-board/pull/9'
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/comments?url=${encodeURIComponent(pullUrl)}`)
+        expect(response.status).toBe(200)
+        const body = await response.json() as { comments: Array<{ id: string }> }
+        expect(body.comments.map(c => c.id)).toEqual(['IC_pr'])
+    })
+
+    it('drops a malformed (null) comment node instead of throwing', async () => {
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, undefined, undefined, undefined, undefined, () => ({
+            data: { resource: { comments: { nodes: [makeCommentNode(), null] } } }
+        }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/comments?url=${encodeURIComponent(VALID_ITEM_URL)}`)
+        expect(response.status).toBe(200)
+        const body = await response.json() as { comments: unknown[] }
+        expect(body.comments).toHaveLength(1)
+    })
+
+    it('maps a null comment author to null instead of crashing (deleted account)', async () => {
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, undefined, undefined, undefined, undefined, () => ({
+            data: { resource: { comments: { nodes: [makeCommentNode({ author: null })] } } }
+        }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/comments?url=${encodeURIComponent(VALID_ITEM_URL)}`)
+        expect(response.status).toBe(200)
+        const body = await response.json() as { comments: Array<{ author: unknown }> }
+        expect(body.comments[0]?.author).toBeNull()
+    })
+
+    it('rejects a missing url query parameter', async () => {
+        const app = await createApp(() => ({ data: {} }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/comments`)
+        expect(response.status).toBe(400)
+    })
+
+    it('404s for an unknown board', async () => {
+        const app = await createApp(() => ({ data: {} }))
+        const response = await app.request(`/api/todo-boards/unknown/items/comments?url=${encodeURIComponent(VALID_ITEM_URL)}`)
+        expect(response.status).toBe(404)
+    })
+
+    it('403s for a non-default namespace', async () => {
+        const app = await createApp(() => ({ data: {} }), undefined, 'some-other-namespace')
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/comments?url=${encodeURIComponent(VALID_ITEM_URL)}`)
+        expect(response.status).toBe(403)
+    })
+
+    it('rejects an item URL that is not a member of this board\'s project — same gate as every write action', async () => {
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, undefined, () => ({
+            data: { resource: { projectItems: { nodes: [] } } }
+        }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/comments?url=${encodeURIComponent(VALID_ITEM_URL)}`)
+        expect(response.status).toBe(400)
+    })
+
+    it('surfaces a GraphQL-level error as a 502', async () => {
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, undefined, undefined, undefined, undefined, () => ({
+            errors: [{ message: 'boom' }]
+        }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/comments?url=${encodeURIComponent(VALID_ITEM_URL)}`)
+        expect(response.status).toBe(502)
+    })
+})
+
+describe('POST /api/todo-boards/:id/items/assignees', () => {
+    beforeEach(() => {
+        process.env.HAPI_BOARD_OWNER = 'heavygee'
+        process.env.HAPI_BOARD_NUMBER = '6'
+    })
+
+    it('adds and removes assignees in a single call via the setAssignees action', async () => {
+        const calls: unknown[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            setAssignees: async (target, addLogins, removeLogins) => { calls.push([target, addLogins, removeLogins]) }
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/assignees`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, addLogins: ['alice'], removeLogins: ['bob'] })
+        })
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([[
+            { host: 'github.com', url: VALID_ITEM_URL, isPullRequest: false },
+            ['alice'],
+            ['bob']
+        ]])
+    })
+
+    it('rejects a request with neither addLogins nor removeLogins', async () => {
+        const app = await createApp(() => ({ data: {} }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/assignees`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL })
+        })
+        expect(response.status).toBe(400)
+    })
+
+    it('rejects a request with both arrays empty', async () => {
+        const app = await createApp(() => ({ data: {} }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/assignees`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, addLogins: [], removeLogins: [] })
+        })
+        expect(response.status).toBe(400)
+    })
+
+    it('404s for an unknown board', async () => {
+        const app = await createApp(() => ({ data: {} }))
+        const response = await app.request('/api/todo-boards/unknown/items/assignees', {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, addLogins: ['alice'] })
+        })
+        expect(response.status).toBe(404)
+    })
+
+    it('403s for a non-default namespace', async () => {
+        const app = await createApp(() => ({ data: {} }), undefined, 'some-other-namespace')
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/assignees`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, addLogins: ['alice'] })
+        })
+        expect(response.status).toBe(403)
+    })
+
+    it('rejects an item URL that is not a member of this board\'s project — same gate as every write action', async () => {
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, () => ({
+            data: { resource: { projectItems: { nodes: [] } } }
+        }))
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/assignees`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, addLogins: ['alice'] })
+        })
+        expect(response.status).toBe(400)
+    })
+
+    it('surfaces a failed gh invocation as a 502, not a silently-swallowed success', async () => {
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            setAssignees: async () => { throw new Error('gh issue edit failed') }
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items/assignees`, {
+            method: 'POST',
+            body: JSON.stringify({ url: VALID_ITEM_URL, addLogins: ['alice'] })
+        })
+        expect(response.status).toBe(502)
+    })
+})
+
+describe('GET /api/todo-boards/:id/issue-templates', () => {
+    beforeEach(() => {
+        process.env.HAPI_BOARD_OWNER = 'heavygee'
+        process.env.HAPI_BOARD_NUMBER = '6'
+    })
+
+    const BUG_REPORT_YAML = `
+name: Bug report
+description: File a bug report
+body:
+  - type: input
+    id: contact
+    attributes:
+      label: Contact
+    validations:
+      required: false
+`
+
+    it('404s for an unknown board', async () => {
+        const app = await createApp(() => ({ data: {} }))
+        const response = await app.request('/api/todo-boards/unknown/issue-templates?repo=heavygee/hapi')
+        expect(response.status).toBe(404)
+    })
+
+    it('403s for a non-default namespace', async () => {
+        const app = await createApp(() => ({ data: {} }), undefined, 'some-other-namespace')
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/hapi`, undefined)
+        expect(response.status).toBe(403)
+    })
+
+    it('400s for a missing or malformed repo query parameter', async () => {
+        const app = await createApp(() => ({ data: {} }))
+        const missing = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates`)
+        expect(missing.status).toBe(400)
+        const malformed = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=not-a-slug`)
+        expect(malformed.status).toBe(400)
+    })
+
+    it('returns blankAllowed: true with an empty template list when the repo has no .github/ISSUE_TEMPLATE directory at all', async () => {
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
+            () => ({ data: { repository: { isBlankIssuesEnabled: true, issueTemplateDir: null } } })
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/hapi`)
+        expect(response.status).toBe(200)
+        const body = await response.json() as { templates: unknown[]; blankAllowed: boolean; githubNewIssueUrl: string }
+        expect(body.templates).toEqual([])
+        expect(body.blankAllowed).toBe(true)
+        expect(body.githubNewIssueUrl).toBe('https://github.com/heavygee/hapi/issues/new/choose')
+    })
+
+    // Templates AND policy both inherit from .github here (review finding,
+    // tiann/hapi#2147, round 9→11): blankAllowed is the conjunction of the
+    // target's own isBlankIssuesEnabled (viewer-eligible: true) and the
+    // APPLICABLE config's blank_issues_enabled (inherited from .github's
+    // PUBLIC, eligible config.yml: false) — the viewer check alone isn't
+    // sufficient (it's eligible-to-this-viewer, not the repo's actual
+    // policy; round 11 found isBlankIssuesEnabled reads true for a
+    // WRITE-access viewer even on a repo whose own config disables blank
+    // issues), so the real policy still has to come from the applicable
+    // config.yml.
+    it('inherits both templates and blank-issue policy from the owner\'s .github repo when the target has no directory of its own', async () => {
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
+            (target: { repo: string }) => {
+                calls.push(target.repo)
+                if (target.repo === '.github') {
+                    return {
+                        data: {
+                            repository: {
+                                visibility: 'PUBLIC',
+                                issueTemplateDir: {
+                                    entries: [
+                                        { name: 'bug_report.yml', object: { text: BUG_REPORT_YAML } },
+                                        { name: 'config.yml', object: { text: 'blank_issues_enabled: false' } }
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                }
+                return { data: { repository: { isBlankIssuesEnabled: true, issueTemplateDir: null } } }
+            }
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/no-local-templates`)
+        expect(response.status).toBe(200)
+        const body = await response.json() as { templates: Array<{ id: string }>; blankAllowed: boolean }
+        expect(body.templates.map(t => t.id)).toEqual(['bug_report.yml'])
+        expect(body.blankAllowed).toBe(false)
+        expect(calls).toEqual(['no-local-templates', '.github'])
+    })
+
+    // Review finding: GitHub only inherits default community files from a
+    // PUBLIC .github repo — a private one (readable here only because the
+    // hub's gh account happens to have access) must not leak its templates
+    // into a board for a repo GitHub itself would never apply them to.
+    // blankAllowed stays true too: PRIVATE is determinately inapplicable
+    // (not unresolved), so its config.yml is ignored and the true default
+    // stands — same policy outcome as "no .github repo at all."
+    it('does not inherit templates from a private .github repo', async () => {
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
+            (target: { repo: string }) => {
+                calls.push(target.repo)
+                if (target.repo === '.github') {
+                    return {
+                        data: {
+                            repository: {
+                                visibility: 'PRIVATE',
+                                issueTemplateDir: {
+                                    entries: [
+                                        { name: 'bug_report.yml', object: { text: BUG_REPORT_YAML } },
+                                        { name: 'config.yml', object: { text: 'blank_issues_enabled: false' } }
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                }
+                return { data: { repository: { isBlankIssuesEnabled: true, issueTemplateDir: null } } }
+            }
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/no-local-templates`)
+        expect(response.status).toBe(200)
+        const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
+        expect(body.templates).toEqual([])
+        expect(body.blankAllowed).toBe(true)
+        expect(calls).toEqual(['no-local-templates', '.github'])
+    })
+
+    // Review finding (second pass): isPrivate is true for BOTH private and
+    // internal repos, so the first fix also wrongly rejected a managed-user
+    // organization's internal .github repo — GitHub's own default-community-
+    // files docs require inheriting from it for those orgs. visibility is
+    // the field that actually distinguishes PRIVATE from INTERNAL.
+    //
+    // Review finding (third pass): internal-repo inheritance is an EMU-org
+    // policy, not a general Enterprise-Cloud one, and nothing distinguishes
+    // the two via API — so this defaults to ineligible and requires an
+    // explicit operator opt-in for the EMU case (see the sibling test
+    // below for that case). Unlike the private-repo test above, INTERNAL
+    // without opt-in is genuinely unresolved (not determinately
+    // inapplicable) — so blankAllowed still fails closed here, even
+    // though the target's own isBlankIssuesEnabled is true.
+    it('does not inherit templates from an internal .github repo by default, and fails closed on blank issues', async () => {
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
+            (target: { repo: string }) => {
+                calls.push(target.repo)
+                if (target.repo === '.github') {
+                    return {
+                        data: {
+                            repository: {
+                                visibility: 'INTERNAL',
+                                issueTemplateDir: {
+                                    entries: [
+                                        { name: 'bug_report.yml', object: { text: BUG_REPORT_YAML } },
+                                        { name: 'config.yml', object: { text: 'blank_issues_enabled: false' } }
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                }
+                return { data: { repository: { isBlankIssuesEnabled: true, issueTemplateDir: null } } }
+            }
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/no-local-templates`)
+        expect(response.status).toBe(200)
+        const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
+        expect(body.templates).toEqual([])
+        expect(body.blankAllowed).toBe(false)
+        expect(calls).toEqual(['no-local-templates', '.github'])
+    })
+
+    it('inherits from an internal .github repo when the operator opts in (GitHub Enterprise Managed User org)', async () => {
+        process.env.HAPI_BOARD_ALLOW_INTERNAL_GITHUB_FALLBACK = '1'
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
+            (target: { repo: string }) => {
+                calls.push(target.repo)
+                if (target.repo === '.github') {
+                    return {
+                        data: {
+                            repository: {
+                                visibility: 'INTERNAL',
+                                issueTemplateDir: {
+                                    entries: [
+                                        { name: 'bug_report.yml', object: { text: BUG_REPORT_YAML } },
+                                        { name: 'config.yml', object: { text: 'blank_issues_enabled: false' } }
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                }
+                return { data: { repository: { isBlankIssuesEnabled: true, issueTemplateDir: null } } }
+            }
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/no-local-templates`)
+        expect(response.status).toBe(200)
+        const body = await response.json() as { templates: Array<{ id: string }>; blankAllowed: boolean }
+        expect(body.templates.map(t => t.id)).toEqual(['bug_report.yml'])
+        expect(body.blankAllowed).toBe(false)
+        expect(calls).toEqual(['no-local-templates', '.github'])
+    })
+
+    it('does not fall back to .github when the target repo already has a usable template of its own', async () => {
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
+            (target: { repo: string }) => {
+                calls.push(target.repo)
+                return {
+                    data: {
+                        repository: {
+                            issueTemplateDir: { entries: [{ name: 'bug_report.yml', object: { text: BUG_REPORT_YAML } }] }
+                        }
+                    }
+                }
+            }
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/hapi`)
+        expect(response.status).toBe(200)
+        expect(calls).toEqual(['hapi'])
+    })
+
+    // Review finding (tiann/hapi#2147): a directory that *exists* but defines
+    // nothing GitHub's own chooser would recognize — a README.md documenting
+    // the templates, or genuinely no entries at all — must still trigger the
+    // owner's `.github` inheritance fallback for the template LIST. The old
+    // check only asked whether the directory was present, not whether it
+    // had a template or config.yml.
+    it('falls back to .github when the target directory exists but only has a README', async () => {
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
+            (target: { repo: string }) => {
+                calls.push(target.repo)
+                if (target.repo === '.github') {
+                    return {
+                        data: {
+                            repository: {
+                                visibility: 'PUBLIC',
+                                issueTemplateDir: {
+                                    entries: [{ name: 'config.yml', object: { text: 'blank_issues_enabled: false' } }]
+                                }
+                            }
+                        }
+                    }
+                }
+                return {
+                    data: {
+                        repository: {
+                            isBlankIssuesEnabled: true,
+                            issueTemplateDir: { entries: [{ name: 'README.md', object: { text: 'See the templates above.' } }] }
+                        }
+                    }
+                }
+            }
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/readme-only`)
+        expect(response.status).toBe(200)
+        const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
+        expect(body.templates).toEqual([])
+        // The applicable policy inherits from .github's config.yml (false)
+        // even though the target's own isBlankIssuesEnabled is true — the
+        // conjunction needs both to say yes.
+        expect(body.blankAllowed).toBe(false)
+        expect(calls).toEqual(['readme-only', '.github'])
+    })
+
+    // Review finding (tiann/hapi#2147, follow-up on the README-only fix
+    // above): a directory entry that *is* a .yml file still gets pushed
+    // into the picker's template list as a `kind: 'unsupported'` entry
+    // even when it's genuinely malformed (not just a feature HAPI doesn't
+    // render) — unlike README.md, nothing filters it out of the discovery
+    // loop. Treating its mere presence as "local coverage" blocked the
+    // owner's inheritance fallback for a repo whose only local file
+    // GitHub's own chooser would never have offered either.
+    it('falls back to .github when the target directory exists but only has a malformed YAML file', async () => {
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
+            (target: { repo: string }) => {
+                calls.push(target.repo)
+                if (target.repo === '.github') {
+                    return {
+                        data: {
+                            repository: {
+                                visibility: 'PUBLIC',
+                                issueTemplateDir: {
+                                    entries: [{ name: 'config.yml', object: { text: 'blank_issues_enabled: false' } }]
+                                }
+                            }
+                        }
+                    }
+                }
+                return {
+                    data: {
+                        repository: {
+                            isBlankIssuesEnabled: true,
+                            issueTemplateDir: { entries: [{ name: 'broken.yml', object: { text: 'name: Broken\nbody: []' } }] }
+                        }
+                    }
+                }
+            }
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/malformed-only`)
+        expect(response.status).toBe(200)
+        // Inheritance replaces the whole TEMPLATE LIST with .github's own
+        // content (just its config.yml here, no templates of its own) —
+        // the malformed local file isn't merged in alongside it. The
+        // applicable policy also inherits from that same config.yml.
+        const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
+        expect(body.templates).toEqual([])
+        expect(body.blankAllowed).toBe(false)
+        expect(calls).toEqual(['malformed-only', '.github'])
+    })
+
+    // Review finding (tiann/hapi#2147, follow-up): a config.yml that
+    // exists but doesn't parse used to count as hasConfig: true, wrongly
+    // blocking inheritance of the owner's TEMPLATE LIST even though the
+    // local file provides no real configuration to override it with.
+    it('falls back to .github when the target directory exists but only has an unparseable config.yml', async () => {
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
+            (target: { repo: string }) => {
+                calls.push(target.repo)
+                if (target.repo === '.github') {
+                    return {
+                        data: {
+                            repository: {
+                                visibility: 'PUBLIC',
+                                issueTemplateDir: {
+                                    entries: [{ name: 'config.yml', object: { text: 'blank_issues_enabled: false' } }]
+                                }
+                            }
+                        }
+                    }
+                }
+                return {
+                    data: {
+                        repository: {
+                            isBlankIssuesEnabled: true,
+                            issueTemplateDir: { entries: [{ name: 'config.yml', object: { text: ': : not yaml {{{' } }] }
+                        }
+                    }
+                }
+            }
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/bad-config`)
+        expect(response.status).toBe(200)
+        const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
+        expect(body.templates).toEqual([])
+        expect(body.blankAllowed).toBe(false)
+        expect(calls).toEqual(['bad-config', '.github'])
+    })
+
+    // Review finding (tiann/hapi#2147, follow-up): a config.yml containing
+    // a bare YAML scalar parses without throwing — asRecord silently
+    // coerces it to {}, which the prior fix's try/catch-only check read as
+    // a valid local override even though there's no real configuration in it.
+    it('falls back to .github when the target directory exists but only has a config.yml that parses to a scalar', async () => {
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
+            (target: { repo: string }) => {
+                calls.push(target.repo)
+                if (target.repo === '.github') {
+                    return {
+                        data: {
+                            repository: {
+                                visibility: 'PUBLIC',
+                                issueTemplateDir: {
+                                    entries: [{ name: 'config.yml', object: { text: 'blank_issues_enabled: false' } }]
+                                }
+                            }
+                        }
+                    }
+                }
+                return {
+                    data: {
+                        repository: {
+                            isBlankIssuesEnabled: true,
+                            issueTemplateDir: { entries: [{ name: 'config.yml', object: { text: 'true' } }] }
+                        }
+                    }
+                }
+            }
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/scalar-config`)
+        expect(response.status).toBe(200)
+        const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
+        expect(body.templates).toEqual([])
+        expect(body.blankAllowed).toBe(false)
+        expect(calls).toEqual(['scalar-config', '.github'])
+    })
+
+    it('does not recurse when the target repo being queried is already .github', async () => {
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
+            (target: { repo: string }) => {
+                calls.push(target.repo)
+                return { data: { repository: { issueTemplateDir: null } } }
+            }
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/.github`)
+        expect(response.status).toBe(200)
+        expect(calls).toEqual(['.github'])
+    })
+
+    it('falls back to the empty result when the owner has no .github repo either', async () => {
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
+            () => ({ data: { repository: { isBlankIssuesEnabled: true, issueTemplateDir: null } } })
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/no-local-templates`)
+        expect(response.status).toBe(200)
+        const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
+        expect(body.templates).toEqual([])
+        expect(body.blankAllowed).toBe(true)
+    })
+
+    // Review finding: `gh api graphql` treats GitHub's NOT_FOUND for a
+    // nonexistent repo as a command failure and rejects, rather than
+    // resolving with an `errors` array in the response body — the far more
+    // common real-world case than the "resolves with errors" shape the
+    // previous test covers, since most owners have no `.github` repo at
+    // all. Without a dedicated try/catch around the optional fallback, this
+    // rejection reached the route's outer catch and 502'd "New card" for
+    // the ordinary case of a valid repo with no templates of its own.
+    //
+    // Still returns 200 with an empty template list — that part of the
+    // outcome doesn't change. blankAllowed fails closed here even though
+    // the target's own isBlankIssuesEnabled is true (review finding,
+    // tiann/hapi#2147, round 11, narrowed to Organization owners in round
+    // 13 — see the User-owner sibling below for the opposite outcome):
+    // NOT_FOUND on `.github` means "can't read it," not "it doesn't
+    // exist," for an ORGANIZATION owner specifically, because an eligible
+    // internal `.github` repo could be hidden from this credential (round
+    // 10's EMU reasoning) — this hub can't rule that out, so applicability
+    // stays unresolved and the policy half of the answer fails closed
+    // regardless of what the viewer-eligibility half says.
+    it('fails closed on blankAllowed even though the target\'s own isBlankIssuesEnabled is true, when the .github lookup rejects with NOT_FOUND for an Organization owner', async () => {
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
+            (target: { repo: string }) => {
+                calls.push(target.repo)
+                if (target.repo === '.github') {
+                    throw new GhGraphqlNotFoundError("gh api graphql failed: GraphQL: Could not resolve to a Repository with the name '.github'. (repository)")
+                }
+                return {
+                    data: {
+                        repositoryOwner: { __typename: 'Organization' },
+                        repository: { isBlankIssuesEnabled: true, issueTemplateDir: null }
+                    }
+                }
+            }
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/no-local-templates`)
+        expect(response.status).toBe(200)
+        const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
+        expect(body.templates).toEqual([])
+        expect(body.blankAllowed).toBe(false)
+        expect(calls).toEqual(['no-local-templates', '.github'])
+    })
+
+    // The User-owner opposite of the test above (review finding,
+    // tiann/hapi#2147, round 13, confirmed against tiann/eadb:
+    // isBlankIssuesEnabled: true at viewerPermission: READ — no elevated
+    // access, so that true is genuinely policy-derived). A personal
+    // account's eligible defaults can only ever come from a PUBLIC
+    // `.github` repo — never PRIVATE, and INTERNAL isn't even a
+    // visibility a personal account's repo can have — and a public repo
+    // is visible to any authenticated credential, so this hub's own
+    // authenticated NOT_FOUND already proves none exists. That's a
+    // determinate absence, not an unresolved one: blankAllowed survives.
+    it('does not fail closed on blankAllowed when the .github lookup rejects with NOT_FOUND for a personal (User) owner', async () => {
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
+            (target: { repo: string }) => {
+                calls.push(target.repo)
+                if (target.repo === '.github') {
+                    throw new GhGraphqlNotFoundError("gh api graphql failed: GraphQL: Could not resolve to a Repository with the name '.github'. (repository)")
+                }
+                return {
+                    data: {
+                        repositoryOwner: { __typename: 'User' },
+                        repository: { isBlankIssuesEnabled: true, issueTemplateDir: null }
+                    }
+                }
+            }
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/no-local-templates`)
+        expect(response.status).toBe(200)
+        const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
+        expect(body.templates).toEqual([])
+        expect(body.blankAllowed).toBe(true)
+        expect(calls).toEqual(['no-local-templates', '.github'])
+    })
+
+    // Sibling of the test above with the viewer-eligibility half ALSO
+    // false, just to pin that either half failing is enough on its own —
+    // the conjunction doesn't require both reasons to agree.
+    it('also fails closed when the target\'s own isBlankIssuesEnabled is false and .github is unreadable', async () => {
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
+            (target: { repo: string }) => {
+                if (target.repo === '.github') {
+                    throw new GhGraphqlNotFoundError("gh api graphql failed: GraphQL: Could not resolve to a Repository with the name '.github'. (repository)")
+                }
+                return { data: { repository: { isBlankIssuesEnabled: false, issueTemplateDir: null } } }
+            }
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/no-local-templates`)
+        expect(response.status).toBe(200)
+        const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
+        expect(body.templates).toEqual([])
+        expect(body.blankAllowed).toBe(false)
+    })
+
+    // Review finding, second pass: the first fix swallowed *every* error from
+    // the .github fallback, which would also hide a genuine auth/rate-limit/
+    // transport failure on that specific call as if it just meant "no
+    // inherited templates" — silently serving the wrong (empty) policy for a
+    // repo whose .github fallback might really have templates. Only
+    // GhGraphqlNotFoundError (the repo genuinely doesn't exist) should be
+    // swallowed; anything else must still 502.
+    it('still 502s when the .github lookup fails for a reason other than NOT_FOUND', async () => {
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
+            (target: { repo: string }) => {
+                if (target.repo === '.github') {
+                    throw new Error('gh api graphql failed: HTTP 401: Bad credentials')
+                }
+                return { data: { repository: { issueTemplateDir: null } } }
+            }
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/no-local-templates`)
+        expect(response.status).toBe(502)
+    })
+
+    it('parses .yml forms and .md legacy templates, skips config.yml as a template entry', async () => {
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
+            () => ({
+                data: {
+                    repository: {
+                        isBlankIssuesEnabled: false,
+                        issueTemplateDir: {
+                            entries: [
+                                { name: 'bug_report.yml', object: { text: BUG_REPORT_YAML } },
+                                { name: 'feature_request.md', object: { text: '---\nname: Feature\n---\nBody text' } },
+                                { name: 'config.yml', object: { text: 'blank_issues_enabled: false' } }
+                            ]
+                        }
+                    }
+                }
+            })
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/hapi`)
+        expect(response.status).toBe(200)
+        const body = await response.json() as { templates: Array<{ id: string; kind: string }>; blankAllowed: boolean; githubNewIssueUrl: string }
+        expect(body.templates.map(t => t.id)).toEqual(['bug_report.yml', 'feature_request.md'])
+        expect(body.templates[0]?.kind).toBe('form')
+        expect(body.templates[1]?.kind).toBe('legacy')
+        expect(body.blankAllowed).toBe(false)
+        expect(body.githubNewIssueUrl).toBe('https://github.com/heavygee/hapi/issues/new/choose')
+    })
+
+    it('excludes README.md from the template list — a widespread convention for documenting the directory, not a template GitHub itself would offer', async () => {
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
+            () => ({
+                data: {
+                    repository: {
+                        issueTemplateDir: {
+                            entries: [
+                                { name: 'README.md', object: { text: 'These templates follow our usual format.' } },
+                                { name: 'feature_request.md', object: { text: '---\nname: Feature\n---\nBody text' } }
+                            ]
+                        }
+                    }
+                }
+            })
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/hapi`)
+        const body = await response.json() as { templates: Array<{ id: string }> }
+        expect(body.templates.map(t => t.id)).toEqual(['feature_request.md'])
+    })
+
+    it('excludes a non-README .md with no valid name/about frontmatter from the template list', async () => {
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
+            () => ({
+                data: {
+                    repository: {
+                        isBlankIssuesEnabled: false,
+                        issueTemplateDir: {
+                            entries: [
+                                { name: 'notes.md', object: { text: 'Just some ordinary notes, no frontmatter at all.' } },
+                                { name: 'config.yml', object: { text: 'blank_issues_enabled: false' } }
+                            ]
+                        }
+                    }
+                }
+            })
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/hapi`)
+        const body = await response.json() as { templates: Array<{ id: string }>; blankAllowed: boolean }
+        expect(body.templates).toEqual([])
+        expect(body.blankAllowed).toBe(false)
+    })
+
+    it('honors isBlankIssuesEnabled: false even when every template is unsupported (operator ruling, hapi#238: do not fall back to blank)', async () => {
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
+            () => ({
+                data: {
+                    repository: {
+                        isBlankIssuesEnabled: false,
+                        issueTemplateDir: {
+                            entries: [
+                                { name: 'weird.yml', object: { text: 'name: Weird\nbody:\n  - type: some-future-type\n    id: x\n    attributes:\n      label: X' } },
+                                { name: 'config.yml', object: { text: 'blank_issues_enabled: false' } }
+                            ]
+                        }
+                    }
+                }
+            })
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/hapi`)
+        const body = await response.json() as { templates: Array<{ kind: string }>; blankAllowed: boolean; githubNewIssueUrl: string }
+        expect(body.templates[0]?.kind).toBe('unsupported')
+        expect(body.blankAllowed).toBe(false)
+        expect(body.githubNewIssueUrl).toBe('https://github.com/heavygee/hapi/issues/new/choose')
+    })
+
+    it('surfaces a GraphQL-level error as a 502', async () => {
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
+            () => ({ errors: [{ message: 'rate limited' }] })
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/hapi`)
+        expect(response.status).toBe(502)
+    })
+})
+
+describe('POST /api/todo-boards/:id/items (create a card)', () => {
+    beforeEach(() => {
+        process.env.HAPI_BOARD_OWNER = 'heavygee'
+        process.env.HAPI_BOARD_NUMBER = '6'
+    })
+
+    it('creates the issue then adds it to the project, in that order, and reports the created url', async () => {
+        const calls: string[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            createIssue: async (target) => {
+                calls.push(`createIssue:${target.repo}`)
+                return 'https://github.com/heavygee/hapi/issues/42'
+            },
+            addItemToProject: async (target) => {
+                calls.push(`addItemToProject:${target.issueUrl}`)
+            }
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({ repo: 'heavygee/hapi', title: 'New bug', body: '### What\n\nBroke.', templateId: null, templateRevision: null, labels: ['bug'], assignees: [] })
+        })
+        expect(response.status).toBe(200)
+        const body = await response.json() as { ok: true; url: string }
+        expect(body.url).toBe('https://github.com/heavygee/hapi/issues/42')
+        expect(calls).toEqual(['createIssue:heavygee/hapi', 'addItemToProject:https://github.com/heavygee/hapi/issues/42'])
+    })
+
+    // Regression (bot review, hapi#238): the route used to trust whatever
+    // the client sent with no re-check against the repo's CURRENT policy —
+    // a maintainer disabling blank issues between picker-open and submit
+    // left a window where this route filed one anyway.
+    it('rejects a blank-issue submission when the repo currently disables blank issues', async () => {
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined,
+            {
+                ...UNUSED_ACTIONS,
+                createIssue: async () => { calls.push('should-not-be-called'); return 'https://github.com/heavygee/hapi/issues/42' }
+            },
+            ALWAYS_MEMBER, undefined,
+            () => ({ data: { repository: { isBlankIssuesEnabled: false, issueTemplateDir: null } } })
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({ repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: null, templateRevision: null })
+        })
+        expect(response.status).toBe(409)
+        expect(calls).toEqual([])
+    })
+
+    // Review finding (tiann/hapi#2147, round 11): blankIssuesEnabled is read
+    // directly from the target's own isBlankIssuesEnabled (GitHub's own,
+    // already inheritance-resolved field) — the write route must respect
+    // it the same way the picker does, independent of whether `.github`
+    // itself is public, private, readable, or exists at all. The prior
+    // version of this coverage asserted outcomes reconstructed from
+    // `.github`'s own visibility/config.yml (PRIVATE vs INTERNAL), which
+    // no longer has anything to do with authorization on either route.
+    it('rejects a blank-issue submission when the target\'s own isBlankIssuesEnabled is false', async () => {
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined,
+            {
+                ...UNUSED_ACTIONS,
+                createIssue: async () => { calls.push('should-not-be-called'); return 'https://github.com/heavygee/hapi/issues/42' }
+            },
+            ALWAYS_MEMBER, undefined,
+            () => ({ data: { repository: { isBlankIssuesEnabled: false, issueTemplateDir: null } } })
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({ repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: null, templateRevision: null })
+        })
+        expect(response.status).toBe(409)
+        expect(calls).toEqual([])
+    })
+
+    // Review finding (round 10): a current, revision-matching template was
+    // enough to pass the old checks even if the submitted answers didn't
+    // satisfy the template's own required/min_length rules — the request
+    // schema carried no answers at all, so there was nothing to validate.
+    // The hub must now derive the body itself from CURRENT fields + the
+    // submitted answers (same formatIssueBody the picker's preview uses),
+    // not trust whatever markdown the client rendered.
+    const FORM_WITH_REQUIRED_FIELD_YAML = `
+name: Bug report
+description: File a bug report
+labels: [bug, needs-triage]
+assignees: [octocat]
+body:
+  - type: input
+    id: contact
+    attributes:
+      label: Contact
+    validations:
+      required: true
+      min_length: 3
+`
+    const formTemplateRevision = createHash('sha256').update(FORM_WITH_REQUIRED_FIELD_YAML).digest('hex')
+
+    // Review finding (round 10, bot re-raise): the body derivation above
+    // closed one half of the client-trust gap, but labels/assignees were
+    // still whatever the client sent — a submission with a current,
+    // revision-matching template could still carry labels or assignees
+    // the template itself never declared. These are template policy the
+    // same way blank_issues_enabled is, so they must come from the CURRENT
+    // template too, not the client's draft of it.
+    it('derives the issue body, labels, and assignees from the current template, not the client-supplied values', async () => {
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined,
+            {
+                ...UNUSED_ACTIONS,
+                createIssue: async (target) => {
+                    calls.push(`createIssue:${target.repo}:${target.body}:${target.labels.join(',')}:${target.assignees.join(',')}`)
+                    return 'https://github.com/heavygee/hapi/issues/42'
+                },
+                addItemToProject: async (target) => {
+                    calls.push(`addItemToProject:${target.issueUrl}`)
+                }
+            },
+            ALWAYS_MEMBER, undefined,
+            () => ({
+                data: {
+                    repository: {
+                        issueTemplateDir: {
+                            entries: [{ name: 'bug_report.yml', object: { text: FORM_WITH_REQUIRED_FIELD_YAML } }]
+                        }
+                    }
+                }
+            })
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({
+                repo: 'heavygee/hapi',
+                title: 'T',
+                // The client's own rendered body AND labels/assignees are
+                // deliberately wrong here — proves the hub re-derives all
+                // three from the current template rather than trusting them.
+                body: 'this should never reach GitHub',
+                labels: ['spoofed-label'],
+                assignees: ['spoofed-assignee'],
+                answers: [{ kind: 'input', id: 'contact', value: 'me@example.com' }],
+                templateId: 'bug_report.yml',
+                templateRevision: formTemplateRevision
+            })
+        })
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([
+            'createIssue:heavygee/hapi:### Contact\n\nme@example.com:bug,needs-triage:octocat',
+            'addItemToProject:https://github.com/heavygee/hapi/issues/42'
+        ])
+    })
+
+    it('rejects a submission whose answers do not satisfy the current template\'s required fields', async () => {
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined,
+            {
+                ...UNUSED_ACTIONS,
+                createIssue: async () => { calls.push('should-not-be-called'); return 'https://github.com/heavygee/hapi/issues/42' }
+            },
+            ALWAYS_MEMBER, undefined,
+            () => ({
+                data: {
+                    repository: {
+                        issueTemplateDir: {
+                            entries: [{ name: 'bug_report.yml', object: { text: FORM_WITH_REQUIRED_FIELD_YAML } }]
+                        }
+                    }
+                }
+            })
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({
+                repo: 'heavygee/hapi',
+                title: 'T',
+                body: 'B',
+                // No answers at all — a client that skips its own
+                // validation (bug, or a non-browser caller) must not be
+                // able to file past the hub's own gate.
+                answers: [],
+                templateId: 'bug_report.yml',
+                templateRevision: formTemplateRevision
+            })
+        })
+        expect(response.status).toBe(400)
+        expect(calls).toEqual([])
+    })
+
+    it('rejects a submission against a template that no longer exists', async () => {
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined,
+            {
+                ...UNUSED_ACTIONS,
+                createIssue: async () => { calls.push('should-not-be-called'); return 'https://github.com/heavygee/hapi/issues/42' }
+            },
+            ALWAYS_MEMBER, undefined,
+            () => ({ data: { repository: { issueTemplateDir: { entries: [] } } } })
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({ repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: 'bug_report.yml', templateRevision: 'any' })
+        })
+        expect(response.status).toBe(409)
+        expect(calls).toEqual([])
+    })
+
+    // Regression (bot review, hapi#238, follow-up): templateId existing
+    // isn't enough — a maintainer can edit a template's fields/labels in
+    // place between picker-open and submit, same id, different content.
+    //
+    // The fixture must be a genuinely USABLE template (bot review,
+    // tiann/hapi#2147, follow-up) — an earlier version of this test used a
+    // form with no `description` and a markdown-only body, which
+    // `parseIssueFormYaml` now rejects as `unsupported` on its own merits
+    // (two independent, unrelated fixes landed earlier this same PR). That
+    // made the request 409 via the EARLIER "this template is no longer
+    // available" branch (current template unresolvable) rather than the
+    // revision-mismatch branch this test claims to exercise — both return
+    // the same `code: 'template_conflict'`, so the assertion passed for
+    // the wrong reason without ever reaching `current.revision !==
+    // templateRevision` at all. Asserting the exact message (not just the
+    // shared code) keeps that distinction honest going forward.
+    it('rejects a submission against a template whose content changed since the picker fetched it', async () => {
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined,
+            {
+                ...UNUSED_ACTIONS,
+                createIssue: async () => { calls.push('should-not-be-called'); return 'https://github.com/heavygee/hapi/issues/42' }
+            },
+            ALWAYS_MEMBER, undefined,
+            () => ({
+                data: {
+                    repository: {
+                        issueTemplateDir: {
+                            entries: [
+                                { name: 'bug_report.yml', object: { text: 'name: Bug report\ndescription: File a bug report\nbody:\n  - type: input\n    id: contact\n    attributes:\n      label: Contact\n' } }
+                            ]
+                        }
+                    }
+                }
+            })
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({
+                repo: 'heavygee/hapi', title: 'T', body: 'B',
+                templateId: 'bug_report.yml', templateRevision: 'stale-revision-from-before-the-edit'
+            })
+        })
+        expect(response.status).toBe(409)
+        // code (review finding, hapi#2147, follow-up): the dialog's own
+        // template_conflict handling needs a machine-readable signal, not
+        // just this message's wording, to know it's safe to refetch and
+        // send the user back to pick again rather than retry as-is.
+        const body = await response.json() as { code: string, error: string }
+        expect(body.code).toBe('template_conflict')
+        expect(body.error).toBe('This template has changed since you opened it — review it again and try again')
+        expect(calls).toEqual([])
+    })
+
+    it('404s for an unknown board', async () => {
+        const app = await createApp(() => ({ data: {} }))
+        const response = await app.request('/api/todo-boards/unknown/items', {
+            method: 'POST',
+            body: JSON.stringify({ repo: 'heavygee/hapi', title: 'T', body: 'B' })
+        })
+        expect(response.status).toBe(404)
+    })
+
+    it('403s for a non-default namespace', async () => {
+        const app = await createApp(() => ({ data: {} }), undefined, 'some-other-namespace')
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({ repo: 'heavygee/hapi', title: 'T', body: 'B' })
+        })
+        expect(response.status).toBe(403)
+    })
+
+    it('400s for a malformed body (bad repo slug, missing title)', async () => {
+        const app = await createApp(() => ({ data: {} }))
+        const badRepo = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({ repo: 'not-a-slug', title: 'T', body: 'B', templateId: null, templateRevision: null })
+        })
+        expect(badRepo.status).toBe(400)
+        const missingTitle = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({ repo: 'heavygee/hapi', body: 'B', templateId: null, templateRevision: null })
+        })
+        expect(missingTitle.status).toBe(400)
+    })
+
+    // Review finding (tiann/hapi#2147, follow-up): GitHub CLI applies
+    // assignees as a mutation separate from issue creation, and prints no
+    // URL at all if that second mutation fails — confirmed against gh
+    // CLI's own source (api.IssueCreate, v2.97.0). The issue is real and
+    // already exists; the route must report its URL the same way it
+    // already does for a failed addItemToProject, not a bare 502 that
+    // reads as "nothing happened" and invites a duplicate-creating retry.
+    it('surfaces a created-issue-but-assignees-failed error distinctly, including the created url', async () => {
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            createIssue: async () => {
+                throw new CreateIssueAssigneesFailedError('https://github.com/heavygee/hapi/issues/42', 'could not find user "ghost"')
+            },
+            addItemToProject: async () => { throw new Error('should-not-be-called') }
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({ repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: null, templateRevision: null })
+        })
+        expect(response.status).toBe(502)
+        const body = await response.json() as { error: string; url: string; recoveryToken: string }
+        expect(body.error).toContain('https://github.com/heavygee/hapi/issues/42')
+        expect(body.error).toContain('could not find user "ghost"')
+        expect(body.url).toBe('https://github.com/heavygee/hapi/issues/42')
+        // The token must bind the exact board/repo/url/assignees this
+        // submission resolved — not just be present (bot review,
+        // tiann/hapi#2147, follow-up).
+        const verification = await verifyBoardItemRecoveryToken(TEST_JWT_SECRET, body.recoveryToken)
+        expect(verification).toEqual({ ok: true, claims: { boardId: DEFAULT_BOARD_ID, repo: 'heavygee/hapi', url: 'https://github.com/heavygee/hapi/issues/42', assignees: [] } })
+    })
+
+    it('surfaces a failed createIssue as a 502 without attempting to add anything to the project', async () => {
+        const calls: string[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            createIssue: async () => { throw new Error('gh issue create failed: repo not found') },
+            addItemToProject: async () => { calls.push('should-not-be-called') }
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({ repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: null, templateRevision: null })
+        })
+        expect(response.status).toBe(502)
+        expect(calls).toEqual([])
+    })
+
+    it('surfaces a created-but-not-added-to-board failure distinctly, including the created url', async () => {
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            createIssue: async () => 'https://github.com/heavygee/hapi/issues/42',
+            addItemToProject: async () => { throw new Error('gh project item-add failed') }
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({ repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: null, templateRevision: null })
+        })
+        expect(response.status).toBe(502)
+        const body = await response.json() as { error: string; url: string; recoveryToken: string }
+        expect(body.error).toContain('https://github.com/heavygee/hapi/issues/42')
+        expect(body.url).toBe('https://github.com/heavygee/hapi/issues/42')
+        const verification = await verifyBoardItemRecoveryToken(TEST_JWT_SECRET, body.recoveryToken)
+        expect(verification).toEqual({ ok: true, claims: { boardId: DEFAULT_BOARD_ID, repo: 'heavygee/hapi', url: 'https://github.com/heavygee/hapi/issues/42', assignees: [] } })
+    })
+
+    // Regression (bot review, hapi#238): a retry after "created but not
+    // added to board" used to re-run createIssue too, filing a second,
+    // duplicate issue. A recovery token makes the retry attach-only.
+    it('retries only the project-attach step for a recoveryToken, without creating a second issue', async () => {
+        const calls: string[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            createIssue: async () => { calls.push('createIssue'); return 'https://github.com/heavygee/hapi/issues/99' },
+            addItemToProject: async (target) => { calls.push(`addItemToProject:${target.issueUrl}`) }
+        })
+        const recoveryToken = await signBoardItemRecoveryToken(TEST_JWT_SECRET, {
+            boardId: DEFAULT_BOARD_ID, repo: 'heavygee/hapi', url: 'https://github.com/heavygee/hapi/issues/42', assignees: []
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({
+                repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: null, templateRevision: null,
+                recoveryToken
+            })
+        })
+        expect(response.status).toBe(200)
+        const body = await response.json() as { ok: true; url: string }
+        expect(body.url).toBe('https://github.com/heavygee/hapi/issues/42')
+        expect(calls).toEqual(['addItemToProject:https://github.com/heavygee/hapi/issues/42'])
+    })
+
+    // Bot review, tiann/hapi#2147, follow-up: an owner-namespace request
+    // could otherwise point a retry at an arbitrary issue in the right repo
+    // and have the hub edit its assignees or attach it to the board, despite
+    // Boards never having created it — a raw existingIssueUrl field is no
+    // longer accepted at all; the token is the only trust boundary. Also
+    // covers the original repo-mismatch case: a token signed for one repo
+    // must not validate against a submission that changed repos.
+    it('rejects a retry-attach whose recovery token was signed for a different repo', async () => {
+        const calls: string[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            createIssue: async () => { calls.push('should-not-be-called'); return 'https://github.com/heavygee/hapi/issues/99' },
+            addItemToProject: async (target) => { calls.push(`should-not-be-called:${target.issueUrl}`) }
+        })
+        const recoveryToken = await signBoardItemRecoveryToken(TEST_JWT_SECRET, {
+            boardId: DEFAULT_BOARD_ID, repo: 'heavygee/hapi', url: 'https://github.com/heavygee/hapi/issues/42', assignees: []
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({
+                repo: 'heavygee/a-different-repo', title: 'T', body: 'B', templateId: null, templateRevision: null,
+                recoveryToken
+            })
+        })
+        expect(response.status).toBe(400)
+        expect(calls).toEqual([])
+    })
+
+    // Bot review, tiann/hapi#2147, follow-up: a raw URL is no longer a valid
+    // way to request a retry at all — it must be a token this hub itself
+    // signed. A bare existingIssueUrl-shaped body (the pre-fix request
+    // shape) must not be mistaken for a fresh creation either, since the
+    // schema no longer has that field; it's simply ignored and this
+    // proceeds as a normal creation attempt.
+    it('rejects an attempt to retry with a garbage/forged recoveryToken', async () => {
+        const calls: string[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            createIssue: async () => { calls.push('should-not-be-called'); return 'https://github.com/heavygee/hapi/issues/99' },
+            addItemToProject: async (target) => { calls.push(`should-not-be-called:${target.issueUrl}`) }
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({
+                repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: null, templateRevision: null,
+                recoveryToken: 'not-a-real-token'
+            })
+        })
+        expect(response.status).toBe(400)
+        expect(calls).toEqual([])
+    })
+
+    // Bot review, tiann/hapi#2147, follow-up: a genuinely expired token
+    // (not forged, not mismatched — just aged past its TTL) gets a
+    // distinct machine-readable code so the dialog can offer a different
+    // recovery path than "start over," which would create a duplicate
+    // issue (the whole reason the token exists in the first place).
+    it('surfaces a distinct recovery_expired code for a token that has genuinely expired', async () => {
+        const calls: string[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            createIssue: async () => { calls.push('should-not-be-called'); return 'https://github.com/heavygee/hapi/issues/99' },
+            addItemToProject: async (target) => { calls.push(`should-not-be-called:${target.issueUrl}`) }
+        })
+        const expiredToken = await new SignJWT({
+            typ: 'board_item_recovery', boardId: DEFAULT_BOARD_ID, repo: 'heavygee/hapi',
+            url: 'https://github.com/heavygee/hapi/issues/42', assignees: []
+        })
+            .setProtectedHeader({ alg: 'HS256' })
+            .setIssuedAt(Math.floor(Date.now() / 1000) - 3600)
+            .setExpirationTime(Math.floor(Date.now() / 1000) - 10)
+            .sign(TEST_JWT_SECRET)
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({
+                repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: null, templateRevision: null,
+                recoveryToken: expiredToken
+            })
+        })
+        expect(response.status).toBe(400)
+        const body = await response.json() as { error: string; code?: string }
+        expect(body.code).toBe('recovery_expired')
+        expect(calls).toEqual([])
+    })
+
+    // Bot review, tiann/hapi#2147, follow-up: a token signed for a
+    // different board must not validate just because the repo happens to
+    // match — the board is part of the trust boundary too (a board swap in
+    // the same tab, or a token replayed against a different board on the
+    // same repo).
+    it('rejects a retry-attach whose recovery token was signed for a different board', async () => {
+        const calls: string[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            createIssue: async () => { calls.push('should-not-be-called'); return 'https://github.com/heavygee/hapi/issues/99' },
+            addItemToProject: async (target) => { calls.push(`should-not-be-called:${target.issueUrl}`) }
+        })
+        const recoveryToken = await signBoardItemRecoveryToken(TEST_JWT_SECRET, {
+            boardId: 'github.com::heavygee::999', repo: 'heavygee/hapi', url: 'https://github.com/heavygee/hapi/issues/42', assignees: []
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({
+                repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: null, templateRevision: null,
+                recoveryToken
+            })
+        })
+        expect(response.status).toBe(400)
+        // Not `recovery_expired` — this token is perfectly valid and
+        // unexpired, it just doesn't match this board (bot review,
+        // tiann/hapi#2147, follow-up: the two must not be conflated).
+        const body = await response.json() as { error: string; code?: string }
+        expect(body.code).toBeUndefined()
+        expect(calls).toEqual([])
+    })
+
+    // A retry-attach creates nothing, so there is nothing for a changed
+    // template policy to invalidate — the policy re-check must not 409 it.
+    it('skips the template-policy re-check for a retry-attach', async () => {
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined,
+            {
+                ...UNUSED_ACTIONS,
+                createIssue: async () => { calls.push('should-not-be-called'); return 'https://github.com/heavygee/hapi/issues/99' },
+                addItemToProject: async (target) => { calls.push(`addItemToProject:${target.issueUrl}`) }
+            },
+            ALWAYS_MEMBER, undefined,
+            () => ({
+                data: {
+                    repository: {
+                        issueTemplateDir: {
+                            entries: [
+                                { name: 'config.yml', object: { text: 'blank_issues_enabled: false' } }
+                            ]
+                        }
+                    }
+                }
+            })
+        )
+        const recoveryToken = await signBoardItemRecoveryToken(TEST_JWT_SECRET, {
+            boardId: DEFAULT_BOARD_ID, repo: 'heavygee/hapi', url: 'https://github.com/heavygee/hapi/issues/42', assignees: []
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({
+                repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: null, templateRevision: null,
+                recoveryToken
+            })
+        })
+        expect(response.status).toBe(200)
+        expect(calls).toEqual(['addItemToProject:https://github.com/heavygee/hapi/issues/42'])
+    })
+
+    // Regression (cold review, tiann/hapi#2147, follow-up): a retry-attach
+    // used to only ever re-run addItemToProject, so an assignee-application
+    // failure (same { error, url } shape) silently and permanently dropped
+    // the assignees once the client retried — this proves the retry path
+    // re-applies them too, before attaching to the project. Also proves the
+    // hub uses the token's OWN assignees, not whatever the request body
+    // separately claims (bot review, tiann/hapi#2147, follow-up): the body
+    // here deliberately sends a different, bogus login the token never
+    // mentions, and it must never reach setAssignees.
+    it('re-applies the token\'s own assignees on a retry-attach, ignoring any assignees in the request body', async () => {
+        const calls: string[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            createIssue: async () => { calls.push('should-not-be-called'); return 'https://github.com/heavygee/hapi/issues/99' },
+            setAssignees: async (target, addLogins, removeLogins) => { calls.push(`setAssignees:${target.url}:${addLogins.join(',')}:${removeLogins.join(',')}`) },
+            addItemToProject: async (target) => { calls.push(`addItemToProject:${target.issueUrl}`) }
+        })
+        const recoveryToken = await signBoardItemRecoveryToken(TEST_JWT_SECRET, {
+            boardId: DEFAULT_BOARD_ID, repo: 'heavygee/hapi', url: 'https://github.com/heavygee/hapi/issues/42', assignees: ['ghost']
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({
+                repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: null, templateRevision: null,
+                assignees: ['someone-else-entirely'],
+                recoveryToken
+            })
+        })
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([
+            'setAssignees:https://github.com/heavygee/hapi/issues/42:ghost:',
+            'addItemToProject:https://github.com/heavygee/hapi/issues/42'
+        ])
+    })
+
+    // Regression (bot review, tiann/hapi#2147, follow-up): a *persistently*
+    // unassignable login (a deleted/renamed account, one without repo
+    // access) must not block the user from ever attaching the issue to the
+    // board — the retry-attach assignee call is best-effort, swallowed on
+    // failure, not fatal, so addItemToProject still runs and the user
+    // reaches a real success instead of retrying into the same 502 forever.
+    it('still attaches to the project on a retry-attach whose assignee re-application keeps failing', async () => {
+        const calls: string[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            createIssue: async () => { calls.push('should-not-be-called'); return 'https://github.com/heavygee/hapi/issues/99' },
+            setAssignees: async () => { throw new Error('could not find user "ghost"') },
+            addItemToProject: async (target) => { calls.push(`addItemToProject:${target.issueUrl}`) }
+        })
+        const recoveryToken = await signBoardItemRecoveryToken(TEST_JWT_SECRET, {
+            boardId: DEFAULT_BOARD_ID, repo: 'heavygee/hapi', url: 'https://github.com/heavygee/hapi/issues/42', assignees: ['ghost']
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({
+                repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: null, templateRevision: null,
+                recoveryToken
+            })
+        })
+        expect(response.status).toBe(200)
+        const body = await response.json() as { ok: true; url: string; warning?: string }
+        expect(body.url).toBe('https://github.com/heavygee/hapi/issues/42')
+        // Meta review follow-up: the swallowed failure must still be
+        // recorded on the success response — otherwise a retry-only flow
+        // that never saw the first attempt's explicit 502 has no way to
+        // learn the assignees are still outstanding.
+        expect(body.warning).toContain('could not find user "ghost"')
+        expect(calls).toEqual(['addItemToProject:https://github.com/heavygee/hapi/issues/42'])
+    })
+})
+
+// Review finding (tiann/hapi#2147): `gh project item-edit`'s name-based
+// flags (--owner/--url/--field/--value) were only added in cli/cli#13807,
+// first released in gh 2.97.0 (confirmed against the actual gh CLI source:
+// v2.95.0's item-edit only has --id/--field-id/--project-id/--text/--number/
+// --date/--single-select-option-id/--iteration-id/--clear). An older gh
+// rejects those flags outright, so every status change failed with a
+// confusing CLI error rather than an actionable one.
+describe('gh version gate for project item-edit name-based flags', () => {
+    it('parses a standard gh --version line', () => {
+        expect(parseGhVersion('gh version 2.97.0 (2026-08-01)\nhttps://github.com/cli/cli/releases/tag/v2.97.0'))
+            .toEqual([2, 97, 0])
+    })
+
+    it('returns null for output that does not look like gh --version', () => {
+        expect(parseGhVersion('command not found: gh')).toBeNull()
+    })
+
+    it('treats a version below the minimum as below', () => {
+        expect(isGhVersionBelow([2, 95, 0], [2, 97, 0])).toBe(true)
+        expect(isGhVersionBelow([2, 96, 9], [2, 97, 0])).toBe(true)
+        expect(isGhVersionBelow([1, 99, 0], [2, 97, 0])).toBe(true)
+    })
+
+    it('treats the minimum version itself, and anything newer, as not below', () => {
+        expect(isGhVersionBelow([2, 97, 0], [2, 97, 0])).toBe(false)
+        expect(isGhVersionBelow([2, 97, 1], [2, 97, 0])).toBe(false)
+        expect(isGhVersionBelow([2, 98, 0], [2, 97, 0])).toBe(false)
+        expect(isGhVersionBelow([3, 0, 0], [2, 97, 0])).toBe(false)
+    })
+})

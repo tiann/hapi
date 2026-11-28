@@ -389,7 +389,7 @@ describe('session model', () => {
             source: 'agent' as const,
             linkedAt: 1,
             openState: 'open' as const,
-            checks: 'success' as const,
+            checks: 'pass' as const,
             merge: 'clean' as const,
             estateCode: 'babysit.green'
         }]
@@ -438,6 +438,147 @@ describe('session model', () => {
         expect(refs).toEqual(healthRefs)
     })
 
+    // Regression (bot review, hapi#238): a deleting merge's final metadata
+    // pass re-read the TARGET session fresh but reused a SOURCE snapshot
+    // taken before the scratchlist-attachment transfer step, which can
+    // await real file I/O. An issue/PR link landing on the source session
+    // during that window used to be silently discarded the moment the
+    // source row was deleted right after this merge.
+    it('preserves a source externalRefs link acknowledged while the merge was mid-flight', async () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const lateRef = [{
+            kind: 'github_issue' as const,
+            repo: 'tiann/hapi',
+            number: 235,
+            url: 'https://github.com/tiann/hapi/issues/235',
+            linkedAt: 1
+        }]
+
+        const oldSession = cache.getOrCreateSession(
+            'session-merge-midflight-old',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+        const newSession = cache.getOrCreateSession(
+            'session-merge-midflight-new',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+
+        // Simulates a link_issue/link_pr write landing on oldSessionId
+        // during the real code's scratchlist-attachment I/O await — the
+        // exact window between the merge's initial snapshot and its final
+        // metadata-merge pass.
+        const originalTransfer = store.scratchlist.transfer.bind(store.scratchlist)
+        store.scratchlist.transfer = (fromSessionId, toSessionId) => {
+            const result = originalTransfer(fromSessionId, toSessionId)
+            const row = store.sessions.getSessionByNamespace(fromSessionId, 'default')
+            if (row) {
+                store.sessions.updateSessionMetadata(
+                    fromSessionId,
+                    { ...(row.metadata as Record<string, unknown>), externalRefs: lateRef },
+                    row.metadataVersion,
+                    'default',
+                    { touchUpdatedAt: false }
+                )
+            }
+            return result
+        }
+
+        await cache.mergeSessions(oldSession.id, newSession.id, 'default')
+
+        const merged = store.sessions.getSessionByNamespace(newSession.id, 'default')
+        const refs = (merged?.metadata as { externalRefs?: unknown })?.externalRefs
+        expect(refs).toEqual(lateRef)
+    })
+
+    // Regression (bot review, hapi#238 / hapi#2147, follow-up): the fix
+    // above makes a late-arriving ref visible to the final merge pass —
+    // but if combining it with the target's refs pushes the total over
+    // MAX_EXTERNAL_REFS, re-throwing there (the original follow-up's fix)
+    // skipped the whole round's consolidation, silently losing the exact
+    // ref that just landed — even though messages/scratchlist/job
+    // redirects had already moved to the target by that point, so nothing
+    // about re-throwing was actually safe to begin with. The merge must
+    // complete (old row deleted) AND keep the freshest ref — the one
+    // acknowledged during the merge's own I/O window — trimming the
+    // stalest entry among the target's own refs instead.
+    it('completes a deleting merge and keeps the freshest ref when a mid-flight link pushes combined refs over the cap', async () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const targetRefs = Array.from({ length: 32 }, (_, i) => ({
+            kind: 'github_pr' as const,
+            repo: 'tiann/hapi',
+            number: i + 1,
+            url: `https://github.com/tiann/hapi/pull/${i + 1}`,
+            role: 'secondary' as const,
+            source: 'user' as const,
+            linkedAt: 1
+        }))
+        // Strictly fresher than every targetRefs entry — represents the
+        // link just acknowledged on the old row during the merge's own
+        // scratchlist I/O window, which must survive the trim.
+        const lateRef = [{
+            kind: 'github_pr' as const,
+            repo: 'tiann/hapi',
+            number: 999,
+            url: 'https://github.com/tiann/hapi/pull/999',
+            role: 'secondary' as const,
+            source: 'user' as const,
+            linkedAt: 2
+        }]
+
+        const oldSession = cache.getOrCreateSession(
+            'session-merge-overcap-old',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+        const newSession = cache.getOrCreateSession(
+            'session-merge-overcap-new',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex', externalRefs: targetRefs },
+            null,
+            'default'
+        )
+        store.messages.addMessage(oldSession.id, { role: 'user', content: { type: 'text', text: 'pre-merge message' } })
+
+        const originalTransfer = store.scratchlist.transfer.bind(store.scratchlist)
+        store.scratchlist.transfer = (fromSessionId, toSessionId) => {
+            const result = originalTransfer(fromSessionId, toSessionId)
+            const row = store.sessions.getSessionByNamespace(fromSessionId, 'default')
+            if (row) {
+                store.sessions.updateSessionMetadata(
+                    fromSessionId,
+                    { ...(row.metadata as Record<string, unknown>), externalRefs: lateRef },
+                    row.metadataVersion,
+                    'default',
+                    { touchUpdatedAt: false }
+                )
+            }
+            return result
+        }
+
+        await expect(cache.mergeSessions(oldSession.id, newSession.id, 'default')).resolves.toBeUndefined()
+
+        // Merge completed: old row deleted, its message carried over, the
+        // result stays at the cap, and the ref acknowledged mid-merge
+        // (the freshest one) survived — a stalest target ref was trimmed
+        // instead of the just-landed one.
+        expect(store.sessions.getSessionByNamespace(oldSession.id, 'default')).toBeNull()
+        expect(store.messages.getMessages(newSession.id).length).toBe(1)
+        const merged = store.sessions.getSessionByNamespace(newSession.id, 'default')
+        const refs = (merged?.metadata as { externalRefs?: Array<{ number: number }> })?.externalRefs
+        expect(refs?.length).toBe(32)
+        expect(refs?.some(ref => ref.number === 999)).toBe(true)
+    })
+
     it('retains source session when metadata merge exhausts version retries', async () => {
         const store = new Store(':memory:')
         const events: SyncEvent[] = []
@@ -479,7 +620,7 @@ describe('session model', () => {
 
         await expect(
             cache.mergeSessions(oldSession.id, newSession.id, 'default')
-        ).rejects.toThrow('Failed to preserve session metadata during merge')
+        ).rejects.toThrow('Session metadata changed concurrently during merge')
 
         expect(store.sessions.getSessionByNamespace(oldSession.id, 'default')).not.toBeNull()
         expect(store.messages.getMessages(oldSession.id).length).toBe(1)
@@ -529,7 +670,7 @@ describe('session model', () => {
 
         await expect(
             cache.mergeSessions(oldSession.id, newSession.id, 'default')
-        ).rejects.toThrow('Failed to preserve session metadata during merge')
+        ).rejects.toThrow('Failed to merge session metadata')
 
         expect(store.sessions.getSessionByNamespace(oldSession.id, 'default')).not.toBeNull()
         expect(store.messages.getMessages(oldSession.id).length).toBe(1)

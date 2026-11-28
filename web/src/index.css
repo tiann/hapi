@@ -548,7 +548,7 @@ html:has(.chat-scroll-y) #root {
  * tooltip is active, let that shell expose it so the tooltip's lower edge is
  * not clipped by the group boundary. */
 .collapsible-panel[data-open] > .collapsible-inner:has([data-hover-tooltip-anchor]:hover),
-.collapsible-panel[data-open] > .collapsible-inner:has(.session-list-item:focus-visible) {
+.collapsible-panel[data-open] > .collapsible-inner:has(.session-list-item :focus-visible) {
     overflow: visible;
 }
 

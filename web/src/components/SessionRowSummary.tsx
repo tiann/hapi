@@ -5,7 +5,9 @@ import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
 import { InfoIcon, LoaderIcon, ScheduleIcon, StoppedBadgeIcon } from '@/components/icons'
 import { HoverTooltip, SESSION_ROW_TOOLTIP_FOCUS_CLASS, useSessionRowTooltipIds } from '@/components/HoverTooltip'
 import { getAttentionLabel, SessionAttentionIndicator, SessionRequestIcon } from '@/components/SessionAttentionIndicator'
+import { IssueRefChip } from '@/components/IssueRefChip'
 import { classifySessionAttention, sessionIsUnread } from '@/lib/sessionAttention'
+import { getLinkedGithubIssue } from '@/lib/externalRefs'
 import { getSessionLastSeenAt, getSessionManualUnreadAt } from '@/lib/sessionLastSeen'
 import { formatRelativeTime } from '@/lib/relativeTime'
 import { getStoppedSessionTime } from '@/lib/sessionListOrder'
@@ -131,6 +133,13 @@ export function SessionRowSummary(props: {
     projectLabel?: string
     /** Machine label shown next to the project name (pinned "in progress" rows). */
     machineLabel?: string
+    /**
+     * False when the parent renders the issue chip itself as a sibling of an
+     * enclosing `role="button"` row (ARIA forbids a focusable descendant of
+     * a button role — see SessionList.tsx's row wrapper). Defaults to true
+     * for callers like the mention-chip tooltip, which aren't inside one.
+     */
+    showIssueChip?: boolean
     /** Context returned by the opt-in session message-content search. */
     contentSnippet?: string
     /** The indexed message exceeded the search index budget. */
@@ -146,6 +155,7 @@ export function SessionRowSummary(props: {
         showDetailedStatus = true,
         selected = false,
         nestedTooltips = true,
+        showIssueChip = true,
         attentionTooltipId: attentionTooltipIdProp,
         lastSeenVersion,
         scheduleTooltipId: scheduleTooltipIdProp,
@@ -201,6 +211,10 @@ export function SessionRowSummary(props: {
     const legacyImportedAt = useSyncExternalStore(subscribeCodexImportedSessions, () => getCodexImportedAt(codexSessionId))
     const importedAt = s.metadata?.codexImportedAt !== undefined ? s.metadata.codexImportedAt : legacyImportedAt
     const timeLabel = getSessionTimeLabel(s, importedAt, t, showStoppedTime)
+    const primaryPrRef = githubPrAwarenessEnabled
+        ? getPrimaryGithubPrRef(s.metadata?.externalRefs)
+        : null
+    const linkedIssue = getLinkedGithubIssue(s.metadata)
     const attachedJob = s.attachedJob?.status === 'running' ? s.attachedJob : null
     const jobStale = attachedJob ? isAttachedJobStale(attachedJob, nowMs) : false
     const jobFraction = attachedJob ? attachedJobFraction(attachedJob) : null
@@ -210,9 +224,6 @@ export function SessionRowSummary(props: {
             running: t('session.item.attachedJob.running'),
             noHeartbeat: t('session.item.attachedJob.noHeartbeat'),
         })
-        : null
-    const primaryPrRef = githubPrAwarenessEnabled
-        ? getPrimaryGithubPrRef(s.metadata?.externalRefs)
         : null
 
     // An attached process reports through its own meter, independently of the agent.
@@ -292,6 +303,7 @@ export function SessionRowSummary(props: {
                         >
                             {sessionName}
                         </div>
+                        {showIssueChip && linkedIssue ? <IssueRefChip ref={linkedIssue} /> : null}
                         {/* Model error outranks activity/unread: the turn looked
                             finished but failed, so this must not be collapsed
                             into the combined indicator below. */}
@@ -359,7 +371,8 @@ export function SessionRowSummary(props: {
                             </span>
                         ) : null}
                     </div>
-                    <div className={`flex min-w-0 items-center justify-end gap-2 overflow-hidden text-xs ${trailingClassName ?? ''}`}>
+                    {/* overflow-visible so the PR chip HoverTooltip is not clipped */}
+                    <div className={`flex min-w-0 items-center justify-end gap-2 overflow-visible text-xs ${trailingClassName ?? ''}`}>
                         {todoProgress ? (
                             <span className="flex shrink-0 items-center gap-1 text-[var(--app-hint)]">
                                 <BulbIcon className="h-3 w-3" />

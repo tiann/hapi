@@ -55,6 +55,23 @@ const HAPI_LINK_PR_TOOL_NAMES = new Set([
     'mcp__happy__link_pr'
 ]);
 
+// link_issue mutates session metadata the same way link_pr does (bot review,
+// hapi#2147) — it must never be waved through read-only mode just because its
+// name doesn't match a generic "write" hint.
+const HAPI_LINK_ISSUE_TOOL_NAMES = new Set([
+    'link_issue',
+    'link issue',
+    // Advertised MCP registerTool() title (startHappyServer.ts,
+    // happyMcpStdioBridge.ts) — ACP permission-name derivation prefers this
+    // title over the raw tool name (bot review, hapi#2147, follow-up pass).
+    'link github issue',
+    'happy__link_issue',
+    'hapi_link_issue',
+    'hapi__link_issue',
+    'mcp__hapi__link_issue',
+    'mcp__happy__link_issue'
+]);
+
 function isVerifiedHapiLinkPrTool(toolName: string, context?: AutoApprovalContext): boolean {
     if (!HAPI_LINK_PR_TOOL_NAMES.has(toolName.toLowerCase())) {
         return false
@@ -112,9 +129,9 @@ export function resolveToolAutoApprovalDecision(
     const lowerId = toolCallId.toLowerCase();
     const decisionForMode: AutoApprovalDecision = (mode === 'yolo' || mode === 'always-proceed') ? 'approved_for_session' : 'approved';
 
-    // link_pr mutates session metadata — never auto-approve in read-only,
-    // even when the call arrives on a trusted HAPI MCP transport.
-    if (HAPI_LINK_PR_TOOL_NAMES.has(lowerTool) && mode === 'read-only') {
+    // link_pr/link_issue mutate session metadata — never auto-approve in
+    // read-only, even when the call arrives on a trusted HAPI MCP transport.
+    if ((HAPI_LINK_PR_TOOL_NAMES.has(lowerTool) || HAPI_LINK_ISSUE_TOOL_NAMES.has(lowerTool)) && mode === 'read-only') {
         return null;
     }
 
