@@ -113,8 +113,12 @@ final class AppModel {
     /// live session. Throws ``PairingFailure`` for the confirm sheet's error
     /// states.
     @discardableResult
-    func pair(hubUrl: String, accessToken: String) async throws -> PairedHub {
-        let paired = try await pairingService.pair(rawHubUrl: hubUrl, accessToken: accessToken)
+    func pair(hubUrl: String, accessToken: String, cloudflareAccessToken: String? = nil) async throws -> PairedHub {
+        let paired = try await pairingService.pair(
+            rawHubUrl: hubUrl,
+            accessToken: accessToken,
+            cloudflareAccessToken: cloudflareAccessToken
+        )
         didPair(paired)
         return paired
     }

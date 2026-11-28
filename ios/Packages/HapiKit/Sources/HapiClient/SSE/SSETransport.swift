@@ -59,7 +59,7 @@ public struct URLSessionSSETransport: SSETransport {
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.urlCache = nil
         configuration.httpCookieStorage = nil
-        return URLSession(configuration: configuration)
+        return URLSession(configuration: configuration, delegate: CloudflareAccessRedirectDelegate(), delegateQueue: nil)
     }
 
     #if canImport(FoundationNetworking)
@@ -88,7 +88,7 @@ public struct URLSessionSSETransport: SSETransport {
     /// Bridges delegate callbacks into the stream continuation. URLSession
     /// serializes its delegate callbacks, and the continuation is Sendable,
     /// so the unchecked conformance is safe.
-    private final class StreamingDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private final class StreamingDelegate: CloudflareAccessRedirectDelegate, URLSessionDataDelegate, @unchecked Sendable {
         private let continuation: AsyncThrowingStream<SSETransportEvent, Error>.Continuation
 
         init(continuation: AsyncThrowingStream<SSETransportEvent, Error>.Continuation) {

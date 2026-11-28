@@ -92,6 +92,7 @@ struct PairingErrorView: View {
         case .unreachable: "wifi.exclamationmark"
         case .protocolMismatch: "arrow.triangle.2.circlepath"
         case .invalidAccessToken: "key"
+        case .cloudflareAccessRequired, .invalidCloudflareAccessToken: "lock"
         case .hubError: "exclamationmark.triangle"
         case .storageFailure: "externaldrive.badge.xmark"
         case .passkeyRejected, .passkeyUnavailable, .passkeyHubAddressRequired, .passkeyWrongHub: "person.badge.key"
@@ -104,6 +105,8 @@ struct PairingErrorView: View {
         case .unreachable: String(localized: "Hub unreachable")
         case .protocolMismatch: String(localized: "Version mismatch")
         case .invalidAccessToken: String(localized: "Token rejected")
+        case .cloudflareAccessRequired: String(localized: "Cloudflare Access sign-in required")
+        case .invalidCloudflareAccessToken: String(localized: "Invalid Cloudflare Access token")
         case .hubError: String(localized: "Hub error")
         case .storageFailure: String(localized: "Could not save")
         case .passkeyRejected: String(localized: "Passkey rejected")
@@ -127,6 +130,10 @@ struct PairingErrorView: View {
             )
         case .invalidAccessToken:
             String(localized: "The hub rejected this access token — it may have been rotated. Get a fresh pairing code from the hub and try again.")
+        case .cloudflareAccessRequired:
+            String(localized: "In Enter Manually, expand Cloudflare Access and enter a current application token for this hub.")
+        case .invalidCloudflareAccessToken:
+            String(localized: "Use an HTTPS hub address and paste the application token issued by Cloudflare Access.")
         case .hubError(let status):
             String(
                 format: String(localized: "The hub answered unexpectedly (HTTP %lld). Try again in a moment."),

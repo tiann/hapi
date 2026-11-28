@@ -22,6 +22,7 @@ struct ManualPairingForm {
     struct Submission: Equatable {
         let hubURL: String
         let accessToken: String
+        var cloudflareAccessToken: String? = nil
     }
 
     private(set) var scheme: Scheme = .https

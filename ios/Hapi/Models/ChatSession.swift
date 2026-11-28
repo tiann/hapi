@@ -169,7 +169,8 @@ final class ChatSession {
                 // pipe in `HubSession`, which tears this session down too.
                 try? await auth.validToken()
             },
-            scope: .session(sessionId)
+            scope: .session(sessionId),
+            cloudflareAccess: auth.cloudflareAccess
         )
         let client = SSEClient(configuration: configuration, pathObserver: NWPathObserver())
         sse = client

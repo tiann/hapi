@@ -34,7 +34,12 @@ struct ManualEntryView: View {
             ) {
                 attempt.failure = nil
             } onPair: { submission in
-                attempt.pair(model, hubUrl: submission.hubURL, accessToken: submission.accessToken)
+                attempt.pair(
+                    model,
+                    hubUrl: submission.hubURL,
+                    accessToken: submission.accessToken,
+                    cloudflareAccessToken: submission.cloudflareAccessToken
+                )
             } onPasskeySignIn: { hubURL in
                 attempt.signInWithPasskey(model, hubUrl: hubURL)
             }
@@ -72,6 +77,8 @@ struct ManualPairingFormView: View {
     @Environment(\.locale) private var locale
     @State private var form = ManualPairingForm()
     @State private var focusedField: ManualPairingForm.Field? = .address
+    @State private var showCloudflareAccess = false
+    @State private var cloudflareAccessToken = ""
 
     var body: some View {
         Form {
@@ -124,6 +131,7 @@ struct ManualPairingFormView: View {
 
             if !passkeyOnly {
                 tokenSections
+                cloudflareAccessSection
             }
 
             if let failure {
@@ -136,6 +144,14 @@ struct ManualPairingFormView: View {
 
             if passkeyOnly, onPasskeySignIn != nil {
                 passkeySection
+            }
+        }
+        .onChange(of: form.passkeyHubURL) { _, _ in
+            cloudflareAccessToken = ""
+        }
+        .onChange(of: failure) { _, result in
+            if result == .cloudflareAccessRequired {
+                showCloudflareAccess = true
             }
         }
     }
@@ -177,6 +193,21 @@ struct ManualPairingFormView: View {
             }
             .accessibilityIdentifier("pairing.submit")
             .disabled(form.submission == nil || isPairing)
+        }
+    }
+
+    private var cloudflareAccessSection: some View {
+        Section {
+            DisclosureGroup("Cloudflare Access", isExpanded: $showCloudflareAccess) {
+                SecureField("Application token", text: $cloudflareAccessToken)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .accessibilityIdentifier("pairing.cloudflareAccessToken")
+                    .disabled(isPairing)
+                Text("For hubs behind Cloudflare Access, enter the application token issued after you sign in with cloudflared.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -269,7 +300,9 @@ struct ManualPairingFormView: View {
         guard !isPairing else { return }
         form.finishEditing(.address)
         form.finishEditing(.accessToken)
-        guard let submission = form.submission else { return }
+        guard var submission = form.submission else { return }
+        let token = cloudflareAccessToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        submission.cloudflareAccessToken = token.isEmpty ? nil : token
         focusedField = nil
         onPair(submission)
     }

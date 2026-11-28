@@ -47,6 +47,15 @@
         }
       }
     },
+    "Application token" : {
+      "extractionState" : "manual"
+    },
+    "Cloudflare Access" : {
+      "extractionState" : "manual"
+    },
+    "Cloudflare Access sign-in required" : {
+      "extractionState" : "manual"
+    },
     "Continue" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -230,6 +239,15 @@
           }
         }
       }
+    },
+    "For hubs behind Cloudflare Access, enter the application token issued after you sign in with cloudflared." : {
+      "extractionState" : "manual"
+    },
+    "In Enter Manually, expand Cloudflare Access and enter a current application token for this hub." : {
+      "extractionState" : "manual"
+    },
+    "Invalid Cloudflare Access token" : {
+      "extractionState" : "manual"
     },
     "Last used %@" : {
       "extractionState" : "manual",
@@ -782,6 +800,9 @@
           }
         }
       }
+    },
+    "Use an HTTPS hub address and paste the application token issued by Cloudflare Access." : {
+      "extractionState" : "manual"
     },
     "Uses a passkey you added for this hub in Settings → Passkeys. No access token needed." : {
       "extractionState" : "manual",

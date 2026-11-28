@@ -23,7 +23,8 @@ struct SSEClientTests {
         tokens: [String?] = ["tok-1"],
         pathObserver: FakePathObserver? = nil,
         transport: FakeTransport = FakeTransport(),
-        clock: ManualClock = ManualClock()
+        clock: ManualClock = ManualClock(),
+        cloudflareAccess: CloudflareAccess? = nil
     ) async -> Harness {
         let tokenSource = TokenSource(tokens)
         let configuration = SSEClientConfiguration(
@@ -31,7 +32,8 @@ struct SSEClientTests {
             tokenProvider: { tokenSource.next() },
             scope: scope,
             visibility: visibility,
-            jitterMs: { 0 }
+            jitterMs: { 0 },
+            cloudflareAccess: cloudflareAccess
         )
         let client = SSEClient(
             configuration: configuration,
@@ -53,6 +55,20 @@ struct SSEClientTests {
     }
 
     // MARK: - Handshake
+
+    @Test(arguments: [SSEScope.global, .session("s-42")])
+    func eventStreamsKeepCloudflareAndHapiAuthSeparate(scope: SSEScope) async throws {
+        let hub = try #require(URL(string: "https://hub.test"))
+        let token = "header.payload.signature"
+        let access = try #require(CloudflareAccess(hubURL: hub, token: token))
+        let h = await makeHarness(scope: scope, cloudflareAccess: access)
+        let connection = try #require(await h.transport.nextConnection())
+
+        #expect(connection.request.value(forHTTPHeaderField: "CF-Access-Token") == token)
+        #expect(connection.queryItems["token"] == "tok-1")
+        #expect(!connection.queryItems.values.contains(token))
+        await h.client.stop()
+    }
 
     @Test func handshakeGatesConnectedState() async throws {
         let h = await makeHarness()

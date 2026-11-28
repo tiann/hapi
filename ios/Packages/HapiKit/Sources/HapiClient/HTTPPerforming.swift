@@ -51,7 +51,7 @@ public struct URLSessionHTTPPerformer: HTTPPerforming {
         )
         #endif
         configuration.requestCachePolicy = .useProtocolCachePolicy
-        return URLSession(configuration: configuration)
+        return URLSession(configuration: configuration, delegate: CloudflareAccessRedirectDelegate(), delegateQueue: nil)
     }
 
     public func perform(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {

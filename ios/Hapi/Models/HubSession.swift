@@ -331,7 +331,8 @@ final class HubSession {
                     return nil
                 }
             },
-            scope: .global
+            scope: .global,
+            cloudflareAccess: auth.cloudflareAccess
         )
         let client = SSEClient(configuration: configuration, pathObserver: NWPathObserver())
         sse = client
