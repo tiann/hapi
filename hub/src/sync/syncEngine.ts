@@ -3991,13 +3991,18 @@ export class SyncEngine {
     flipCursorSessionProtocolToAcp(
         sessionId: string,
         namespace: string,
-        lastUsedModel: string | null
+        lastUsedModel: string | null,
+        expectedMetadataVersion?: number
     ): { result: 'success' | 'version-mismatch' | 'not-found' | 'session-active' } {
         for (let attempt = 0; attempt < 2; attempt += 1) {
             const latest = this.sessionCache.getSessionByNamespace(sessionId, namespace)
                 ?? this.sessionCache.refreshSession(sessionId)
-            if (!latest?.metadata) {
+            if (!latest?.metadata || latest.namespace !== namespace) {
                 return { result: 'not-found' }
+            }
+            // Remote verification applies only to the row that requested the copy.
+            if (expectedMetadataVersion !== undefined && latest.metadataVersion !== expectedMetadataVersion) {
+                return { result: 'version-mismatch' }
             }
             // Combined SSE-event payload contract (UX A++): clear the
             // `cursorMigrationState='in_progress'` flag in the SAME metadata
@@ -5112,6 +5117,31 @@ export class SyncEngine {
         return undefined
     }
 
+    private async prepareRemoteCursorResume(session: Session, namespace: string): Promise<boolean> {
+        const { metadata: md, metadataVersion, activeAt } = session
+        if (session.active || session.namespace !== namespace || md?.flavor !== 'cursor'
+            || md.cursorSessionProtocol === 'acp' || !md.machineId || !md.cursorSessionId || !md.path || !md.host) {
+            return false
+        }
+        const owner = this.machineCache.getMachineByNamespace(md.machineId, namespace)
+        if (!owner?.active || owner.metadata?.host !== md.host
+            || (md.homeDir && owner.metadata.homeDir !== md.homeDir)) return false
+
+        const knownMessageCount = this.store.messages.countMessages(session.id)
+        const copy = await this.rpcGateway.prepareCursorImportForMachine(
+            owner.id, md.cursorSessionId, md.path, { knownMessageCount }
+        )
+        if (!copy.success || copy.sourceFormat !== 'legacy' || copy.verifiedLegacyCopy !== true
+            || copy.uuid !== md.cursorSessionId || copy.workspacePath !== md.path || copy.hostName !== md.host) {
+            return false
+        }
+        const current = this.sessionCache.getSessionByNamespace(session.id, namespace)
+        if (!current || current.activeAt !== activeAt || this.store.messages.countMessages(session.id) !== knownMessageCount) {
+            return false
+        }
+        return this.flipCursorSessionProtocolToAcp(session.id, namespace, null, metadataVersion).result === 'success'
+    }
+
     /**
      * tiann/hapi#824 — sync-on-open auto-migration. Returns the (possibly
      * refreshed-from-cache) session. If the session is a legacy stream-json
@@ -5145,6 +5175,7 @@ export class SyncEngine {
             console.info('[auto-migrate] skipped: env flag disabled', { sessionId: session.id })
             return session
         }
+        if (session.active) return session
         if (!md || md.flavor !== 'cursor') {
             console.info('[auto-migrate] skipped: not a cursor session', { sessionId: session.id, flavor: md?.flavor ?? null })
             return session
@@ -5183,7 +5214,16 @@ export class SyncEngine {
             // This is exactly the stale-row case the sync-on-open path is
             // meant to clean up — refusing here would defeat the whole
             // point and silently fall back to the legacy launcher forever.
-            const outcome = await migrator.migrateOne(session, { forceArchiveRunning: true })
+            const versionBeforeMigration = this.sessionCache.getSessionByNamespace(session.id, namespace)?.metadataVersion
+            const outcome = await migrator.migrateOne(session, { forceArchiveRunning: true, keepSource: true })
+            if (!outcome.ok && outcome.reason === 'cross_host_session') {
+                const candidate = this.sessionCache.getSessionByNamespace(session.id, namespace)
+                if (candidate && candidate.metadataVersion === versionBeforeMigration
+                    && await this.prepareRemoteCursorResume(candidate, namespace)) {
+                    bannerCleanupNeeded = false
+                    return this.sessionCache.getSessionByNamespace(session.id, namespace) ?? session
+                }
+            }
             if (outcome.ok) {
                 console.info('[auto-migrate] success', {
                     sessionId: session.id,
@@ -5480,7 +5520,10 @@ export class SyncEngine {
         // would block the post-migration ACP launcher), run the transplant
         // synchronously before resuming. The user sees the regular session
         // loading state for ~3–5s longer; the session opens as ACP.
-        const session = await this.maybeAutoMigrateLegacyCursorSession(initialSession, namespace)
+        await this.maybeAutoMigrateLegacyCursorSession(initialSession, namespace)
+        const session = this.sessionCache.getSessionByNamespace(access.sessionId, namespace)
+        if (!session) return { type: 'error', message: 'Session not found', code: 'session_not_found' }
+        if (session.active) return { type: 'success', sessionId: access.sessionId }
 
         const targetResult = this.resolveLocalResumeTarget(access.sessionId, namespace)
         let flavor: AgentFlavor

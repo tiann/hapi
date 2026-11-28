@@ -604,6 +604,7 @@ export class ApiMachineClient {
                 const prepared = await prepareCursorImportOnDisk({
                     uuid: parsed.data.uuid.trim(),
                     workspacePath: parsed.data.workspacePath ?? null,
+                    knownMessageCount: 'knownMessageCount' in parsed.data ? parsed.data.knownMessageCount : undefined,
                     home: homedir()
                 })
                 // Prepare may resolve cwd from ACP meta when the request omitted

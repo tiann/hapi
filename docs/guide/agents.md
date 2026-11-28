@@ -242,8 +242,8 @@ Cursor sometimes reports a transient model error inside a turn instead of failin
 ### Limitations
 
 - **Multitask UI** - `/multitask` is slash-driven; HAPI does not yet provide an Agents Window-style fleet pane. Subagent `cursor/task` notifications show as CursorTask cards when the agent emits them.
-- **Legacy sessions** - Cursor sessions created before the ACP migration can still resume temporarily via stream-json. Start a new Cursor session to get ACP permissions, plans, todos, and question support.
-- **Session resume** - ACP sessions resume through `session/load`. Old stream-json `session_id` values are not loadable via ACP; those sessions keep using the legacy path until you start fresh.
+- **Legacy session resume** - When you resume an inactive stream-json session, HAPI tries to upgrade it to ACP so you can steer a turn and answer Cursor's questions in the same chat. On a different host from the hub, the owning runner copies the legacy store for the recorded Cursor session and workspace, preserves the original, and verifies that ACP can replay history from the copy before HAPI switches protocols.
+- **When the upgrade is skipped** - Active sessions keep their current protocol. An older runner, an existing ACP destination, or a copy with no verifiable history leaves the cross-host session on the legacy resume path. Set `HAPI_CURSOR_LEGACY_AUTO_MIGRATE=0` on the hub to disable automatic upgrades.
 
 #### Legacy stream-json safety: AskQuestion behavior
 
