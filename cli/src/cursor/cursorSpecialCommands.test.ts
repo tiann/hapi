@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
     cursorPassThroughStatusMessage,
+    isCursorSlashCommand,
     parseCursorSpecialCommand
 } from './cursorSpecialCommands';
 
@@ -66,6 +67,19 @@ describe('parseCursorSpecialCommand', () => {
     it('rejects prefix collisions', () => {
         expect(parseCursorSpecialCommand('/compressor')).toEqual({ type: null });
         expect(parseCursorSpecialCommand('/multitasking')).toEqual({ type: null });
+    });
+});
+
+describe('isCursorSlashCommand', () => {
+    it.each([
+        ['  /rename-chat New title', true],
+        ['/rename-chat\nNew title', true],
+        ['/rename-chatting', false],
+        ['/unknown', false],
+        ['/rename-chat/data', false],
+        ['/ rename-chat', false]
+    ])('handles the command boundary in %j', (message, expected) => {
+        expect(isCursorSlashCommand(message, new Set(['rename-chat']))).toBe(expected);
     });
 });
 

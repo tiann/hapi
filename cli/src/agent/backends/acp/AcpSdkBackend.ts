@@ -740,6 +740,10 @@ export class AcpSdkBackend implements AgentBackend {
         return Array.from(source.values(), (command) => ({ ...command }));
     }
 
+    hasSessionAvailableCommands(sessionId: string): boolean {
+        return this.sessionAvailableCommands.has(sessionId);
+    }
+
     setAvailableCommandsUpdateListener(
         listener: ((sessionId: string | null, commands: AcpAvailableCommand[]) => void) | null
     ): void {
