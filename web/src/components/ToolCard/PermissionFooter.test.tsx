@@ -37,18 +37,21 @@ function renderFooter(options: {
     metadata?: SessionMetadataSummary | null
     name?: string
     input?: unknown
+    acpAllowOptions?: Record<string, string>
 }) {
     const approvePermission = vi.fn().mockResolvedValue(undefined)
     const denyPermission = vi.fn().mockResolvedValue(undefined)
     const metadata = options.metadata === undefined
         ? ({ path: '/tmp/project', host: 'localhost', flavor: options.flavor } as SessionMetadataSummary)
         : options.metadata
+    const tool = makeTool(options.name, options.input)
+    if (tool.permission) tool.permission.acpAllowOptions = options.acpAllowOptions
     const rendered = render(
         <PermissionFooter
             api={{ approvePermission, denyPermission } as unknown as ApiClient}
             sessionId="session-1"
             metadata={metadata}
-            tool={makeTool(options.name, options.input)}
+            tool={tool}
             disabled={false}
             onDone={vi.fn()}
         />
@@ -61,6 +64,13 @@ function buttonLabels(): string[] {
 }
 
 describe('PermissionFooter', () => {
+    it.each([
+        { allow_once: 'Only this time' }, { allow_always: 'Remember for this project' }, {}
+    ])('shows only the ACP grants advertised for this request', (acpAllowOptions) => {
+        renderFooter({ flavor: 'cursor', acpAllowOptions: acpAllowOptions as Record<string, string> })
+        expect(buttonLabels()).toEqual([...Object.values(acpAllowOptions), 'tool.abortLabel'])
+    })
+
     describe('buttons by session flavor', () => {
         it.each(['codex', 'copilot', 'cursor', 'gemini', 'grok', 'kimi', 'opencode'])(
             '%s offers yes / yes-for-session / abort',

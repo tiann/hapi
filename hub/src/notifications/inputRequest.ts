@@ -22,6 +22,11 @@ export function getFirstPendingRequest(session: Session): PendingNotificationReq
     return entry ? { requestId: entry[0], request: entry[1] } : null
 }
 
+// A push action cannot ask the user to choose between native ACP grant scopes.
+export function supportsQuickAllow(request: AgentStateRequest | undefined): boolean {
+    return request?.acpAllowOptions === undefined || Object.hasOwn(request.acpAllowOptions, 'allow_once')
+}
+
 export function isInputRequestTool(tool: string): boolean {
     // Only the known functions wrapper is stripped, never arbitrary MCP prefixes/suffixes.
     const name = tool.startsWith('functions.') ? tool.slice('functions.'.length) : tool

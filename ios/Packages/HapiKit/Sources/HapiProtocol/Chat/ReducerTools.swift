@@ -109,6 +109,7 @@ func getPermissions(_ agentState: AgentState?) -> PermissionMap {
                 permission: ToolPermission(
                     id: id,
                     status: .pending,
+                    acpAllowOptions: request.acpAllowOptions,
                     createdAt: request.createdAt,
                     presentKeys: [.createdAt]
                 )

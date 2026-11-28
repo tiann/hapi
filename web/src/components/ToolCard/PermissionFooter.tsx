@@ -120,7 +120,8 @@ export function PermissionFooter(props: {
         () => getPermissionReplyStyle(props.metadata?.flavor, props.tool.name),
         [props.metadata, props.tool.name]
     )
-    const decision = replyStyle === 'decision'
+    const scopes = permission?.acpAllowOptions
+    const decision = scopes !== undefined || replyStyle === 'decision'
     const allowTools = replyStyle === 'allowTools'
 
     if (!permission) return null
@@ -235,20 +236,20 @@ export function PermissionFooter(props: {
             <div className="mt-3 flex flex-col gap-1.5">
                 {decision ? (
                     <>
-                        <PermissionRowButton
-                            label={t('tool.yes')}
+                        {(scopes === undefined || scopes.allow_once !== undefined) && <PermissionRowButton
+                            label={scopes?.allow_once || t('tool.yes')}
                             tone="allow"
                             loading={loading === 'allow'}
                             disabled={props.disabled || loading !== null || loadingForSession}
                             onClick={() => approveDecision('approved')}
-                        />
-                        <PermissionRowButton
-                            label={t('tool.yesForSession')}
+                        />}
+                        {(scopes === undefined || scopes.allow_always !== undefined) && <PermissionRowButton
+                            label={scopes?.allow_always || t('tool.yesForSession')}
                             tone="muted"
                             loading={loadingForSession}
                             disabled={props.disabled || loading !== null || loadingForSession}
                             onClick={() => approveDecision('approved_for_session')}
-                        />
+                        />}
                         <PermissionRowButton
                             label={t('tool.abortLabel')}
                             tone="deny"

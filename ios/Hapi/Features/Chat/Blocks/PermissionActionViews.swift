@@ -45,7 +45,7 @@ struct PermissionApprovalView: View {
                 .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             if override != .alreadyHandled {
                 PermissionActionsRow(
-                    options: PermissionActionOptions(flavor: interactions.flavor, toolName: tool.name),
+                    options: PermissionActionOptions(flavor: interactions.flavor, toolName: tool.name, acpAllowOptions: tool.permission?.acpAllowOptions),
                     requestId: requestId,
                     resolving: override == .resolving
                 ) { action in
@@ -97,15 +97,19 @@ struct PermissionApprovalView: View {
 /// UI projection of the existing flavor/tool gates, not a new permission policy.
 struct PermissionActionOptions: Equatable {
     let denyAction: PermissionAction
+    let acpAllowOptions: [String: String]?
+    let canAllowOnce: Bool
     let canAllowForSession: Bool
     let canAllowAllEdits: Bool
 
     var hasMore: Bool { canAllowForSession || canAllowAllEdits }
 
-    init(flavor: String?, toolName: String) {
+    init(flavor: String?, toolName: String, acpAllowOptions: [String: String]? = nil) {
+        self.acpAllowOptions = acpAllowOptions
+        canAllowOnce = acpAllowOptions.map { $0["allow_once"] != nil } ?? true
         let codex = isCodexPermissionUX(flavor: flavor, toolName: toolName)
         denyAction = codex ? .abort : .deny
-        canAllowForSession = codex || !PermissionGates.hideAllowForSession.contains(toolName)
+        canAllowForSession = acpAllowOptions.map { $0["allow_always"] != nil } ?? (codex || !PermissionGates.hideAllowForSession.contains(toolName))
         canAllowAllEdits = flavor == "claude" && PermissionGates.editTools.contains(toolName)
     }
 }
@@ -134,11 +138,16 @@ struct PermissionActionsRow: View {
 
     @ViewBuilder
     private func buttons(horizontal: Bool) -> some View {
-        Button { submit(.allow) } label: {
-            Text("Allow").fixedSize(horizontal: horizontal, vertical: true)
+        if options.canAllowOnce {
+            Button { submit(.allow) } label: {
+                Group {
+                    if let label = options.acpAllowOptions?["allow_once"], !label.isEmpty { Text(verbatim: label) }
+                    else { Text("Allow") }
+                }.fixedSize(horizontal: horizontal, vertical: true)
+            }
+            .buttonStyle(ChatActionButtonStyle(emphasis: .primary))
+            .accessibilityIdentifier("permission-allow-\(requestId)")
         }
-        .buttonStyle(ChatActionButtonStyle(emphasis: .primary))
-        .accessibilityIdentifier("permission-allow-\(requestId)")
 
         Button { submit(options.denyAction) } label: {
             Text(options.denyAction == .abort ? LocalizedStringKey("Abort") : LocalizedStringKey("Deny"))
@@ -150,7 +159,10 @@ struct PermissionActionsRow: View {
         if options.hasMore {
             Menu {
                 if options.canAllowForSession {
-                    Button("Allow for this session") { submit(.allowForSession) }
+                    Button { submit(.allowForSession) } label: {
+                        if let label = options.acpAllowOptions?["allow_always"], !label.isEmpty { Text(verbatim: label) }
+                        else { Text("Allow for this session") }
+                    }
                 }
                 if options.canAllowAllEdits {
                     Button("Allow all edits") { submit(.allowAllEdits) }

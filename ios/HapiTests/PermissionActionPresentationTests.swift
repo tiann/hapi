@@ -148,6 +148,15 @@ final class PermissionActionPresentationTests: XCTestCase {
         }
     }
 
+    func testACPUsesOnlyAdvertisedGrants() {
+        let once = PermissionActionOptions(flavor: "cursor", toolName: "Read", acpAllowOptions: ["allow_once": "Only this call"])
+        XCTAssertTrue(once.canAllowOnce)
+        XCTAssertFalse(once.canAllowForSession)
+        let durable = PermissionActionOptions(flavor: "cursor", toolName: "Read", acpAllowOptions: ["allow_always": "Remember"])
+        XCTAssertFalse(durable.canAllowOnce)
+        XCTAssertTrue(durable.canAllowForSession)
+    }
+
     func testFlavorAndToolGatesRetainTheirExistingPermissionSemantics() {
         for (flavor, tool, deny, session, edits) in [
             ("claude", "Bash", PermissionAction.deny, true, false),

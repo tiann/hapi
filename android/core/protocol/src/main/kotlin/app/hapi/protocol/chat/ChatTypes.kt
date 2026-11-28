@@ -388,6 +388,7 @@ data class ToolPermission(
     val createdAt: Long? = null,
     val completedAt: Long? = null,
     val presence: Set<String>,
+    val acpAllowOptions: Map<String, String>? = null,
 ) {
     /** `{ ...this, ...seed }`. */
     fun mergedWith(seed: ToolPermission): ToolPermission = ToolPermission(
@@ -402,6 +403,7 @@ data class ToolPermission(
         createdAt = if ("createdAt" in seed.presence) seed.createdAt else createdAt,
         completedAt = if ("completedAt" in seed.presence) seed.completedAt else completedAt,
         presence = presence + seed.presence,
+        acpAllowOptions = seed.acpAllowOptions ?: acpAllowOptions,
     )
 
     companion object {

@@ -11,7 +11,7 @@ import { ACTIONS } from './callbacks'
 import { createCallbackData, getSessionName } from './renderer'
 import { getAgentName } from '../notifications/sessionInfo'
 import { formatToolArgumentsDetailed } from '../notifications/toolArgs'
-import { composeInputRequestNotification, getFirstPendingRequest, isInputRequestTool } from '../notifications/inputRequest'
+import { composeInputRequestNotification, getFirstPendingRequest, isInputRequestTool, supportsQuickAllow } from '../notifications/inputRequest'
 
 type NotificationContext = {
     hasContext: boolean
@@ -139,9 +139,10 @@ export function createNotificationKeyboard(session: Session, publicUrl: string):
         const requestId = pending.requestId
         const reqPrefix = requestId.slice(0, 8)
 
-        keyboard
-            .text('Allow', createCallbackData(ACTIONS.APPROVE, session.id, reqPrefix))
-            .text('Deny', createCallbackData(ACTIONS.DENY, session.id, reqPrefix))
+        if (supportsQuickAllow(pending.request)) {
+            keyboard.text('Allow', createCallbackData(ACTIONS.APPROVE, session.id, reqPrefix))
+        }
+        keyboard.text('Deny', createCallbackData(ACTIONS.DENY, session.id, reqPrefix))
         keyboard.row()
 
         keyboard.webApp(

@@ -3,7 +3,7 @@ import { getAgentName, getSessionName } from './sessionInfo'
 import { formatToolArgumentsCompact, formatToolArgumentsDetailed } from './toolArgs'
 import { extractAssistantPlainText, extractNotifySummary, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { Store } from '../store'
-import { composeInputRequestNotification, getFirstPendingRequest } from './inputRequest'
+import { composeInputRequestNotification, getFirstPendingRequest, supportsQuickAllow } from './inputRequest'
 
 export const NATIVE_CONTRACT_VERSION = '1'
 
@@ -81,7 +81,7 @@ export class NativeNotificationComposer {
             sessionId: session.id,
             sessionName: name,
             url: this.buildSessionPath(session.id),
-            requestId,
+            requestId: supportsQuickAllow(request) ? requestId : undefined,
             severity: 'warning'
         }
     }
