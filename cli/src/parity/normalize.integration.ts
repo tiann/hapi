@@ -23,6 +23,21 @@ describe('transcript normalization', () => {
         expect(clean([metadata, second, first])).not.toEqual(clean([first, second, metadata]))
     })
 
+    it('records a stable reconnect clientId without shifting the session UUID', () => {
+        const sessionId = 'c1111111-1111-4111-8111-111111111111'
+        const clientInstanceId = 'd2222222-2222-4222-8222-222222222222'
+        const auth = (id: string) => ({ clientType: 'session-scoped', sessionId, clientInstanceId: id })
+        const first = row('auth', auth(clientInstanceId))
+        const reconnected = { ...row('auth', auth(clientInstanceId), 2), connection: 2 }
+        const result = clean([first, reconnected])
+        for (const key of ['1/auth', '2/auth']) {
+            expect(result.channels[key][0]).toMatchObject({
+                args: [{ clientInstanceId: '<client-instance:1>', sessionId: '<uuid:1>' }],
+            })
+        }
+        expect(() => clean([row('auth', auth('invalid'))])).toThrow('clientInstanceId')
+    })
+
     it('retains the order of chat output and pickup receipts across unrelated metadata', () => {
         const message = row('message', { text: 'before pickup' })
         const pickup = row('messages-consumed', { localIds: ['next'] })

@@ -131,8 +131,7 @@ function setup(
         makeIo(cliEmitted),
         publisher as never,
         undefined,
-        new InputTranslationService(provider),
-        readTranslateInputDefault
+        { inputTranslation: new InputTranslationService(provider), readTranslateInputDefault }
     )
     const sentContents = () => store.messages.getMessages(session.id, 50).map((m) => m.content as {
         content: { text: string }

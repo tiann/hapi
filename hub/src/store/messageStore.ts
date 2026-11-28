@@ -25,6 +25,7 @@ import {
     getMessageEpoch,
     bumpMessageEpoch,
     getLocalMessageStates,
+    getMessagesByLocalIds,
     getUninvokedLocalMessages,
     getMatureScheduledMessages,
     getImmediateQueuedLocalMessages,
@@ -45,17 +46,21 @@ import {
     addMessageSweepingLiveSnapshots,
     deleteLiveTextSnapshots,
     getAllMessages,
+    getConsumedScheduledMessages,
     getMessagesAfterSeq,
     getMaxSeq,
     getMinSeq,
     getMessageSeqById,
     getMessageById,
+    hasUninvokedAttachmentReference,
+    rewriteMessageAttachments,
     truncateMessagesFromLocalId,
     truncateOpenCodeRewind,
     type CancelQueuedMessageResult,
     type LookupQueuedMessageResult,
     type LocalMessageState,
     type MessagePosition,
+    type MessageAttachmentRewrite,
     type UpsertToolCallResult,
     type AddMessageSweepResult,
 } from './messages'
@@ -136,6 +141,10 @@ export class MessageStore {
         return getAllMessages(this.db, sessionId)
     }
 
+    getConsumedScheduledMessages(sessionId: string): StoredMessage[] {
+        return getConsumedScheduledMessages(this.db, sessionId)
+    }
+
     getMessagesAfterSeq(sessionId: string, afterSeq: number): StoredMessage[] {
         return getMessagesAfterSeq(this.db, sessionId, afterSeq)
     }
@@ -152,8 +161,13 @@ export class MessageStore {
         return getMessageSeqById(this.db, sessionId, messageId)
     }
 
-    getMessageById(sessionId: string, messageId: string): StoredMessage | null {
-        return getMessageById(this.db, sessionId, messageId)
+    hasUninvokedAttachmentReference(sessionId: string, path: string): boolean {
+
+        return hasUninvokedAttachmentReference(this.db, sessionId, path)
+    }
+
+    rewriteMessageAttachments(sessionId: string, rewrites: MessageAttachmentRewrite[]): number {
+        return rewriteMessageAttachments(this.db, sessionId, rewrites)
     }
 
     getMessages(sessionId: string, limit: number = 200): StoredMessage[] {
@@ -195,6 +209,14 @@ export class MessageStore {
 
     getLocalMessageStates(sessionId: string, localIds: string[]): LocalMessageState[] {
         return getLocalMessageStates(this.db, sessionId, localIds)
+    }
+
+    getMessagesByLocalIds(sessionId: string, localIds: string[]): StoredMessage[] {
+        return getMessagesByLocalIds(this.db, sessionId, localIds)
+    }
+
+    getMessageById(sessionId: string, messageId: string): StoredMessage | null {
+        return getMessageById(this.db, sessionId, messageId)
     }
 
     getUninvokedLocalMessages(sessionId: string, options?: { deliverableOnly?: boolean }): StoredMessage[] {

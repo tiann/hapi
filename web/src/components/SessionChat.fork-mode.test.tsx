@@ -101,6 +101,8 @@ describe('fork preview fed by the hub while the dialog stays open', () => {
                             cachedTailFirstFrame={false}
                             isLoadingMoreMessages={false}
                             isSending={false}
+                            sendSettlement={null}
+                            onScratchlistSendAccepted={() => {}}
                             viewMode="tail"
                             messagesVersion={0}
                             historyVersion={0}

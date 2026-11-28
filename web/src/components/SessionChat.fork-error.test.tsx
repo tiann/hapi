@@ -101,6 +101,8 @@ describe('fork preview error display in the chat', () => {
                             cachedTailFirstFrame={false}
                             isLoadingMoreMessages={false}
                             isSending={false}
+                            sendSettlement={null}
+                            onScratchlistSendAccepted={() => {}}
                             viewMode="tail"
                             messagesVersion={0}
                             historyVersion={0}

@@ -41,6 +41,7 @@ const requestClock = /^update-state\/(?:args|ack)\/agentState\/(?:requests\/[^/]
 export function normalize(rows: Row[], facts: ProcessFacts, launches: unknown[], decoded: unknown[]) {
     const runtimeDir = facts.runtimeDir ?? facts.cli
     const ids = new Map<string, string>()
+    const clientInstances = new Map<string, string>()
     const requests = new Map<string, string>()
     const ports = new Map<string, string>()
     const clocks = new Map<string, number>()
@@ -86,6 +87,11 @@ export function normalize(rows: Row[], facts: ProcessFacts, launches: unknown[],
         }
         if (key === 'happyLibDir') { assert.equal(value, runtimeDir); return '<lib>' }
         if (key === 'happyToolsDir') { assert.equal(value, join(runtimeDir, 'tools/unpacked')); return '<tools>' }
+        if (path === 'auth/args/clientInstanceId') {
+            assert.equal(typeof value, 'string', path)
+            assert.match(value, /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i, path)
+            return token(clientInstances, value, 'client-instance')
+        }
         if (typeof value !== 'string') return value
         if (key === 'request_id') return token(requests, value, 'req')
         if (key === 'PATH') { assert.equal(value, process.env.PATH); return '<path>' }

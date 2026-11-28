@@ -7,6 +7,7 @@ import type { TransferSessionJobsResult } from '../store/sessionJobs'
 import { clampAliveTime } from './aliveTime'
 import { EventPublisher } from './eventPublisher'
 import { extractTodoWriteTodosFromMessageContent, TodosSchema } from './todos'
+import { rehomeMessageAttachments } from './messageAttachmentTransfer'
 import { InvalidExternalRefsError } from './externalRefErrors'
 import { resolveSessionIdleTimeoutMs, shouldClearKeepaliveIdle, shouldMarkKeepaliveIdle } from './sessionIdle'
 
@@ -22,6 +23,16 @@ const TURN_RECOVERY_WINDOW_MS = 10 * 60_000
 // HTTP caller as 409 instead of spinning forever.
 const METADATA_RETRY_ATTEMPTS = 5
 type RuntimeConfigKey = 'permissionMode' | 'model' | 'modelReasoningEffort' | 'effort' | 'serviceTier' | 'collaborationMode' | 'copilotAgentMode'
+type SessionAttachmentLock = <T>(
+    namespace: string,
+    sessionIds: readonly string[],
+    fn: () => Promise<T>,
+) => Promise<T>
+
+type SessionCacheHooks = {
+    /** Fires after a merge deletes a session row. */
+    onSessionMergedAway?: (oldSessionId: string, newSessionId: string) => void
+}
 
 /**
  * Metadata merge used when consolidating an old session row into a replacement
@@ -185,6 +196,9 @@ export class SessionCache {
     private readonly deduplicatePending: Map<string, Set<string>> = new Map()
     private readonly pendingThinkingUntilBySessionId: Map<string, number> = new Map()
     private readonly runtimeConfigUpdatedAtBySessionId: Map<string, Partial<Record<RuntimeConfigKey, number>>> = new Map()
+    /** Process-local creation order; SQLite timestamps can tie within one tick. */
+    private readonly sessionInsertionOrder = new Map<string, number>()
+    private nextSessionInsertionOrder = 0
     /**
      * Last time the hub saw real agent progress per session (tiann/hapi#1820).
      * Deliberately NOT bumped by `session-alive`: keepalives are exactly the
@@ -203,15 +217,21 @@ export class SessionCache {
     constructor(
         private readonly store: Store,
         private readonly publisher: EventPublisher,
-        private readonly hooks: {
-            /** Fires after a merge deletes a session row. Dedup collisions and
-             *  resume-id rotation both land in `mergeSessionData`, so this is
-             *  the single notification point; owners keyed on the removed id
-             *  (e.g. the hub's enumeration cache) release their entries here. */
-            onSessionMergedAway?: (oldSessionId: string, newSessionId: string) => void
-        } = {}
+        withAttachmentLocksOrHooks: SessionAttachmentLock | SessionCacheHooks =
+            async (_namespace, _sessionIds, fn) => fn(),
+        hooks: SessionCacheHooks = {},
     ) {
+        if (typeof withAttachmentLocksOrHooks === 'function') {
+            this.withAttachmentLocks = withAttachmentLocksOrHooks
+            this.hooks = hooks
+        } else {
+            this.withAttachmentLocks = async (_namespace, _sessionIds, fn) => fn()
+            this.hooks = withAttachmentLocksOrHooks
+        }
     }
+
+    private readonly withAttachmentLocks: SessionAttachmentLock
+    private readonly hooks: SessionCacheHooks
 
     /**
      * Closes turns the previous hub process left open; `thinking` starts out
@@ -379,6 +399,7 @@ export class SessionCache {
             const cached = this.sessions.get(sessionId)
             const namespace = cached?.namespace
             const existed = this.sessions.delete(sessionId)
+            this.sessionInsertionOrder.delete(sessionId)
             this.pendingThinkingUntilBySessionId.delete(sessionId)
             this.runtimeConfigUpdatedAtBySessionId.delete(sessionId)
             this.agentProgressAtBySessionId.delete(sessionId)
@@ -389,6 +410,9 @@ export class SessionCache {
         }
 
         const existing = this.sessions.get(sessionId)
+        if (!this.sessionInsertionOrder.has(sessionId)) {
+            this.sessionInsertionOrder.set(sessionId, ++this.nextSessionInsertionOrder)
+        }
 
         if (stored.todos === null && !this.todoBackfillAttemptedSessionIds.has(sessionId)) {
             this.todoBackfillAttemptedSessionIds.add(sessionId)
@@ -2047,6 +2071,7 @@ export class SessionCache {
         this.store.sessionRedirects.deleteTargeting(sessionId, session.namespace)
 
         this.sessions.delete(sessionId)
+        this.sessionInsertionOrder.delete(sessionId)
         this.lastBroadcastAtBySessionId.delete(sessionId)
         this.todoBackfillAttemptedSessionIds.delete(sessionId)
         this.pendingThinkingUntilBySessionId.delete(sessionId)
@@ -2124,12 +2149,33 @@ export class SessionCache {
             return
         }
 
+        await this.withAttachmentLocks(namespace, [oldSessionId, newSessionId], () => (
+            this.mergeSessionDataLocked(oldSessionId, newSessionId, namespace, options)
+        ))
+    }
+
+    private async mergeSessionDataLocked(
+        oldSessionId: string,
+        newSessionId: string,
+        namespace: string,
+        options: { deleteOldSession: boolean; mergeAgentState?: boolean }
+    ): Promise<void> {
+
         const oldStored = this.store.sessions.getSessionByNamespace(oldSessionId, namespace)
         const newStored = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
+        if (!oldStored && newStored && options.deleteOldSession) {
+            // A concurrent deduplication pass may have completed the same
+            // source-to-target merge while a resume was waiting for the
+            // attachment lock. Treat the already-deleted source as an
+            // idempotent success instead of turning a successful resume into
+            // "Session not found for merge".
+            return
+        }
         if (!oldStored || !newStored) {
             throw new Error('Session not found for merge')
         }
 
+        const sourceMessages = this.store.messages.getAllMessages(oldSessionId)
         // A resume/dedup may replace the row. Transfer title ownership before
         // moving data, preserving fresh source/destination metadata on retries.
         let metadataTransferred = false
@@ -2148,8 +2194,14 @@ export class SessionCache {
             if (result.result === 'error') break
         }
         if (!metadataTransferred) throw new Error('Failed to preserve session metadata during merge')
-
         const movedMessages = this.store.messages.mergeSessionMessages(oldSessionId, newSessionId)
+        await rehomeMessageAttachments(
+            this.store,
+            namespace,
+            oldSessionId,
+            newSessionId,
+            sourceMessages,
+        )
         this.syncReadState(newSessionId)
         if (!options.deleteOldSession) this.syncReadState(oldSessionId)
         // mergeSessions deletes the source. mergeSessionHistory keeps it alive
@@ -2212,7 +2264,6 @@ export class SessionCache {
             const {
                 getHapiHomeDir,
                 moveScratchlistAttachmentFilesForSession,
-                deleteScratchlistSessionAttachmentDir,
             } = await import('../scratchlistAttachments/storage')
             const hapiHome = getHapiHomeDir()
             for (const entry of this.store.scratchlist.list(newSessionId)) {
@@ -2228,13 +2279,17 @@ export class SessionCache {
                     this.store.scratchlist.update(newSessionId, entry.entryId, { attachments })
                 }
             }
-            // Collided SQL losers + orphan uploads still under the old dir.
-            await deleteScratchlistSessionAttachmentDir(hapiHome, namespace, oldSessionId)
             // Rows landed on the consolidated session - invalidate so
             // any client on the new id refetches.
             this.emitScratchlistChanged(newSessionId)
-        } else if (movedScratchlist.collided > 0) {
-            // Every old entry lost the PK race — drop leftover hub blobs.
+        }
+        if (options.deleteOldSession
+            || movedScratchlist.moved > 0
+            || movedScratchlist.collided > 0) {
+            // Drop collided SQL losers and any orphan uploads still under the
+            // old directory. A deleted source session can have no remaining
+            // scratchlist rows while still owning an attachment left behind
+            // by an already-removed scheduled draft.
             const { getHapiHomeDir, deleteScratchlistSessionAttachmentDir } = await import(
                 '../scratchlistAttachments/storage'
             )
@@ -2396,6 +2451,7 @@ export class SessionCache {
             }
 
             const existed = this.sessions.delete(oldSessionId)
+            this.sessionInsertionOrder.delete(oldSessionId)
             if (existed) {
                 this.publisher.emit({ type: 'session-removed', sessionId: oldSessionId, namespace })
             }
@@ -3029,12 +3085,21 @@ export class SessionCache {
 
                 // Keep the same canonical session the sidebar is likely to show:
                 // active sessions win, then the most recently updated session wins.
-                // If timestamps tie, prefer the session that triggered this dedup run
-                // so callers can intentionally preserve the visible/resumed session.
+                // If timestamps and database sequence tie, prefer the session
+                // created later in this Hub process; SQLite millisecond
+                // timestamps otherwise let an older inactive duplicate delete
+                // a pre-created resume target before it becomes active.
                 candidates.sort((a, b) => {
                     if (a.session.active !== b.session.active) return a.session.active ? -1 : 1
                     const updatedDelta = b.session.updatedAt - a.session.updatedAt
                     if (updatedDelta !== 0) return updatedDelta
+                    const createdDelta = b.session.createdAt - a.session.createdAt
+                    if (createdDelta !== 0) return createdDelta
+                    const seqDelta = b.session.seq - a.session.seq
+                    if (seqDelta !== 0) return seqDelta
+                    const insertionDelta = (this.sessionInsertionOrder.get(b.id) ?? 0)
+                        - (this.sessionInsertionOrder.get(a.id) ?? 0)
+                    if (insertionDelta !== 0) return insertionDelta
                     if (a.id === passSessionId) return -1
                     if (b.id === passSessionId) return 1
                     return b.session.activeAt - a.session.activeAt

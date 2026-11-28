@@ -1,7 +1,7 @@
 /*
- * Playwright fixture for issue #959: exit scratchlist mode after a
- * successful promote-to-queue. Mirrors ScratchlistDrawerHost behaviour
- * without importing SessionChat (which pulls the full app graph).
+ * Playwright fixture for the scratchlist drawer interaction regression.
+ * Mirrors ScratchlistDrawerHost behaviour without importing SessionChat
+ * (which pulls the full app graph).
  */
 
 import React from 'react'
@@ -10,6 +10,8 @@ import '../src/index.css'
 import { I18nProvider } from '../src/lib/i18n-context'
 import { useScratchlist } from '../src/lib/use-scratchlist'
 import { ScratchlistDrawer } from '../src/components/AssistantChat/ScratchlistPanel'
+import type { ApiClient } from '../src/api/client'
+import type { ScratchlistEntry } from '../src/lib/scratchlist'
 
 declare global {
     interface Window {
@@ -56,27 +58,17 @@ function App() {
         }
     }, [sessionId])
 
-    const handleSend = React.useCallback(async (text: string) => {
-        if (harnessData.current.queueSendMode === 'failure') {
-            return false
-        }
-        harnessData.current.queuedTexts.push(text)
-        return true
-    }, [])
-
-    // Mirror ScratchlistDrawerHost.handlePromoteToQueue (SessionChat.tsx).
-    const handlePromoteToQueue = React.useCallback(async (text: string) => {
-        const accepted = await handleSend(text)
-        if (accepted) {
-            setScratchlistMode(false)
-        }
-        return accepted
-    }, [handleSend])
-
     const handleAdd = React.useCallback(() => {
         const added = scratchlist.add(draft)
         if (added) setDraft('')
     }, [draft, scratchlist])
+
+    const handleSendNow = React.useCallback(async (entry: ScratchlistEntry) => {
+        if (harnessData.current.queueSendMode === 'failure') return false
+        harnessData.current.queuedTexts.push(entry.text)
+        setScratchlistMode(false)
+        return true
+    }, [])
 
     return (
         <I18nProvider>
@@ -117,10 +109,12 @@ function App() {
                 {scratchlistMode ? (
                     <ScratchlistDrawer
                         entries={scratchlist.entries}
-                        onMove={scratchlist.move}
+                        onUpdate={scratchlist.update}
+                        onReorder={scratchlist.reorder}
                         onDelete={scratchlist.remove}
-                        onPromoteToComposer={() => setScratchlistMode(false)}
-                        onPromoteToQueue={handlePromoteToQueue}
+                        onSend={handleSendNow}
+                        sessionId={sessionId}
+                        api={{} as ApiClient}
                     />
                 ) : null}
 

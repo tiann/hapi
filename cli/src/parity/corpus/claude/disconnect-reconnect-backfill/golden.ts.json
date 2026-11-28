@@ -125,6 +125,7 @@
         "ackRequested": false,
         "args": [
           {
+            "clientInstanceId": "<client-instance:1>",
             "clientType": "session-scoped",
             "sessionId": "<uuid:1>",
             "token": "parity-token"
@@ -1081,6 +1082,7 @@
         "ackRequested": false,
         "args": [
           {
+            "clientInstanceId": "<client-instance:1>",
             "clientType": "session-scoped",
             "sessionId": "<uuid:1>",
             "token": "parity-token"
