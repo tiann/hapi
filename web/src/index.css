@@ -588,6 +588,13 @@ html:has(.chat-scroll-y) #root {
     div[style*="--sidebar-w"] {
         width: min(var(--sidebar-w), calc(100vw - 424px)) !important;
     }
+    /* While the session files panel is open beside the chat, also reserve its
+       320px minimum and its 4px handle (424 + 324 = 748), so a wide saved
+       sidebar can't squeeze the panel below its minimum at the 1200px
+       breakpoint. The saved width returns once the panel closes. */
+    body:has([data-session-files-panel]) div[style*="--sidebar-w"] {
+        width: min(var(--sidebar-w), calc(100vw - 748px)) !important;
+    }
 }
 
 /* Sidebar resize handle */

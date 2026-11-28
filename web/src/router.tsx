@@ -32,6 +32,12 @@ import { useAppContext } from '@/lib/app-context'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { isTelegramApp } from '@/hooks/useTelegram'
 import { useSidebarResize } from '@/hooks/useSidebarResize'
+import {
+    SESSION_FILES_PANEL_QUERY,
+    SESSION_FILES_PANEL_RESIZE,
+    SessionFilesPanelProvider,
+    useSessionFilesPanelAvailable,
+} from '@/components/SessionFilesPanel'
 import { useMessages } from '@/hooks/queries/useMessages'
 import { useMachines } from '@/hooks/queries/useMachines'
 import { useMachineLabels } from '@/hooks/useMachineLabels'
@@ -710,7 +716,11 @@ function SessionPage() {
     // SessionPage unmounts.
     const router = useRouter()
     const handleVoiceSessionResolved = useCallback((resolvedSessionId: string) => {
-        if (!isOnSessionPage(router.state.location.pathname, sessionId)) return
+        // On wide viewports the files routes keep this chat visible beside them.
+        const chatBesideFiles = typeof window !== 'undefined'
+            && typeof window.matchMedia === 'function'
+            && window.matchMedia(SESSION_FILES_PANEL_QUERY).matches
+        if (!isOnSessionPage(router.state.location.pathname, sessionId, { chatBesideFiles })) return
         handleSessionResolved(resolvedSessionId)
     }, [handleSessionResolved, router, sessionId])
 
@@ -1035,6 +1045,25 @@ function SessionDetailRoute() {
     useSessionBrowserTitle(session)
     const basePath = `/sessions/${sessionId}`
     const isChat = pathname === basePath || pathname === `${basePath}/`
+    const filesPanelAvailable = useSessionFilesPanelAvailable()
+    const filesPanel = useSidebarResize(SESSION_FILES_PANEL_RESIZE)
+    const closeFilesPanel = useCallback(() => {
+        navigate({
+            to: '/sessions/$sessionId',
+            params: { sessionId },
+            ...PRESERVE_SESSION_SIDEBAR_SCROLL,
+        })
+    }, [navigate, sessionId])
+    const chatFilesPanelState = useMemo(() => ({
+        open: !isChat,
+        inPanel: false,
+        close: closeFilesPanel,
+    }), [closeFilesPanel, isChat])
+    const panelFilesPanelState = useMemo(() => ({
+        open: true,
+        inPanel: true,
+        close: closeFilesPanel,
+    }), [closeFilesPanel])
     const supersedingSessionId = getSupersedingSessionId(sessionId, session?.metadata)
     const observedSessionRef = useRef<{
         sessionId: string
@@ -1102,7 +1131,46 @@ function SessionDetailRoute() {
         )
     }
 
-    return isChat ? <SessionPage /> : <Outlet />
+    const isFilesPanelRoute = pathname === `${basePath}/files`
+        || pathname === `${basePath}/files/`
+        || pathname === `${basePath}/file`
+        || pathname === `${basePath}/file/`
+    const filesPanelOpen = filesPanelAvailable && isFilesPanelRoute
+
+    // Narrow viewports (and the terminal route) keep the full-pane behavior.
+    if (!isChat && !filesPanelOpen) {
+        return <Outlet />
+    }
+
+    // Keep SessionPage at the same tree position whether or not the files panel
+    // is open so toggling the panel doesn't remount the chat (scroll, composer).
+    return (
+        <div className="flex h-full min-h-0">
+            <SessionFilesPanelProvider value={chatFilesPanelState}>
+                <div className="flex min-w-0 flex-1 flex-col">
+                    <SessionPage />
+                </div>
+            </SessionFilesPanelProvider>
+            {filesPanelOpen ? (
+                <>
+                    <div
+                        className="sidebar-resize-handle shrink-0"
+                        data-dragging={filesPanel.isDragging || undefined}
+                        onPointerDown={filesPanel.onPointerDown}
+                    />
+                    <SessionFilesPanelProvider value={panelFilesPanelState}>
+                        <aside
+                            className="flex min-w-0 shrink-0 flex-col bg-[var(--app-bg)]"
+                            style={{ width: `min(${filesPanel.width}px, calc(100% - 424px))` }}
+                            data-session-files-panel="true"
+                        >
+                            <Outlet />
+                        </aside>
+                    </SessionFilesPanelProvider>
+                </>
+            ) : null}
+        </div>
+    )
 }
 
 function NewSessionPage() {
