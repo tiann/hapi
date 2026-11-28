@@ -1474,13 +1474,15 @@ if (isReconnect) {
         this.updateMetadata((metadata) => ({ ...metadata, waiting: null }), options)
     }
 
-    updateMetadata(handler: (metadata: Metadata) => Metadata, options?: { signal?: AbortSignal }): void {
+    updateMetadata(handler: (metadata: Metadata) => Metadata, options?: { signal?: AbortSignal; skipUnchanged?: boolean }): void {
         const signal = options?.signal
         if (signal?.aborted) return
         if (this.state !== 'active') {
             if (this.state === 'closed') return
             const current = this.metadata ?? ({} as Metadata)
-            this.metadata = handler(current)
+            const updated = handler(current)
+            if (options?.skipUnchanged && updated === current) return
+            this.metadata = updated
             if (this.state === 'materializing') {
                 this.metadataChangedDuringAttempt = true
             }
@@ -1498,6 +1500,7 @@ if (isReconnect) {
 
                 const current = this.metadata ?? ({} as Metadata)
                 const updated = handler(current)
+                if (options?.skipUnchanged && updated === current) return
                 if (!this.socket.connected) {
                     throw new Error('Socket not connected')
                 }
