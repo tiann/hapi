@@ -39,6 +39,11 @@ extension APIClient {
         try await request(.get, "/api/hub-settings")
     }
 
+    public func setCursorAutoRetry(_ enabled: Bool) async throws -> HubSettingsResponse {
+        struct Update: Encodable { let autoBridgeTransientModelErrors: Bool }
+        return try await request(.put, "/api/hub-settings", body: Update(autoBridgeTransientModelErrors: enabled))
+    }
+
     /// `POST /api/visibility` — reports foreground/background transitions so
     /// the hub can suppress redundant pushes while the app is visible.
     /// `subscriptionId` comes from the SSE `connection-changed` handshake;

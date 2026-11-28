@@ -56,6 +56,7 @@ fun SettingsGeneralScreen(
     val theme by viewModel.themeSettings.collectAsState()
     val language by viewModel.language.collectAsState()
     val hubInfo by viewModel.hubInfo.collectAsState()
+    val cursorRetry by viewModel.cursorRetry.collectAsState()
 
     SettingsGeneralContent(
         theme = theme,
@@ -67,6 +68,9 @@ fun SettingsGeneralScreen(
         onSetPreset = viewModel::setPreset,
         onSetLanguage = viewModel::setLanguage,
         onRetryHubInfo = viewModel::retryHubInfo,
+        cursorRetry = cursorRetry,
+        onSetCursorRetry = viewModel::setCursorRetry,
+        onRefreshCursorRetry = viewModel::refreshCursorRetry,
         onBack = onBack,
     )
 }
@@ -84,6 +88,9 @@ internal fun SettingsGeneralContent(
     onSetPreset: (ColorThemePreset) -> Unit,
     onSetLanguage: (AppLanguage) -> Unit,
     onRetryHubInfo: () -> Unit,
+    cursorRetry: CursorRetrySetting = CursorRetrySetting(),
+    onSetCursorRetry: (Boolean) -> Unit = {},
+    onRefreshCursorRetry: () -> Unit = {},
     onBack: () -> Unit,
 ) {
     var showThemeDialog by rememberSaveable { mutableStateOf(false) }
@@ -149,6 +156,25 @@ internal fun SettingsGeneralContent(
                 }
             }
 
+            if (cursorRetry.enabled != null || cursorRetry.error != null) {
+                SettingsSection(title = "Cursor") {
+                    if (cursorRetry.enabled != null) {
+                        SwitchRow(
+                            label = stringResource(R.string.settings_cursor_retry),
+                            checked = cursorRetry.enabled,
+                            enabled = !cursorRetry.pending,
+                            onCheckedChange = onSetCursorRetry,
+                        )
+                    } else {
+                        SettingsRow(
+                            label = stringResource(R.string.settings_cursor_retry),
+                            value = stringResource(R.string.settings_retry),
+                            onClick = onRefreshCursorRetry,
+                        )
+                    }
+                    cursorRetry.error?.takeIf { it.isNotBlank() }?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                }
+            }
             SettingsSection(title = stringResource(R.string.settings_section_language)) {
                 SettingsRow(
                     label = stringResource(R.string.settings_language),
@@ -299,7 +325,7 @@ private fun SettingsRow(
 @Composable
 private fun SwitchRow(
     label: String,
-    description: String,
+    description: String? = null,
     checked: Boolean,
     enabled: Boolean,
     onCheckedChange: (Boolean) -> Unit,
@@ -312,7 +338,7 @@ private fun SwitchRow(
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(text = label, style = MaterialTheme.typography.bodyLarge)
-            Text(
+            if (description != null) Text(
                 text = description,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

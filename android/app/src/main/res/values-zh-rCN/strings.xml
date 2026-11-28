@@ -120,6 +120,7 @@
     <string name="settings_category_general_summary">外观、语言与关于</string>
     <string name="settings_back">返回</string>
     <string name="settings_cancel">取消</string>
+    <string name="settings_cursor_retry">暂时性模型错误自动重试一次</string>
     <string name="settings_retry">重试</string>
     <string name="settings_load_error">无法加载此看板。</string>
     <string name="settings_owner_only">此看板仅对 hub 所有者（default 命名空间）可用。</string>

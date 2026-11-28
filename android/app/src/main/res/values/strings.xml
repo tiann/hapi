@@ -113,6 +113,7 @@
     <string name="settings_category_general_summary">Appearance, language, and about</string>
     <string name="settings_back">Back</string>
     <string name="settings_cancel">Cancel</string>
+    <string name="settings_cursor_retry">Automatically retry transient model errors once</string>
     <string name="settings_retry">Retry</string>
     <string name="settings_load_error">Could not load this dashboard.</string>
     <string name="settings_owner_only">This dashboard is only available to the hub owner (default namespace).</string>
