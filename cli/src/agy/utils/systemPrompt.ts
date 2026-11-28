@@ -46,9 +46,9 @@ export function getAgySystemPromptAppend(
 
     if (isPeerToolsDisabled(env)) {
         lines.push(SESSION_CITATION_DISABLED_STEER);
-    } else if (toolSet.has('inspect_peer') && toolSet.has('ping_peer')) {
-        // Citation steer only interpolates inspectTool; peer contact rules live
-        // in the tool descriptions (shared/sessionCitation), not this append.
+    } else if (toolSet.has('inspect_peer')) {
+        // Prompt refactor (#8ae7729): citation steer is a short pointer; peer
+        // contact rules live on the MCP tool descriptions.
         lines.push(buildSessionCitationSteerInstruction({
             inspectTool: 'inspect_peer',
         }));

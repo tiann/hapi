@@ -33,6 +33,9 @@ describe('getAgySystemPromptAppend & server-side AGY HAPI MCP bridge boundary', 
         expect(prompt).toContain('/sessions/<id> is a HAPI hub path');
         expect(prompt).toContain('Peer session MCP tools are not exposed in this Antigravity session');
         expect(prompt).not.toContain('read it with inspect_peer');
+        expect(prompt).not.toContain('call "ping_peer"');
+        expect(prompt).not.toContain('call "list_peers"');
+        expect(prompt).not.toContain('call "spawn_peer"');
         expect(getAgySystemPromptAppend(['change_title'], {})).not.toContain('Session jobs (`hapi job run`)');
     });
 
