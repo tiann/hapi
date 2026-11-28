@@ -15,8 +15,11 @@ type RenameSessionDialogProps = {
     onClose: () => void
     currentName: string
     currentTitleLocked?: boolean
+    /** True while the session carries a pinned custom name (metadata.name). */
+    hasCustomName?: boolean
     sessionId?: string
-    onRename: (newName: string | undefined, titleLocked?: boolean) => Promise<void>
+    /** string = set a custom name; null = clear it and return to auto naming. */
+    onRename: (newName: string | null | undefined, titleLocked?: boolean) => Promise<void>
     onSuggestTitle?: () => Promise<string>
     onUpdateSummary?: (text: string, titleLocked?: boolean) => Promise<void>
     isPending: boolean
@@ -24,7 +27,7 @@ type RenameSessionDialogProps = {
 
 export function RenameSessionDialog(props: RenameSessionDialogProps) {
     const { t } = useTranslation()
-    const { isOpen, onClose, currentName, currentTitleLocked = false, sessionId, onRename, onSuggestTitle, onUpdateSummary, isPending } = props
+    const { isOpen, onClose, currentName, currentTitleLocked = false, hasCustomName = false, sessionId, onRename, onSuggestTitle, onUpdateSummary, isPending } = props
     const [name, setName] = useState(currentName)
     const [titleLocked, setTitleLocked] = useState(currentTitleLocked)
     const [error, setError] = useState<string | null>(null)
@@ -95,7 +98,14 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
         const trimmed = name.trim()
         const lockChanged = titleLocked !== currentTitleLocked
         const untouchedTitle = !draftEdited && draftSource === 'manual'
-        if (!trimmed || (untouchedTitle && !lockChanged)) {
+        // Cleared input on a custom-named session = drop the custom name and
+        // return the session to its agent-generated title (per-turn naming).
+        const clearedCustom = hasCustomName && draftEdited && trimmed === ''
+        if (untouchedTitle && !lockChanged) {
+            handleClose()
+            return
+        }
+        if (!trimmed && !clearedCustom) {
             handleClose()
             return
         }
@@ -103,10 +113,19 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
         setIsSaving(true)
         const saveGeneration = generationRef.current
         try {
-            if (untouchedTitle && lockChanged) {
+            if (clearedCustom) {
+                await onRename(null, false)
+            } else if (untouchedTitle && lockChanged) {
                 // Preserve summary/name ownership when only the lock changes.
                 await onRename(undefined, titleLocked)
             } else if (draftSource === 'generated' && onUpdateSummary) {
+                // The generated title flows through the summary fallback. On a
+                // custom-named session the pinned metadata.name would keep
+                // winning the title chain, so lift the pin first — the
+                // generated text becomes the visible title again.
+                if (hasCustomName) {
+                    await onRename(null, false)
+                }
                 await onUpdateSummary(trimmed, titleLocked)
             } else {
                 await onRename(trimmed, titleLocked)
@@ -191,6 +210,10 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
                         </div>
                     ) : null}
 
+                    {hasCustomName && draftEdited && !name.trim() && !error ? (
+                        <p className="text-xs text-[var(--app-hint)]">{t('dialog.rename.clearHint')}</p>
+                    ) : null}
+
                     <div className="flex items-center justify-between gap-2">
                         <Button
                             type="button"
@@ -213,7 +236,7 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
                             ) : null}
                             <Button
                                 type="submit"
-                                disabled={busy || !name.trim()}
+                                disabled={busy || (!name.trim() && !(hasCustomName && draftEdited))}
                             >
                                 {isPending ? t('dialog.rename.saving') : t('button.save')}
                             </Button>

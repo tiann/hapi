@@ -30,7 +30,7 @@ export function useSessionActions(
     setModelReasoningEffort: (modelReasoningEffort: string | null) => Promise<void>
     setEffort: (effort: string | null) => Promise<void>
     setServiceTier: (serviceTier: string | null) => Promise<void>
-    renameSession: (name: string | undefined, titleLocked?: boolean) => Promise<void>
+    renameSession: (name: string | null | undefined, titleLocked?: boolean) => Promise<void>
     setExternalRefs: (refs: import('@/types/api').ExternalRef[]) => Promise<void>
     upsertExternalRef: (ref: import('@/types/api').ExternalRef) => Promise<void>
     removePrimaryExternalRef: () => Promise<void>
@@ -245,7 +245,7 @@ export function useSessionActions(
     })
 
     const renameMutation = useMutation({
-        mutationFn: async ({ name, titleLocked }: { name: string | undefined; titleLocked?: boolean }) => {
+        mutationFn: async ({ name, titleLocked }: { name: string | null | undefined; titleLocked?: boolean }) => {
             if (!api || !sessionId) {
                 throw new Error('Session unavailable')
             }
@@ -341,7 +341,7 @@ export function useSessionActions(
         setModelReasoningEffort: modelReasoningEffortMutation.mutateAsync,
         setEffort: effortMutation.mutateAsync,
         setServiceTier: serviceTierMutation.mutateAsync,
-        renameSession: (name: string | undefined, titleLocked?: boolean) => renameMutation.mutateAsync({ name, titleLocked }),
+        renameSession: (name: string | null | undefined, titleLocked?: boolean) => renameMutation.mutateAsync({ name, titleLocked }),
         setExternalRefs: externalRefsMutation.mutateAsync,
         upsertExternalRef: upsertExternalRefMutation.mutateAsync,
         removePrimaryExternalRef: removePrimaryExternalRefMutation.mutateAsync,

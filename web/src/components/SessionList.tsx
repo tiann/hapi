@@ -1923,6 +1923,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                     onClose={() => setRenameOpen(false)}
                     currentName={sessionName}
                     currentTitleLocked={s.metadata?.titleLocked === true}
+                    hasCustomName={Boolean(s.metadata?.name)}
                     sessionId={s.id}
                     onRename={renameSession}
                     onSuggestTitle={api && titleSuggestionAvailable ? suggestSessionTitle : undefined}
