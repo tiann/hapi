@@ -1246,14 +1246,18 @@ export class MessageService {
      * each tick until the CLI acks it, which is the correct behaviour for hub
      * restart scenarios (pitfall #2 guard).
      *
+     * Returns the ids of the sessions a message was emitted to; the engine
+     * resumes the inactive ones so the message reaches an agent.
+     *
      * Race window with cancel: this tick widens the cancel race to 5 s for
      * scheduled messages (vs near-zero for immediate-queued ones). If the CLI
      * has already shift()-ed the row when cancel arrives, a non-positive cancel
      * ACK leaves the row indeterminate; only an explicit consumed ACK stamps it
      * invoked. See messageService.test.ts "cancel × mature race". */
-    releaseMatureScheduledMessages(now: number, skipSessionIds?: ReadonlySet<string>): void {
+    releaseMatureScheduledMessages(now: number, skipSessionIds?: ReadonlySet<string>): string[] {
         const mature = this.store.messages.getMatureScheduledMessages(now)
         const maturedSessionIds = new Set<string>()
+        const releasedSessionIds = new Set<string>()
         const deliveryGateBySession = new Map<string, boolean>()
         for (const msg of mature) {
             let deliveryGated = deliveryGateBySession.get(msg.sessionId)
@@ -1286,11 +1290,13 @@ export class MessageService {
                 }
             }
             this.io.of('/cli').to(`session:${msg.sessionId}`).emit('update', update)
+            releasedSessionIds.add(msg.sessionId)
             // NOTE: do NOT call markMessagesInvoked here (pitfall #2).
             // CLI ack (messages-consumed) will handle invoked_at stamping.
         }
         for (const sessionId of maturedSessionIds) {
             this.publisher.emit({ type: 'scheduled-matured', sessionId })
         }
+        return [...releasedSessionIds]
     }
 }

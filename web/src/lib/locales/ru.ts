@@ -808,7 +808,7 @@ export default {
   'composer.scheduleSend': 'Отложенная отправка',
   'composer.scheduleRelativeTab': 'Относительно',
   'composer.scheduleSpecificTab': 'Точное время',
-  'composer.scheduleSpecificHint': 'Максимум 7 дней. Требуется работающий хаб; CLI наверстает отправку при следующем подключении после этого времени.',
+  'composer.scheduleSpecificHint': 'Не позднее чем через 7 дней. Требуется работающий Hub. Если сессия в это время не запущена, Hub возобновит её; если машина офлайн — сообщение уйдёт после её возвращения.',
   'composer.scheduleErrorPast': 'Время отправки должно быть в будущем.',
   'composer.scheduleErrorTooFar': 'Максимальное время отправки — 7 дней.',
   'queuedMessages.scheduledFor': 'Запланировано на {time}',

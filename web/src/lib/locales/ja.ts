@@ -894,7 +894,7 @@ export default {
   'composer.scheduleSend': '送信を予約',
   'composer.scheduleRelativeTab': '相対',
   'composer.scheduleSpecificTab': '指定',
-  'composer.scheduleSpecificHint': '最長 7 日間。hub が稼働している必要があります。その時刻以降に CLI が次に接続したときに追いつきます。',
+  'composer.scheduleSpecificHint': '最大 7 日先まで。Hub の起動が必要です。その時点でセッションが動いていなければ Hub が再開し、マシンがオフラインなら復帰後に送信されます。',
   'composer.scheduleErrorPast': '予約時刻は未来にする必要があります。',
   'composer.scheduleErrorTooFar': '予約できるのは最長 7 日先までです。',
   'queuedMessages.scheduledFor': '{time} に予約',

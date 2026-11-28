@@ -940,7 +940,7 @@ export default {
   'composer.scheduleSend': 'Schedule send',
   'composer.scheduleRelativeTab': 'Relative',
   'composer.scheduleSpecificTab': 'Specific',
-  'composer.scheduleSpecificHint': 'Max 7 days. Requires the hub running; the CLI catches up the next time it connects after that time.',
+  'composer.scheduleSpecificHint': 'Max 7 days. Requires the hub running. If the session is not running at that time, the hub resumes it; if its machine is offline, the message goes out when it is back.',
   'composer.scheduleErrorPast': 'Scheduled time must be in the future.',
   'composer.scheduleErrorTooFar': 'Maximum schedule time is 7 days.',
   'queuedMessages.scheduledFor': 'Scheduled for {time}',
