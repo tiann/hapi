@@ -43,6 +43,7 @@ export default defineConfig({
           { text: 'Session-attached jobs', link: '/guide/session-jobs' },
           { text: 'Usage & Quotas', link: '/guide/usage-and-quotas' },
           { text: 'Voice Assistant', link: '/guide/voice-assistant' },
+          { text: 'Release Notes', link: '/guide/release-notes-authoring' },
           { text: 'Why HAPI', link: '/guide/why-hapi' },
           { text: 'FAQ', link: '/guide/faq' }
         ]

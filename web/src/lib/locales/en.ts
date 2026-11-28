@@ -1469,7 +1469,8 @@ export default {
   'settings.machines.error': 'Could not rename this machine.',
   'settings.hub.machines.summary': 'Custom names for your machines',
   'settings.about.title': 'About',
-  'settings.about.description': 'HAPI links and version information.',
+  'settings.about.description': 'HAPI links, version information, and release notes.',
+  'settings.about.releaseNotes.unavailable': 'Release history is unavailable. Reload the page to try again.',
   'settings.about.website': 'Website',
   'settings.about.appVersion': 'App Version',
   'settings.about.protocolVersion': 'Protocol Version',
@@ -1478,6 +1479,13 @@ export default {
   'settings.about.backup.exportButton': 'Export',
   'settings.about.backup.importButton': 'Import',
   'settings.about.backup.importError': 'This file is not a HAPI settings export.',
+  'settings.about.releaseNotes.title': "What's New",
+  'settings.about.releaseNotes.description': 'Release dates and highlights for every HAPI version.',
+  'settings.about.releaseNotes.released': 'Released',
+  'settings.about.releaseNotes.openRelease': 'Open release page for v{version}',
+  'settings.about.releaseNotes.kind.feature': 'Added',
+  'settings.about.releaseNotes.kind.fix': 'Fixed',
+  'settings.about.releaseNotes.kind.note': 'Note',
 
   // Browse / Workspace
   'browse.title': 'Browse',

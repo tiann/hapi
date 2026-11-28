@@ -1,4 +1,4 @@
-import { useState, type ChangeEvent } from 'react'
+import { lazy, Suspense, useState, type ChangeEvent } from 'react'
 import { PROTOCOL_VERSION } from '@hapi/protocol'
 import { useTranslation } from '@/lib/use-translation'
 import { downloadBlob } from '@/lib/file-download'
@@ -8,8 +8,17 @@ import { SettingsPageContent, SettingsRow, SettingsSection } from '@/components/
 
 const buttonClassName = 'cursor-pointer rounded-lg bg-[var(--app-button)] px-3 py-2 text-sm font-medium text-[var(--app-button-text)]'
 
-export default function SettingsAboutPage() {
+function ReleaseHistoryUnavailable() {
     const { t } = useTranslation()
+    return <p role="status" className="px-3 py-3 text-sm text-[var(--app-hint)]">{t('settings.about.releaseNotes.unavailable')}</p>
+}
+
+// A tab on the old build can request a chunk that an upgraded Hub no longer
+// serves. Keep version details and settings backup available in that tab.
+const LazyAboutReleaseHistory = lazy(() => import('./AboutReleaseHistory').catch(() => ({ default: ReleaseHistoryUnavailable })))
+
+export default function SettingsAboutPage() {
+    const { t, locale } = useTranslation()
     const [importError, setImportError] = useState(false)
 
     const handleExport = () => {
@@ -60,6 +69,14 @@ export default function SettingsAboutPage() {
                 }>
                     {importError ? <div role="alert" className="mt-0.5 text-xs text-red-600 dark:text-red-400">{t('settings.about.backup.importError')}</div> : null}
                 </SettingsRow>
+            </SettingsSection>
+            <SettingsSection
+                title={t('settings.about.releaseNotes.title')}
+                description={t('settings.about.releaseNotes.description')}
+            >
+                <Suspense fallback={<p className="px-3 py-3 text-sm text-[var(--app-hint)]">{t('loading')}</p>}>
+                    <LazyAboutReleaseHistory />
+                </Suspense>
             </SettingsSection>
         </SettingsPageContent>
     )
