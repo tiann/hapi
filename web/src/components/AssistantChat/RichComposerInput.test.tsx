@@ -10,6 +10,7 @@ import {
     segmentsFromEditor,
 } from './RichComposerInput'
 import { serializeComposerSegments } from '@/lib/composerSegments'
+import { SESSION_MENTION_DRAG_MIME } from '@/lib/sessionMentionDrag'
 
 function selectionOffset(root: HTMLElement): number {
     const selection = window.getSelection()
@@ -511,5 +512,168 @@ describe('RichComposerInput undo history', () => {
         })
         expect(editor.dispatchEvent(undo)).toBe(false)
         expect(value.textContent).toBe('ab')
+    })
+})
+
+function installCaret(name: 'caretPositionFromPoint' | 'caretRangeFromPoint', value: unknown) {
+    Object.defineProperty(document, name, { configurable: true, writable: true, value })
+}
+
+function sessionMentionDrag(payload: string, types: readonly string[] = [SESSION_MENTION_DRAG_MIME]) {
+    return {
+        types,
+        dropEffect: 'none',
+        effectAllowed: 'copy',
+        getData: (type: string) => type === SESSION_MENTION_DRAG_MIME ? payload : '',
+    }
+}
+
+function SessionDropHarness(props: {
+    disabled?: boolean
+    excludeSessionId?: string
+    onSessionMentionDrop?: (mention: { id: string; title: string }) => void
+}) {
+    const [value, setValue] = useState('Hello world')
+    const ref = useRef<RichComposerInputHandle>(null)
+
+    return (
+        <>
+            <output data-testid="controlled-value">{value}</output>
+            <RichComposerInput
+                ref={ref}
+                value={value}
+                disabled={props.disabled}
+                excludeSessionId={props.excludeSessionId}
+                onValueChange={(next) => {
+                    flushSync(() => setValue(next))
+                }}
+                onMirrorChange={() => {}}
+                onSessionMentionDrop={(mention) => {
+                    props.onSessionMentionDrop?.(mention)
+                    ref.current?.insertSessionMention(mention, [])
+                }}
+            />
+        </>
+    )
+}
+
+describe('RichComposerInput session drops', () => {
+    afterEach(() => {
+        Reflect.deleteProperty(document, 'caretPositionFromPoint')
+        Reflect.deleteProperty(document, 'caretRangeFromPoint')
+    })
+
+    function editorText(): Text {
+        const editor = screen.getByRole('textbox')
+        const text = Array.from(editor.childNodes).find((node) => node.nodeType === Node.TEXT_NODE)
+        if (!(text instanceof Text)) throw new Error('editor text node missing')
+        return text
+    }
+
+    function stubCaret(offset: number, api: 'range' | 'position' | 'miss') {
+        const text = editorText()
+        if (api === 'position') {
+            installCaret('caretPositionFromPoint', () => ({ offsetNode: text, offset }))
+            installCaret('caretRangeFromPoint', () => {
+                throw new Error('caretRangeFromPoint should not run after a Firefox hit')
+            })
+            return
+        }
+        installCaret('caretPositionFromPoint', () => null)
+        installCaret('caretRangeFromPoint', () => {
+            if (api === 'miss') {
+                const range = document.createRange()
+                range.setStart(document.body, 0)
+                range.collapse(true)
+                return range
+            }
+            const range = document.createRange()
+            range.setStart(text, offset)
+            range.collapse(true)
+            return range
+        })
+    }
+
+    function dropMention() {
+        fireEvent.drop(screen.getByRole('textbox'), {
+            clientX: 40,
+            clientY: 18,
+            dataTransfer: sessionMentionDrag(JSON.stringify({ id: 'peer-1', title: 'Peer session' })),
+        })
+    }
+
+    it('accepts a session drag on dragover and inserts the mention at the drop caret', () => {
+        const onSessionMentionDrop = vi.fn()
+        render(<SessionDropHarness onSessionMentionDrop={onSessionMentionDrop} />)
+        const editor = screen.getByRole('textbox')
+        placeCaret(editorText(), 0)
+        stubCaret(6, 'range')
+
+        expect(fireEvent.dragOver(editor, {
+            dataTransfer: sessionMentionDrag(''),
+        })).toBe(false)
+
+        dropMention()
+
+        expect(onSessionMentionDrop).toHaveBeenCalledWith({ id: 'peer-1', title: 'Peer session' })
+        expect(screen.getByTestId('controlled-value').textContent).toBe(
+            'Hello [Peer session](/sessions/peer-1) world'
+        )
+    })
+
+    it('uses caretPositionFromPoint when caretRangeFromPoint is unavailable', () => {
+        render(<SessionDropHarness />)
+        placeCaret(editorText(), 0)
+        stubCaret(6, 'position')
+
+        dropMention()
+
+        expect(screen.getByTestId('controlled-value').textContent).toBe(
+            'Hello [Peer session](/sessions/peer-1) world'
+        )
+    })
+
+    it('does not keep a stale caret when the drop point misses the editor', () => {
+        render(<SessionDropHarness />)
+        placeCaret(editorText(), 0)
+        stubCaret(0, 'miss')
+
+        dropMention()
+
+        expect(screen.getByTestId('controlled-value').textContent).toBe(
+            'Hello world[Peer session](/sessions/peer-1) '
+        )
+    })
+
+    it('leaves the composer alone for a disabled, foreign, malformed, or self drop', () => {
+        const { rerender } = render(<SessionDropHarness disabled />)
+        const editor = screen.getByRole('textbox')
+        expect(fireEvent.dragOver(editor, {
+            dataTransfer: sessionMentionDrag(''),
+        })).toBe(true)
+        dropMention()
+        expect(screen.getByTestId('controlled-value').textContent).toBe('Hello world')
+
+        rerender(<SessionDropHarness />)
+        expect(fireEvent.dragOver(editor, {
+            dataTransfer: sessionMentionDrag('', ['Files']),
+        })).toBe(true)
+        fireEvent.drop(editor, {
+            clientX: 1,
+            clientY: 1,
+            dataTransfer: sessionMentionDrag('ignored', ['Files']),
+        })
+        expect(screen.getByTestId('controlled-value').textContent).toBe('Hello world')
+
+        fireEvent.drop(editor, {
+            clientX: 1,
+            clientY: 1,
+            dataTransfer: sessionMentionDrag('not-json'),
+        })
+        expect(screen.getByTestId('controlled-value').textContent).toBe('Hello world')
+
+        rerender(<SessionDropHarness excludeSessionId="peer-1" />)
+        dropMention()
+        expect(screen.getByTestId('controlled-value').textContent).toBe('Hello world')
     })
 })
