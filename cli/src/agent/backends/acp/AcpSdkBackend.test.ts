@@ -1014,6 +1014,81 @@ describe('AcpSdkBackend', () => {
         expect(onAnswered).toHaveBeenCalledTimes(1);
     });
 
+    it('passes the prompt answer outcome to onAnswered before late output drains', async () => {
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const events: string[] = [];
+        const backendInternal = backend as unknown as {
+            transport: { sendRequest: () => Promise<unknown>; close: () => Promise<void> } | null;
+            waitForSessionUpdateQuiet: (quietMs: number, timeoutMs: number) => Promise<void>;
+            drainLateBuffers: () => Promise<void>;
+        };
+        let releaseDrain!: () => void;
+        let quietCalls = 0;
+        backendInternal.waitForSessionUpdateQuiet = () => {
+            quietCalls += 1;
+            return quietCalls === 1
+                ? Promise.resolve()
+                : new Promise<void>((resolve) => { releaseDrain = resolve; });
+        };
+        backendInternal.drainLateBuffers = async () => {};
+        backendInternal.transport = {
+            sendRequest: async () => ({ stopReason: 'end_turn' }),
+            close: async () => {}
+        };
+
+        const prompt = backend.prompt('session-1', [{ type: 'text', text: 'hello' }], () => {}, {
+            timing: { onAnswered: (succeeded) => events.push(`answered:${succeeded}`) }
+        });
+        await vi.waitFor(() => expect(events).toEqual(['answered:true']));
+        expect(releaseDrain).toBeTypeOf('function');
+        releaseDrain();
+        await prompt;
+    });
+
+    it('reports each soft steer answer outcome before its late output drains', async () => {
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const answered: Array<[boolean, string | null]> = [];
+        const drainGates: Array<() => void> = [];
+        const backendInternal = backend as unknown as {
+            transport: {
+                sendRequestWithDispatch: () => { dispatched: Promise<void>; completed: Promise<unknown> };
+                close: () => Promise<void>;
+            } | null;
+            isProcessingMessage: boolean;
+            waitForSessionUpdateQuiet: (quietMs: number, timeoutMs: number) => Promise<void>;
+            drainLateBuffers: () => Promise<void>;
+        };
+        backendInternal.isProcessingMessage = true;
+        backendInternal.waitForSessionUpdateQuiet = () => new Promise<void>((resolve) => { drainGates.push(resolve); });
+        backendInternal.drainLateBuffers = async () => {};
+        const failure = Object.assign(new Error('waiting for a permission answer'), { code: -32603 });
+        let requests = 0;
+        backendInternal.transport = {
+            sendRequestWithDispatch: () => {
+                requests += 1;
+                return {
+                    dispatched: Promise.resolve(),
+                    completed: requests === 1 ? Promise.resolve({ stopReason: 'end_turn' }) : Promise.reject(failure)
+                };
+            },
+            close: async () => {}
+        };
+        const onAnswered = (succeeded: boolean, stopReason: string | null) => { answered.push([succeeded, stopReason]); };
+
+        const first = backend.beginSoftSteerPrompt('session-1', [{ type: 'text', text: 'pivot' }], { onAnswered });
+        await vi.waitFor(() => expect(answered).toEqual([[true, 'end_turn']]));
+        expect(drainGates).toHaveLength(1);
+        drainGates.shift()!();
+        await first.completed;
+
+        backendInternal.isProcessingMessage = true;
+        const second = backend.beginSoftSteerPrompt('session-1', [{ type: 'text', text: 'again' }], { onAnswered });
+        await vi.waitFor(() => expect(answered).toEqual([[true, 'end_turn'], [false, null]]));
+        expect(drainGates).toHaveLength(1);
+        drainGates.shift()!();
+        await expect(second.completed).rejects.toBe(failure);
+    });
+
     it('seals a Cursor done footer before quiet drain so harness text stays separate (#2268)', async () => {
         backendStatics.UPDATE_QUIET_PERIOD_MS = 40;
         backendStatics.UPDATE_DRAIN_TIMEOUT_MS = 200;

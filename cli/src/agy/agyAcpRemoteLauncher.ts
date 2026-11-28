@@ -181,6 +181,12 @@ function asQuestionCard(message: AgentMessage): { message: AgentMessage; shownLa
 /** agy acp did not come up; the caller may fall back to another transport. */
 export class AgyAcpStartError extends Error {}
 
+type EarlySteer = {
+    written: boolean;
+    rejected: boolean;
+    accept: () => void;
+};
+
 type AgyTurn = {
     modeHash: string;
     aborted: boolean;
@@ -231,6 +237,7 @@ type AgyTurn = {
     steerAnswers: Promise<void>[];
     // agy echoes the prompt first, and that echo may contain a steer's text.
     promptEcho: { text: string; echo: string; done: boolean };
+    earlySteer: EarlySteer | null;
     unechoedSteers: Array<{ text: string; echo: string; accept: () => void }>;
     // Steers agy answered without an echo; settled when the turn ends.
     answeredSteers: Array<{ accept: () => void; hold: () => void }>;
@@ -1117,6 +1124,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             answerMain,
             steerAnswers: [],
             promptEcho: { text: normalizeEcho(message), echo: '', done: false },
+            earlySteer: null,
             unechoedSteers: [],
             answeredSteers: [],
             abandonSteers: [],
@@ -1229,9 +1237,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                             // in `Queued` while the model is thinking.
                             if (!turn.aborted) turn.acknowledge();
                         },
-                        onAnswered: () => {
+                        onAnswered: (succeeded: boolean) => {
                             turn.answeredAt = Date.now();
                             turn.answerMain();
+                            if (succeeded) this.confirmEarlySteer(turn);
                         }
                     }
                 });
@@ -1435,6 +1444,13 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
+    private confirmEarlySteer(turn: AgyTurn): void {
+        const candidate = turn.earlySteer;
+        if (!candidate || !candidate.written || candidate.rejected) return;
+        if (this.turn !== turn || turn.aborted || this.backendLost) return;
+        candidate.accept();
+    }
+
     /**
      * The hub RPC is answered once the steer request is written: the request
      * itself only completes with the turn, past the hub's RPC timeout.
@@ -1517,6 +1533,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             return { steered: false, error: 'Antigravity is waiting for your approval or answer; respond to it, then steer' };
         }
 
+        const candidate = !turn.earlySteer && turn.unechoedSteers.length === 0 && !turn.promptEcho.echo
+            ? { written: false, rejected: false, accept: () => {} }
+            : null;
         let steer: ReturnType<AcpSdkBackend['beginSoftSteerPrompt']>;
         try {
             steer = backend.beginSoftSteerPrompt(
@@ -1528,6 +1547,13 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         // out, and a second one would read as another turn.
                         if (this.turn !== turn) return;
                         turn.usage = addAgyUsage(turn.usage, usage);
+                    },
+                    onAnswered: (succeeded, stopReason) => {
+                        if (candidate) {
+                            if (!succeeded && stopReason === null) candidate.rejected = true;
+                        } else if (succeeded) {
+                            this.confirmEarlySteer(turn);
+                        }
                     }
                 }
             );
@@ -1564,7 +1590,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         };
         forgetEcho = () => {
             turn.unechoedSteers = turn.unechoedSteers.filter((entry) => entry.accept !== accept);
+            if (candidate && turn.earlySteer === candidate) turn.earlySteer = null;
         };
+        if (candidate && !resolved) {
+            candidate.accept = accept;
+            turn.earlySteer = candidate;
+        }
         turn.unechoedSteers.push({ text: normalizeEcho(taken.item.message), echo: '', accept });
         turn.abandonSteers.push(markIndeterminate);
 
@@ -1578,6 +1609,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             await restoreQueued();
             return { steered: false, error: 'Failed to steer into the active turn' };
         }
+        if (candidate && !resolved) candidate.written = true;
 
         void steer.completed.then((stopReason) => {
             // Stop answers an open steer with `cancelled`; without the echo,

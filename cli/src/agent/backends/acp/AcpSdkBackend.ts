@@ -837,7 +837,7 @@ export class AcpSdkBackend implements AgentBackend {
             beforeHandlerSwap?: () => Promise<void>
             // prompt() waits for earlier output before it sends and for late output
             // after the answer; callers timing the agent itself need both moments.
-            timing?: { onSent?: () => void; onAnswered?: () => void }
+            timing?: { onSent?: () => void; onAnswered?: (succeeded: boolean) => void }
         }
     ): Promise<boolean> {
         if (!this.transport) {
@@ -875,6 +875,7 @@ export class AcpSdkBackend implements AgentBackend {
         this.promptUsageCallback = onUpdate;
         this.childEmitSink = onUpdate;
         let stopReason: string | null = null;
+        let answeredSucceeded = false;
         let numTurns: number | undefined = undefined;
         let promptUsage: AcpPromptUsage | null = null;
 
@@ -894,6 +895,7 @@ export class AcpSdkBackend implements AgentBackend {
                     await request.dispatched;
                     options?.timing?.onSent?.();
                     response = await request.completed;
+                    answeredSucceeded = (isObject(response) ? asString(response.stopReason) : null) !== 'cancelled';
                 } else {
                     const request = this.transport.sendRequest('session/prompt', {
                         sessionId,
@@ -901,10 +903,11 @@ export class AcpSdkBackend implements AgentBackend {
                     }, { timeoutMs: Infinity });
                     options?.timing?.onSent?.();
                     response = await request;
+                    answeredSucceeded = (isObject(response) ? asString(response.stopReason) : null) !== 'cancelled';
                 }
             } finally {
                 this.promptRequestInFlight = false;
-                options?.timing?.onAnswered?.();
+                options?.timing?.onAnswered?.(answeredSucceeded);
             }
 
             stopReason = isObject(response) ? asString(response.stopReason) : null;
@@ -1042,6 +1045,8 @@ export class AcpSdkBackend implements AgentBackend {
         // Agents that answer each request with its own share (Antigravity)
         // need every response's usage to total the turn.
         onUsage?: (usage: Extract<AgentMessage, { type: 'usage' }>) => void;
+        /** Called when the agent answers, before late output is drained. */
+        onAnswered?: (succeeded: boolean, stopReason: string | null) => void;
     }): {
         dispatched: Promise<void>;
         /** Settles when the agent answers, before late output is drained. */
@@ -1063,6 +1068,8 @@ export class AcpSdkBackend implements AgentBackend {
             prompt: content
         }, { timeoutMs: Infinity, dispatchTimeoutMs: 20_000 });
         const completed = (async () => {
+            let stopReason: string | null = null;
+            let succeeded = false;
             try {
                 const response = await request.completed;
                 const usage = options?.onUsage ? this.extractPromptUsage(response) : null;
@@ -1075,8 +1082,11 @@ export class AcpSdkBackend implements AgentBackend {
                         contextWindow: context?.contextWindow
                     });
                 }
-                return isObject(response) ? asString(response.stopReason) : null;
+                stopReason = isObject(response) ? asString(response.stopReason) : null;
+                succeeded = stopReason !== 'cancelled';
+                return stopReason;
             } finally {
+                options?.onAnswered?.(succeeded, stopReason);
                 try {
                     await this.waitForSessionUpdateQuiet(
                         AcpSdkBackend.UPDATE_QUIET_PERIOD_MS,
