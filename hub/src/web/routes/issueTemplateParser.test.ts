@@ -221,6 +221,32 @@ body:
         expect(missingLabel.kind).toBe('unsupported')
     })
 
+    // GitHub's own validation-errors doc documents this as "Body[i]: label
+    // contains forbidden word," disclosing exactly one example ("password")
+    // on an input/textarea label (bot review, tiann/hapi#2147, follow-up).
+    // A miss here is silent, not visible: `gh issue create --title --body`
+    // never re-validates against the originating .yml, so this has to be
+    // caught at parse time, same as every other template-validity rule.
+    it('is unsupported when an input field label contains the forbidden word "password"', () => {
+        const template = parseIssueFormYaml('x.yml', 'name: Bug\ndescription: Bug\nbody:\n  - type: input\n    id: field\n    attributes:\n      label: Account Password')
+        expect(template.kind).toBe('unsupported')
+    })
+
+    it('is unsupported when a textarea field label contains the forbidden word, case-insensitively', () => {
+        const template = parseIssueFormYaml('x.yml', 'name: Bug\ndescription: Bug\nbody:\n  - type: textarea\n    id: field\n    attributes:\n      label: Your PASSWORD here')
+        expect(template.kind).toBe('unsupported')
+    })
+
+    it('does not reject a dropdown/checkboxes label containing the forbidden word — GitHub documents the rule as input/textarea-only', () => {
+        const dropdown = parseIssueFormYaml('x.yml', 'name: Bug\ndescription: Bug\nbody:\n  - type: dropdown\n    id: field\n    attributes:\n      label: Password strength\n      options:\n        - Weak\n        - Strong')
+        expect(dropdown.kind).toBe('form')
+    })
+
+    it('does not reject an ordinary label that merely shares a prefix with the forbidden word', () => {
+        const template = parseIssueFormYaml('x.yml', 'name: Bug\ndescription: Bug\nbody:\n  - type: input\n    id: field\n    attributes:\n      label: Pass/Fail Result')
+        expect(template.kind).toBe('form')
+    })
+
     // GitHub's issue-forms schema makes `id` optional (the field's rendered
     // issue-body section is keyed by label, never id) — a field without one
     // is still a valid, GitHub-accepted form, so it gets a generated id

@@ -9,6 +9,35 @@ function hashTemplateRevision(raw: string): string {
 
 const SUPPORTED_FIELD_TYPES = new Set(['markdown', 'input', 'textarea', 'dropdown', 'checkboxes'])
 
+// GitHub forbids certain words in the `label` of input/textarea elements
+// "commonly used by attackers," to limit credentials/PII posted publicly
+// in an issue (confirmed against GitHub's own validation-errors doc,
+// "Body[i]: label contains forbidden word") — it discloses exactly one
+// example, "password," and explicitly states its examples aren't an
+// exhaustive list, with no published full list anywhere (deliberately,
+// since publishing an anti-abuse filter in full would let it be trivially
+// worked around). Checking the one disclosed word is a strict coverage
+// improvement with no false rejections.
+//
+// Previously left unimplemented on the theory that a miss here fails
+// visibly, not silently: `gh issue create --title --body` was assumed to
+// get re-validated against the originating form schema the same way
+// GitHub's own form UI would reject it. It doesn't — GitHub's REST
+// issue-create call has no concept of the originating .yml template at
+// all, so a forbidden-word label that slips past this check is never
+// validated by anyone; the issue gets created exactly as filled in (bot
+// review, tiann/hapi#2147, follow-up). Checked against `kind: 'unsupported'`
+// the same way every other GitHub-documented template-validity rule in
+// this file is — a repo whose only local template has this flaw must NOT
+// count as having valid local coverage, same as a duplicate id or a
+// reserved dropdown word wouldn't.
+const FORBIDDEN_LABEL_WORDS = ['password']
+
+function containsForbiddenLabelWord(label: string): boolean {
+    const lower = label.toLowerCase()
+    return FORBIDDEN_LABEL_WORDS.some(word => lower.includes(word))
+}
+
 // GitHub's own attribute tables, one per field type (confirmed directly
 // against GitHub's documented form-schema syntax) — the full permitted
 // set, used to reject an unrecognized attribute key (see the main parse
@@ -433,6 +462,9 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
         const label = asNonBlankString(attrs.label)
         if (!label) {
             return { id, name, kind: 'unsupported', reason: `A "${type}" field is missing a label`, githubValid: false }
+        }
+        if ((type === 'input' || type === 'textarea') && containsForbiddenLabelWord(label)) {
+            return { id, name, kind: 'unsupported', reason: `Field "${label}" uses a word GitHub forbids in an input/textarea label ("password")`, githubValid: false }
         }
         const explicitFieldId = asString(elObj.id)
         if (!explicitFieldId) {
