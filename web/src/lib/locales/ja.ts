@@ -1132,8 +1132,6 @@ export default {
   'settings.display.sessionPreviewLimit': '折りたたむまでのセッション数',
   'settings.display.sessionPreviewLimit.decrease': '折りたたむまでのセッション表示数を減らす',
   'settings.display.sessionPreviewLimit.increase': '折りたたむまでのセッション表示数を増やす',
-  'settings.display.activeSessionsOnly': 'アクティブなセッションのみ',
-  'settings.display.activeSessionsOnly.desc': '開いているセッションと、長時間ジョブが実行中のセッションを除き、非アクティブなセッションを非表示にします。',
   'settings.display.pinInProgressSessions': '進行中のセッションをピン留め',
   'settings.display.pinInProgressSessions.desc': 'プロジェクトフォルダの上にある「進行中」セクションの先頭に、どの範囲のセッションを浮かべるかを選びます。デフォルトは長時間ジョブ（セッションジョブメーターを持つ、バッチ処理などの長時間作業）です。グローバルのピン留めはその上に残ります。接続中だがアイドル状態のセッション（hub ソケットは接続済みで、エージェントが作業中でも入力待ちでもないもの）は、どのモードでもプロジェクトフォルダに残ります。これは進行中の作業ではありません。オフにすると、すべてディレクトリグループ内に表示されます。',
   'settings.display.pinInProgressMode.off': 'オフ',
