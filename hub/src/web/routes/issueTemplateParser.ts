@@ -253,6 +253,18 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
     if (!name) {
         return { id, name: id, kind: 'unsupported', reason: 'Template is missing the required "name" field', githubValid: false }
     }
+    // Not documented on GitHub's own syntax/validation-errors pages (both
+    // checked directly — neither mentions a length minimum), but confirmed
+    // real via multiple independent real-world repos hitting GitHub's own
+    // in-editor error "Name is too short (minimum is 3 characters)" (bot
+    // review, tiann/hapi#2147, follow-up) — a template named "Bug" (3
+    // characters) meets that minimum and would be offered by GitHub's own
+    // chooser; the review's own example used it as a rejection case, which
+    // the literal GitHub error string contradicts. Threshold here matches
+    // the quoted error exactly: fewer than 3 is rejected, 3 or more passes.
+    if (name.length < 3) {
+        return { id, name, kind: 'unsupported', reason: `Template name "${name}" is too short (GitHub requires at least 3 characters)`, githubValid: false }
+    }
     // `description` is required alongside `name` per GitHub's own top-level
     // syntax table (review finding, tiann/hapi#2147, follow-up on the name
     // check above) — a form missing it isn't one GitHub's own template

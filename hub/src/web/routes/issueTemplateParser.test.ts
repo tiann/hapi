@@ -472,6 +472,28 @@ body:
         expect(template.kind === 'unsupported' && template.githubValid).toBe(false)
     })
 
+    // Not on GitHub's own syntax/validation-errors doc pages (checked
+    // directly), but confirmed real via GitHub's own in-editor error,
+    // quoted verbatim in multiple independent real-world repos: "Name is
+    // too short (minimum is 3 characters)" (bot review, tiann/hapi#2147,
+    // follow-up) — a 2-character name (including non-Latin scripts, where
+    // this has actually bitten people) is rejected; 3 passes.
+    it('is unsupported when name is shorter than 3 characters', () => {
+        const template = parseIssueFormYaml('x.yml', 'name: Bg\ndescription: Bug\nbody:\n  - type: textarea\n    attributes:\n      label: What happened?')
+        expect(template.kind).toBe('unsupported')
+        expect(template.kind === 'unsupported' && template.githubValid).toBe(false)
+    })
+
+    it('is unsupported for a 2-character non-Latin name — length, not Latin-script assumptions', () => {
+        const template = parseIssueFormYaml('x.yml', 'name: 버그\ndescription: Bug\nbody:\n  - type: textarea\n    attributes:\n      label: What happened?')
+        expect(template.kind).toBe('unsupported')
+    })
+
+    it('a name of exactly 3 characters meets the minimum and is not rejected on length', () => {
+        const template = parseIssueFormYaml('x.yml', 'name: Bug\ndescription: Bug\nbody:\n  - type: textarea\n    attributes:\n      label: What happened?')
+        expect(template.kind).toBe('form')
+    })
+
     // Regression (Meta review, tiann/hapi#2147, follow-up): GitHub's own
     // top-level syntax table documents exactly eight permitted keys
     // (name/description/body/assignees/labels/title/type/projects) and
