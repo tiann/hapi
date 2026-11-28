@@ -1,18 +1,19 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, mock } from 'bun:test'
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { gunzipSync } from 'node:zlib'
 import { Hono } from 'hono'
 import type { SyncEngine } from '../../sync/syncEngine'
-import { createConfiguration, getConfiguration, resetConfigurationForTests } from '../../configuration'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { writeAutoBridgeTransientModelErrorsEnabled } from '../../config/autoBridgeTransientModelErrors'
 import { createCliRoutes } from './cli'
 import { SessionIdentityConflictError } from '../../store/sessions'
 
 function createApp(engine: Partial<SyncEngine>) {
     const app = new Hono()
-    app.route('/cli', createCliRoutes(() => engine as SyncEngine))
+    app.route('/cli', createCliRoutes(() => engine as SyncEngine, () => ({
+        cliApiToken: 'test-token', dataDir, githubPrAwareness: true, sources: { githubPrAwareness: 'file' }
+    })))
     return app
 }
 
@@ -22,30 +23,9 @@ function authHeaders() {
     }
 }
 
-let homeDir = ''
-let previousHapiHome: string | undefined
-
-// Actions runners under a full hub suite occasionally exceed bun's default 5s
-// hook budget during createConfiguration (seen as an unnamed
-// beforeEach/afterEach timeout). Give setup headroom — tiann/hapi#2514.
-beforeAll(async () => {
-    previousHapiHome = process.env.HAPI_HOME
-    homeDir = mkdtempSync(join(tmpdir(), 'hapi-cli-test-'))
-    process.env.HAPI_HOME = homeDir
-    resetConfigurationForTests()
-    const config = await createConfiguration()
-    config._setCliApiToken('test-token', 'env', false)
-    await config.setGithubPrAwareness(true)
-}, 30_000)
-
-afterAll(() => {
-    if (previousHapiHome === undefined) delete process.env.HAPI_HOME
-    else process.env.HAPI_HOME = previousHapiHome
-    if (homeDir) {
-        resetConfigurationForTests(homeDir)
-        rmSync(homeDir, { recursive: true, force: true })
-    }
-})
+let dataDir: string
+beforeAll(async () => { dataDir = await mkdtemp(join(tmpdir(), 'hapi-cli-routes-')) }, 30_000)
+afterAll(async () => { await rm(dataDir, { recursive: true, force: true }) }, 30_000)
 
 describe('cli shutdown preparation', () => {
     function fixture(machineId = 'machine-1') {
@@ -543,11 +523,11 @@ describe('cli features and external-refs read', () => {
 
 describe('cli autoBridgeTransientModelErrors namespace gate', () => {
     afterEach(async () => {
-        await writeAutoBridgeTransientModelErrorsEnabled(getConfiguration().dataDir, false)
+        await writeAutoBridgeTransientModelErrorsEnabled(dataDir, false)
     }, 30_000)
 
     it('returns hub auto-bridge only for the default namespace', async () => {
-        await writeAutoBridgeTransientModelErrorsEnabled(getConfiguration().dataDir, true)
+        await writeAutoBridgeTransientModelErrorsEnabled(dataDir, true)
         const sessionId = '22222222-2222-4222-8222-222222222222'
         const app = createApp({
             getOrCreateSession: () => ({ id: sessionId }),
