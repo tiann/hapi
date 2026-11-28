@@ -2,6 +2,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readSync, readdirSync, read
 import { randomUUID } from 'node:crypto'
 import { basename, dirname, join, relative } from 'node:path'
 import { homedir } from 'node:os'
+import { zstdDecompressSync } from 'node:zlib'
 import {
     AGENT_MESSAGE_PAYLOAD_TYPE,
     deduplicateCodexTranscriptMessages,
@@ -31,6 +32,7 @@ export type LocalCodexSessionSummary = {
     source?: string | null
     threadSource?: string | null
     forkedFromId?: string | null
+    loadError?: string
 }
 
 export type LocalCodexSessionWithMessages = LocalCodexSessionSummary & {
@@ -75,7 +77,7 @@ function inferSessionIdFromFileName(filePath: string): string | null {
     return /([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/.exec(filePath)?.[1] ?? null
 }
 
-function collectJsonlFiles(root: string, files: string[]): void {
+function collectJsonlFiles(root: string, files: string[], pattern = /\.jsonl$/i): void {
     let entries: import('node:fs').Dirent[]
     try {
         entries = readdirSync(root, { withFileTypes: true })
@@ -84,8 +86,8 @@ function collectJsonlFiles(root: string, files: string[]): void {
     }
     for (const entry of entries) {
         const fullPath = join(root, entry.name)
-        if (entry.isDirectory()) collectJsonlFiles(fullPath, files)
-        else if (entry.isFile() && fullPath.toLowerCase().endsWith('.jsonl')) files.push(fullPath)
+        if (entry.isDirectory()) collectJsonlFiles(fullPath, files, pattern)
+        else if (entry.isFile() && pattern.test(entry.name)) files.push(fullPath)
     }
 }
 
@@ -259,6 +261,67 @@ function convertCodexRecordToImportedMessage(record: Record<string, unknown>): C
     return null
 }
 
+function parseCodexRecords(lines: string[]): Record<string, unknown>[] {
+    const records: Record<string, unknown>[] = []
+    for (const line of lines) {
+        try {
+            const record = asRecord(JSON.parse(line))
+            if (record) records.push(record)
+        } catch { continue }
+    }
+    return records
+}
+
+function findCodexRolloutFile(rolloutId: string): string | null {
+    const files: string[] = []
+    for (const root of [join(getCodexHome(), 'sessions'), join(getCodexHome(), 'archived_sessions')]) {
+        collectJsonlFiles(root, files, /\.jsonl(\.zst)?$/i)
+    }
+    return files.find((file) => basename(file).replace(/\.jsonl(\.zst)?$/i, '').endsWith(rolloutId)) ?? null
+}
+
+function readCodexRolloutLines(filePath: string, endByteOffset: number | undefined): string[] {
+    const raw = readFileSync(filePath)
+    const decoded = filePath.toLowerCase().endsWith('.zst') ? zstdDecompressSync(raw) : raw
+    if (endByteOffset !== undefined && endByteOffset > decoded.length) {
+        throw new Error('Codex fork history is incomplete: parent rollout ends before the saved byte boundary')
+    }
+    return decoded.subarray(0, endByteOffset).toString('utf-8').split(/\r?\n/).filter(Boolean)
+}
+
+// Paginated Codex forks persist only their own records; inherited history stays in the
+// history_base rollout, bounded by its saved byte position and exclusive ordinal.
+function resolveCodexForkRecords(records: Record<string, unknown>[], seen = new Set<string>()): Record<string, unknown>[] {
+    const meta = records[0]?.type === 'session_meta' ? asRecord(records[0].payload) : null
+    if (meta?.history_base == null) return records
+    const base = asRecord(meta.history_base)
+    const rolloutId = asString(base?.thread_id)
+    const end = base?.end_ordinal_exclusive
+    const endByteOffset = base?.end_byte_offset
+    if (!rolloutId || typeof end !== 'number' || !Number.isSafeInteger(end) || end <= 0
+        || (endByteOffset !== undefined && (typeof endByteOffset !== 'number' || !Number.isSafeInteger(endByteOffset) || endByteOffset <= 0))) {
+        throw new Error('Codex fork history is incomplete: invalid history_base')
+    }
+    if (seen.has(rolloutId)) {
+        throw new Error(`Codex fork history is incomplete: cycle at rollout ${rolloutId}`)
+    }
+    seen.add(rolloutId)
+    const parentFile = findCodexRolloutFile(rolloutId)
+    if (!parentFile) throw new Error(`Codex fork history is incomplete: parent rollout ${rolloutId} not found`)
+    const parentRecords = parseCodexRecords(readCodexRolloutLines(parentFile, endByteOffset))
+    const parentMeta = parentRecords[0]?.type === 'session_meta' ? asRecord(parentRecords[0].payload) : null
+    if (parentMeta?.id !== rolloutId) {
+        throw new Error(`Codex fork history is incomplete: parent rollout ${rolloutId} has invalid session metadata`)
+    }
+    const inherited = resolveCodexForkRecords(parentRecords, seen)
+        .filter((record) => typeof record.ordinal === 'number' && record.ordinal < end)
+    // Ordinals are contiguous across the lineage, so a complete prefix is exactly 0..end-1.
+    if (inherited.length !== end || inherited.some((record, index) => record.ordinal !== index)) {
+        throw new Error(`Codex fork history is incomplete: parent rollout ${rolloutId} is missing records before the fork point`)
+    }
+    return [...inherited, ...records]
+}
+
 function parseCodexLocalSession(
     filePath: string,
     includeMessages: boolean,
@@ -276,17 +339,6 @@ function parseCodexLocalSession(
     let threadSource: string | null = null
     let forkedFromId: string | null = null
     let firstUserMessage: string | null = null
-    const entries: CodexImportedMessageEntry[] = []
-
-    if (includeMessages) {
-        for (const line of lines) {
-            let record: Record<string, unknown> | null = null
-            try { record = asRecord(JSON.parse(line)) } catch { continue }
-            if (!record) continue
-            const entry = convertCodexRecordToImportedMessage(record)
-            if (entry) entries.push(entry)
-        }
-    }
 
     for (const line of headLines) {
         try {
@@ -333,11 +385,22 @@ function parseCodexLocalSession(
         threadSource,
         forkedFromId
     }
-    return includeMessages ? { ...summary, messages: deduplicateCodexTranscriptMessages(entries) } : summary
+    if (!includeMessages) return summary
+
+    let records: Record<string, unknown>[]
+    try {
+        records = resolveCodexForkRecords(parseCodexRecords(lines))
+    } catch (error) {
+        return { ...summary, loadError: error instanceof Error ? error.message : String(error) }
+    }
+    const entries: CodexImportedMessageEntry[] = []
+    for (const record of records) {
+        const entry = convertCodexRecordToImportedMessage(record)
+        if (entry) entries.push(entry)
+    }
+    return { ...summary, messages: deduplicateCodexTranscriptMessages(entries) }
 }
 
-function listLocalCodexSessions(includeMessages: false, limit?: number): LocalCodexSessionSummary[]
-function listLocalCodexSessions(includeMessages: true, limit?: number): LocalCodexSessionWithMessages[]
 function listLocalCodexSessions(includeMessages: boolean, limit = DEFAULT_CODEX_SESSION_SCAN_LIMIT): Array<LocalCodexSessionSummary | LocalCodexSessionWithMessages> {
     const files: string[] = []
     for (const root of getCodexSessionRoots()) collectJsonlFiles(root, files)
@@ -357,10 +420,10 @@ export function listLocalCodexSessionSummaries(limit = DEFAULT_CODEX_SESSION_SCA
 }
 
 export function listLocalCodexSessionsWithMessages(limit = DEFAULT_CODEX_SESSION_SCAN_LIMIT): LocalCodexSessionWithMessages[] {
-    return listLocalCodexSessions(true, limit)
+    return listLocalCodexSessions(true, limit).filter((session): session is LocalCodexSessionWithMessages => 'messages' in session)
 }
 
-export function listLocalCodexSessionsWithMessagesByIds(ids: Set<string>): LocalCodexSessionWithMessages[] {
+export function listLocalCodexSessionsWithMessagesByIds(ids: Set<string>): Array<LocalCodexSessionWithMessages | LocalCodexSessionSummary> {
     if (ids.size === 0) return []
     const sessionIndexTitles = readCodexSessionIndexTitles()
     const files: string[] = []
@@ -399,12 +462,12 @@ export function listLocalCodexSessionsWithMessagesByIds(ids: Set<string>): Local
         } catch { continue }
         finally { if (fd !== undefined) closeSync(fd) }
     }
-    const result: LocalCodexSessionWithMessages[] = []
+    const result: Array<LocalCodexSessionWithMessages | LocalCodexSessionSummary> = []
     for (const [id, entries] of candidates) {
         entries.sort((a, b) => b.modifiedAt - a.modifiedAt)
         for (const entry of entries) {
             const session = parseCodexLocalSession(entry.file, true, sessionIndexTitles)
-            if (session && session.id === id && 'messages' in session) { result.push(session); break }
+            if (session && session.id === id) { result.push(session); break }
         }
     }
     return result.sort((a, b) => b.modifiedAt - a.modifiedAt)

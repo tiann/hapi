@@ -278,7 +278,8 @@ export const CodexLocalSessionSummarySchema = z.object({
     cliVersion: z.string().nullable().optional(),
     source: z.string().nullable().optional(),
     threadSource: z.string().nullable().optional(),
-    forkedFromId: z.string().nullable().optional()
+    forkedFromId: z.string().nullable().optional(),
+    loadError: z.string().min(1).optional()
 })
 
 export const CodexLocalSessionWithMessagesSchema = CodexLocalSessionSummarySchema.extend({

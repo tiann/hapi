@@ -84,7 +84,7 @@ function harness(overrides: {
             return {
                 success: true,
                 sessions: wanted
-                    ? source.filter((session) => 'messages' in session && (wanted as string[]).includes(session.id))
+                    ? source.filter((session) => ('messages' in session || session.loadError) && (wanted as string[]).includes(session.id))
                     : source
             }
         },
@@ -220,6 +220,34 @@ describe('generic local session routes', () => {
         const body = await response.json() as { results: Array<Record<string, unknown>> }
         expect(body.results).toHaveLength(1)
         expect(body.results[0]).toMatchObject({ error: { code: 'not_found' } })
+    })
+
+    it('preserves imports before a Codex transcript load error', async () => {
+        const loadError = 'Codex fork history is incomplete: parent rollout not found'
+        const summary: LocalTranscriptSummary = { ...piSummary(), id: 'first', flavor: 'codex' }
+        const first: LocalTranscript = { ...summary, messages: piTranscript().messages }
+        const { app, store } = harness({
+            transcripts: [
+                { ...first, id: 'last' },
+                { ...summary, id: 'fork', loadError },
+                first
+            ]
+        })
+        stores.push(store)
+
+        const response = await app.request('/api/codex/import-sessions', {
+            method: 'POST',
+            body: JSON.stringify({ sessionIds: ['first', 'fork', 'last'] })
+        })
+        const body = await response.json()
+        expect(body).toMatchObject({
+            success: false,
+            results: [
+                { sessionId: 'first', action: 'created' },
+                { sessionId: 'fork', error: { code: 'transcript_load_failed', message: loadError } }
+            ]
+        })
+        expect(store.sessions.getSessionsByNamespace('default')).toHaveLength(1)
     })
 
     it('applies the requested Claude model, effort and permission mode to the import', async () => {

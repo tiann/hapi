@@ -64,6 +64,8 @@ export const LocalTranscriptSummarySchema = z.object({
     file: z.string().min(1),
     modifiedAt: z.number(),
     messageCount: z.number().int().nonnegative().optional(),
+    /** Set when a requested transcript could not be loaded and has no messages. */
+    loadError: z.string().min(1).optional(),
     /** Launch hints carried by the source (Pi model/thinkingLevel, OpenCode v2 model). */
     launch: z.object({
         model: z.string().nullable().optional(),
@@ -139,7 +141,7 @@ function transcriptSummaryBase(parts: {
 // -- Codex ------------------------------------------------------------------
 
 export function codexToTranscriptSummary(session: CodexLocalSessionSummary): LocalTranscriptSummary {
-    return transcriptSummaryBase({
+    const summary = transcriptSummaryBase({
         flavor: 'codex',
         id: session.id,
         title: session.title,
@@ -155,6 +157,7 @@ export function codexToTranscriptSummary(session: CodexLocalSessionSummary): Loc
             forkedFromId: session.forkedFromId ?? null
         }
     })
+    return session.loadError ? { ...summary, loadError: session.loadError } : summary
 }
 
 export function codexToTranscript(session: CodexLocalSessionWithMessages): LocalTranscript {

@@ -87,6 +87,10 @@ export async function fetchLocalTranscriptsByIds(options: {
     if (!result.success) return result
     return {
         ...result,
-        sessions: result.sessions.filter((session): session is LocalTranscript => 'messages' in session)
+        sessions: result.sessions.flatMap((session) => {
+            if ('messages' in session) return [session]
+            // Older hubs filter out summary rows, which keeps failed loads from creating sessions.
+            return session.loadError ? [{ ...session, messages: [] }] : []
+        })
     }
 }

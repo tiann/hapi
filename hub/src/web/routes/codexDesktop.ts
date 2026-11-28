@@ -428,7 +428,7 @@ export async function importSelectedCodexSessions(options: {
                 output: combineSyncOutputs(results) ?? failure.output
             }
         }
-        if (transcript.messages.length === 0) {
+        if (!transcript.loadError && transcript.messages.length === 0) {
             const failure: ScriptLaunchResponse = {
                 ...createImportErrorResponse([codexSessionId], `No importable conversation content found in transcript: ${transcript.file}`),
                 output: `transcript 中没有可导入的会话内容：${transcript.file}`
