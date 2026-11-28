@@ -30,6 +30,23 @@ function safeParseJson(value: string): unknown {
     }
 }
 
+function readStored(): DraftsMap {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (!raw) return {}
+    const parsed = safeParseJson(raw)
+    if (!parsed || typeof parsed !== 'object') return {}
+    const result: DraftsMap = {}
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+        if (key.trim().length === 0) continue
+        if (typeof value !== 'string') continue
+        result[key] = value
+    }
+    return result
+}
+
+// localStorage (not sessionStorage) so drafts survive closing the tab and the
+// browser/OS discarding a backgrounded mobile PWA, matching attachment drafts
+// in IndexedDB.
 function hydrate(): DraftsMap {
     if (cache) return cache
     if (typeof window === 'undefined') {
@@ -37,30 +54,12 @@ function hydrate(): DraftsMap {
         return cache
     }
     try {
-        const raw = sessionStorage.getItem(STORAGE_KEY)
-        if (!raw) {
-            cache = {}
-            return cache
-        }
-        const parsed = safeParseJson(raw)
-        if (!parsed || typeof parsed !== 'object') {
-            cache = {}
-            return cache
-        }
-        const record = parsed as Record<string, unknown>
-        const result: DraftsMap = {}
-        for (const [key, value] of Object.entries(record)) {
-            if (key.trim().length === 0) continue
-            if (typeof value !== 'string') continue
-            result[key] = value
-            markDraftEdited(key)
-        }
-        cache = result
-        return cache
+        cache = readStored()
     } catch {
         cache = {}
-        return cache
     }
+    for (const key of Object.keys(cache)) markDraftEdited(key)
+    return cache
 }
 
 function evict(drafts: DraftsMap): void {
@@ -73,12 +72,16 @@ function evict(drafts: DraftsMap): void {
     }
 }
 
-function persist(): void {
+// Other tabs share localStorage: re-read before writing and change only this
+// session's entry, so a stale in-memory map never drops their drafts.
+function persist(sessionId: string, text: string | null): void {
     if (typeof window === 'undefined') return
     try {
-        const drafts = hydrate()
-        evict(drafts)
-        sessionStorage.setItem(STORAGE_KEY, JSON.stringify(drafts))
+        const stored = readStored()
+        delete stored[sessionId]
+        if (text !== null) stored[sessionId] = text
+        evict(stored)
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(stored))
     } catch {
         // Ignore storage errors
     }
@@ -100,12 +103,13 @@ export function saveDraft(sessionId: string, text: string): void {
         delete drafts[sessionId]
         drafts[sessionId] = text
     }
-    persist()
+    evict(drafts)
+    persist(sessionId, trimmed ? text : null)
 }
 
 export function clearDraft(sessionId: string): void {
     markDraftEdited(sessionId)
     const drafts = hydrate()
     delete drafts[sessionId]
-    persist()
+    persist(sessionId, null)
 }
