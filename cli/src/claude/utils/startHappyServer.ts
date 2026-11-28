@@ -581,6 +581,8 @@ function createHapiMcpServer(
                     message: args.message,
                     deliveryMode: args.deliveryMode,
                     wake: args.wake === true,
+                    // Soft nametag via /cli/.../peer-messages using this session id (#1203).
+                    authenticatedSourceSessionId: client.sessionId,
                 });
                 const replyNote = forwardReplyIfRequested(args.waitForReply, result);
                 return {

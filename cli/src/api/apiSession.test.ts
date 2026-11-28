@@ -173,7 +173,7 @@ function triggerIncomingUserMessage(
         id?: string
         seq: number
         text: string
-        sentFrom: 'cli' | 'webapp' | 'telegram-bot'
+        sentFrom: 'cli' | 'webapp' | 'telegram-bot' | 'peer'
     }
 ): void {
     socket.trigger('update', {
@@ -1759,7 +1759,7 @@ describe('ApiSessionClient incoming user messages', () => {
         client.close()
     })
 
-    it.each(['webapp', 'telegram-bot'] as const)(
+    it.each(['webapp', 'telegram-bot', 'peer'] as const)(
         'delivers %s-originated user messages',
         (sentFrom) => {
             socketHarness.sockets.length = 0

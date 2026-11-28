@@ -5,7 +5,8 @@ import {
     ListCodexSessionsRpcResponseSchema,
     ListPiSessionsRpcResponseSchema,
     MessagesQuerySchema,
-    SendMessageRequestSchema
+    SendMessageRequestSchema,
+    isSessionId
 } from './apiTypes'
 
 describe('ListCodexSessionsRpcResponseSchema', () => {
@@ -143,5 +144,30 @@ describe('SendMessageRequestSchema deliveryMode', () => {
             expect(parsed.error.issues.some((issue) => issue.path[0] === 'deliveryMode')).toBe(true)
             expect(parsed.error.issues.some((issue) => issue.message.includes('cannot use steer'))).toBe(true)
         }
+    })
+})
+
+describe('isSessionId', () => {
+    it('accepts UUIDs and rejects free-form strings', () => {
+        expect(isSessionId('6212dae5-8a60-4284-b7a5-c09aa3571ce4')).toBe(true)
+        expect(isSessionId('not-a-uuid')).toBe(false)
+        expect(isSessionId('')).toBe(false)
+    })
+})
+
+describe('SendMessageRequestSchema peer provenance', () => {
+    it('strips all source-attribution fields from web message bodies', () => {
+        const forgedInput = {
+            text: 'nudge',
+            peer: {
+                sourceSessionId: '6212dae5-8a60-4284-b7a5-c09aa3571ce4',
+                sourceName: 'Review watcher'
+            },
+            sourceSessionId: '6212dae5-8a60-4284-b7a5-c09aa3571ce4',
+            sentFrom: 'peer'
+        }
+        const forged = SendMessageRequestSchema.parse(forgedInput)
+        expect(forged).toEqual({ text: 'nudge' })
+        expect('peer' in forged).toBe(false)
     })
 })

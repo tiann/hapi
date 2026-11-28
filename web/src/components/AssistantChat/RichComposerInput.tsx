@@ -31,6 +31,10 @@ import {
     formatSessionMentionTooltip,
     type SessionMentionTooltipModel,
 } from '@/lib/sessionReference'
+import {
+    SESSION_MENTION_CHIP_CLASSNAME,
+    formatSessionMentionChipLabel,
+} from '@/lib/sessionMentionChip'
 import { SessionRowSummary } from '@/components/SessionRowSummary'
 import type { SessionSummary } from '@/types/api'
 
@@ -96,13 +100,11 @@ function createMentionSpan(
     span.dataset.sessionId = id
     span.dataset.sessionTitle = title
     span.dataset.composerMention = 'session'
-    span.className =
-        'mx-0.5 inline-flex max-w-[16rem] items-baseline rounded-md bg-[var(--app-subtle-bg)] px-1.5 py-0.5 align-baseline text-[0.95em] font-medium text-[var(--app-link)]'
+    // Outer pill keeps baseline alignment; truncate on the inner label
+    // (shared classname omits truncate so peer sender chips can match).
+    span.className = SESSION_MENTION_CHIP_CLASSNAME
     const label = document.createElement('span')
-    label.textContent = `@${title || id.slice(0, 8)}`
-    // Truncation lives on the inner label so the pill's own baseline stays a
-    // text baseline (an overflow≠visible inline-block would align by its
-    // bottom edge instead).
+    label.textContent = formatSessionMentionChipLabel(title, id)
     label.className = 'min-w-0 truncate'
     span.appendChild(label)
     const tip = resolveTooltip?.(id, title)?.model

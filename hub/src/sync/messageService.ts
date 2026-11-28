@@ -969,7 +969,11 @@ export class MessageService {
             text: string
             localId?: string | null
             attachments?: AttachmentMetadata[]
-            sentFrom?: 'telegram-bot' | 'webapp' | 'hapi-system'
+            sentFrom?: 'telegram-bot' | 'webapp' | 'hapi-system' | 'peer'
+            peer?: {
+                sourceSessionId?: string
+                sourceName?: string
+            }
             scheduledAt?: number | null
             deliveryMode?: MessageDeliveryMode
         }
@@ -1057,6 +1061,16 @@ export class MessageService {
             payload.deliveryMode,
             payload.scheduledAt
         )
+        // Omit empty peer:{} — only persist when a sourceSessionId was resolved.
+        const peer = sentFrom === 'peer'
+            && payload.peer?.sourceSessionId
+            ? {
+                sourceSessionId: payload.peer.sourceSessionId,
+                ...(payload.peer.sourceName
+                    ? { sourceName: payload.peer.sourceName }
+                    : {})
+            }
+            : undefined
 
         const content = {
             role: 'user',
@@ -1071,7 +1085,8 @@ export class MessageService {
                 // `translatedFrom`: what the user typed; `content.text` holds the English
                 // sent to the agent. `translationFailed`: the provider failed, so the
                 // original text was sent as-is.
-                ...translation
+                ...translation,
+                ...(peer ? { peer } : {})
             }
         }
 

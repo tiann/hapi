@@ -7,7 +7,7 @@ import { SESSION_KEEP_ALIVE_INTERVAL_MS } from '@/api/keepAlive';
 import { logger } from '@/ui/logger';
 import { listSlashCommands } from '@/modules/common/slashCommands';
 import { normalizeCodexModel } from '@/modules/common/codexModels';
-import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
+import { formatUserMessageForAgent } from '@/utils/attachmentFormatter';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { ImplementCodexPlanRequestSchema, type ImplementCodexPlanResult } from '@hapi/protocol/apiTypes';
 import { CodexAppServerClient, isIndeterminateError } from '../codexAppServerClient';
@@ -145,8 +145,17 @@ export class SharedCodexRoot {
                 if (this.host.attached) await this.refresh();
                 if (this.closed || this.stopping) return;
                 const id = localId ?? randomUUID();
-                const text = formatMessageWithAttachments(message.content.text, message.content.attachments);
-                const resolved = text.trim().startsWith('/') ? await this.queue.command(id, () => this.command(text)) : text;
+                // Peer deliveries: annotate From:/Name: and skip slash resolvers so
+                // control syntax in peer text stays inert (#1203 / #1618).
+                const isPeerDelivery = message.meta?.sentFrom === 'peer';
+                const text = formatUserMessageForAgent(
+                    message.content.text,
+                    message.content.attachments,
+                    message.meta
+                );
+                const resolved = !isPeerDelivery && text.trim().startsWith('/')
+                    ? await this.queue.command(id, () => this.command(text))
+                    : text;
                 if (resolved === null) { this.session.emitMessagesConsumed([id], { clearQueuedThinkingGrace: true }); return; }
                 // Compute the batch key now: this.settings may have changed
                 // while this message waited behind earlier queued work (e.g. a

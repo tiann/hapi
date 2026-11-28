@@ -30,6 +30,8 @@ export default {
   "branch.create": "Create branch",
   "branch.source": "Branched from this conversation (visible text)",
   "branch.uncertain": "Launch outcome is uncertain. Inspect this session and its queued instruction before creating another branch.",
+  'message.peerFromUnknown': 'From peer (unknown session)',
+  'message.peerUnknownChip': '@peer',
   'message.fork': 'Fork',
   'message.rewind': 'Rewind',
   'message.fork.confirmTitle': 'Fork conversation',
