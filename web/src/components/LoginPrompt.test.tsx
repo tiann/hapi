@@ -49,6 +49,37 @@ describe('LoginPrompt', () => {
         expect(hubInput).toHaveValue('https://hub.example.com')
         expect(screen.queryByText('Hub URL required. Please set it before signing in.')).not.toBeInTheDocument()
     })
+
+    it('renders Cloudflare Access sign-in and retry actions instead of a token-only trap', () => {
+        const onReauth = vi.fn()
+        const onRetry = vi.fn()
+        renderWithProviders(
+            <LoginPrompt
+                mode="cloudflare"
+                baseUrl="https://app.example.com"
+                serverUrl={null}
+                setServerUrl={vi.fn((value: string) => ({ ok: true as const, value }))}
+                clearServerUrl={vi.fn()}
+                onReauthenticateCloudflare={onReauth}
+                onRetryCloudflare={onRetry}
+                onLogin={vi.fn()}
+                error="Auth failed: HTTP 401"
+            />
+        )
+
+        expect(screen.getByText('Auth failed: HTTP 401')).toBeInTheDocument()
+        expect(screen.queryByPlaceholderText('Access token')).not.toBeInTheDocument()
+
+        fireEvent.click(screen.getByRole('button', { name: 'Sign in with Cloudflare Access' }))
+        expect(onReauth).toHaveBeenCalledTimes(1)
+
+        fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+        expect(onRetry).toHaveBeenCalledTimes(1)
+
+        // Optional secondary access-token fallback remains reachable if needed.
+        fireEvent.click(screen.getByRole('button', { name: 'Use access token instead' }))
+        expect(screen.getByPlaceholderText('Access token')).toBeInTheDocument()
+    })
 })
 
 const REDIRECT_TEXT = 'Request was redirected'

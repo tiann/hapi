@@ -8,8 +8,11 @@ import {
     PASSKEY_ORIGIN, PASSKEY_RP_ID, passkeyBase64url, passkeyUserHandleHub, validatePasskeyUserHandle
 } from '@hapi/protocol/passkey'
 import { Hono } from 'hono'
+import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from 'jose'
 import { SoftAuthenticator } from '../testHelpers/passkeyAuthenticator'
 import { createConfiguration, getConfiguration, resetConfigurationForTests } from '../../configuration'
+import type { CloudflareAccessConfig } from '../../config/cloudflareAccess'
+import { createCloudflareAccessVerifier, type CloudflareAccessVerifier } from '../cloudflareAccess'
 import { createAuthMiddleware, type WebAppEnv } from '../middleware/auth'
 import { Store } from '../../store'
 import { signWebJwt } from '../authTokens'
@@ -31,6 +34,46 @@ const ORIGIN = 'https://hub.example.com'
 const HOST = 'hub.example.com'
 const ANDROID_ORIGIN = 'android:apk-key-hash:test-hash'
 
+const CF_CONFIG: CloudflareAccessConfig = {
+    teamDomain: 'synthetic.cloudflareaccess.com',
+    audience: 'synthetic-audience',
+    users: { 'alice@example.com': 'default' }
+}
+
+const CF_ISSUER = 'https://synthetic.cloudflareaccess.com'
+
+let cfKeyPair: { publicKey: CryptoKey; privateKey: CryptoKey }
+let cfJwks: { keys: Array<Record<string, string>> }
+
+async function initCfKeys() {
+    if (cfKeyPair) return
+    cfKeyPair = await generateKeyPair('RS256')
+    cfJwks = { keys: [await exportJWK(cfKeyPair.publicKey) as unknown as Record<string, string>] }
+}
+
+async function localVerifier(): Promise<CloudflareAccessVerifier> {
+    await initCfKeys()
+    return createCloudflareAccessVerifier(CF_CONFIG, { keyResolver: createLocalJWKSet(cfJwks) })
+}
+
+async function signAccessAssertion(claims: Record<string, unknown> = {}): Promise<string> {
+    return await new SignJWT({ sub: 'subject-1', email: 'alice@example.com', ...claims })
+        .setProtectedHeader({ alg: 'RS256' })
+        .setIssuer(CF_ISSUER)
+        .setAudience(CF_CONFIG.audience)
+        .setIssuedAt()
+        .setExpirationTime('1h')
+        .sign(cfKeyPair.privateKey)
+}
+
+async function signCloudflareToken(payload: Record<string, unknown>): Promise<string> {
+    return await new SignJWT(payload)
+        .setProtectedHeader({ alg: 'HS256' })
+        .setIssuedAt()
+        .setExpirationTime('1h')
+        .sign(JWT_SECRET)
+}
+
 const b64url = (bytes: Uint8Array | Buffer) => Buffer.from(bytes).toString('base64url')
 const sha256 = (data: Uint8Array | string) => createHash('sha256').update(data).digest()
 
@@ -38,7 +81,10 @@ type Options = { challenge: string; rp: { id: string }; user: { id: string; name
 type Session = { token: string; passkeySession: string; operation: string }
 type Listed = { passkeys: Array<{ valid: boolean }> }
 
-function createApp(store: Store, config: { now?: () => number; cors?: string[]; hub?: string } = {}) {
+function createApp(
+    store: Store,
+    config: { now?: () => number; cors?: string[]; hub?: string; cloudflareAccessVerifier?: CloudflareAccessVerifier | null } = {}
+) {
     const app = new Hono<WebAppEnv>()
     const deps = {
         jwtSecret: JWT_SECRET, store,
@@ -49,7 +95,7 @@ function createApp(store: Store, config: { now?: () => number; cors?: string[]; 
     }
     app.route('/api', createAuthRoutes(JWT_SECRET, store))
     app.route('/api', createPasskeyLoginRoutes(deps))
-    app.use('/api/*', createAuthMiddleware(JWT_SECRET))
+    app.use('/api/*', createAuthMiddleware(JWT_SECRET, { cloudflareAccessVerifier: config.cloudflareAccessVerifier }))
     app.route('/api', createPasskeyManagementRoutes(deps))
     return { app, deps }
 }
@@ -363,6 +409,55 @@ describe('unified passkeys', () => {
         const store = newStore()
         const { app } = createApp(store)
         expect((await post(app, '/api/passkey/login/verify', { padding: 'x'.repeat(128 * 1024) })).status).toBe(413)
+    })
+})
+
+describe('Cloudflare-derived sessions', () => {
+    it('rejects passkey registration before a challenge is created or a credential stored', async () => {
+        const store = new Store(':memory:')
+        const { app } = createApp(store, { cloudflareAccessVerifier: await localVerifier() })
+        const assertion = await signAccessAssertion()
+        const token = await signCloudflareToken({
+            uid: 1, ns: 'default', authMethod: 'cloudflareAccess', cfAccessSub: 'subject-1', cfAccessEmail: 'alice@example.com'
+        })
+        const auth = { authorization: `Bearer ${token}`, 'Cf-Access-Jwt-Assertion': assertion }
+
+        const optionsRes = await post(app, '/api/passkey/register/options', {}, auth)
+        expect(optionsRes.status).toBe(403)
+        expect(await optionsRes.json()).toEqual({ error: 'Passkey registration requires a non-Cloudflare sign-in' })
+
+        // The browser bridge registration path is refused identically, before
+        // any challenge is armed.
+        const bridgeRes = await post(app, '/api/passkey/browser/register/start', startBody(), auth)
+        expect(bridgeRes.status).toBe(403)
+        expect(await bridgeRes.json()).toEqual({ error: 'Passkey registration requires a non-Cloudflare sign-in' })
+
+        // Even a well-formed assertion body cannot store a credential.
+        const authenticator = new SoftAuthenticator(PASSKEY_RP_ID, PASSKEY_ORIGIN)
+        const verifyRes = await post(app, '/api/passkey/register/verify', {
+            response: authenticator.create({ challenge: 'never-issued', user: { id: 'u' } })
+        }, auth)
+        expect(verifyRes.status).toBe(403)
+        expect(await verifyRes.json()).toEqual({ error: 'Passkey registration requires a non-Cloudflare sign-in' })
+
+        // No bridge challenge was armed, so the ceremony cannot complete either.
+        expect((await complete(app, randomBytes(32).toString('base64url'))).status).toBe(401)
+
+        expect(store.passkeys.listByNamespace('default')).toHaveLength(0)
+        store.close()
+    })
+
+    it('still allows registration with an access-token-derived JWT', async () => {
+        const store = new Store(':memory:')
+        const { app } = createApp(store)
+        const authenticator = new SoftAuthenticator(PASSKEY_RP_ID, PASSKEY_ORIGIN)
+        await registerNative(app, authenticator)
+        const listed = await (await app.request('/api/passkeys', { headers: await bearer() })).json() as { passkeys: unknown[] }
+        expect(listed.passkeys).toHaveLength(1)
+
+        // The browser bridge registration path stays open for token-derived sessions.
+        await browserStart(app, 'register')
+        store.close()
     })
 })
 

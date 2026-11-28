@@ -6,6 +6,8 @@ type AppContextValue = {
     token: string
     baseUrl: string
     titleSuggestionAvailable?: boolean
+    /** False in Cloudflare Access sessions, where the hub refuses passkey registration. */
+    passkeyRegistrationAllowed?: boolean
 }
 
 const AppContext = createContext<AppContextValue | null>(null)

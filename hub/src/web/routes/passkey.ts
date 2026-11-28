@@ -285,6 +285,16 @@ function secureRoutes() {
     return app
 }
 
+const REGISTRATION_REQUIRES_NON_CLOUDFLARE_SIGN_IN = 'Passkey registration requires a non-Cloudflare sign-in'
+
+/** A Cloudflare-derived session must not arm or complete passkey registration:
+ * the operator can remove or move the email mapping at any time. */
+function rejectCloudflareRegistration(c: Context<WebAppEnv>): Response | null {
+    return c.get('authMethod') === 'cloudflareAccess'
+        ? c.json({ error: REGISTRATION_REQUIRES_NON_CLOUDFLARE_SIGN_IN }, 403)
+        : null
+}
+
 async function browserStart(c: Context<WebAppEnv>, deps: PasskeyRouteDeps, operation: PasskeyOperation) {
     const parsed = PasskeyBrowserStartRequestSchema.safeParse(await c.req.json().catch(() => null))
     if (!parsed.success) return c.json({ error: 'Invalid body' }, 400)
@@ -381,13 +391,28 @@ export function createPasskeyLoginRoutes(deps: PasskeyRouteDeps): Hono<WebAppEnv
 
 export function createPasskeyManagementRoutes(deps: PasskeyRouteDeps): Hono<WebAppEnv> {
     const app = secureRoutes()
-    app.post('/passkey/browser/register/start', (c) => browserStart(c, deps, 'register'))
+    app.post('/passkey/browser/register/start', (c) => {
+        const blocked = rejectCloudflareRegistration(c)
+        if (blocked) return blocked
+        return browserStart(c, deps, 'register')
+    })
     app.post('/passkey/register/options', async (c) => {
+        // A Cloudflare-derived session is only as valid as the edge assertion
+        // forwarding it: the operator can remove or move the email mapping at
+        // any time. Registering a long-lived passkey from such a session would
+        // keep the namespace open after the allowlist entry is gone, so refuse
+        // before creating a challenge or storing anything.
+        const blocked = rejectCloudflareRegistration(c)
+        if (blocked) return blocked
         if (!PasskeyOptionsRequestSchema.safeParse(await c.req.json().catch(() => null)).success) return c.json({ error: 'Native client required' }, 400)
         try { return c.json(await optionsFor(deps, 'register', 'native', c.get('namespace'))) }
         catch (error) { return c.json({ error: message(error) }, 400) }
     })
     app.post('/passkey/register/verify', async (c) => {
+        // Same identity-binding rule as /passkey/register/options: a passkey
+        // must not be created from a Cloudflare-derived session.
+        const blocked = rejectCloudflareRegistration(c)
+        if (blocked) return blocked
         const parsed = PasskeyRegisterVerifyRequestSchema.safeParse(await c.req.json().catch(() => null))
         if (!parsed.success) return c.json({ error: 'Invalid body' }, 400)
         try {

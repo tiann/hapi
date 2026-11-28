@@ -1,20 +1,29 @@
 import type { MiddlewareHandler } from 'hono'
 import { z } from 'zod'
-import { jwtVerify } from 'jose'
+import { verifyWebAuthToken, type WebAuthMethod } from '../authToken'
+import type { CloudflareAccessVerifier } from '../cloudflareAccess'
 
 export type WebAppEnv = {
     Variables: {
         userId: number
         namespace: string
+        authMethod: WebAuthMethod
     }
 }
 
-const jwtPayloadSchema = z.object({
-    uid: z.number(),
-    ns: z.string()
-})
+export interface AuthMiddlewareOptions {
+    /**
+     * Cloudflare Access verifier override (tests only). When omitted, the
+     * verifier for the configured bundle is used; an explicitly null value
+     * models a disabled Cloudflare configuration.
+     */
+    cloudflareAccessVerifier?: CloudflareAccessVerifier | null
+}
 
-export function createAuthMiddleware(jwtSecret: Uint8Array): MiddlewareHandler<WebAppEnv> {
+export function createAuthMiddleware(
+    jwtSecret: Uint8Array,
+    options: AuthMiddlewareOptions = {}
+): MiddlewareHandler<WebAppEnv> {
     return async (c, next) => {
         const path = c.req.path
         if (
@@ -35,19 +44,18 @@ export function createAuthMiddleware(jwtSecret: Uint8Array): MiddlewareHandler<W
             return c.json({ error: 'Missing authorization token' }, 401)
         }
 
-        try {
-            const verified = await jwtVerify(token, jwtSecret, { algorithms: ['HS256'] })
-            const parsed = jwtPayloadSchema.safeParse(verified.payload)
-            if (!parsed.success) {
-                return c.json({ error: 'Invalid token payload' }, 401)
-            }
-
-            c.set('userId', parsed.data.uid)
-            c.set('namespace', parsed.data.ns)
-            await next()
-            return
-        } catch {
-            return c.json({ error: 'Invalid token' }, 401)
+        const assertion = c.req.header('Cf-Access-Jwt-Assertion')
+        const result = await verifyWebAuthToken(token, jwtSecret, assertion, {
+            cloudflareAccessVerifier: options.cloudflareAccessVerifier
+        })
+        if (!result.ok) {
+            return c.json({ error: result.error }, result.status)
         }
+
+        c.set('userId', result.userId)
+        c.set('namespace', result.namespace)
+        c.set('authMethod', result.authMethod)
+        await next()
+        return
     }
 }
