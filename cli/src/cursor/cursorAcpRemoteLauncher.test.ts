@@ -3974,6 +3974,35 @@ describe('cursorAcpRemoteLauncher', () => {
         await runPromise;
     });
 
+    it.each(['composer-2.5[fast=false]', 'default[]'])('preserves the reported %s model and queued input when Auto is contradicted during a turn', async (actual) => {
+        const session = makeSession(null, { keepQueueOpen: true });
+        const run = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+        const prior = 'composer-2.5[fast=false]';
+        await session.applyModelConfig(prior);
+        let finish!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { finish = resolve; });
+        try {
+            session.queue.push('active', { permissionMode: 'default' }, 'active');
+            await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+            session.queue.push('next', { permissionMode: 'default' }, 'queued');
+            harness.modelOptionValues = ['auto', prior];
+            const backend = vi.mocked(createCursorAcpBackend).mock.results.at(-1)!.value;
+            vi.mocked(backend.setConfigOption).mockResolvedValueOnce([
+                { id: 'model-opt', currentValue: actual, options: [] }
+            ]);
+            await expect(session.applyModelConfig('auto')).rejects.toThrow(/in flight/);
+            expect(session.model).toBe(actual);
+            expect(session.queue.pendingLocalIds()).toContain('queued');
+            expect(harness.loadSessionCalled).toBe(false);
+        } finally {
+            harness.deferPrompt = null;
+            finish();
+            session.queue.close();
+            await run;
+        }
+    });
+
     it('relaunches via setModel Auto when ACP has no auto option', async () => {
         const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
         const client = {
