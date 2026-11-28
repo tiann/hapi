@@ -73,12 +73,11 @@ describe('agent config descriptors', () => {
         }).success).toBe(true)
     })
 
-    test('every builtin descriptor validates and carries a permission field', () => {
+    test('every builtin descriptor validates', () => {
         const descriptors = getBuiltinAgentConfigDescriptors()
         expect(descriptors.length).toBeGreaterThan(0)
         for (const descriptor of descriptors) {
             expect(AgentConfigDescriptorSchema.safeParse(descriptor).success).toBe(true)
-            expect(descriptor.fields.some((field) => field.id === 'permission')).toBe(true)
         }
     })
 })

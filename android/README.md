@@ -17,7 +17,8 @@ The app provides sessions/chat, approvals and questions, new sessions,
 attachments, files/Git, Scratchlist, standard dictation, usage/storage,
 settings and encrypted-relay or direct-FCM notifications. Model and permission
 controls follow agent/session capabilities; usage/storage require the owner
-namespace. See the [native app guide](../docs/guide/native-apps.md) for platform
+namespace. Settings → Usage shows session totals and CLI account quotas reported
+by online runners. See the [native app guide](../docs/guide/native-apps.md) for platform
 differences, pairing and features currently available through the web.
 
 - **Session actions:** pin/archive plus Rename, Delete and explicit Reopen

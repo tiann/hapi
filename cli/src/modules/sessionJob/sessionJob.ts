@@ -30,6 +30,13 @@ export class SessionJobError extends Error {
     }
 }
 
+/** When a session job may be attached. Shared by the MCP tool description and `hapi job --help`. */
+export const SESSION_JOB_GATE =
+    'Default is NOT to attach a job. Only for a process that must keep running after this agent goes idle'
+    + ' and that the operator would reopen the chat to ask about (hours-long batch, nohup script, daemon you own).'
+    + ' Never for anything that finishes within this turn: tests, builds, installs, typechecks, git, short scripts.'
+    + ' If unsure, do not attach. Do not pass --wake-on-terminal unless the operator asked to be woken.'
+
 /** Exact Shell recipe agents should run instead of MCP set or update-before-create. */
 export const SESSION_JOB_RUN_RECIPE =
     'hapi job run <session-id> <job-key> --label "<label>" --progress unknown|fraction|until … -- <cmd>…'

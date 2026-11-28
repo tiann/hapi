@@ -45,12 +45,10 @@ describe('OpenCode ACP title and peer instructions', () => {
         for (const prompt of [TITLE_INSTRUCTION, OPENCODE_NATIVE_TOOL_INSTRUCTION]) {
             expect(prompt).toContain('hapi_change_title')
             expect(prompt).toContain('skill_lookup')
-            for (const tool of ['hapi_list_peers', 'hapi_inspect_peer', 'hapi_ping_peer']) {
-                if (disabled) {
-                    expect(prompt).not.toContain(tool)
-                } else {
-                    expect(prompt).toContain(tool)
-                }
+            if (disabled) {
+                expect(prompt).not.toContain('hapi_inspect_peer')
+            } else {
+                expect(prompt).toContain('hapi_inspect_peer')
             }
         }
     })

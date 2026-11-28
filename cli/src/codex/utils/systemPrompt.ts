@@ -10,6 +10,7 @@ import { buildSessionCitationSteerInstruction, SESSION_CITATION_DISABLED_STEER }
 import { isPeerToolsDisabled } from '@/modules/common/peerTools';
 import { withSessionJobInstruction } from '@/modules/common/sessionJobInstruction';
 import { withSessionSummaryInstruction } from '@/modules/common/sessionSummaryInstruction';
+import { buildTitleInstruction } from '@/modules/common/titleInstruction';
 
 /**
  * Title instruction for Codex to call the hapi MCP tool.
@@ -17,16 +18,9 @@ import { withSessionSummaryInstruction } from '@/modules/common/sessionSummaryIn
  * so the tool is called as `functions.hapi__change_title`.
  */
 export const TITLE_INSTRUCTION = trimIdent(`
-    Use the title tool sparingly. For a new chat, call it once after the user's initial request is clear, and set a concise task title.
-    Prefer calling functions.hapi__change_title.
-    If that exact tool name is unavailable, call an equivalent alias such as hapi__change_title, mcp__hapi__change_title, or hapi_change_title.
-    Do not rename the chat for routine progress, substeps, implementation details, or a slightly better wording.
-    Rename only when the user's primary objective changes substantially and the existing title would be misleading.
+    ${buildTitleInstruction('functions.hapi__change_title (or its available alias)')}
     ${isPeerToolsDisabled() ? SESSION_CITATION_DISABLED_STEER : buildSessionCitationSteerInstruction({
         inspectTool: 'functions.hapi__inspect_peer',
-        pingTool: 'functions.hapi__ping_peer',
-        listPeersTool: 'functions.hapi__list_peers',
-        spawnTool: 'functions.hapi__spawn_peer',
     })}
 `);
 

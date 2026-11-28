@@ -56,7 +56,7 @@ export function parseCursorAskQuestionInput(input: unknown): { questions: AskUse
             question,
             options,
             multiSelect,
-            allowFreeText: true
+            allowFreeText: false
         })
     }
 

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
     collectMachineHealth,
+    diskUsageFromStatfs,
+    refreshDiskUsage,
     readDarwinMemoryUsedPercent,
     readLinuxMemoryUsedPercent,
     resetMachineHealthSamplerForTests
@@ -141,5 +143,36 @@ describe('collectMachineHealth', () => {
             expect(second.cpuPercent).toBeGreaterThanOrEqual(0)
             expect(second.cpuPercent).toBeLessThanOrEqual(100)
         }
+    })
+})
+
+describe('diskUsageFromStatfs', () => {
+    it('reports df-style total, used and available bytes', () => {
+        expect(diskUsageFromStatfs({ bsize: 4096, blocks: 1000, bfree: 300, bavail: 250 })).toEqual({
+            diskTotalBytes: 4_096_000,
+            diskUsedBytes: 2_867_200,
+            diskAvailableBytes: 1_024_000,
+        })
+    })
+
+    it('rejects empty or malformed filesystems', () => {
+        expect(diskUsageFromStatfs({ bsize: 0, blocks: 1000, bfree: 1, bavail: 1 })).toBeUndefined()
+        expect(diskUsageFromStatfs({ bsize: 4096, blocks: 0, bfree: 0, bavail: 0 })).toBeUndefined()
+        expect(diskUsageFromStatfs({ bsize: 4096, blocks: Number.NaN, bfree: 1, bavail: 1 })).toBeUndefined()
+    })
+
+    it('omits disk until the asynchronous lookup has completed', () => {
+        resetMachineHealthSamplerForTests()
+        const health = collectMachineHealth(1)
+        expect(health.diskTotalBytes).toBeUndefined()
+    })
+
+    it('includes disk usage of the home filesystem once a lookup has completed', async () => {
+        resetMachineHealthSamplerForTests()
+        await refreshDiskUsage()
+        const health = collectMachineHealth(1)
+        expect(health.diskTotalBytes).toBeGreaterThan(0)
+        expect(health.diskUsedBytes).toBeGreaterThanOrEqual(0)
+        expect(health.diskAvailableBytes).toBeGreaterThanOrEqual(0)
     })
 })

@@ -17,6 +17,7 @@ import { splitAgyModelSelection } from '@hapi/protocol';
 import { listAgyModels } from '@/modules/common/agyModels';
 import { parseAgySwarmBoardCommand } from './agySwarmBoard';
 import { normalizeAgyModelSelection } from './utils/agyModelSelection';
+import { agyImageAttachmentsFor } from './utils/agyPromptContent';
 
 export async function runAgy(opts: {
     startedBy?: 'runner' | 'terminal';
@@ -69,6 +70,7 @@ export async function runAgy(opts: {
         permissionMode: mode.permissionMode,
         model: mode.model,
         effort: mode.effort,
+        ...(mode.imageAttachments?.length ? { imageAttachments: mode.imageAttachments } : {})
     }));
 
     let currentPermissionMode: PermissionMode = opts.permissionMode ?? 'request-review';
@@ -163,6 +165,7 @@ export async function runAgy(opts: {
                 permissionMode: currentPermissionMode,
                 model: sessionModel,
                 effort: sessionEffort,
+                ...agyImageAttachmentsFor(message.content.attachments)
             };
             if (parseAgySwarmBoardCommand(formattedText)) {
                 messageQueue.pushIsolated(formattedText, mode, localId);

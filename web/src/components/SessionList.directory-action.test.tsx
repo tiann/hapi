@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { ApiError, type ApiClient } from '@/api/client'
 import type { SessionSummary } from '@/types/api'
 import { I18nProvider } from '@/lib/i18n-context'
@@ -771,6 +771,37 @@ describe('SessionList fork session action', () => {
 })
 
 describe('SessionList selection', () => {
+    it('moves the current page marker to the session the user opens', () => {
+        const sessions = ['First', 'Second'].map((name) => makeSession({
+            id: name,
+            active: true,
+            metadata: { path: '/work/selection', name: `${name} session` },
+        }))
+
+        function SelectableList() {
+            const [selectedSessionId, setSelectedSessionId] = useState(sessions[0].id)
+            return (
+                <SessionList
+                    sessions={sessions}
+                    selectedSessionId={selectedSessionId}
+                    onSelect={setSelectedSessionId}
+                    onNewSession={vi.fn()}
+                    onRefresh={vi.fn()}
+                    isLoading={false}
+                    renderHeader={false}
+                    api={null}
+                />
+            )
+        }
+
+        renderWithProviders(<SelectableList />)
+        expect(screen.getByRole('button', { current: 'page' })).toHaveAccessibleName(/First session/)
+
+        fireEvent.click(screen.getByRole('button', { name: /Second session/ }))
+
+        expect(screen.getByRole('button', { current: 'page' })).toHaveAccessibleName(/Second session/)
+    })
+
     it('does not select the row that moves under the pointer during a live reorder', () => {
         const onSelect = vi.fn()
         const first = makeSession({

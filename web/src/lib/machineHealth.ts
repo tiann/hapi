@@ -9,13 +9,55 @@ export type MachineHealthMetricPresentation = {
     tone: MachineHealthTone
 }
 
+export type MachineDiskPresentation = {
+    usedBytes: number
+    totalBytes: number
+    availableBytes: number
+    /** `df` Use%: used / (used + available). */
+    percent: number
+    tone: MachineHealthTone
+}
+
 export type MachineHealthPresentation = {
     metrics: MachineHealthMetricPresentation[]
+    /** Storage on the runner's home filesystem (where uploads land). */
+    disk?: MachineDiskPresentation
     overallTone: MachineHealthTone
     loadDetail?: string
     uptimeDetail?: string
     cpuCount?: number
     status: 'healthy' | 'elevated' | 'high' | 'unknown'
+}
+
+/** Human size with binary units like `df -h` (162 GB, 9.5 GB, 512 MB). */
+export function formatStorageBytes(bytes: number): string {
+    if (!Number.isFinite(bytes) || bytes < 0) return '—'
+    const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+    let value = bytes
+    let unit = 0
+    while (value >= 1024 && unit < units.length - 1) {
+        value /= 1024
+        unit += 1
+    }
+    const digits = unit === 0 || value >= 10 ? 0 : 1
+    return `${value.toFixed(digits)} ${units[unit]}`
+}
+
+function presentDisk(health: MachineHealth): MachineDiskPresentation | undefined {
+    const { diskTotalBytes, diskUsedBytes, diskAvailableBytes } = health
+    if (diskTotalBytes === undefined || diskUsedBytes === undefined || diskTotalBytes <= 0) {
+        return undefined
+    }
+    const availableBytes = diskAvailableBytes ?? Math.max(0, diskTotalBytes - diskUsedBytes)
+    const denominator = diskUsedBytes + availableBytes
+    const percent = denominator > 0 ? Math.min(100, Math.ceil((diskUsedBytes / denominator) * 100)) : 0
+    return {
+        usedBytes: diskUsedBytes,
+        totalBytes: diskTotalBytes,
+        availableBytes,
+        percent,
+        tone: percent >= 95 ? 'critical' : percent >= 85 ? 'warn' : 'ok',
+    }
 }
 
 /** Compact uptime for sidebar tiles, e.g. 1h 54m, 2d 4h, 5m. */
@@ -120,9 +162,13 @@ export function presentMachineHealth(
         tones.push(loadTone(health.load1m!, health.cpuCount))
     }
 
+    // Disk is shown alongside but does not drive the agent-capacity status.
+    const disk = presentDisk(health)
+
     if (metrics.length === 0 && loadDetail === undefined && uptimeDetail === undefined) {
         return {
             metrics: [],
+            ...(disk ? { disk } : {}),
             overallTone: 'unknown',
             status: 'unknown'
         }
@@ -132,6 +178,7 @@ export function presentMachineHealth(
 
     return {
         metrics,
+        ...(disk ? { disk } : {}),
         overallTone,
         loadDetail,
         uptimeDetail: uptimeDetail ?? undefined,
@@ -160,4 +207,16 @@ export const MACHINE_HEALTH_CHIP_CLASS: Record<MachineHealthTone, string> = {
     warn: 'border-[var(--app-badge-warning-border)] bg-[var(--app-badge-warning-bg)]/40',
     critical: 'border-[var(--app-badge-error-border)] bg-[var(--app-badge-error-bg)]/40',
     unknown: 'border-[var(--app-border)] bg-[var(--app-subtle-bg)]/60 opacity-70'
+}
+
+/** One-line summary for the sidebar machine row, e.g. "CPU 7% · RAM 37% · Disk 162 GB / 197 GB". */
+export function formatMachineHealthInline(
+    presentation: MachineHealthPresentation,
+    diskLabel: string,
+): string {
+    const parts = presentation.metrics.map((metric) => `${metric.shortLabel} ${metric.percent}%`)
+    if (presentation.disk) {
+        parts.push(`${diskLabel} ${formatStorageBytes(presentation.disk.usedBytes)} / ${formatStorageBytes(presentation.disk.totalBytes)}`)
+    }
+    return parts.join(' · ')
 }

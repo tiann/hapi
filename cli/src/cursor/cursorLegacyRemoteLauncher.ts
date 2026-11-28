@@ -138,7 +138,7 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
     }
 
     protected createDisplay(context: RemoteLauncherDisplayContext): React.ReactElement {
-        return React.createElement(OpencodeDisplay, context);
+        return React.createElement(OpencodeDisplay, { ...context, agentName: 'Cursor' });
     }
 
     protected async runMainLoop(): Promise<void> {

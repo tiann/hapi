@@ -90,7 +90,10 @@ public struct HubSettingsResponse: Codable, Equatable, Sendable {
     /// `metadata.translateInput`.
     public var translateInputByDefault: Bool?
 
-    public init(translateInputByDefault: Bool? = nil) {
+    public var autoBridgeTransientModelErrors: Bool?
+
+    public init(translateInputByDefault: Bool? = nil, autoBridgeTransientModelErrors: Bool? = nil) {
+        self.autoBridgeTransientModelErrors = autoBridgeTransientModelErrors
         self.translateInputByDefault = translateInputByDefault
     }
 

@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
 import { apiErrorMessage } from '@/api/client'
 import type { CodexDuplicateSessionGroup, CodexLocalSessionSummary, Machine, OpencodeLocalSessionSummary, PiLocalSessionSummary } from '@/types/api'
-import { CREATABLE_AGENT_FLAVORS, getYoloToggleMigrationMode, usesNativePermissionSelect, usesSharedPermissionModeState, getAgyModelChoices, splitAgyModelSelection, getClaudeEffortLevelsForModel, resolveClaudeEffortForModel } from '@hapi/protocol'
+import { CREATABLE_AGENT_FLAVORS, getYoloToggleMigrationMode, usesNativePermissionSelect, usesSharedPermissionModeState, usesSessionModelReasoningEffort, getAgyModelChoices, splitAgyModelSelection, getClaudeEffortLevelsForModel, resolveClaudeEffortForModel } from '@hapi/protocol'
 import type { AgentAvailabilityEntry, CodexCollaborationMode, PermissionModeOf, Flavors, PermissionMode, CopilotAgentMode } from '@hapi/protocol'
 import { codexModelAdvertisesFastTier } from '@/components/AssistantChat/codexFastMode'
 import { usePlatform } from '@/hooks/usePlatform'
@@ -57,6 +57,7 @@ import { CodexImportActions } from './CodexImportActions'
 import { PiImportActions } from './PiImportActions'
 import { OpencodeImportActions } from './OpencodeImportActions'
 import { ClaudeImportActions } from './ClaudeImportActions'
+import { CursorImportActions } from './CursorImportActions'
 import { clearBatchImportedCodexSelection, resolveCodexImportRedirectSessionId } from './codexImportMerge'
 import { AgyModelSelector } from './AgyModelSelector'
 import { DirectorySection } from './DirectorySection'
@@ -90,6 +91,7 @@ import { CodexSessionSyncDialog } from '@/components/CodexSessionSyncDialog'
 import { PiSessionImportDialog } from '@/components/PiSessionImportDialog'
 import { OpencodeSessionImportDialog } from '@/components/OpencodeSessionImportDialog'
 import { ClaudeSessionImportDialog } from '@/components/ClaudeSessionImportDialog'
+import { CursorSessionImportDialog } from '@/components/CursorSessionImportDialog'
 import { useLocalSessionImport } from '@/hooks/useLocalSessionImport'
 import type { LocalSessionImportApi, LocalSessionListItem } from '@/lib/localSessionImport'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
@@ -235,6 +237,21 @@ export function NewSession(props: {
     const [isImportingClaudeSession, setIsImportingClaudeSession] = useState(false)
     const [isBulkImportingClaudeSessions, setIsBulkImportingClaudeSessions] = useState(false)
     const [isClaudeImportDialogOpen, setIsClaudeImportDialogOpen] = useState(false)
+    const cursorImportApiAdapter = useMemo<LocalSessionImportApi>(() => ({
+        getLocalSessions: (_flavor, cwd, adapterMachineId) => props.api.getCursorSessions(cwd ?? null, adapterMachineId ?? null),
+        importLocalSessions: (_flavor, payload) => props.api.importCursorSessions(payload)
+    }), [props.api])
+    const cursorImport = useLocalSessionImport({
+        api: cursorImportApiAdapter,
+        flavor: 'cursor',
+        directory,
+        machineId,
+        auto: false
+    })
+    const [selectedCursorImportSessionId, setSelectedCursorImportSessionId] = useState<string | null>(null)
+    const [isImportingCursorSession, setIsImportingCursorSession] = useState(false)
+    const [isBulkImportingCursorSessions, setIsBulkImportingCursorSessions] = useState(false)
+    const [isCursorImportDialogOpen, setIsCursorImportDialogOpen] = useState(false)
     const [isCreating, setIsCreating] = useState(false)
     const createInFlightRef = useRef(false)
     const [isBulkImportingCodexSessions, setIsBulkImportingCodexSessions] = useState(false)
@@ -256,6 +273,8 @@ export function NewSession(props: {
         || isBulkImportingOpencodeSessions
         || isImportingClaudeSession
         || isBulkImportingClaudeSessions
+        || isImportingCursorSession
+        || isBulkImportingCursorSessions
     )
     const worktreeInputRef = useRef<HTMLInputElement>(null)
     const preserveRestoredDraftRef = useRef(false)
@@ -1387,11 +1406,23 @@ export function NewSession(props: {
         setSelectedClaudeImportSessionId((current) => current && claudeImport.sessions.some((session) => session.id === current) ? current : null)
     }, [claudeImport.sessions])
 
+    useEffect(() => {
+        setSelectedCursorImportSessionId((current) => current && cursorImport.sessions.some((session) => session.id === current) ? current : null)
+    }, [cursorImport.sessions])
+
     const formatClaudeImportError = useCallback((code?: string, message?: string): string => {
         if (code === 'transcript_diverged') return t('claudeImport.error.diverged')
         if (code === 'already_in_hapi') return t('claudeImport.error.alreadyImported')
         if (code === 'session_active') return t('claudeImport.error.active')
         return message?.trim() || t('claudeImport.failed.body')
+    }, [t])
+
+    const formatCursorImportError = useCallback((code?: string, message?: string): string => {
+        if (!code) return message?.trim() || t('cursorImport.failed.body')
+        const key = `cursorImport.error.${code}` as const
+        const localized = t(key)
+        if (localized !== key) return localized
+        return message?.trim() || t('cursorImport.failed.body')
     }, [t])
 
     const formatOpencodeImportError = useCallback((code?: string, message?: string): string => {
@@ -1775,6 +1806,66 @@ export function NewSession(props: {
         trimmedDirectory
     ])
 
+    const handleBulkImportCursorSessions = useCallback(async (sessionIds: string[]) => {
+        if (isBulkImportingCursorSessions || cursorImport.isLoading) return
+        setIsBulkImportingCursorSessions(true)
+        try {
+            const result = await props.api.importCursorSessions({
+                sessionIds,
+                cwd: trimmedDirectory || null,
+                machineId: cursorImport.machineId ?? machineId
+            })
+            const importedCount = result.results.filter((item) => item.hapiSessionId && !item.error && item.action === 'created').length
+            const failed = result.results.filter((item) => item.error)
+            if (importedCount > 0) {
+                addToast({
+                    title: t('cursorImport.success.title'),
+                    body: t('cursorImport.success.body', { n: importedCount }),
+                    sessionId: '',
+                    url: ''
+                })
+                await refetchSessions()
+                await cursorImport.refresh()
+            }
+            if (failed.length > 0) {
+                const first = failed[0]!.error!
+                addToast({
+                    title: t('cursorImport.failed.title'),
+                    body: t('cursorImport.failed.partial', {
+                        failed: failed.length,
+                        reason: formatCursorImportError(first.code, first.message)
+                    }),
+                    sessionId: '',
+                    url: ''
+                })
+                return
+            }
+            setIsCursorImportDialogOpen(false)
+            setSelectedCursorImportSessionId(null)
+        } catch (importError) {
+            addToast({
+                title: t('cursorImport.failed.title'),
+                body: apiErrorMessage(importError, t('cursorImport.failed.body')),
+                sessionId: '',
+                url: ''
+            })
+        } finally {
+            setIsBulkImportingCursorSessions(false)
+        }
+    }, [
+        addToast,
+        cursorImport.isLoading,
+        cursorImport.machineId,
+        cursorImport.refresh,
+        formatCursorImportError,
+        isBulkImportingCursorSessions,
+        machineId,
+        props.api,
+        refetchSessions,
+        t,
+        trimmedDirectory
+    ])
+
     const selectedCodexImportSession = useMemo(
         () => codexImportSessions.find((session) => session.id === selectedCodexImportSessionId) ?? null,
         [codexImportSessions, selectedCodexImportSessionId]
@@ -1790,6 +1881,10 @@ export function NewSession(props: {
     const selectedClaudeImportSession = useMemo(
         () => claudeImport.sessions.find((session) => session.id === selectedClaudeImportSessionId) ?? null,
         [claudeImport.sessions, selectedClaudeImportSessionId]
+    )
+    const selectedCursorImportSession = useMemo(
+        () => cursorImport.sessions.find((session) => session.id === selectedCursorImportSessionId) ?? null,
+        [cursorImport.sessions, selectedCursorImportSessionId]
     )
     // Pi history import reopens the native session as-is; the launch-only
     // model/effort controls would silently not apply, so hide them.
@@ -1922,6 +2017,11 @@ export function NewSession(props: {
         if (session.cwd?.trim()) setDirectory(session.cwd.trim())
     }, [])
 
+    const handleSelectCursorImportSession = useCallback((session: LocalSessionListItem) => {
+        setSelectedCursorImportSessionId(session.id)
+        if (session.cwd?.trim()) setDirectory(session.cwd.trim())
+    }, [])
+
     const handlePathClick = useCallback((path: string) => {
         setDirectory(path)
     }, [])
@@ -2032,7 +2132,7 @@ export function NewSession(props: {
                     && (!agySelectedChoice || agySelectedChoice.supportedEfforts.some((level) => level === effort)))) && effort !== 'auto'
                 ? effort
                 : undefined
-            const resolvedModelReasoningEffort = (agent === 'codex' || agent === 'opencode') && modelReasoningEffort !== 'default'
+            const resolvedModelReasoningEffort = usesSessionModelReasoningEffort(agent) && modelReasoningEffort !== 'default'
                 ? modelReasoningEffort
                 : undefined
             const preferredLaunchSettings = {
@@ -2179,6 +2279,31 @@ export function NewSession(props: {
                 return
             }
 
+            if (agent === 'cursor' && selectedCursorImportSession) {
+                setIsImportingCursorSession(true)
+                const result = await props.api.importCursorSessions({
+                    sessionIds: [selectedCursorImportSession.id],
+                    cwd: selectedCursorImportSession.cwd ?? trimmedDirectory,
+                    machineId: cursorImport.machineId ?? machineId
+                })
+                const imported = result.results.find((item) => item.cursorSessionId === selectedCursorImportSession.id)
+                if (imported?.error) {
+                    setIsImportingCursorSession(false)
+                    haptic.notification('error')
+                    setError(formatCursorImportError(imported.error.code, imported.error.message))
+                    return
+                }
+                if (!imported?.hapiSessionId) throw new Error(result.error || t('cursorImport.failed.body'))
+                const reopened = await props.api.reopenSession(imported.hapiSessionId)
+                haptic.notification('success')
+                savePreferredLaunchSettings(machineId, agent, preferredLaunchSettings)
+                clearNewSessionFormDraft()
+                setLastUsedMachineId(machineId)
+                addRecentPath(machineId, trimmedDirectory)
+                props.onSuccess(reopened.sessionId)
+                return
+            }
+
             const result = await spawnSession({
                 machineId,
                 directory: trimmedDirectory,
@@ -2217,6 +2342,7 @@ export function NewSession(props: {
             setIsImportingPiSession(false)
             setIsImportingOpencodeSession(false)
             setIsImportingClaudeSession(false)
+            setIsImportingCursorSession(false)
             haptic.notification('error')
             setError(apiErrorMessage(e, 'Failed to create session'))
         } finally {
@@ -2400,6 +2526,19 @@ export function NewSession(props: {
                         void claudeImport.refresh()
                     }}
                     onClear={() => setSelectedClaudeImportSessionId(null)}
+                />
+            ) : null}
+            {agent === 'cursor' ? (
+                <CursorImportActions
+                    selectedSession={selectedCursorImportSession}
+                    isLoading={cursorImport.isLoading}
+                    isDisabled={isFormDisabled}
+                    error={cursorImport.error}
+                    onChooseHistory={() => {
+                        setIsCursorImportDialogOpen(true)
+                        void cursorImport.refresh()
+                    }}
+                    onClear={() => setSelectedCursorImportSessionId(null)}
                 />
             ) : null}
             {agent === 'dsh' ? (
@@ -2607,7 +2746,7 @@ export function NewSession(props: {
             ) : null}
 
             <ActionButtons
-                isPending={isCreating || isPending || isImportingCodexSession || isImportingPiSession || isImportingOpencodeSession || isImportingClaudeSession}
+                isPending={isCreating || isPending || isImportingCodexSession || isImportingPiSession || isImportingOpencodeSession || isImportingClaudeSession || isImportingCursorSession}
                 canCreate={canCreate}
                 isDisabled={isFormDisabled}
                 createLabel={createLabel}
@@ -2697,6 +2836,26 @@ export function NewSession(props: {
                 }}
                 isPending={isBulkImportingClaudeSessions}
                 isLoading={claudeImport.isLoading}
+            />
+            <CursorSessionImportDialog
+                isOpen={isCursorImportDialogOpen}
+                onClose={() => setIsCursorImportDialogOpen(false)}
+                sessions={cursorImport.sessions}
+                currentSessionId={selectedCursorImportSessionId}
+                currentWorkDirectory={trimmedDirectory}
+                onConfirm={async (sessionIds) => {
+                    if (sessionIds.length === 1) {
+                        const session = cursorImport.sessions.find((candidate) => candidate.id === sessionIds[0])
+                        if (session) {
+                            handleSelectCursorImportSession(session)
+                            setIsCursorImportDialogOpen(false)
+                        }
+                        return
+                    }
+                    await handleBulkImportCursorSessions(sessionIds)
+                }}
+                isPending={isBulkImportingCursorSessions}
+                isLoading={cursorImport.isLoading}
             />
             <ConfirmDialog
                 isOpen={isDuplicateMergeConfirmOpen && duplicateSessionGroups.length > 0}

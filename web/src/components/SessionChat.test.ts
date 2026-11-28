@@ -464,6 +464,31 @@ describe('applyGlobalSelectAll', () => {
         expect(selection?.toString()).toBe('assistant reply text')
     })
 
+    it('selects the file preview instead of the conversation inside the files panel', () => {
+        setupThread()
+        const panel = document.createElement('aside')
+        panel.setAttribute('data-session-files-panel', 'true')
+        const header = document.createElement('div')
+        header.textContent = 'Files'
+        const scroll = document.createElement('div')
+        scroll.setAttribute('data-hapi-file-scroll', 'true')
+        scroll.textContent = 'const answer = 42'
+        panel.append(header, scroll)
+        document.body.appendChild(panel)
+
+        // Focus stays on <body> after clicking file text; the selection anchor decides.
+        window.getSelection()?.collapse(scroll.firstChild!, 3)
+        const fromSelection = new KeyboardEvent('keydown', { key: 'a', ctrlKey: true, cancelable: true })
+        expect(applyGlobalSelectAll(fromSelection)).toBe(true)
+        expect(window.getSelection()?.toString()).toBe('const answer = 42')
+
+        window.getSelection()?.removeAllRanges()
+        const fromTarget = new KeyboardEvent('keydown', { key: 'a', ctrlKey: true, cancelable: true })
+        Object.defineProperty(fromTarget, 'target', { value: scroll })
+        expect(applyGlobalSelectAll(fromTarget)).toBe(true)
+        expect(window.getSelection()?.toString()).toBe('const answer = 42')
+    })
+
     it('ignores non-Ctrl/Cmd+A shortcuts', () => {
         setupThread()
         for (const event of [

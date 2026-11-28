@@ -63,6 +63,8 @@ class SettingsViewModelTest {
     private fun runWithViewModel(
         jwt: String?,
         health: suspend () -> HubHealthResponse,
+        fetchCursorRetry: (suspend () -> Boolean?)? = null,
+        updateCursorRetry: (suspend (Boolean) -> Boolean?)? = null,
         assertions: suspend TestScope.(SettingsViewModel) -> Unit,
     ) = runTest {
         val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
@@ -76,6 +78,8 @@ class SettingsViewModelTest {
                 hubUrl = "https://hub.example",
                 currentJwt = { jwt },
                 fetchHealth = health,
+                fetchCursorRetry = fetchCursorRetry,
+                updateCursorRetry = updateCursorRetry,
                 scope = scope,
             )
             advanceUntilIdle()
@@ -83,6 +87,37 @@ class SettingsViewModelTest {
         } finally {
             scope.coroutineContext[Job]?.cancelAndJoin()
         }
+    }
+
+    @Test fun ownerRetryShowsOnlyConfirmedHubValuesAndReconcilesOnFailure() = runWithViewModel(
+        jwt = fakeJwt(ns = "default"), health = { HubHealthResponse(status = "ok", protocolVersion = 1) },
+        fetchCursorRetry = { false }, updateCursorRetry = { throw IllegalStateException("runner unavailable") },
+    ) { vm ->
+        assertEquals(false, vm.cursorRetry.value.enabled)
+        vm.setCursorRetry(true)
+        assertEquals(false, vm.cursorRetry.value.enabled)
+        advanceUntilIdle()
+        assertEquals(false, vm.cursorRetry.value.enabled)
+        assertEquals("runner unavailable", vm.cursorRetry.value.error)
+    }
+
+    @Test fun olderHubDoesNotOfferOrWriteAnAbsentField() = runWithViewModel(
+        jwt = fakeJwt(ns = "default"), health = { HubHealthResponse(status = "ok", protocolVersion = 1) },
+        fetchCursorRetry = { null }, updateCursorRetry = { error("unsupported write") },
+    ) { vm ->
+        vm.setCursorRetry(true)
+        advanceUntilIdle()
+        assertEquals(CursorRetrySetting(), vm.cursorRetry.value)
+    }
+
+    @Test fun guestCannotFetchOrEnableCursorRetry() = runWithViewModel(
+        jwt = fakeJwt(ns = "guest"), health = { HubHealthResponse(status = "ok", protocolVersion = 1) },
+        fetchCursorRetry = { error("unexpected read") }, updateCursorRetry = { error("unexpected write") },
+    ) { vm ->
+        vm.setCursorRetry(true)
+        vm.refreshCursorRetry()
+        advanceUntilIdle()
+        assertEquals(CursorRetrySetting(), vm.cursorRetry.value)
     }
 
     @Test

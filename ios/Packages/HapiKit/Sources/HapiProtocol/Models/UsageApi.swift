@@ -132,3 +132,45 @@ public struct SqliteStorageUsageResponse: Codable, Equatable, Sendable {
         self.totalBytes = totalBytes
     }
 }
+
+/// Live CLI account limits. Percentages use the 0...100 scale independently
+/// of token totals, and reset timestamps are Unix milliseconds.
+public struct UsageQuotasResponse: Decodable, Sendable {
+    public let machines: [Machine]
+
+    public struct Machine: Decodable, Sendable {
+        public let machineId: String
+        public let machineName: String
+        public let supported: Bool
+        public let error: String?
+        public let accounts: [Account]
+
+        public var visibleAccounts: [Account] {
+            accounts.filter { $0.available || $0.status != "unavailable" }
+        }
+    }
+
+    public struct Account: Decodable, Sendable {
+        public let agent: AgentFlavor
+        public let available: Bool
+        public let status: String
+        public let planLabel: String?
+        public let creditsLabel: String?
+        public let accountLabel: String?
+        public let note: String?
+        public let buckets: [Bucket]
+    }
+
+    public struct Bucket: Decodable, Sendable {
+        public let id: String
+        public let label: String
+        public let remainingPercent: Double
+        public let usedPercent: Double
+        public let resetsAt: Double?
+
+        public var resetDate: Date? {
+            guard let resetsAt, resetsAt != 0 else { return nil }
+            return Date(timeIntervalSince1970: resetsAt / 1_000)
+        }
+    }
+}

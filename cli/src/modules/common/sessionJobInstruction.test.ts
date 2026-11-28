@@ -5,21 +5,16 @@ import {
 } from './sessionJobInstruction'
 
 describe('sessionJobInstruction', () => {
-    it('defaults to not attaching and names short work as excluded', () => {
+    it('defaults to not attaching and points at the full rules', () => {
         expect(SESSION_JOB_INSTRUCTION).toMatch(/default is NOT/)
-        expect(SESSION_JOB_INSTRUCTION).toMatch(/within this turn/)
-        expect(SESSION_JOB_INSTRUCTION).toMatch(/If unsure, do not attach/)
+        expect(SESSION_JOB_INSTRUCTION).toMatch(/never tests or builds/)
+        expect(SESSION_JOB_INSTRUCTION).toContain('hapi job run')
+        expect(SESSION_JOB_INSTRUCTION).toContain('hapi job --help')
         expect(SESSION_JOB_INSTRUCTION).not.toMatch(/REQUIRED|MUST|FORBIDDEN/)
     })
 
-    it('shows the run command and keeps wake opt-in', () => {
-        expect(SESSION_JOB_INSTRUCTION).toContain('hapi job run')
-        expect(SESSION_JOB_INSTRUCTION).toContain('hapi job --help')
-        expect(SESSION_JOB_INSTRUCTION).toMatch(/--wake-on-terminal unless the operator asked/)
-    })
-
     it('stays small', () => {
-        expect(SESSION_JOB_INSTRUCTION.length).toBeLessThan(900)
+        expect(SESSION_JOB_INSTRUCTION.length).toBeLessThanOrEqual(200)
     })
 
     it('appends after an existing prompt block', () => {

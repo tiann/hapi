@@ -193,7 +193,11 @@ function AppInner() {
         }
     }, [goBack, pathname])
     const queryClient = useQueryClient()
+    // The files routes can render beside a still-mounted chat (wide viewports),
+    // so keep the session's message stream selected there too.
     const sessionMatch = matchRoute({ to: '/sessions/$sessionId' })
+        || matchRoute({ to: '/sessions/$sessionId/files' })
+        || matchRoute({ to: '/sessions/$sessionId/file' })
     const selectedSessionId = sessionMatch && sessionMatch.sessionId !== 'new' ? sessionMatch.sessionId : null
     const { isSyncing, startSync, endSync } = useSyncingState()
     const {
