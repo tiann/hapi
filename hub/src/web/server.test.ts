@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test'
 import { randomBytes } from 'node:crypto'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import zlib from 'node:zlib'
@@ -191,6 +191,7 @@ describe.each(['embeddedAssetMap', 'distDir'] as const)('web static asset servin
         for (const method of ['GET', 'HEAD'] as const) {
             const missingAsset = await app.request('/assets/stale-chunk.js', { method })
             expect(missingAsset.status).toBe(404)
+            expect(missingAsset.headers.get('Cache-Control')).toBe('no-store')
 
             const spaRoute = await app.request('/sessions/abc', { method })
             expect(spaRoute.status).toBe(200)
@@ -198,4 +199,74 @@ describe.each(['embeddedAssetMap', 'distDir'] as const)('web static asset servin
             expect(spaRoute.headers.get('Cache-Control')).toBe('no-cache')
         }
     })
+
+    it('exposes app version and deterministic webBuildId on /health with no-store caching', async () => {
+        const app = buildApp(mode)
+        const res = await app.request('/health')
+        expect(res.status).toBe(200)
+        expect(res.headers.get('Cache-Control')).toBe('no-store')
+        const body = await res.json() as {
+            status: string
+            version?: string
+            webBuildId?: string
+        }
+        expect(body.status).toBe('ok')
+        expect(typeof body.version).toBe('string')
+        expect(body.version?.length).toBeGreaterThan(0)
+        expect(body.webBuildId).toMatch(/^[0-9a-f]{12}$/)
+    })
+})
+
+it('refreshes the disk build fingerprint when sw.js changes without a restart', async () => {
+    const app = buildApp('distDir')
+    const readId = async () => (await (await app.request('/health')).json() as { webBuildId: string }).webBuildId
+    const original = await readId()
+    try {
+        writeFixture('/sw.js', SW_BODY + '// rebuilt')
+        expect(await readId()).not.toBe(original)
+    } finally {
+        writeFixture('/sw.js', SW_BODY)
+    }
+})
+
+it('keeps /health returning 200 without webBuildId when web assets are inaccessible and recovers once access returns', async () => {
+    const app = buildApp('distDir')
+    const initialRes = await app.request('/health')
+    expect(initialRes.status).toBe(200)
+    const initialBody = await initialRes.json() as { status: string; webBuildId?: string }
+    expect(initialBody.webBuildId).toMatch(/^[0-9a-f]{12}$/)
+
+    const backupDir = `${distDir}-backup`
+    let usedRenameFallback = false
+    chmodSync(distDir, 0o000)
+    try {
+        // Root or platforms without POSIX directory execute enforcement may still traverse 0o000.
+        statSync(join(distDir, 'index.html'))
+        chmodSync(distDir, 0o755)
+        renameSync(distDir, backupDir)
+        writeFileSync(distDir, 'not-a-directory')
+        usedRenameFallback = true
+    } catch {
+        // statSync threw EACCES as expected.
+    }
+
+    try {
+        const degradedRes = await app.request('/health')
+        expect(degradedRes.status).toBe(200)
+        const degradedBody = await degradedRes.json() as { status: string; webBuildId?: string }
+        expect(degradedBody.status).toBe('ok')
+        expect(degradedBody.webBuildId).toBeUndefined()
+    } finally {
+        if (usedRenameFallback) {
+            rmSync(distDir, { force: true })
+            renameSync(backupDir, distDir)
+        } else {
+            chmodSync(distDir, 0o755)
+        }
+    }
+
+    const recoveredRes = await app.request('/health')
+    expect(recoveredRes.status).toBe(200)
+    const recoveredBody = await recoveredRes.json() as { status: string; webBuildId?: string }
+    expect(recoveredBody.webBuildId).toBe(initialBody.webBuildId)
 })

@@ -41,7 +41,9 @@ import { VoiceErrorBanner } from '@/components/VoiceErrorBanner'
 import { RunnerVersionSkewBanner } from '@/components/RunnerVersionSkewBanner'
 import { LoadingState } from '@/components/LoadingState'
 import { ToastContainer } from '@/components/ToastContainer'
-import { PwaUpdateProvider } from '@/lib/pwa-update-context'
+import { PwaUpdateProvider, usePwaUpdateContext } from '@/lib/pwa-update-context'
+import { fetchThroughAuthProxy } from '@/api/authProxy'
+import { getSafeLocalStorage, fetchPublicHubHealth, recordHubWebBuildId, shouldCheckSwUpdateForHubHealth, type HubHealthProbe } from '@/lib/swStaticCache'
 import { ToastProvider, useAddToast } from '@/lib/toast-context'
 import { getNotificationClickHref, NOTIFICATION_CLICK_ACK_TYPE } from '@/lib/notificationClick'
 import type { SyncEvent } from '@/types/api'
@@ -84,26 +86,62 @@ function AppInner() {
     const matchRoute = useMatchRoute()
     const router = useRouter()
     const addToast = useAddToast()
+    const { checkForUpdates } = usePwaUpdateContext()
+    const healthRequestSeqRef = useRef(0)
 
-    useEffect(() => {
-        let cancelled = false
-        setTitleSuggestionAvailable(false)
-        if (!api) return () => { cancelled = true }
+    const refreshHubHealth = useCallback((options?: { resetOnError?: boolean }) => {
+        const requestSeq = ++healthRequestSeqRef.current
+        if (!api || options?.resetOnError) {
+            setTitleSuggestionAvailable(false)
+        }
 
-        void api.getHealth()
-            .then((health) => {
-                if (!cancelled) {
-                    setTitleSuggestionAvailable(health.capabilities?.titleSuggestion === true)
+        const handleHealthResponse = (health: HubHealthProbe | null) => {
+            if (!health || healthRequestSeqRef.current !== requestSeq) {
+                return
+            }
+            if (api) {
+                setTitleSuggestionAvailable(health.capabilities?.titleSuggestion === true)
+            }
+            const appVersion = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '0.0.0'
+            const storage = getSafeLocalStorage()
+            if (shouldCheckSwUpdateForHubHealth({
+                baseUrl,
+                windowOrigin: window.location.origin,
+                appVersion,
+                health,
+                storage,
+            })) {
+                void checkForUpdates().then((succeeded) => {
+                    if (succeeded) {
+                        recordHubWebBuildId(storage, health.webBuildId)
+                    }
+                })
+            }
+        }
+
+        const healthPromise: Promise<HubHealthProbe | null> = api
+            ? api.getHealth()
+            : fetchPublicHubHealth({
+                baseUrl,
+                windowOrigin: window.location.origin,
+                fetchImpl: fetchThroughAuthProxy,
+            })
+
+        void healthPromise
+            .then(handleHealthResponse)
+            .catch(() => {
+                if (options?.resetOnError && healthRequestSeqRef.current === requestSeq) {
+                    setTitleSuggestionAvailable(false)
                 }
             })
-            .catch(() => {
-                if (!cancelled) setTitleSuggestionAvailable(false)
-            })
+    }, [api, baseUrl, checkForUpdates])
 
+    useEffect(() => {
+        refreshHubHealth({ resetOnError: true })
         return () => {
-            cancelled = true
+            healthRequestSeqRef.current += 1
         }
-    }, [api])
+    }, [refreshHubHealth])
 
     useEffect(() => {
         const tg = getTelegramWebApp()
@@ -293,6 +331,9 @@ function AppInner() {
 
         const isFirstConnect = isFirstConnectRef.current
         const invalidationKeys = getAppSseResyncQueryKeys(info, isFirstConnect)
+        if (!isFirstConnect) {
+            refreshHubHealth()
+        }
 
         // The hub replayed every event missed during the gap, so the caches
         // are already consistent - the full refetch below would only re-download
@@ -331,7 +372,7 @@ function AppInner() {
                     endSync()
                 }
             })
-    }, [api, queryClient, selectedSessionId, startSync, endSync, reportSseConnect])
+    }, [api, queryClient, refreshHubHealth, selectedSessionId, startSync, endSync, reportSseConnect])
 
     const handleSseDisconnect = useCallback((reason: string) => {
         // Only show reconnecting banner if we've already connected once
