@@ -2,11 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { NativeAppPromoButton, NativeAppPromoSheet } from '@/components/NativeAppPromo'
 import { useQueryClient } from '@tanstack/react-query'
 import {
-    Navigate,
     Outlet,
     createRootRoute,
     createRoute,
     createRouter,
+    redirect,
     useLocation,
     useMatchRoute,
     useNavigate,
@@ -1317,7 +1317,15 @@ const rootRoute = createRootRoute({
 const indexRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/',
-    component: () => <Navigate to="/sessions" replace />,
+    // Redirect while the route loads, not from a one-shot <Navigate> render:
+    // a direct link like `/?token=...` strips its sign-in params with a history
+    // replace that can race the index redirect. If the router settled on `/`
+    // after that race, the already-fired <Navigate> rendered nothing and the
+    // app stayed blank under a `/sessions` address bar. Keep the search so the
+    // sign-in params survive until auth has read and cleared them.
+    beforeLoad: ({ search }) => {
+        throw redirect({ to: '/sessions', search, replace: true })
+    },
 })
 
 const sessionsRoute = createRoute({
