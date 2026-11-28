@@ -446,6 +446,19 @@ export async function bootstrapExistingSession(options: {
             + '(use hub reopen to clear archive metadata first)'
         )
     }
+    if (options.flavor === 'dsh' && sessionInfo.metadata?.dshSessionId) {
+        const recordedMachineId = sessionInfo.metadata.machineId
+        if (!recordedMachineId) {
+            throw new Error(
+                `HAPI session ${options.sessionId} has no recorded machine; DSH native resume requires the owning machine`
+            )
+        }
+        if (recordedMachineId !== machineId) {
+            throw new Error(
+                `HAPI session ${options.sessionId} belongs to another machine (${recordedMachineId}); DSH native resume requires the owning machine`
+            )
+        }
+    }
     const baseMetadata = buildSessionMetadata({
         flavor: options.flavor,
         startedBy,

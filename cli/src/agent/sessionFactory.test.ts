@@ -261,6 +261,81 @@ describe('bootstrapExistingSession', () => {
         expect(sessionClient.updateMetadata).toHaveBeenCalledOnce()
     })
 
+    it('refuses a direct DSH reopen on another machine before rewriting the row', async () => {
+        const session = createSession()
+        session.metadata = { ...session.metadata!, flavor: 'dsh', machineId: 'machine-1', dshSessionId: 'dsh-native-1' }
+        const before = { ...session.metadata }
+        const sessionClient = { updateMetadata: vi.fn(), flushMetadata: vi.fn(async () => true) }
+        getSessionMock.mockResolvedValue(session)
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-2' })
+        sessionSyncClientMock.mockReturnValue(sessionClient)
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-2' })
+
+        await expect(bootstrapExistingSession({
+            sessionId: session.id,
+            flavor: 'dsh',
+            workingDirectory: '/tmp/project'
+        })).rejects.toThrow(/other machine|recorded machine/)
+
+        expect(sessionSyncClientMock).not.toHaveBeenCalled()
+        expect(sessionClient.updateMetadata).not.toHaveBeenCalled()
+        expect(session.metadata).toEqual(before)
+        expect(notifyRunnerSessionStartedMock).not.toHaveBeenCalled()
+    })
+
+    it('refuses a direct DSH reopen when the row has no recorded machine id', async () => {
+        const session = createSession()
+        session.metadata = {
+            path: '/tmp/project',
+            host: 'localhost',
+            flavor: 'dsh',
+            dshSessionId: 'dsh-native-unscoped'
+        }
+        const before = { ...session.metadata }
+        const sessionClient = { updateMetadata: vi.fn(), flushMetadata: vi.fn(async () => true) }
+        getSessionMock.mockResolvedValue(session)
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
+        sessionSyncClientMock.mockReturnValue(sessionClient)
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+
+        await expect(bootstrapExistingSession({
+            sessionId: session.id,
+            flavor: 'dsh',
+            workingDirectory: '/tmp/project'
+        })).rejects.toThrow(/no recorded machine|missing machine id/)
+
+        expect(sessionSyncClientMock).not.toHaveBeenCalled()
+        expect(sessionClient.updateMetadata).not.toHaveBeenCalled()
+        expect(session.metadata).toEqual(before)
+        expect(notifyRunnerSessionStartedMock).not.toHaveBeenCalled()
+    })
+
+    it('resumes a DSH row on the machine recorded in it', async () => {
+        const session = createSession()
+        session.metadata = { ...session.metadata!, flavor: 'dsh', machineId: 'machine-1', dshSessionId: 'dsh-native-1' }
+        const sessionClient = { updateMetadata: vi.fn(), flushMetadata: vi.fn(async () => true) }
+        getSessionMock.mockResolvedValue(session)
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
+        sessionSyncClientMock.mockReturnValue(sessionClient)
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+
+        const result = await bootstrapExistingSession({
+            sessionId: session.id,
+            flavor: 'dsh',
+            workingDirectory: '/tmp/project'
+        })
+
+        expect(result.metadata).toEqual(expect.objectContaining({
+            machineId: 'machine-1',
+            dshSessionId: 'dsh-native-1'
+        }))
+        const updateHandler = sessionClient.updateMetadata.mock.calls[0][0]
+        expect(updateHandler(session.metadata)).toEqual(expect.objectContaining({
+            machineId: 'machine-1',
+            dshSessionId: 'dsh-native-1'
+        }))
+    })
+
     it('preserves existing native resume metadata when reactivating a session', async () => {
         const checkpoint = { sessionId: 'native-child', messageIds: ['m1'], userMessageIds: ['m1'], localMessageIds: ['m2'], localPublicationPending: true as const }
         const session = createSession()

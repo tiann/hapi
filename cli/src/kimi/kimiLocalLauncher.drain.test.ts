@@ -23,6 +23,12 @@ it.each(['pending trailing scan', 'idle watcher'])('forwards the silent append o
     vi.useFakeTimers();
     const path = mkdtempSync(join(tmpdir(), 'kimi-local-drain-'));
     const located = { sessionId: 'native', wirePath: join(path, 'wire.jsonl'), statePath: join(path, 'state.json') };
+    let locatedOnce = false;
+    const locate = () => {
+        if (locatedOnce) return;
+        locatedOnce = true;
+        vi.mocked(createKimiWireLocator).mock.calls[0]![0].onLocated(located);
+    };
     const session = { path, client: {}, getModel: () => undefined, onSessionFound: vi.fn(), sendAgentMessage: vi.fn() };
     const append = (text: string) => appendFileSync(located.wirePath, JSON.stringify({
         type: 'context.append_loop_event', event: { type: 'content.part', part: { type: 'text', text } }
@@ -35,10 +41,10 @@ it.each(['pending trailing scan', 'idle watcher'])('forwards the silent append o
         });
         vi.mocked(createKimiWireLocator).mockImplementation(({ onLocated }) => ({
             ready: Promise.resolve(),
-            cleanup: async () => { onLocated(located); }
+            cleanup: async () => { locate(); }
         }));
         run.mockImplementation(async () => {
-            vi.mocked(createKimiWireLocator).mock.calls[0]![0].onLocated(located);
+            locate();
             await vi.mocked(createKimiWireScanner).mock.results[0]!.value;
             if (mode === 'idle watcher') {
                 await vi.advanceTimersByTimeAsync(10_000);

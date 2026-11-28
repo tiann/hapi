@@ -255,6 +255,262 @@ describe('session model', () => {
         expect(survivors).toHaveLength(1)
     })
 
+    it('does not merge dsh sessions that share a dshSessionId without a machine id', async () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const oldSession = cache.getOrCreateSession(
+            'dsh-dup-old',
+            { path: '/tmp/project', host: 'localhost', flavor: 'dsh', dshSessionId: 'dsh-native-1' },
+            null,
+            'default'
+        )
+        const newSession = cache.getOrCreateSession(
+            'dsh-dup-new',
+            { path: '/tmp/project', host: 'localhost', flavor: 'dsh', dshSessionId: 'dsh-native-1' },
+            null,
+            'default'
+        )
+
+        await cache.deduplicateByAgentSessionId(newSession.id)
+
+        // Without a recorded machine id the hub cannot tell whether the two
+        // rows really share the same native session, so neither may be merged.
+        const survivors = [oldSession.id, newSession.id].filter((id) => cache.getSession(id) != null)
+        expect(survivors).toHaveLength(2)
+        store.close()
+    })
+
+    it('merges the same dsh session id when both rows recorded the same machine', async () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const s1 = cache.getOrCreateSession(
+            'dsh-scoped-1',
+            { path: '/tmp/project', host: 'one', machineId: 'machine-1', flavor: 'dsh', dshSessionId: 'dsh-native-machine' },
+            null,
+            'default'
+        )
+        const s2 = cache.getOrCreateSession(
+            'dsh-scoped-2',
+            { path: '/tmp/project', host: 'one', machineId: 'machine-1', flavor: 'dsh', dshSessionId: 'dsh-native-machine' },
+            null,
+            'default'
+        )
+
+        await cache.deduplicateByAgentSessionId(s2.id)
+
+        expect([s1.id, s2.id].filter((id) => cache.getSession(id) != null)).toHaveLength(1)
+        store.close()
+    })
+
+    it('does not merge the same dsh session id across different machines', async () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const s1 = cache.getOrCreateSession(
+            'dsh-scoped-1',
+            { path: '/tmp/project', host: 'one', machineId: 'machine-1', flavor: 'dsh', dshSessionId: 'dsh-native-machine' },
+            null,
+            'default'
+        )
+        const s2 = cache.getOrCreateSession(
+            'dsh-scoped-2',
+            { path: '/tmp/project', host: 'two', machineId: 'machine-2', flavor: 'dsh', dshSessionId: 'dsh-native-machine' },
+            null,
+            'default'
+        )
+
+        await cache.deduplicateByAgentSessionId(s2.id)
+
+        expect(cache.getSession(s1.id)).toBeDefined()
+        expect(cache.getSession(s2.id)).toBeDefined()
+        store.close()
+    })
+
+    it('keeps a legacy DSH row separate after a same-host reopen cannot bind a machine', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            engine.getOrCreateMachine(
+                'machine-one',
+                { host: 'shared-host', platform: 'linux', happyCliVersion: '0.1.0' },
+                { status: 'running' },
+                'default'
+            )
+            engine.getOrCreateMachine(
+                'machine-two',
+                { host: 'shared-host', platform: 'linux', happyCliVersion: '0.1.0' },
+                { status: 'running' },
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-one', time: Date.now() })
+            engine.handleMachineAlive({ machineId: 'machine-two', time: Date.now() })
+
+            const legacy = engine.getOrCreateSession(
+                'dsh-hostname-legacy',
+                {
+                    path: '/remote/project',
+                    host: 'shared-host',
+                    flavor: 'dsh',
+                    dshSessionId: 'dsh-native-shared',
+                    lifecycleState: 'archived'
+                },
+                null,
+                'default'
+            )
+            const scoped = engine.getOrCreateSession(
+                'dsh-hostname-scoped',
+                {
+                    path: '/remote/project',
+                    host: 'shared-host',
+                    machineId: 'machine-two',
+                    flavor: 'dsh',
+                    dshSessionId: 'dsh-native-shared'
+                },
+                null,
+                'default'
+            )
+
+            const bootstrappedMachines: string[] = []
+            ;(engine as any).rpcGateway.spawnSession = async (machineId: string) => {
+                bootstrappedMachines.push(machineId)
+                const current = store.sessions.getSessionByNamespace(legacy.id, 'default')!
+                store.sessions.updateSessionMetadata(
+                    legacy.id,
+                    { ...current.metadata!, machineId },
+                    current.metadataVersion,
+                    'default'
+                )
+                return { type: 'success', sessionId: legacy.id }
+            }
+            ;(engine as any).waitForSessionActive = async () => true
+
+            expect(await engine.reopenSession(legacy.id, 'default')).toEqual({
+                type: 'error',
+                message: 'DSH session has no recorded machine; native resume requires the owning machine',
+                code: 'resume_unavailable'
+            })
+            expect(bootstrappedMachines).toEqual([])
+
+            await (engine as any).sessionCache.deduplicateByAgentSessionId(scoped.id)
+
+            expect(engine.getSession(legacy.id)).toBeDefined()
+            expect(engine.getSession(scoped.id)).toBeDefined()
+            expect(engine.getSession(legacy.id)?.metadata?.machineId).toBeUndefined()
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('keeps the recorded machine on a base-CLI DSH write so keepalive keeps both machine rows', async () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+        const storedMetadata = (id: string) =>
+            store.sessions.getSessionByNamespace(id, 'default')?.metadata as Record<string, unknown> | null
+
+        const machineARow = cache.getOrCreateSession(
+            'dsh-boundary-machine-a',
+            {
+                path: '/remote/project',
+                host: 'host-a',
+                machineId: 'machine-a',
+                flavor: 'dsh',
+                dshSessionId: 'dsh-native-boundary',
+                lifecycleState: 'archived'
+            },
+            null,
+            'default'
+        )
+        const machineBRow = cache.getOrCreateSession(
+            'dsh-boundary-machine-b',
+            {
+                path: '/remote/project',
+                host: 'host-b',
+                machineId: 'machine-b',
+                flavor: 'dsh',
+                dshSessionId: 'dsh-native-boundary',
+                lifecycleState: 'archived'
+            },
+            null,
+            'default'
+        )
+
+        // An older CLI skips the bootstrap machine check and writes its own
+        // machine id onto machine A's row while the native id stays the same.
+        const beforeWrite = store.sessions.getSessionByNamespace(machineARow.id, 'default')!
+        const written = store.sessions.updateSessionMetadata(
+            machineARow.id,
+            { ...beforeWrite.metadata!, machineId: 'machine-b', name: 'Renamed by the base CLI' },
+            beforeWrite.metadataVersion,
+            'default'
+        )
+        expect(written.result).toBe('success')
+        expect(written.result).not.toBe('version-mismatch')
+        if (written.result !== 'success') throw new Error('expected a successful write')
+        expect((written.value as Record<string, unknown>).machineId).toBe('machine-a')
+        cache.refreshSession(machineARow.id)
+
+        expect(storedMetadata(machineARow.id)?.machineId).toBe('machine-a')
+        expect(storedMetadata(machineARow.id)?.name).toBe('Renamed by the base CLI')
+
+        // Re-applying the same write keeps the recorded machine and changes nothing.
+        const afterFirst = storedMetadata(machineARow.id)
+        const second = store.sessions.updateSessionMetadata(
+            machineARow.id,
+            { ...afterFirst!, machineId: 'machine-b', name: 'Renamed by the base CLI' },
+            written.version,
+            'default'
+        )
+        expect(second.result).toBe('success')
+        expect(second.result).not.toBe('version-mismatch')
+        expect(storedMetadata(machineARow.id)).toEqual(afterFirst)
+
+        // Keepalive dedup leaves both machine rows in place.
+        await cache.deduplicateByAgentSessionId(machineARow.id)
+
+        expect(cache.getSession(machineARow.id)).toBeDefined()
+        expect(cache.getSession(machineBRow.id)).toBeDefined()
+        expect(storedMetadata(machineARow.id)?.machineId).toBe('machine-a')
+
+        // A same-machine write still applies.
+        const beforeSame = store.sessions.getSessionByNamespace(machineARow.id, 'default')!
+        const sameMachine = store.sessions.updateSessionMetadata(
+            machineARow.id,
+            { ...beforeSame.metadata!, name: 'Renamed on machine A' },
+            beforeSame.metadataVersion,
+            'default'
+        )
+        expect(sameMachine.result).toBe('success')
+        expect(storedMetadata(machineARow.id)?.name).toBe('Renamed on machine A')
+
+        // A fresh native session changes both ids together and still applies.
+        const beforeFresh = store.sessions.getSessionByNamespace(machineARow.id, 'default')!
+        const freshNative = store.sessions.updateSessionMetadata(
+            machineARow.id,
+            { ...beforeFresh.metadata!, dshSessionId: 'dsh-native-fresh', machineId: 'machine-b' },
+            beforeFresh.metadataVersion,
+            'default'
+        )
+        expect(freshNative.result).toBe('success')
+        expect(store.sessions.getSessionByNamespace(machineARow.id, 'default')?.metadata).toMatchObject({
+            dshSessionId: 'dsh-native-fresh',
+            machineId: 'machine-b'
+        })
+
+        store.close()
+    })
+
     it('notifies onSessionMergedAway when dedup collapses a duplicate row', async () => {
         const store = new Store(':memory:')
         const events: SyncEvent[] = []
@@ -4184,6 +4440,103 @@ describe('session model', () => {
             })
             expect(spawnCalled).toBe(false)
             expect(engine.getSession(session.id)?.metadata?.lifecycleState).toBe('archived')
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('reports resume_unavailable when a DSH row has no recorded machine but runners are online', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            engine.getOrCreateMachine(
+                'online-machine',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                { status: 'running' },
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'online-machine', time: Date.now() })
+
+            const session = engine.getOrCreateSession(
+                'dsh-no-machine-resume',
+                {
+                    path: '/remote/project',
+                    host: 'localhost',
+                    flavor: 'dsh',
+                    dshSessionId: 'dsh-native-unscoped',
+                    lifecycleState: 'archived'
+                },
+                null,
+                'default'
+            )
+
+            let spawnCalled = false
+            ;(engine as any).rpcGateway.spawnSession = async () => {
+                spawnCalled = true
+                return { type: 'success', sessionId: session.id }
+            }
+
+            expect(await engine.reopenSession(session.id, 'default')).toEqual({
+                type: 'error',
+                message: expect.stringContaining('no recorded machine'),
+                code: 'resume_unavailable'
+            })
+            expect(spawnCalled).toBe(false)
+            expect(engine.getSession(session.id)?.metadata?.lifecycleState).toBe('archived')
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('keeps no_machine_online when a DSH row records an offline machine', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            engine.getOrCreateMachine(
+                'offline-machine',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.getOrCreateMachine(
+                'online-machine',
+                { host: 'other-host', platform: 'linux', happyCliVersion: '0.1.0' },
+                { status: 'running' },
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'online-machine', time: Date.now() })
+
+            const session = engine.getOrCreateSession(
+                'dsh-offline-machine-resume',
+                {
+                    path: '/remote/project',
+                    host: 'localhost',
+                    machineId: 'offline-machine',
+                    flavor: 'dsh',
+                    dshSessionId: 'dsh-native-offline',
+                    lifecycleState: 'archived'
+                },
+                null,
+                'default'
+            )
+
+            expect(await engine.reopenSession(session.id, 'default')).toEqual({
+                type: 'error',
+                message: 'No machine online',
+                code: 'no_machine_online'
+            })
         } finally {
             engine.stop()
         }

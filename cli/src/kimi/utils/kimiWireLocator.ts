@@ -3,11 +3,15 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { logger } from '@/ui/logger';
 import { getKimiCodeHome } from './config';
+import type { KimiWireBaseline } from './kimiWireScanner';
 
 export type LocatedKimiWire = {
     sessionId: string;
     wirePath: string;
     statePath: string;
+    // File identity and byte offset of the wire file when this launch began;
+    // events after it belong to this launch even when they confirmed the resume.
+    wireBaseline?: KimiWireBaseline;
 };
 
 export type KimiWireLocator = {
@@ -98,6 +102,7 @@ class KimiWireLocatorImpl {
     private readonly onLocated: KimiWireLocatorOptions['onLocated'];
     private readonly onAmbiguous?: KimiWireLocatorOptions['onAmbiguous'];
     private readonly initialSessionIds = new Set<string>();
+    private resumeWireBaseline: { size: number; mtimeMs: number; device: number; inode: number } | null = null;
     private interval: ReturnType<typeof setInterval> | null = null;
     private scanPromise: Promise<void> | null = null;
     private stopped = false;
@@ -113,7 +118,16 @@ class KimiWireLocatorImpl {
     }
 
     async start(): Promise<void> {
-        if (!this.resumeSessionId) {
+        if (this.resumeSessionId) {
+            // A resumed session already has a wire file. Record its current
+            // state so a pre-existing file alone cannot confirm that this
+            // launch opened the conversation.
+            const resumeWirePath = getKimiWirePath(join(this.workspaceDir, this.resumeSessionId))
+            const stats = await stat(resumeWirePath).catch(() => null)
+            this.resumeWireBaseline = stats?.isFile()
+                ? { size: stats.size, mtimeMs: stats.mtimeMs, device: stats.dev, inode: stats.ino }
+                : null
+        } else {
             // Snapshot pre-existing sessions: only directories that appear
             // AFTER this locator starts may belong to the process hapi just
             // spawned. Without this, an immediate retry could bind to the
@@ -138,12 +152,24 @@ class KimiWireLocatorImpl {
     }
 
     async cleanup(): Promise<void> {
-        this.stopped = true;
         if (this.interval) {
             clearInterval(this.interval);
             this.interval = null;
         }
-        await this.scanPromise?.catch(() => {});
+        const pending = this.scanPromise;
+        if (pending) {
+            await pending.catch(() => {});
+        }
+        if (!this.stopped) {
+            const finalScan = this.runScan();
+            this.scanPromise = finalScan;
+            try {
+                await finalScan;
+            } finally {
+                this.scanPromise = null;
+            }
+        }
+        this.stopped = true;
     }
 
     private stopPolling(): void {
@@ -227,9 +253,29 @@ class KimiWireLocatorImpl {
                 if (!(await this.matchesWorkDir(sessionDir))) {
                     continue;
                 }
+            } else if (this.resumeWireBaseline
+                && wireStats.size === this.resumeWireBaseline.size
+                && wireStats.mtimeMs === this.resumeWireBaseline.mtimeMs
+                && wireStats.dev === this.resumeWireBaseline.device
+                && wireStats.ino === this.resumeWireBaseline.inode) {
+                // A resumed journal is unchanged only when its identity still
+                // matches the baseline; an equal-sized file written at the
+                // same time under a new inode is a replacement, not this copy.
+                continue;
             }
 
-            candidates.push({ sessionId: entry.name, wirePath, statePath });
+            candidates.push({
+                sessionId: entry.name,
+                wirePath,
+                statePath,
+                ...(this.resumeWireBaseline ? {
+                    wireBaseline: {
+                        device: this.resumeWireBaseline.device,
+                        inode: this.resumeWireBaseline.inode,
+                        offset: this.resumeWireBaseline.size
+                    }
+                } : {})
+            });
         }
         return candidates;
     }

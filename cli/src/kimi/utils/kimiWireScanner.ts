@@ -167,9 +167,21 @@ export function convertKimiWireEvent(event: KimiWireEvent, model?: string | null
     return null;
 }
 
+/**
+ * File identity and byte offset captured by the locator when a native resume
+ * began. The scanner reuses the offset only while the journal is still that
+ * same file; a replacement is read from its start by the rotation handling.
+ */
+export type KimiWireBaseline = {
+    device: number;
+    inode: number;
+    offset: number;
+};
+
 interface KimiWireScannerOptions {
     wirePath: string;
     onEvent: (event: KimiWireEvent) => void;
+    wireBaseline?: KimiWireBaseline;
 }
 
 export interface KimiWireScanner {
@@ -189,6 +201,7 @@ export async function createKimiWireScanner(opts: KimiWireScannerOptions): Promi
 class KimiWireScannerImpl extends BaseSessionScanner<KimiWireEvent> {
     private readonly wirePath: string;
     private readonly onEvent: (event: KimiWireEvent) => void;
+    private readonly wireBaseline: KimiWireBaseline | undefined;
     private fileEpoch = 0;
     private fileState: {
         device: number;
@@ -201,9 +214,23 @@ class KimiWireScannerImpl extends BaseSessionScanner<KimiWireEvent> {
         super({ intervalMs: 2000 });
         this.wirePath = opts.wirePath;
         this.onEvent = opts.onEvent;
+        this.wireBaseline = opts.wireBaseline;
     }
 
     protected async initialize(): Promise<void> {
+        if (this.wireBaseline) {
+            // Resume: the locator recorded this file identity and offset when
+            // the launch began. Seed the baseline identity so readWire treats a
+            // replaced journal as a rotation and reads it from the start.
+            this.fileState = {
+                device: this.wireBaseline.device,
+                inode: this.wireBaseline.inode,
+                partialLine: Buffer.alloc(0),
+                nextLineIndex: 0
+            };
+            this.setCursor(this.wirePath, this.wireBaseline.offset);
+            return;
+        }
         // Prime to EOF: only events written after hapi attaches are forwarded,
         // so reopening an existing session does not replay its whole history.
         const { events, nextCursor } = await this.readWire(0);

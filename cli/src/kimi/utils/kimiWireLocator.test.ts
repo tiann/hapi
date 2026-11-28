@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -95,11 +95,97 @@ describe('kimiWireLocator', () => {
 
         try {
             await wait(300);
+            expect(located).toHaveLength(0);
+
+            // The TUI writes to the journal when it actually opens the session.
+            const sessionDir = join(homeDir, 'sessions', encodeKimiWorkDirKey(workDir), 'session_old-resume');
+            const wirePath = getKimiWirePath(sessionDir);
+            const baselineStats = await stat(wirePath);
+            await writeFile(wirePath, JSON.stringify({ type: 'turn.prompt', time: Date.now() }) + '\n', { flag: 'a' });
+            await wait(300);
             expect(located).toHaveLength(1);
             expect(located[0]?.sessionId).toBe('session_old-resume');
+            expect(located[0]?.wireBaseline).toEqual({
+                device: baselineStats.dev,
+                inode: baselineStats.ino,
+                offset: baselineStats.size
+            });
         } finally {
             await locator.cleanup();
         }
+    });
+
+    it('scans once at cleanup so a resume confirmed after the last poll is still located', async () => {
+        const sessionDir = await seedSession('session_late-resume');
+        const wirePath = getKimiWirePath(sessionDir);
+        const baselineStats = await stat(wirePath);
+
+        const located: LocatedKimiWire[] = [];
+        const locator = createKimiWireLocator({
+            cwd: workDir,
+            startupTimestampMs: Date.now(),
+            resumeSessionId: 'session_late-resume',
+            intervalMs: 60_000,
+            onLocated: (result) => located.push(result)
+        });
+
+        await locator.ready;
+        await wait(50);
+        expect(located).toHaveLength(0);
+
+        await writeFile(wirePath, JSON.stringify({ type: 'turn.prompt', time: Date.now() }) + '\n', { flag: 'a' });
+        await locator.cleanup();
+
+        expect(located).toHaveLength(1);
+        expect(located[0]).toMatchObject({
+            sessionId: 'session_late-resume',
+            wireBaseline: {
+                device: baselineStats.dev,
+                inode: baselineStats.ino,
+                offset: baselineStats.size
+            }
+        });
+    });
+
+    it('detects a resumed journal replaced with the same size and mtime', async () => {
+        const sessionDir = await seedSession('session_replaced-resume');
+        const wirePath = getKimiWirePath(sessionDir);
+        // A whole-second mtime round-trips exactly through utimes on every filesystem.
+        const fixedTime = Math.floor(Date.now() / 1000);
+        await utimes(wirePath, fixedTime, fixedTime);
+        const baselineStats = await stat(wirePath);
+
+        const located: LocatedKimiWire[] = [];
+        const locator = createKimiWireLocator({
+            cwd: workDir,
+            startupTimestampMs: Date.now(),
+            resumeSessionId: 'session_replaced-resume',
+            intervalMs: 60_000,
+            onLocated: (result) => located.push(result)
+        });
+
+        await locator.ready;
+        await wait(50);
+        expect(located).toHaveLength(0);
+
+        // Replace the file with a different inode holding the same bytes and
+        // the same mtime, so only the file identity reveals the replacement.
+        const replacementPath = join(sessionDir, 'agents', 'main', 'wire-replacement.jsonl');
+        await writeFile(replacementPath, await readFile(wirePath));
+        await utimes(replacementPath, fixedTime, fixedTime);
+        await rename(replacementPath, wirePath);
+
+        const replacedStats = await stat(wirePath);
+        expect(replacedStats.size).toBe(baselineStats.size);
+        expect(replacedStats.mtimeMs).toBe(baselineStats.mtimeMs);
+        expect(replacedStats.ino).not.toBe(baselineStats.ino);
+
+        // The final poll must notice the replacement, even though the TUI
+        // wrote nothing new before exiting.
+        await locator.cleanup();
+
+        expect(located).toHaveLength(1);
+        expect(located[0]?.sessionId).toBe('session_replaced-resume');
     });
 
     it('excludes sessions that already existed when the locator started (retry race)', async () => {

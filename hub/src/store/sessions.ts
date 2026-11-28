@@ -540,6 +540,23 @@ export function adoptPreallocatedSession(
     })()
 }
 
+/**
+ * A DSH row keeps the machineId it was recorded with while its dshSessionId
+ * stays the same. When a write would reassign that machineId, copy the stored
+ * value onto the merged metadata so the write succeeds with the recorded
+ * machine and the caller converges on it. A row with no recorded machine stays
+ * unassigned. A write that also changes dshSessionId is a fresh native session
+ * and applies with its own machineId.
+ */
+function preserveDshMachineOnMerged(prior: unknown, merged: unknown): unknown {
+    if (!isPlainObject(prior) || !isPlainObject(merged)) return merged
+    const dshSessionId = prior.dshSessionId
+    if (typeof dshSessionId !== 'string' || dshSessionId.length === 0) return merged
+    if (merged.dshSessionId !== dshSessionId) return merged
+    if (prior.machineId === merged.machineId) return merged
+    return { ...merged, machineId: prior.machineId }
+}
+
 export function updateSessionMetadata(
     db: Database,
     id: string,
@@ -573,6 +590,11 @@ export function updateSessionMetadata(
             const titleOwner = isPlainObject(prior) && prior.titleLocked === true ? prior
                 : isPlainObject(sourceTitle) && sourceTitle.titleLocked === true ? sourceTitle : prior
             let merged = preserveSessionTitle(titleOwner, mergeSessionMetadata(prior, metadata), options)
+
+            // Keep the stored machineId on a DSH row when a write would
+            // reassign it. The write succeeds with the recorded value so the
+            // caller converges, and every other field in the update applies.
+            merged = preserveDshMachineOnMerged(prior, merged)
 
             // #1911 M1: unauthorized un-archive of hub-archived rows.
             // Return success + merge-preserved archive fields — NOT version-mismatch

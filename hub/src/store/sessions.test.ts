@@ -1703,6 +1703,69 @@ describe('replaceSessionTodos: watermark ratchet (PR #897 rewind race)', () => {
     })
 })
 
+describe('updateSessionMetadata: DSH machine assignment', () => {
+    it('keeps the recorded machine when a base CLI writes its own machineId', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'dsh-boundary-machine-write',
+            { path: '/tmp/project', host: 'localhost', machineId: 'machine-a', flavor: 'dsh', dshSessionId: 'dsh-native-boundary' },
+            null,
+            'default'
+        )
+        const write = (metadataVersion: number) => store.sessions.updateSessionMetadata(
+            session.id,
+            { ...(getMetadata(store, session.id) ?? {}), machineId: 'machine-b', name: 'Renamed by the base CLI' },
+            metadataVersion,
+            'default'
+        )
+
+        const first = write(session.metadataVersion)
+        expect(first.result).toBe('success')
+        expect(first.result).not.toBe('version-mismatch')
+        if (first.result !== 'success') throw new Error('expected a successful write')
+        expect((first.value as Record<string, unknown>).machineId).toBe('machine-a')
+        expect((first.value as Record<string, unknown>).name).toBe('Renamed by the base CLI')
+
+        const afterFirst = getMetadata(store, session.id)
+        expect(afterFirst?.machineId).toBe('machine-a')
+        expect(afterFirst?.name).toBe('Renamed by the base CLI')
+
+        // Re-applying the same base-CLI change keeps the recorded machine, so
+        // the stored metadata stops changing and the writer has nothing to retry.
+        const second = write(first.version)
+        expect(second.result).toBe('success')
+        expect(second.result).not.toBe('version-mismatch')
+        expect(getMetadata(store, session.id)).toEqual(afterFirst)
+
+        store.close()
+    })
+
+    it('keeps a DSH row without a recorded machine unassigned', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'dsh-unscoped-machine-write',
+            { path: '/tmp/project', host: 'localhost', flavor: 'dsh', dshSessionId: 'dsh-native-unscoped' },
+            null,
+            'default'
+        )
+
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            { ...(session.metadata ?? {}), machineId: 'machine-b', name: 'Renamed by the base CLI' },
+            session.metadataVersion,
+            'default'
+        )
+
+        expect(result.result).toBe('success')
+        expect(result.result).not.toBe('version-mismatch')
+        if (result.result !== 'success') throw new Error('expected a successful write')
+        expect((result.value as Record<string, unknown>).machineId).toBeUndefined()
+        expect(getMetadata(store, session.id)?.machineId).toBeUndefined()
+        expect(getMetadata(store, session.id)?.name).toBe('Renamed by the base CLI')
+        store.close()
+    })
+})
+
 describe('updateSessionAgentState: updated_at (#1855)', () => {
     it('only advances updated_at when a new permission request arrives', () => {
         const store = makeStore()

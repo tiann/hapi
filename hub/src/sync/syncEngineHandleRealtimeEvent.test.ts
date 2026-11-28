@@ -83,6 +83,64 @@ describe('SyncEngine.handleRealtimeEvent dedup-on-metadata-change', () => {
         expect(cache.getSession(created.id)?.metadata?.cursorSessionId).toBe('cursor-new')
     })
 
+    it('triggers dedup when a structured metadata patch changes only dshSessionId', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+        const cache = (engine as unknown as { sessionCache: SessionCache }).sessionCache
+        const dedupCalls: string[] = []
+        const originalDedup = cache.deduplicateByAgentSessionId.bind(cache)
+        let dedupDone: Promise<void> | undefined
+        cache.deduplicateByAgentSessionId = async (sessionId: string) => {
+            dedupCalls.push(sessionId)
+            dedupDone = originalDedup(sessionId)
+            await dedupDone
+        }
+
+        const oldSession = cache.getOrCreateSession(
+            'dsh-realtime-old',
+            { path: '/tmp', host: 'h', machineId: 'machine-1', flavor: 'dsh', dshSessionId: 'dsh-native-1' },
+            null,
+            'default'
+        )
+        const newSession = cache.getOrCreateSession(
+            'dsh-realtime-new',
+            { path: '/tmp', host: 'h', machineId: 'machine-1', flavor: 'dsh' },
+            null,
+            'default'
+        )
+
+        const patch: SessionPatch = {
+            metadata: {
+                version: newSession.metadataVersion + 1,
+                value: {
+                    path: '/tmp',
+                    host: 'h',
+                    machineId: 'machine-1',
+                    flavor: 'dsh',
+                    dshSessionId: 'dsh-native-1'
+                }
+            }
+        }
+
+        engine.handleRealtimeEvent({
+            type: 'session-updated',
+            sessionId: newSession.id,
+            data: patch
+        })
+        await dedupDone
+
+        expect(dedupCalls).toEqual([newSession.id])
+        expect(cache.getSession(oldSession.id)).toBeUndefined()
+        expect(cache.getSession(newSession.id)).toBeDefined()
+        engine.stop()
+        store.close()
+    })
+
     it('does not trigger dedup when the patch leaves agent session ids unchanged', () => {
         const { engine, cache, dedupCalls } = makeEngine()
 

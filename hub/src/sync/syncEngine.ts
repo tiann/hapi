@@ -5505,6 +5505,14 @@ export class SyncEngine {
 
         const metadata = session.metadata!
 
+        if (flavor === 'dsh' && resumeToken !== undefined && !metadata.machineId) {
+            return {
+                type: 'error',
+                message: 'DSH session has no recorded machine; native resume requires the owning machine',
+                code: 'resume_unavailable'
+            }
+        }
+
         const targetMachine = this.resolveOnlineMachineForSession(
             session,
             namespace,
@@ -6279,6 +6287,7 @@ export class SyncEngine {
             && (prev?.kimiSessionId ?? null) === (next.kimiSessionId ?? null)
             && (prev?.agySessionId ?? null) === (next.agySessionId ?? null)
             && (prev?.copilotSessionId ?? null) === (next.copilotSessionId ?? null)
+            && (prev?.dshSessionId ?? null) === (next.dshSessionId ?? null)
     }
 
     private canRunCursorDedup(session: Session): boolean {
