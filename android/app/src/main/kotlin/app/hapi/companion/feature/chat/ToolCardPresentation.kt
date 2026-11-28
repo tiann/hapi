@@ -3,6 +3,7 @@ package app.hapi.companion.feature.chat
 import android.content.res.Resources
 import androidx.annotation.DrawableRes
 import app.hapi.companion.R
+import app.hapi.companion.feature.chat.blocks.codexPatchFiles
 import app.hapi.companion.feature.chat.blocks.toolPresentationName
 import app.hapi.protocol.chat.ChatToolCall
 import app.hapi.protocol.chat.getInputStringAny
@@ -374,8 +375,7 @@ fun toolCardPresentation(
         }
 
         "CodexPatch" -> {
-            val changes = input.asObjectOrNull()?.get("changes").asObjectOrNull()
-            val files = changes?.keys?.toList().orEmpty()
+            val files = codexPatchFiles(input).map { it.path }
             val subtitle = files.firstOrNull()?.let { first ->
                 val display = basename(displayPath(first, basePath))
                 if (files.size > 1) "$display (+${files.size - 1})" else display

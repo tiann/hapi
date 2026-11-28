@@ -93,26 +93,6 @@ function extractViewedImagePath(value: unknown): string | null {
     }
 }
 
-function extractChanges(value: unknown): Record<string, unknown> | null {
-    const record = asRecord(value);
-    if (record) return record;
-
-    if (Array.isArray(value)) {
-        const changes: Record<string, unknown> = {};
-        for (const entry of value) {
-            const entryRecord = asRecord(entry);
-            if (!entryRecord) continue;
-            const path = asString(entryRecord.path ?? entryRecord.file ?? entryRecord.filePath ?? entryRecord.file_path);
-            if (path) {
-                changes[path] = entryRecord;
-            }
-        }
-        return Object.keys(changes).length > 0 ? changes : null;
-    }
-
-    return null;
-}
-
 function extractTextFromContent(value: unknown): string | null {
     if (typeof value === 'string' && value.length > 0) {
         return value;
@@ -1221,10 +1201,11 @@ export class AppServerEventConverter {
                 const startedAtMs = asNumber(item.startedAtMs ?? item.started_at_ms);
                 const completedAtMs = asNumber(item.completedAtMs ?? item.completed_at_ms);
                 if (method === 'item/started') {
-                    const changes = extractChanges(item.changes ?? item.change ?? item.diff);
+                    const changes = item.changes ?? item.change ?? item.diff;
                     const autoApproved = asBoolean(item.autoApproved ?? item.auto_approved);
                     const meta: Record<string, unknown> = {};
-                    if (changes) meta.changes = changes;
+                    // Preserve ordered V2 entries (including repeated paths) and legacy path maps.
+                    if (changes && typeof changes === 'object') meta.changes = changes;
                     if (autoApproved !== null) meta.auto_approved = autoApproved;
                     if (startedAtMs !== null) meta.started_at_ms = startedAtMs;
                     this.fileChangeMeta.set(itemId, meta);

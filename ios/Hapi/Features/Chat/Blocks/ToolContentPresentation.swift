@@ -19,6 +19,35 @@ func toolSourceInput(_ input: JSONValue?, keys: [String]) -> String? {
     input?.chatString ?? chatInputString(input, keys)
 }
 
+struct CodexPatchFile {
+    let path: String
+    let diff: String?
+
+    init(path: String, change: JSONValue) {
+        self.path = path
+        let kind = change[chatKey: "kind"]?[chatKey: "type"]?.chatString ?? change[chatKey: "type"]?.chatString
+        if kind == "update", let text = chatInputString(change, ["unified_diff", "diff"]),
+           text.contains(where: { !$0.isWhitespace }) {
+            diff = text
+        } else {
+            diff = nil
+        }
+    }
+}
+
+func codexPatchFiles(_ input: JSONValue?) -> [CodexPatchFile] {
+    switch input?[chatKey: "changes"] {
+    case .object(let changes):
+        return changes.sorted { $0.key < $1.key }.map { CodexPatchFile(path: $0.key, change: $0.value) }
+    case .array(let changes):
+        return changes.compactMap { change in
+            guard let path = change[chatKey: "path"]?.chatString, !path.isEmpty else { return nil }
+            return CodexPatchFile(path: path, change: change)
+        }
+    default: return []
+    }
+}
+
 func isPlanProposalTool(_ name: String) -> Bool {
     name == "ExitPlanMode" || name == "exit_plan_mode"
 }

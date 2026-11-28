@@ -115,6 +115,17 @@ private struct ToolInputSection: View {
             ToolTextContent(language: "javascript", code: source)
         } else if name == "CodexPatch", let patch = toolSourceInput(input, keys: ["patch", "input", "command"]) {
             ToolTextContent(language: "diff", code: patch)
+        } else if name == "CodexPatch" {
+            let files = codexPatchFiles(input)
+            if files.isEmpty { GenericJSONInput(input: input) }
+            ForEach(Array(files.enumerated()), id: \.offset) { _, file in
+                let path = chatDisplayPath(file.path, basePath: basePath)
+                if let diff = file.diff, !diff.isEmpty {
+                    ToolDiffContent(text: diff, patchPath: path).id(path)
+                } else {
+                    Text(verbatim: path)
+                }
+            }
         } else if name == "Edit" {
             if let old = chatInputString(input, ["old_string"]),
                let new = chatInputString(input, ["new_string"]) {
@@ -353,21 +364,35 @@ func resultRendering(_ tool: ChatToolCall) -> ResultRendering? {
 
 private struct ToolDiffContent: View {
     let text: String
+    var patchPath: String? = nil
     @State private var files: [DiffFile]?
     var body: some View {
         Group {
             if let files { DiffTextView(files: files) }
-            else { ToolTextContent(language: "diff", code: text) }
+            else {
+                if let patchPath { Text(verbatim: patchPath) }
+                ToolTextContent(language: "diff", code: text)
+            }
         }
         .task(id: text) {
-            let text = text
-            let parsed = await Task.detached(priority: .userInitiated) {
-                text.count <= toolTextPageSize ? tryParseDiff(text) : nil
+            let text = text, patchPath = patchPath
+            let parsed = await Task.detached(priority: .userInitiated) { () -> [DiffFile]? in
+                guard text.count <= toolTextPageSize else { return nil }
+                if let patchPath { return codexPatchDiff(text, path: patchPath).map { [$0] } }
+                return tryParseDiff(text)
             }.value
             guard !Task.isCancelled else { return }
             files = parsed
         }
     }
+}
+
+func codexPatchDiff(_ text: String, path: String) -> DiffFile? {
+    let files = UnifiedDiffParser.parse(text)
+    guard files.count == 1, var file = files.first, !file.hunks.isEmpty else { return nil }
+    file.oldPath = path
+    file.newPath = path
+    return file
 }
 
 // MARK: - Shared helpers
