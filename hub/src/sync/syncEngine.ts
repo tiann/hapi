@@ -3570,7 +3570,8 @@ export class SyncEngine {
 
         if (session.metadata?.flavor === 'opencode') return await this.rewindOpenCode(session, namespace, messageLocalId)
 
-        this.claudeRewindRpcsInFlight.set(sessionId, messageLocalId)
+        const isClaude = session.metadata?.flavor === 'claude'
+        if (isClaude) this.claudeRewindRpcsInFlight.set(sessionId, messageLocalId)
         // The CLI persists this bound with its intent, so recovery after a
         // lost reply or a hub restart cuts exactly what was discarded now.
         const discardedThroughSeq = this.store.messages.getMaxSeq(sessionId)
@@ -3588,7 +3589,7 @@ export class SyncEngine {
             try {
                 this.sessionCache.refreshSession(sessionId)
                 const intent = this.getSession(sessionId)?.metadata?.claudeRewind as { truncateFromLocalId?: string } | undefined
-                if (intent?.truncateFromLocalId === messageLocalId) {
+                if (isClaude && intent?.truncateFromLocalId === messageLocalId) {
                     try {
                         this.truncateHubTranscriptFrom(sessionId, namespace, messageLocalId, discardedThroughSeq)
                         return { type: 'success' }
@@ -3618,7 +3619,7 @@ export class SyncEngine {
                 // intent that the CLI's local settlement already consumed:
                 // treat it as committed and reconcile the cut idempotently.
                 // (The lost-RPC catch above does the same.)
-                const committedLocalId = this.committedClaudeRewindLocalId(sessionId, messageLocalId)
+                const committedLocalId = isClaude ? this.committedClaudeRewindLocalId(sessionId, messageLocalId) : null
                 if (committedLocalId) {
                     // Nothing to truncate (already cut) or the boundary is gone:
                     // the native side already dropped those turns either way.
@@ -3630,7 +3631,7 @@ export class SyncEngine {
                     }
                     return { type: 'success' }
                 }
-                this.clearUncommittedClaudeRewind(sessionId, namespace)
+                if (isClaude) this.clearUncommittedClaudeRewind(sessionId, namespace)
                 return {
                     type: 'error',
                     message: rpcResult?.error ?? 'Native rewind failed',
@@ -3642,7 +3643,29 @@ export class SyncEngine {
         }
 
         try {
-            this.truncateHubTranscriptFrom(sessionId, namespace, rpcResult.truncateFromLocalId ?? messageLocalId, discardedThroughSeq)
+            if (isClaude) {
+                this.truncateHubTranscriptFrom(sessionId, namespace, rpcResult.truncateFromLocalId ?? messageLocalId, discardedThroughSeq)
+            } else {
+                this.store.messages.truncateMessagesFromLocalId(
+                    sessionId,
+                    rpcResult.truncateFromLocalId ?? messageLocalId,
+                    rpcResult.messages ?? [],
+                    discardedThroughSeq
+                )
+                this.scrubHistoryLocators(sessionId, namespace)
+                this.sessionCache.rebuildTodosFromTranscript(sessionId)
+                this.eventPublisher.emit({
+                    type: 'messages-invalidated',
+                    sessionId,
+                    namespace,
+                    reason: 'rewind',
+                    truncateFromLocalId: rpcResult.truncateFromLocalId ?? messageLocalId
+                })
+                this.sessionCache.refreshSession(sessionId)
+                if (rpcResult.rewindToken) {
+                    await this.rpcGateway.completeConversationRewind(sessionId, rpcResult.rewindToken)
+                }
+            }
             return { type: 'success' }
         } catch (error) {
             // Native history already changed; refuse further history actions until repaired.

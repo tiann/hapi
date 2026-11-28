@@ -4,10 +4,11 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { CodexAppServerClient } from '../codexAppServerClient';
 import { isIndeterminateError } from '../codexAppServerClient';
+import { planImplementationAttempt, planImplementationMessageId } from './plan';
 
 const InputSchema = z.array(z.object({ type: z.string() }).passthrough());
 export const SubmissionSchema = z.object({ id: z.string(), input: InputSchema, clientUserMessageId: z.string() });
-const StateSchema = z.enum(['unknown', 'queued', 'consumed', 'canceled', 'rejected', 'released']);
+const StateSchema = z.enum(['unknown', 'queued', 'consumed', 'canceled', 'rejected', 'released', 'rewound']);
 const EntrySchema = z.object({
     input: InputSchema, state: StateSchema, nativeId: z.string().optional(), batchId: z.string().optional(),
     detachedSteer: z.boolean().optional()
@@ -117,6 +118,30 @@ export class SharedCodexQueue {
     }
     owns(id: string): boolean { return id in this.entries; }
     state(id: string): Entry['state'] | undefined { return this.entries[id]?.state; }
+    planImplementation(planId: string): { id: string; state: Entry['state']; attempt: number } | undefined {
+        let latest: { id: string; state: Entry['state']; attempt: number } | undefined;
+        for (const [id, entry] of Object.entries(this.entries)) {
+            const attempt = planImplementationAttempt(planId, id);
+            if (attempt && (!latest || attempt > latest.attempt)) latest = { id, state: entry.state, attempt };
+        }
+        return latest;
+    }
+    nextPlanImplementationId(planId: string): string {
+        return planImplementationMessageId(planId, (this.planImplementation(planId)?.attempt ?? 0) + 1);
+    }
+    /** The verified rewind removed the native turn that consumed these attempts. */
+    rewindPlanImplementation(planId: string): Promise<void> {
+        return this.serial(async () => {
+            let changed = false;
+            for (const [id, entry] of Object.entries(this.entries)) {
+                if (entry.state === 'consumed' && planImplementationAttempt(planId, id)) {
+                    entry.state = 'rewound'; changed = true;
+                }
+            }
+            if (changed) await this.save();
+        });
+    }
+    hasUncertainInput(): boolean { return Object.values(this.entries).some(entry => ['unknown', 'queued', 'released'].includes(entry.state)); }
 
     private nativeIdFor(entry: Entry): string | undefined {
         if (entry.detachedSteer) return undefined;
@@ -495,7 +520,7 @@ export class SharedCodexQueue {
     }
     private async enqueueLegacy(id: string, input: QueueInput, resumeInterrupted: boolean): Promise<void> {
         const existing = this.entries[id];
-        if (existing && !['rejected', 'canceled', 'released'].includes(existing.state)) {
+        if (existing && !['rejected', 'canceled', 'released', 'rewound'].includes(existing.state)) {
             if (existing.state === 'consumed') this.consumed([id]);
             else await this.reconcileLocked();
             return;
@@ -525,7 +550,7 @@ export class SharedCodexQueue {
     }
     private async enqueueBatched(id: string, input: QueueInput, resumeInterrupted: boolean, batchKey: string): Promise<void> {
         const existing = this.entries[id];
-        if (existing && !['rejected', 'canceled', 'released'].includes(existing.state)) {
+        if (existing && !['rejected', 'canceled', 'released', 'rewound'].includes(existing.state)) {
             if (existing.state === 'consumed') this.consumed([id]);
             else await this.reconcileLocked();
             return;
@@ -615,7 +640,7 @@ export class SharedCodexQueue {
             const entry = this.entries[id];
             if (!entry) return 'indeterminate';
             if (entry.state === 'consumed') return 'consumed';
-            if (entry.state === 'canceled' || entry.state === 'rejected' || entry.state === 'released') {
+            if (entry.state === 'canceled' || entry.state === 'rejected' || entry.state === 'released' || entry.state === 'rewound') {
                 entry.state = 'canceled'; await this.save(); return true;
             }
             if (entry.batchId) return this.cancelBatchMember(entry, id);

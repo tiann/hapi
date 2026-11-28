@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { WebSocket, WebSocketServer } from 'ws';
 import { CodexAppServerClient } from '../codexAppServerClient';
-import { startCodexGateway, type Envelope } from './gateway';
+import { startCodexGateway, type Envelope, type GatewayHooks } from './gateway';
 
-async function fixture(after: (request: Envelope, response: Envelope, connection: string) => Promise<void>) {
+async function fixture(after: (request: Envelope, response: Envelope, connection: string) => Promise<void>, admit?: GatewayHooks['admit']) {
     const engine = new WebSocketServer({ port: 0, host: '127.0.0.1' });
     await new Promise<void>(resolve => engine.once('listening', resolve));
     const connections = new Map<WebSocket, Envelope[]>();
@@ -18,7 +18,7 @@ async function fixture(after: (request: Envelope, response: Envelope, connection
     const port = (engine.address() as { port: number }).port;
     const before = vi.fn(async (value: Envelope) => value);
     const gateway = await startCodexGateway({ upstream: `ws://127.0.0.1:${port}`, token: 'secret', hooks: {
-        before, after, control: async () => ({})
+        before, after, admit, control: async () => ({})
     } });
     const clients: WebSocket[] = [];
     const connect = async () => {
@@ -32,8 +32,36 @@ async function fixture(after: (request: Envelope, response: Envelope, connection
     } };
 }
 describe('native gateway barriers', () => {
+    it('holds native write admission until the response barrier completes', async () => {
+        let finish!: () => void;
+        const gate = new Promise<void>(resolve => { finish = resolve; });
+        const release = vi.fn();
+        const f = await fixture(async () => { await gate; }, async () => release);
+        try {
+            const client = await f.connect(); const replies: unknown[] = [];
+            client.on('message', value => replies.push(value));
+            client.send(JSON.stringify({ id: 1, method: 'thread/resume', params: { threadId: 'root' } }));
+            await vi.waitFor(() => expect(f.before).toHaveBeenCalledOnce());
+            expect(release).not.toHaveBeenCalled(); expect(replies).toHaveLength(0);
+            finish();
+            await vi.waitFor(() => expect(replies).toHaveLength(1));
+            expect(release).toHaveBeenCalledOnce();
+        } finally { finish(); await f.close(); }
+    });
+    it('does not dispatch writes rejected by rewind admission', async () => {
+        const f = await fixture(async () => {}, async () => { throw new Error('rewind pending'); });
+        try {
+            const client = await f.connect();
+            const result = new Promise<Envelope>(resolve => client.once('message', raw => resolve(JSON.parse(raw.toString()))));
+            client.send(JSON.stringify({ id: 1, method: 'turn/start', params: { threadId: 'root' } }));
+            expect(await result).toMatchObject({ error: { message: 'rewind pending' } });
+            expect(f.before).not.toHaveBeenCalled();
+        } finally { await f.close(); }
+    });
+
     it('returns an owned queue mutation response without forwarding or running after twice', async () => {
-        const after = vi.fn(async () => {}); const f = await fixture(after);
+        const after = vi.fn(async () => {}); const release = vi.fn();
+        const f = await fixture(after, async () => release);
         const response = { id: 7, result: { deleted: true } };
         f.before.mockImplementation(async () => response);
         try {
@@ -43,6 +71,7 @@ describe('native gateway barriers', () => {
             expect(await reply).toEqual(response);
             expect([...f.connections.values()].flat()).toEqual([]);
             expect(after).not.toHaveBeenCalled();
+            expect(release).toHaveBeenCalledOnce();
         } finally { await f.close(); }
     });
     it('round-trips payloads larger than 64 MiB through the gateway and app-server client', async () => {

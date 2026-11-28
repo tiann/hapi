@@ -79,6 +79,7 @@ export const RPC_METHODS = {
     PreviewForkBoundary: 'preview-fork-boundary',
     ForkArchivedCodex: 'fork-archived-codex',
     RewindConversation: 'rewind-conversation',
+    CompleteConversationRewind: 'complete-conversation-rewind',
     UsageQueryGetSettings: 'usage-query-get-settings',
     UsageQuerySaveSettings: 'usage-query-save-settings',
     UsageQueryTest: 'usage-query-test',
