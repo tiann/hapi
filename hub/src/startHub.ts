@@ -26,6 +26,7 @@ import { TunnelManager } from './tunnel'
 import { refreshRejectedRelayAuthKey, resolveRelayAuthKey } from './tunnel/relayAuth'
 import { waitForTunnelTlsReady } from './tunnel/tlsGate'
 import { ServerChanChannel } from './serverchan/channel'
+import { createWxPusherChannels } from './wxpusher/channel'
 import QRCode from 'qrcode'
 import type { Server as BunServer } from 'bun'
 import type { WebSocketData } from '@socket.io/bun-engine'
@@ -169,6 +170,10 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
     } else {
         console.log('[Hub] ServerChan: disabled (no SERVERCHAN_SENDKEY)')
     }
+    const wxPusherDestinationCount = config.wxPusherNotification ? config.wxPusherDestinations.size : 0
+    console.log(`[Hub] WxPusher: ${wxPusherDestinationCount > 0
+        ? `enabled for ${wxPusherDestinationCount} namespace(s)`
+        : 'disabled (no enabled namespace destinations)'}`)
 
     // Display tunnel status
     if (relayFlag.enabled) {
@@ -260,6 +265,10 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
             visibilityTracker,
             config.serverChanBackgroundOnly
         ))
+    }
+
+    if (config.wxPusherNotification) {
+        notificationChannels.push(...createWxPusherChannels(config.wxPusherDestinations, config.publicUrl, visibilityTracker))
     }
 
     // Initialize Telegram bot (optional)

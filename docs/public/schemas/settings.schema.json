@@ -73,6 +73,95 @@
       "default": false,
       "description": "Only send ServerChan notifications when no visible HAPI connection exists in the namespace. ENV: SERVERCHAN_BACKGROUND_ONLY"
     },
+    "wxPusherAppToken": {
+      "type": "string",
+      "description": "WxPusher application token for App/client notifications. ENV: WXPUSHER_APP_TOKEN"
+    },
+    "wxPusherUids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "WxPusher recipient UIDs. ENV: WXPUSHER_UIDS (comma-separated)"
+    },
+    "wxPusherTopicIds": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "description": "WxPusher topic recipient IDs. ENV: WXPUSHER_TOPIC_IDS (comma-separated)"
+    },
+    "wxPusherNotification": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable WxPusher notifications. ENV: WXPUSHER_NOTIFICATION"
+    },
+    "wxPusherBackgroundOnly": {
+      "type": "boolean",
+      "default": false,
+      "description": "Only send WxPusher notifications when no visible HAPI connection exists in the namespace. ENV: WXPUSHER_BACKGROUND_ONLY"
+    },
+    "wxPusherByNamespace": {
+      "type": "object",
+      "description": "WxPusher recipients by exact session namespace. Legacy WxPusher credentials apply only to default.",
+      "propertyNames": {
+        "pattern": "^(?!\\s)(?!.*\\s$)[^:]+$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "appToken"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "appToken": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "topicIds": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "backgroundOnly": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "anyOf": [
+          {
+            "required": [
+              "uids"
+            ],
+            "properties": {
+              "uids": {
+                "minItems": 1
+              }
+            }
+          },
+          {
+            "required": [
+              "topicIds"
+            ],
+            "properties": {
+              "topicIds": {
+                "minItems": 1
+              }
+            }
+          }
+        ]
+      }
+    },
     "androidPushMode": {
       "type": "string",
       "enum": [
