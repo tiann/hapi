@@ -2899,6 +2899,17 @@ describe('AcpSdkBackend OpenCode child session updates', () => {
         expect(answerIdx).toBeGreaterThan(turnCompleteIdx);
     });
 
+    it('keeps the existing child output handler through a compact prompt', async () => {
+        useFastDrains();
+        const { backend, internal } = makeBackend();
+        const messages: AgentMessage[] = [];
+        await backend.prompt('session-1', [{ type: 'text', text: 'start a background task' }], (message) => messages.push(message));
+        await backend.prompt('session-1', [{ type: 'text', text: '/compact' }], () => {}, { preserveChildUpdates: true });
+        notify(internal, childText('ses_child', 'background result'));
+        notify(internal, childStatus('ses_child', 'completed'));
+        await vi.waitFor(() => expect(texts(messages)).toEqual(['background result']));
+    });
+
     it('flushes pending child text on disconnect (f)', async () => {
         useFastDrains();
         const { backend, internal } = makeBackend();

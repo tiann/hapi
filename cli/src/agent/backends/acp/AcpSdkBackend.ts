@@ -255,6 +255,9 @@ export class AcpSdkBackend implements AgentBackend {
          * new model's options this way instead.
          */
         configOptionUpdates?: boolean;
+        /** Advertise support for ACP compaction updates and their structured summary. */
+        sessionCompaction?: boolean;
+        onSessionUpdate?: (sessionId: string, update: unknown) => void;
         textChunkMode?: AcpTextChunkMode;
         flavor?: AgentFlavor;
         /**
@@ -329,6 +332,7 @@ export class AcpSdkBackend implements AgentBackend {
                 clientCapabilities: {
                     fs: { readTextFile: false, writeTextFile: false },
                     terminal: false,
+                    ...(this.options.sessionCompaction ? { session: { compaction: {} } } : {}),
                     ...(this.options.elicitationForm ? { elicitation: { form: {} } } : {}),
                     _meta: {
                         // Cursor ACP exposes Composer's non-fast/fast choice as separate
@@ -729,6 +733,10 @@ export class AcpSdkBackend implements AgentBackend {
             ?? this.initialAvailableCommands.has(command);
     }
 
+    hasSessionAvailableCommands(sessionId: string): boolean {
+        return this.sessionAvailableCommands.has(sessionId);
+    }
+
     /**
      * Returns the slash commands negotiated via ACP `available_commands_update`
      * (or `initialize` / `session/new` / `session/resume` metadata) for the
@@ -835,6 +843,8 @@ export class AcpSdkBackend implements AgentBackend {
             shouldSend?: () => boolean
             /** Runs after the pre-prompt drain, right before the new handler replaces the old one. */
             beforeHandlerSwap?: () => Promise<void>
+            /** Keep forwarding background child output to the previous prompt handler. */
+            preserveChildUpdates?: boolean;
             // prompt() waits for earlier output before it sends and for late output
             // after the answer; callers timing the agent itself need both moments.
             timing?: { onSent?: () => void; onAnswered?: () => void }
@@ -873,7 +883,7 @@ export class AcpSdkBackend implements AgentBackend {
         this.latestUsageUpdate = null;
         this.lastForwardedUsageUpdate = null;
         this.promptUsageCallback = onUpdate;
-        this.childEmitSink = onUpdate;
+        if (!options?.preserveChildUpdates) this.childEmitSink = onUpdate;
         let stopReason: string | null = null;
         let numTurns: number | undefined = undefined;
         let promptUsage: AcpPromptUsage | null = null;
@@ -1497,8 +1507,8 @@ export class AcpSdkBackend implements AgentBackend {
      * its own handler keyed by `childSessionId`, kept across parent prompt
      * changes, unaffected by `suppressUpdatesDuring` and by abort (OpenCode
      * keeps children running after a cancelled turn). Emission goes through
-     * the most recent prompt()'s onUpdate; before any prompt has run there
-     * is no sink, so updates are dropped.
+     * the most recent prompt handler that did not retain the previous sink.
+     * Without a sink, updates are dropped.
      */
     private handleChildSessionUpdate(params: unknown): void {
         if (!isObject(params)) return;
@@ -1622,6 +1632,7 @@ export class AcpSdkBackend implements AgentBackend {
                 this.captureSessionConfigOptions(sessionId, update);
             }
         }
+        if (sessionId) this.options.onSessionUpdate?.(sessionId, update);
         this.forwardSessionInfoUpdate(sessionId, update);
         this.captureUsageUpdate(update);
         this.notifyAgentActivity(update);

@@ -104,11 +104,16 @@ export function allocateFreePort(hostname = '127.0.0.1'): Promise<number> {
     });
 }
 
+export function shouldDiscoverOpencodeV2Rest(): boolean {
+    return process.platform !== 'win32';
+}
+
 export function createOpencodeBackend(opts: {
     cwd?: string;
     port?: number;
     hostname?: string;
     majorVersion?: 'v1' | 'v2';
+    onSessionUpdate?: (sessionId: string, update: unknown) => void;
 }): AcpSdkBackend {
     const env = buildOpencodeEnv();
     if (opts.majorVersion === 'v2') {
@@ -122,6 +127,8 @@ export function createOpencodeBackend(opts: {
             spawnCwd: opts.cwd ?? getInvokedCwd(),
             acpModelSwitchViaConfigOption: true,
             childSessionUpdates: true,
+            sessionCompaction: opts.onSessionUpdate !== undefined,
+            onSessionUpdate: opts.onSessionUpdate,
             // OpenCode asks `question` tool calls through form elicitation; the
             // permission handler answers them from the web card.
             elicitationForm: true,
