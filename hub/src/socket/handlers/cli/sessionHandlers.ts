@@ -15,6 +15,9 @@ import type { SessionEndReason } from '@hapi/protocol'
 import type { AccessErrorReason, AccessResult } from './types'
 import { getConfiguration } from '../../../configuration'
 import { stripExternalRefsWhenAwarenessDisabled, externalRefsInMetadataValid } from '../../../sync/externalRefsPolicy'
+import { cliMetadataWaitingValid } from '../../../sync/waitingMetadataPolicy'
+
+export { cliMetadataWaitingValid }
 
 function gateExternalRefs(metadata: unknown): unknown {
     let awarenessEnabled = false
@@ -73,23 +76,6 @@ const updateMetadataSchema = z.object({
     expectedVersion: z.number().int(),
     metadata: z.unknown()
 })
-
-/** Waiting patch shape from MetadataSchema — validate before persist (#2616). */
-const waitingMetadataFieldSchema = z.object({
-    since: z.number(),
-    reason: z.string().optional(),
-}).nullable()
-
-/**
- * Reject malformed `waiting` before updateSessionMetadata so a bad patch
- * cannot ack success then null the whole cached metadata on parse failure.
- */
-export function cliMetadataWaitingValid(metadata: unknown): boolean {
-    if (metadata === null || metadata === undefined) return true
-    if (typeof metadata !== 'object' || Array.isArray(metadata)) return true
-    if (!Object.prototype.hasOwnProperty.call(metadata, 'waiting')) return true
-    return waitingMetadataFieldSchema.safeParse((metadata as { waiting: unknown }).waiting).success
-}
 
 const updateStateSchema = z.object({
     sid: z.string(),

@@ -47,11 +47,10 @@ export function getAgySystemPromptAppend(
     if (isPeerToolsDisabled(env)) {
         lines.push(SESSION_CITATION_DISABLED_STEER);
     } else if (toolSet.has('inspect_peer') && toolSet.has('ping_peer')) {
+        // Citation steer only interpolates inspectTool; peer contact rules live
+        // in the tool descriptions (shared/sessionCitation), not this append.
         lines.push(buildSessionCitationSteerInstruction({
             inspectTool: 'inspect_peer',
-            pingTool: 'ping_peer',
-            ...(toolSet.has('list_peers') ? { listPeersTool: 'list_peers' } : {}),
-            ...(toolSet.has('spawn_peer') ? { spawnTool: 'spawn_peer' } : {})
         }));
     } else {
         lines.push(SESSION_CITATION_UNEXPOSED_STEER);

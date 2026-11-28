@@ -2545,7 +2545,7 @@ describe('AgyAcpRemoteLauncher HAPI MCP bridge, systemPrompt.append, safe auto-a
         const firstMeta = backend1.newSessionConfigs[0]?.meta as { antigravity?: { systemPrompt?: { append?: string } } };
         expect(firstMeta?.antigravity?.systemPrompt?.append).toContain('change_title');
         expect(firstMeta?.antigravity?.systemPrompt?.append).toContain('skill_lookup');
-        expect(firstMeta?.antigravity?.systemPrompt?.append).toContain('Session-attached jobs:');
+        expect(firstMeta?.antigravity?.systemPrompt?.append).toContain('Session jobs (`hapi job run`)');
         expect(firstMeta?.antigravity?.systemPrompt?.append).not.toContain('"spawn_peer"');
         expect(firstMeta?.antigravity?.systemPrompt?.append).not.toContain('"ping_peer"');
         expect(firstMeta?.antigravity?.systemPrompt?.append).not.toContain('"inspect_peer"');
