@@ -7,6 +7,7 @@ import {
     buildFlatCursorModelPickerOptions,
     cursorModelDedupeKey,
     resolveCursorBaseKey,
+    resolveDefaultCursorVariantWire,
     resolveCursorVariantOptions,
     shouldUseCursorDualPickers,
     type CursorModelCatalog,
@@ -170,23 +171,15 @@ export function buildCursorPickerState(args: {
     }
 }
 
-/**
- * When switching base in dual picker, only apply when the base maps to exactly one wire.
- * Multi-variant bases require an explicit variant click; no "closest" matching.
- */
+/** Keep an existing selection in this family; a new family uses its published default. */
 export function resolveWireIdForBaseChange(
     baseKey: string,
     catalog: CursorModelCatalog,
-    _currentWireId?: string | null
+    currentWireId?: string | null
 ): string | null {
-    if (baseKey === 'auto') {
-        return 'auto'
-    }
-    const variants = resolveCursorVariantOptions(baseKey, catalog)
-    if (variants.length === 1) {
-        return variants[0].wireId
-    }
-    return null
+    if (baseKey === 'auto') return 'auto'
+    if (currentWireId && catalog.wireToBase.get(currentWireId) === baseKey) return currentWireId
+    return resolveDefaultCursorVariantWire(baseKey, catalog)
 }
 
 export function resolveCursorBaseFromWire(

@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
     buildSessionCursorPickerState,
-    isCursorEffortWireInCatalog,
     isSessionCursorCatalogAwaitingSkus,
     isSessionCursorCatalogLoading,
     isSessionCursorCatalogPending,
@@ -46,94 +45,56 @@ describe('resolveSessionCursorModelChange', () => {
         sessionCurrentModelId: 'composer-2.5[fast=true]'
     })
 
-    it('applies the default variant and keeps base selected when the base has multiple variants', () => {
-        const plan = resolveSessionCursorModelChange({
-            picker,
-            sessionModel: 'composer-2.5[fast=true]',
-            cursorSelectedBase: 'composer-2.5',
-            kind: 'base',
-            value: 'composer-2.5'
-        })
-        expect(plan).toEqual({
-            ok: true,
-            wireId: 'composer-2.5[fast=true]',
-            nextSelectedBase: 'composer-2.5',
-            shouldApply: true
-        })
+    it('keeps the current variant when reselecting a model or its selected parameter', () => {
+        expect(resolveSessionCursorModelChange(picker, 'model', 'composer-2.5')).toBeNull()
+        expect(resolveSessionCursorModelChange(picker, 'parameter', 'composer-2.5[fast=true]')).toBeNull()
     })
 
-    it('selecting Auto applies the CLI auto model id', () => {
-        const plan = resolveSessionCursorModelChange({
-            picker,
-            sessionModel: 'composer-2.5[fast=true]',
-            cursorSelectedBase: 'composer-2.5',
-            kind: 'base',
-            value: 'auto'
+    it('uses a single advertised variant for an explicit model choice', () => {
+        const fromAuto = buildSessionCursorPickerState({
+            sessionModels, machineModels: [], sessionModel: 'auto', sessionCurrentModelId: null
         })
-        expect(plan).toEqual({
-            ok: true,
-            wireId: 'auto',
-            nextSelectedBase: 'auto',
-            shouldApply: true
-        })
+        expect(resolveSessionCursorModelChange(fromAuto, 'model', 'composer-2.5')).toBe('composer-2.5[fast=true]')
+        expect(resolveSessionCursorBaseSelectValue(fromAuto)).toBe('auto')
     })
 
-    it('applies a base change when the base has exactly one wire variant', () => {
-        const singlePicker = buildSessionCursorPickerState({
-            sessionModels: [{ modelId: 'gpt-5.5[context=272k,reasoning=medium,fast=false]' }],
-            machineModels: [],
-            sessionModel: null,
-            sessionCurrentModelId: null
+    it('rejects parameters from a different family even when they are still in the catalog', () => {
+        const other = 'other[fast=false]'
+        const multi = buildSessionCursorPickerState({
+            sessionModels: [...sessionModels, { modelId: other }], machineModels: [],
+            sessionModel: 'composer-2.5[fast=false]', sessionCurrentModelId: null
         })
-        const plan = resolveSessionCursorModelChange({
-            picker: singlePicker,
-            sessionModel: null,
-            cursorSelectedBase: 'auto',
-            kind: 'base',
-            value: 'gpt-5.5'
-        })
-        expect(plan).toEqual({
-            ok: true,
-            wireId: 'gpt-5.5[context=272k,reasoning=medium,fast=false]',
-            nextSelectedBase: 'gpt-5.5',
-            shouldApply: true
-        })
+        expect(resolveSessionCursorModelChange(multi, 'parameter', other)).toBeNull()
+        expect(resolveSessionCursorModelChange(multi, 'model', 'other')).toBe(other)
+        expect(resolveSessionCursorModelChange(multi, 'model', 'absent')).toBeNull()
     })
 
-    it('accepts exact variant wire ids without matching stale session baseKey', () => {
-        const plan = resolveSessionCursorModelChange({
-            picker,
-            sessionModel: 'composer-2.5[fast=true]',
-            cursorSelectedBase: 'composer-2.5',
-            kind: 'effort',
-            value: 'composer-2.5[fast=false]'
-        })
-        expect(plan).toEqual({
-            ok: true,
-            wireId: 'composer-2.5[fast=false]',
-            nextSelectedBase: 'composer-2.5',
-            shouldApply: true
-        })
+    it('accepts Auto and offered parameters but ignores stale selections', () => {
+        expect(resolveSessionCursorModelChange(picker, 'model', 'auto')).toBe('auto')
+        expect(resolveSessionCursorModelChange(picker, 'parameter', 'composer-2.5[fast=false]')).toBe('composer-2.5[fast=false]')
+        expect(resolveSessionCursorModelChange(picker, 'parameter', 'absent[fast=true]')).toBeNull()
     })
 
-    it('rejects variant wire ids missing from catalog', () => {
-        const plan = resolveSessionCursorModelChange({
-            picker,
-            sessionModel: 'composer-2.5[fast=true]',
-            cursorSelectedBase: 'composer-2.5',
-            kind: 'effort',
-            value: 'claude-opus-4-8[effort=high]'
-        })
-        expect(plan).toEqual({ ok: false, reason: 'effort wire id not in catalog' })
+    it.each(['default', 'default[]'])('offers an Auto retry when the session explicitly reports %s', (model) => {
+        for (const models of [sessionModels, [{ modelId: 'single-model' }]]) {
+            const reported = buildSessionCursorPickerState({
+                sessionModels: models, machineModels: [], sessionModel: model,
+                sessionCurrentModelId: 'auto', accountDefaultLabel: 'Account default'
+            })
+            expect(resolveSessionCursorBaseSelectValue(reported)).toBe(model)
+            expect(reported.modelOptions).toContainEqual({ value: model, label: 'Account default' })
+            expect(resolveSessionCursorModelChange(reported, 'model', 'auto')).toBe('auto')
+            expect(resolveSessionCursorModelChange(reported, 'model', model)).toBeNull()
+        }
     })
 
-    it('uses explicit selected base for dual-mode model row highlight', () => {
-        expect(
-            resolveSessionCursorBaseSelectValue(picker, 'composer-2.5')
-        ).toBe('composer-2.5')
-        expect(
-            resolveSessionCursorBaseSelectValue(picker, 'auto')
-        ).toBe('composer-2.5')
+    it.each([null, 'auto'])('keeps startup or pinned Auto when only the catalog reports a default alias (%s)', (model) => {
+        const auto = buildSessionCursorPickerState({
+            sessionModels, machineModels: [], sessionModel: model, sessionCurrentModelId: 'default[]'
+        })
+        expect(resolveSessionCursorBaseSelectValue(auto)).toBe('auto')
+        expect(auto.modelOptions.some(option => option.value === 'default[]')).toBe(false)
+        expect(resolveSessionCursorModelChange(auto, 'model', 'auto')).toBeNull()
     })
 
     it('highlights Default when session has no model even if local base is auto', () => {
@@ -143,7 +104,7 @@ describe('resolveSessionCursorModelChange', () => {
             sessionModel: null,
             sessionCurrentModelId: null
         })
-        expect(resolveSessionCursorBaseSelectValue(defaultPicker, 'auto')).toBe('auto')
+        expect(resolveSessionCursorBaseSelectValue(defaultPicker)).toBe('auto')
     })
 
     // Cursor ACP without parameterizedModelPicker returns one wire per base = flat picker.
@@ -161,7 +122,7 @@ describe('resolveSessionCursorModelChange', () => {
             sessionCurrentModelId: null
         })
         expect(flatPicker.mode).toBe('flat')
-        expect(resolveSessionCursorBaseSelectValue(flatPicker, 'auto')).toBe('auto')
+        expect(resolveSessionCursorBaseSelectValue(flatPicker)).toBe('auto')
     })
 
     it('highlights the active wire id in flat-mode picker when session has an explicit model', () => {
@@ -175,7 +136,7 @@ describe('resolveSessionCursorModelChange', () => {
             sessionCurrentModelId: 'gpt-5.5[context=272k,reasoning=medium,fast=false]'
         })
         expect(flatPicker.mode).toBe('flat')
-        expect(resolveSessionCursorBaseSelectValue(flatPicker, 'auto'))
+        expect(resolveSessionCursorBaseSelectValue(flatPicker))
             .toBe('gpt-5.5[context=272k,reasoning=medium,fast=false]')
     })
 
@@ -191,7 +152,7 @@ describe('resolveSessionCursorModelChange', () => {
         })
         expect(flatPicker.mode).toBe('flat')
         expect(flatPicker.modelOptions.some((row) => row.value === 'composer-2.5')).toBe(true)
-        expect(resolveSessionCursorBaseSelectValue(flatPicker, 'auto')).toBe('composer-2.5')
+        expect(resolveSessionCursorBaseSelectValue(flatPicker)).toBe('composer-2.5')
     })
 })
 
@@ -207,18 +168,7 @@ describe('CLI sku variants in session picker', () => {
             sessionModel: 'gpt-5.5[context=272k,reasoning=medium,fast=false]',
             sessionCurrentModelId: 'gpt-5.5[context=272k,reasoning=medium,fast=false]'
         })
-        const plan = resolveSessionCursorModelChange({
-            picker,
-            sessionModel: 'gpt-5.5[context=272k,reasoning=medium,fast=false]',
-            cursorSelectedBase: 'gpt-5.5',
-            kind: 'effort',
-            value: 'gpt-5.5-high-fast'
-        })
-        expect(plan).toMatchObject({
-            ok: true,
-            wireId: 'gpt-5.5-high-fast',
-            shouldApply: true
-        })
+        expect(resolveSessionCursorModelChange(picker, 'parameter', 'gpt-5.5-high-fast')).toBe('gpt-5.5-high-fast')
     })
 })
 
@@ -381,18 +331,5 @@ describe('session cursor catalog readiness', () => {
             ...args,
             nowMs: startedAt + 15_000
         })).toBe(false)
-    })
-})
-
-describe('isCursorEffortWireInCatalog', () => {
-    it('checks wireToBase membership', () => {
-        const picker = buildSessionCursorPickerState({
-            sessionModels,
-            machineModels: [],
-            sessionModel: null,
-            sessionCurrentModelId: null
-        })
-        expect(isCursorEffortWireInCatalog('composer-2.5[fast=false]', picker.catalog)).toBe(true)
-        expect(isCursorEffortWireInCatalog('unknown[fast=true]', picker.catalog)).toBe(false)
     })
 })

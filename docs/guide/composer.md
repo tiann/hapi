@@ -81,6 +81,12 @@ Open the composer **Settings** button (or the model/effort buttons in the toolba
 
 Most of these controls need an active session in remote mode; they are hidden or disabled while you are driving the session from the local terminal. The unset choice is shown as **Default** everywhere.
 
+### Cursor model options on the web
+
+Choosing a model applies its catalog default once. Selecting the current model keeps its existing settings. In **Model options**, change the reasoning level, thinking, context window, or speed that the selected model offers. Each choice preserves the other settings and sends an advertised model ID. When a catalog lists coupled variants, choose the complete combination from the list. The new-session form uses the same controls.
+
+Some Cursor versions require an idle session to switch back to Auto. If Cursor refuses the change, the chat shows the error and keeps the confirmed selection; retry after the turn finishes.
+
 ### Codex fast mode
 
 When the current Codex model advertises a Fast service tier for your account, the composer shows a **Fast mode** toggle (Standard / Fast). It is hidden for models or accounts without a Fast tier, such as API-key sessions. The new-session form remembers your last Fast choice for Codex.

@@ -198,9 +198,10 @@ function scoreWireAgainstSku(slug: string, wireId: string): number {
     let score = 0;
 
     for (const [key, value] of Object.entries(hints)) {
-        if (params[key] === value) {
+        const actual = key === 'reasoning' ? params.reasoning ?? params.reasoning_effort : params[key];
+        if (actual === value) {
             score += 2;
-        } else if (params[key] !== undefined) {
+        } else if (actual !== undefined) {
             score -= 1;
         }
     }
@@ -235,7 +236,7 @@ export function findBestCliSkuForAcpWire(
 }
 
 function syntheticSkuFromWireParams(base: string, params: Record<string, string>): string {
-    const effort = params.reasoning ?? params.effort ?? 'medium';
+    const effort = params.reasoning ?? params.reasoning_effort ?? params.effort ?? 'medium';
     let sku = resolveCursorLegacyModelBase(base);
 
     if (effort === 'extra-high' || effort === 'xhigh') {

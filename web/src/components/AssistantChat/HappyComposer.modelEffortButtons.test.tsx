@@ -419,38 +419,92 @@ describe('HappyComposer generic model/effort value buttons', () => {
         expect(screen.queryByText('Default')).toBeNull()
     })
 
-    it('clears Cursor variant drill-down when the sheet is closed through the value button', () => {
+    const cursorBaseOptions = [
+        { value: 'auto', label: 'Auto' },
+        { value: 'composer-2.5', label: 'Composer 2.5' },
+        { value: 'opus', label: 'Opus' },
+    ]
+    const cursorSpeedOptions = [
+        { value: 'composer-2.5[fast=false]', label: 'Standard' },
+        { value: 'composer-2.5[fast=true]', label: 'Fast' },
+    ]
+
+    it('displays the reported Cursor default and sends a new request when Auto is chosen', () => {
+        const onModelChange = vi.fn()
         renderComposer('cursor', {
-            model: 'composer-2.5-fast',
-            selectedModelBase: 'composer-2.5',
-            availableModelOptions: [
-                { value: 'composer-2.5', label: 'Composer 2.5' },
-                { value: 'composer-2.5-fast', label: 'Composer 2.5 Fast' },
-                { value: 'composer-2.5-mini', label: 'Composer 2.5 Mini' },
-            ],
-            resolveModelVariantsForBase: (base) => base === 'composer-2.5'
-                ? [
-                    { value: 'composer-2.5-fast', label: 'Composer 2.5 Fast' },
-                    { value: 'composer-2.5-mini', label: 'Composer 2.5 Mini' },
-                ]
-                : [],
+            model: 'default[]', selectedModelBase: 'default[]',
+            availableModelOptions: [{ value: 'auto', label: 'Auto' }, { value: 'default[]', label: 'Default' }],
+            onModelChange,
         })
-        // Open from the value button (label resolves to the selected base).
-        const valueButton = screen.getByRole('button', { name: 'Composer 2.5' })
-        fireEvent.click(valueButton)
-        // Drill into the multi-variant base row: the Model section is replaced
-        // by the variant sub-list with a back control.
-        const baseRow = screen.getAllByRole('button', { name: 'Composer 2.5' })
-            .find((btn) => btn.className.includes('w-full'))!
-        fireEvent.click(baseRow)
+        fireEvent.click(screen.getByRole('button', { name: 'Default' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Auto' }))
+        expect(onModelChange.mock.calls).toEqual([['auto']])
+    })
+
+    it('keeps the confirmed Cursor speed when reselecting its model and applies another model only once', () => {
+        const changeModel = vi.fn()
+        renderComposer('cursor', {
+            model: cursorSpeedOptions[1].value, selectedModelBase: 'composer-2.5',
+            availableModelOptions: cursorBaseOptions, modelEffortOptions: cursorSpeedOptions,
+            onModelChange: changeModel, onModelEffortChange: vi.fn(),
+        })
+        const openModels = () => fireEvent.click(screen.getByRole('button', { name: 'Composer 2.5' }))
+        openModels()
+        expect(screen.queryByRole('combobox')).toBeNull()
+        const selected = screen.getAllByRole('button', { name: 'Composer 2.5' }).find((b) => b.className.includes('w-full'))!
+        fireEvent.click(selected)
+        expect(changeModel).not.toHaveBeenCalled()
         expect(screen.queryByText('Model')).toBeNull()
-        expect(screen.getByText('← Models')).toBeTruthy()
-        // Close and reopen through the value button: drill-down must reset to
-        // the base model list (same behavior as the gear toggle).
-        fireEvent.click(valueButton)
-        fireEvent.click(valueButton)
-        expect(screen.queryByText('← Models')).toBeNull()
-        expect(screen.getByText('Model')).toBeTruthy()
+        openModels()
+        fireEvent.click(screen.getByRole('button', { name: 'Opus' }))
+        expect(changeModel.mock.calls).toEqual([['opus']])
+        expect(screen.queryByText('Model')).toBeNull()
+    })
+
+    it('opens parameters for the confirmed Cursor model independently of the model list', () => {
+        const changeModel = vi.fn()
+        const changeVariant = vi.fn()
+        renderComposer('cursor', {
+            model: cursorSpeedOptions[1].value, selectedModelBase: 'composer-2.5',
+            selectedModelVariant: cursorSpeedOptions[1].value,
+            availableModelOptions: cursorBaseOptions, modelEffortOptions: cursorSpeedOptions,
+            onModelChange: changeModel, onModelEffortChange: changeVariant,
+        })
+        fireEvent.click(screen.getByRole('button', { name: 'Model options' }))
+        expect(screen.queryByText('Model')).toBeNull()
+        const speed = screen.getByRole('combobox') as HTMLSelectElement
+        const other = Array.from(speed.options).find((option) => !option.selected && !option.disabled)!
+        fireEvent.change(speed, { target: { value: other.value } })
+        expect(changeVariant.mock.calls).toEqual([[cursorSpeedOptions[0].value]])
+        expect(changeModel).not.toHaveBeenCalled()
+    })
+
+    it('cycles Cursor models from the selected family even when the session holds a parameterized id', () => {
+        const changeModel = vi.fn()
+        renderComposer('cursor', {
+            model: cursorSpeedOptions[1].value, selectedModelBase: 'composer-2.5',
+            availableModelOptions: cursorBaseOptions, onModelChange: changeModel,
+        })
+        fireEvent.keyDown(window, { key: 'm', ctrlKey: true })
+        expect(changeModel.mock.calls).toEqual([['opus']])
+        expect(screen.queryByRole('button', { name: 'Model options' })).toBeNull()
+    })
+
+    it('keeps the gear available while an in-flight Cursor model change disables only the model controls', () => {
+        const changeModel = vi.fn()
+        renderComposer('cursor', {
+            model: cursorSpeedOptions[1].value, selectedModelBase: 'composer-2.5',
+            selectedModelVariant: cursorSpeedOptions[1].value, modelChangePending: true,
+            availableModelOptions: cursorBaseOptions, modelEffortOptions: cursorSpeedOptions,
+            onModelChange: changeModel, onModelEffortChange: vi.fn(),
+        })
+        fireEvent.keyDown(window, { key: 'm', ctrlKey: true })
+        expect(changeModel).not.toHaveBeenCalled()
+        expect(screen.getByRole('button', { name: 'Model options' })).toBeDisabled()
+        fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+        expect(screen.getByRole('combobox')).toBeDisabled()
+        expect(screen.getByRole('button', { name: 'Opus' })).toBeDisabled()
+        expect(screen.getByText('Permission Mode')).toBeInTheDocument()
     })
 
     it('exposes no effort action while the Pi catalog is unresolved mid-turn', () => {

@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
     availableAgents: [
         'agy', 'claude', 'codex', 'dsh', 'copilot', 'cursor', 'grok', 'kimi', 'opencode', 'pi'
     ].map((agent) => ({ agent, available: true })) as AgentAvailabilityEntry[],
+    cursorModels: [] as Array<{ modelId: string }>,
     codexModelsLoading: false,
     agyModelsLoading: false,
     agyModels: [{ modelId: 'gemini-3.6-flash-low', name: 'Gemini 3.6 Flash (Low)' }],
@@ -148,7 +149,7 @@ vi.mock('@/hooks/queries/useDshModels', () => ({
 }))
 vi.mock('@/hooks/queries/useCursorModelsForMachine', () => ({
     useCursorModelsForMachine: () => ({
-        availableModels: [],
+        availableModels: mocks.cursorModels,
         cliModelSkus: [],
         currentModelId: null,
         isLoading: false,
@@ -396,6 +397,7 @@ describe('NewSession launch preferences', () => {
         mocks.directoryExists = true
         mocks.copilotModels = []
         mocks.copilotModelsLoading = false
+        mocks.cursorModels = []
         mocks.kimiModels = []
         mocks.kimiModelsLoading = false
         mocks.kimiModelsError = null
@@ -664,6 +666,25 @@ describe('NewSession launch preferences', () => {
         await waitFor(() => {
             expect(screen.getByTestId('permission-mode')).toHaveTextContent('yolo')
         })
+    })
+
+    it.each([false, true])('launches the explicit Cursor base and its selected speed (fast=%s)', async (fast) => {
+        const normal = 'example[effort=low,fast=false]'
+        const quick = 'example[effort=low,fast=true]'
+        mocks.cursorModels = [normal, quick].map(modelId => ({ modelId }))
+        mocks.nextModelValue = 'example'
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'cursor-session' })
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1"
+            initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        fireEvent.click(screen.getByLabelText('Cursor'))
+        fireEvent.click(screen.getByTestId('model'))
+        const speed = await screen.findByRole('combobox', { name: 'misc.fastMode' })
+        expect(speed).toHaveValue(normal)
+        if (fast) fireEvent.change(speed, { target: { value: quick } })
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'cursor', model: fast ? quick : normal
+        })))
     })
 
     it('shows discovered Copilot models for the selected directory', async () => {

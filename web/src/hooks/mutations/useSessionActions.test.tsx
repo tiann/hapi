@@ -187,6 +187,21 @@ describe('useSessionActions - reopenSession', () => {
 })
 
 describe('useSessionActions - setModel', () => {
+    it('refreshes Cursor state after a rejected or partially applied model change', async () => {
+        const queryClient = new QueryClient()
+        const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+        const error = new Error('Cursor rejected the requested speed')
+        const api = { setModel: vi.fn().mockRejectedValue(error) } as unknown as ApiClient
+        const { result } = renderHook(() => useSessionActions(api, 'cursor-A', 'cursor'), {
+            wrapper: createWrapper(queryClient),
+        })
+        await act(async () => {
+            await expect(result.current.setModel('model[fast=true]')).rejects.toBe(error)
+        })
+        expect(invalidate).toHaveBeenCalledWith({ queryKey: ['session', 'cursor-A'] })
+        expect(invalidate).toHaveBeenCalledWith({ queryKey: ['session-cursor-models', 'cursor-A'] })
+    })
+
     it('stays pending until the refreshed session detail is available', async () => {
         let releaseSessionRefresh!: () => void
         const sessionRefresh = new Promise<void>((resolve) => {
