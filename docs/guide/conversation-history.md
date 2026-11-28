@@ -1,5 +1,5 @@
 ---
-description: "Fork, rewind, branch across harnesses and export HAPI conversations, with per-agent support for Claude Code, Codex, OpenCode, Grok and Pi."
+description: "Fork, rewind, branch across harnesses and export HAPI conversations, with per-agent support for Claude Code, Codex, Cursor, OpenCode, Grok and Pi."
 ---
 
 # Fork, rewind, branch and export
@@ -26,10 +26,12 @@ Fork and rewind use each agent's own history API, so support depends on the agen
 | Grok Build | Yes¹ | Yes¹ | Yes¹ | — | — |
 | OpenCode | v2 only¹ | v2 only¹ | v2 only¹ | — | — |
 | Pi | Yes¹ | Yes¹ | Yes¹ | — | — |
-| Gemini, Kimi, Copilot, Cursor, Antigravity, DeepSeek Harness | — | — | — | — | — |
+| Cursor Agent | Verified ACP store¹ | Recorded checkpoints¹ | Recorded checkpoints¹ | — | — |
+| Gemini, Kimi, Copilot, Antigravity, DeepSeek Harness | — | — | — | — | — |
 
-¹ Detected when the session starts. HAPI shows the control only if the installed agent version provides the API:
+¹ Availability depends on the installed agent and the current session.
 
+- **Cursor Agent:** a Bun-based runner, the stock versioned launcher for build `2026.11.22-e9042b2`, and a compatible local ACP store. Sessions started with Cursor-native worktree or additional directory flags, legacy stream-json sessions, and unrecognized builds keep the controls hidden.
 - **Grok Build:** its fork and rewind extension methods.
 - **OpenCode:** the v2 history API. OpenCode v1 never gets these controls. Rewind also needs v2's staged revert endpoints.
 - **Pi:** its fork and history-entry RPC commands. HAPI's code assumes Pi 0.83 or later.
@@ -72,13 +74,23 @@ HAPI refuses a fork, apart from the Codex cases above, when:
 
 ## Rewind
 
-**Rewind** appears on user messages for Grok Build, OpenCode v2 and Pi. It removes that message and everything after it from the session, both in the agent's native history and in HAPI's transcript. You then continue from the turn before it. After you confirm, the chat refreshes to the shortened history.
+**Rewind** appears on user messages for Grok Build, OpenCode v2, Pi and supported Cursor ACP sessions. It removes that message and everything after it from the session, both in the agent's native history and in HAPI's transcript. You then continue from the turn before it. After you confirm, the chat refreshes to the shortened history.
 
 ::: warning
 Rewind permanently deletes the later conversation, and files are not restored. To keep the original, fork instead.
 :::
 
 You can't rewind while the agent is working, while messages are queued, in local (terminal) mode, or on an inactive session. Codex doesn't offer rewind. Fork at the message instead.
+
+### Cursor checkpoints and recovery
+
+Before truncating the chat, the runner checks that Cursor can restore the current permission mode, model and model parameters. If the replacement rejects a setting or reports a different value, the original chat remains available.
+
+HAPI records a boundary when a single plain-text user prompt matches one new native Cursor turn and its stored checkpoint. After a restart, fork or rewind, only newly verified messages gain checkpoints. Fork from the latest turn remains available when the current store can be verified.
+
+Cursor todo updates after rewind continue from the last checklist in the retained transcript, including when the runner reconnects.
+
+Rewind keeps the HAPI session ID. HAPI first loads an independent native copy at the checkpoint. The Hub then saves the new Cursor ID and shortens the transcript in a single transaction. The original Cursor store stays on disk. The Hub allows up to 255 seconds on the HTTP request so a slow native load can finish both RPC phases. If the Hub rejects the cut while the original session is still bound, the runner discards the prepared replacement and releases queued input. If the runner disconnects and input remains blocked, stop the active runner session and resume it to load the binding saved by the Hub. Workspace files stay untouched.
 
 ## Branch with options
 

@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { jwtVerify } from 'jose'
 
 export type WebAppEnv = {
+    Bindings: { server?: { timeout(request: Request, seconds: number): void } }
     Variables: {
         userId: number
         namespace: string

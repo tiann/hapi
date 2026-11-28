@@ -410,6 +410,8 @@ vi.mock('@/ui/logger', () => ({
 }));
 
 import { classifyCursorAcpLoadError, cursorAcpRemoteLauncher } from './cursorAcpRemoteLauncher';
+import { cursorTodosBySession } from './utils/cursorTodoSnapshot';
+import { CursorConversationHistory } from './cursorConversationHistory';
 import { createCursorAcpBackend } from './utils/cursorAcpBackend';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { CursorSession } from './session';
@@ -673,6 +675,155 @@ describe('cursorAcpRemoteLauncher', () => {
         resetSessionSummaryContractForTests();
         delete process.env.HAPI_SESSION_SUMMARY_CONTRACT;
     });
+
+    it('keeps the source bound and pending input fenced until the Hub commits the exact prepared rewind', async () => {
+        const fork = vi.spyOn(CursorConversationHistory.prototype, 'fork').mockReturnValue('loaded-acp-session');
+        const session = makeSession(null, { keepQueueOpen: true });
+        const { handlers } = session.client.rpcHandlerManager as unknown as {
+            handlers: Map<string, (payload: unknown) => Promise<unknown>>
+        };
+        const running = cursorAcpRemoteLauncher(session);
+        try {
+            await vi.waitFor(() => expect(handlers.has(RPC_METHODS.RewindConversation)).toBe(true));
+            const rewind = handlers.get(RPC_METHODS.RewindConversation)!;
+            const messageLocalId = 'synthetic-turn';
+            await expect(rewind({ messageLocalId })).rejects.toThrow('two-phase Hub');
+            expect(fork).not.toHaveBeenCalled();
+            const prepared = await rewind({ cursorSourceSessionId: 'new-acp-session', messageLocalId });
+            expect(prepared).toMatchObject({ success: true, nativeSessionId: 'loaded-acp-session' });
+            expect(session.onSessionFoundWithProtocol).not.toHaveBeenCalledWith('loaded-acp-session', 'acp');
+            expect(fork).toHaveBeenCalledWith('new-acp-session', messageLocalId);
+            session.queue.push('next prompt', { permissionMode: 'default' }, 'next');
+            await expect(rewind({ cursorCommittedSessionId: 'wrong', messageLocalId })).rejects.toThrow('No matching');
+            expect(harness.promptSends).toBe(0);
+            const retained = [{ id: 'keep', content: 'Retained', priority: 'medium', status: 'completed' }];
+            await expect(rewind({ cursorCommittedSessionId: 'loaded-acp-session', cursorTodoSnapshot: retained, messageLocalId })).resolves.toMatchObject({ success: true });
+            expect(cursorTodosBySession.get(session.client)).toEqual({ revision: 'loaded-acp-session', items: retained });
+            await vi.waitFor(() => expect(harness.promptSends).toBe(1));
+            expect(session.onSessionFoundWithProtocol).toHaveBeenCalledWith('loaded-acp-session', 'acp');
+            const candidate = vi.mocked(createCursorAcpBackend).mock.results.at(-1)!.value;
+            expect(vi.mocked(candidate.prompt).mock.calls[0][0]).toBe('loaded-acp-session');
+        } finally {
+            await session.kill();
+            await running;
+            fork.mockRestore();
+        }
+    });
+
+    it('disposes only the matching uncommitted candidate and dispatches waiting input to the original', async () => {
+        const fork = vi.spyOn(CursorConversationHistory.prototype, 'fork').mockReturnValue('loaded-acp-session');
+        const session = makeSession(null, { keepQueueOpen: true });
+        const { handlers } = session.client.rpcHandlerManager as unknown as {
+            handlers: Map<string, (payload: unknown) => Promise<unknown>>
+        };
+        const running = cursorAcpRemoteLauncher(session);
+        try {
+            await vi.waitFor(() => expect(handlers.has(RPC_METHODS.RewindConversation)).toBe(true));
+            const rewind = handlers.get(RPC_METHODS.RewindConversation)!;
+            const source = vi.mocked(createCursorAcpBackend).mock.results.at(-1)!.value;
+            const messageLocalId = 'synthetic-turn';
+            const prepare = { cursorSourceSessionId: 'new-acp-session', messageLocalId };
+            const abort = { cursorAbortOperationId: 'first', messageLocalId };
+            await rewind({ ...prepare, cursorPrepareOperationId: 'first' });
+            const candidate = vi.mocked(createCursorAcpBackend).mock.results.at(-1)!.value;
+            await expect(rewind({ ...abort, cursorAbortOperationId: 'unrelated' })).rejects.toThrow();
+            expect(candidate.disconnect).not.toHaveBeenCalled();
+            await expect(rewind(abort)).resolves.toMatchObject({ success: true });
+            expect(candidate.disconnect).toHaveBeenCalledOnce();
+            expect(source.disconnect).not.toHaveBeenCalled();
+            expect(vi.mocked(source.setSessionInfoUpdateListener).mock.calls.at(-1)?.[0]).toEqual(expect.any(Function));
+            await expect(rewind(abort)).resolves.toMatchObject({ success: true });
+            await rewind({ ...prepare, cursorPrepareOperationId: 'second' });
+            await expect(rewind(abort)).rejects.toThrow();
+            session.queue.push('next prompt', { permissionMode: 'default' }, 'next');
+            await rewind({ ...abort, cursorAbortOperationId: 'second' });
+            await vi.waitFor(() => expect(harness.promptSends).toBe(1));
+            expect(vi.mocked(source.prompt).mock.calls.at(-1)?.[0]).toBe('new-acp-session');
+            expect(session.onSessionFoundWithProtocol).not.toHaveBeenCalledWith('loaded-acp-session', 'acp');
+        } finally {
+            await session.kill();
+            await running;
+            fork.mockRestore();
+        }
+    });
+
+    it('restores the source model parameters from native readback before preparing a rewind', async () => {
+        const fork = vi.spyOn(CursorConversationHistory.prototype, 'fork').mockReturnValue('loaded-acp-session');
+        const session = makeSession(null, { keepQueueOpen: true });
+        const { handlers } = session.client.rpcHandlerManager as unknown as {
+            handlers: Map<string, (payload: unknown) => Promise<unknown>>
+        };
+        const create = vi.mocked(createCursorAcpBackend);
+        const running = cursorAcpRemoteLauncher(session);
+        try {
+            await vi.waitFor(() => expect(handlers.has(RPC_METHODS.RewindConversation)).toBe(true));
+            const source = create.mock.results.at(-1)!.value as ReturnType<typeof createCursorAcpBackend>;
+            const candidate = create.getMockImplementation()!({ cwd: session.path });
+            create.mockReturnValueOnce(candidate);
+            const parameter = { id: 'fast', options: [{ value: 'true' }, { value: 'false' }] };
+            source.getSessionConfigOptions = vi.fn(() => [{ ...parameter, currentValue: 'true' }]);
+            let fast = 'false';
+            candidate.getSessionConfigOptions = vi.fn(() => [{ ...parameter, currentValue: fast }]);
+            vi.mocked(candidate.setConfigOption).mockImplementation(async (_id, option, value) => {
+                if (option === 'fast') fast = value;
+                return undefined;
+            });
+            const rewind = handlers.get(RPC_METHODS.RewindConversation)!;
+            await expect(rewind({ cursorSourceSessionId: 'new-acp-session', messageLocalId: 'synthetic-turn' }))
+                .resolves.toMatchObject({ success: true, nativeSessionId: 'loaded-acp-session' });
+            expect(candidate.setConfigOption).toHaveBeenCalledWith('loaded-acp-session', 'fast', 'true');
+            expect(source.disconnect).not.toHaveBeenCalled();
+        } finally {
+            await session.kill();
+            await running;
+            fork.mockRestore();
+        }
+    });
+
+    it.each(['permission', 'model', 'model parameter'] as const)(
+        'keeps the original session usable when rewind cannot confirm the %s', async (rejection) => {
+            const fork = vi.spyOn(CursorConversationHistory.prototype, 'fork').mockReturnValue('loaded-acp-session');
+            const session = makeSession(null, { keepQueueOpen: true });
+            const { handlers } = session.client.rpcHandlerManager as unknown as {
+                handlers: Map<string, (payload: unknown) => Promise<unknown>>
+            };
+            const create = vi.mocked(createCursorAcpBackend);
+            const running = cursorAcpRemoteLauncher(session);
+            try {
+                await vi.waitFor(() => expect(handlers.has(RPC_METHODS.RewindConversation)).toBe(true));
+                const source = create.mock.results.at(-1)!.value as ReturnType<typeof createCursorAcpBackend>;
+                const factory = create.getMockImplementation()!;
+                const candidate = factory({ cwd: session.path });
+                create.mockReturnValueOnce(candidate);
+                if (rejection === 'permission') {
+                    vi.mocked(candidate.setConfigOption).mockRejectedValue(new Error('config rejected'));
+                    vi.mocked(candidate.setMode).mockRejectedValue(new Error('mode rejected'));
+                } else if (rejection === 'model') {
+                    vi.mocked(candidate.getSessionModelsMetadata).mockReturnValue({
+                        currentModelId: 'different-model', availableModels: []
+                    });
+                } else {
+                    const parameter = { id: 'thinking', category: 'thought_level', options: [] };
+                    source.getSessionConfigOptions = vi.fn(() => [{ ...parameter, currentValue: 'on' }]);
+                    candidate.getSessionConfigOptions = vi.fn(() => [{ ...parameter, currentValue: 'off' }]);
+                }
+                const rewind = handlers.get(RPC_METHODS.RewindConversation)!;
+                const messageLocalId = 'synthetic-turn';
+                await expect(rewind({ cursorSourceSessionId: 'new-acp-session', messageLocalId })).rejects.toThrow();
+                expect(candidate.disconnect).toHaveBeenCalledOnce();
+                expect(source.disconnect).not.toHaveBeenCalled();
+                await expect(rewind({ cursorCommittedSessionId: 'loaded-acp-session', messageLocalId })).rejects.toThrow('No matching');
+                session.queue.push('continue the source', { permissionMode: 'default' }, 'continued');
+                await vi.waitFor(() => expect(source.prompt).toHaveBeenCalled());
+                expect(vi.mocked(source.prompt).mock.calls[0][0]).toBe('new-acp-session');
+                expect(session.onSessionFoundWithProtocol).not.toHaveBeenCalledWith('loaded-acp-session', 'acp');
+            } finally {
+                await session.kill();
+                await running;
+                fork.mockRestore();
+            }
+        }
+    );
 
     it('does not auto-bridge after a soft-steer accepted newer input', async () => {
         // Cold-review Major 2026-09-12: steer B into prompt A, then A hits 429.
