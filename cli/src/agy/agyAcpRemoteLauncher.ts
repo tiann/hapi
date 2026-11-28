@@ -859,9 +859,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     this.reconcileRetainedAmbiguousCompletions(null);
                     const priorCallIds = new Set(this.backgroundCommands.map((entry) => entry.callId));
                     // Live agy completes commands by call id: the conversion may settle
-                    // tracked ones but must not mirror the wakeup's own as synthetic.
-                    const renderedFromTranscript = new Map(
-                        this.backgroundCommands.filter((e) => e.synthetic).map((e) => [e.callId, e.taskId] as const)
+                    // previously tracked commands (both synthetic and ACP-rendered) that
+                    // stayed open after the live buffer flushed, without mirroring the
+                    // wakeup's own new commands as synthetic cards.
+                    const openBeforeConversion = new Map(
+                        this.backgroundCommands.map((entry) => [entry.callId, entry.taskId] as const)
                     );
                     const tracked = live ? [...this.backgroundCommands] : this.backgroundCommands;
                     const converted = convertAgyReactiveSteps(
@@ -904,9 +906,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     }
                     if (!live) await this.advanceBackendCursor();
                     for (const msg of converted.messages) {
-                        // Live mode forwards only the end of a card the transcript rendered.
-                        if (!live || (msg.type === 'tool_result' && renderedFromTranscript.has(msg.id))) {
-                            if (live && msg.type === 'tool_result') this.noteSettledFromTranscript(renderedFromTranscript.get(msg.id));
+                        // Live mode forwards only the terminal result of a card that was already tracked open.
+                        if (!live || (msg.type === 'tool_result' && openBeforeConversion.has(msg.id))) {
+                            if (live && msg.type === 'tool_result') {
+                                this.noteSettledFromTranscript(openBeforeConversion.get(msg.id));
+                                if (!this.nativeToolNames.has(msg.id)) {
+                                    this.nativeToolNames.set(msg.id, 'run_command');
+                                }
+                            }
                             this.forwardAgentMessage(this.showQuestionCard(msg));
                         }
                     }
@@ -2356,6 +2363,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 this.settledSyntheticCommands.push(syntheticEntry);
             }
             if (item.toolResult) {
+                this.noteSettledFromTranscript(item.taskId);
                 if (!this.nativeToolNames.has(item.callId)) {
                     this.nativeToolNames.set(item.callId, 'run_command');
                 }

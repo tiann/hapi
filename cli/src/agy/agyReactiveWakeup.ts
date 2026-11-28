@@ -1106,36 +1106,58 @@ export function inspectSyntheticBackgroundCommandMatch(
         }
     }
 
-    const isReadableTerminalAction = (
+    const resolveFreshActionCompletion = (
         action: AgyTranscriptStep | undefined
-    ): action is AgyTranscriptStep & { content: string } =>
-        Boolean(
-            action
-            && action.type === 'RUN_COMMAND'
-            && (action.status === 'DONE' || action.status === 'ERROR')
-            && action.content
-            && !isAgyStepContentTruncated(action)
-        );
+    ): { stdout: string; exitCode?: number; isError: boolean } | null => {
+        if (!action || action.type !== 'RUN_COMMAND' || !action.content || isAgyStepContentTruncated(action)) {
+            return null;
+        }
+        const stripped = stripAgyStepTimestamps(action.content);
+        const freshTaskId = extractAgyBackgroundTaskId(stripped);
+        if (
+            action.status === 'RUNNING'
+            || (freshTaskId && !stripped.startsWith('Command exited with code '))
+        ) {
+            if (!freshTaskId) return null;
+            const bg = completedTasks.get(freshTaskId);
+            if (!bg) return null;
+            return {
+                stdout: bg.stdout,
+                ...(bg.exitCode !== undefined ? { exitCode: bg.exitCode } : {}),
+                isError: bg.exitCode !== undefined && bg.exitCode !== 0
+            };
+        }
+        if (action.status !== 'DONE' && action.status !== 'ERROR') {
+            return null;
+        }
+        const fresh = normalizeAgyCommandBody(stripped);
+        return {
+            stdout: fresh.stdout,
+            ...(fresh.exitCode !== undefined ? { exitCode: fresh.exitCode } : {}),
+            isError: action.status === 'ERROR'
+        };
+    };
+
+    const freshCompletions = freshActions.map(resolveFreshActionCompletion);
 
     // A different persisted output distinguishes an older replay even when
     // both commands have identical arguments. Until the result arrives, defer.
-    if (filteredByResult.length > 0 && freshActions.some((action) => !isReadableTerminalAction(action))) {
+    if (filteredByResult.length > 0 && freshCompletions.some((completion) => completion === null)) {
         return { kind: 'ambiguous' };
     }
-    if (freshActions.length && (filteredByResult.length === 0 || freshActions.some((action) => {
-        if (!isReadableTerminalAction(action)) return false;
-        const fresh = normalizeAgyCommandBody(stripAgyStepTimestamps(action.content));
+    if (freshActions.length && (filteredByResult.length === 0 || freshCompletions.some((fresh) => {
+        if (!fresh) return false;
         const statusCompatible = lookup.resultStatus === 'failed'
-            ? action.status === 'ERROR' || (fresh.exitCode !== undefined && fresh.exitCode !== 0)
+            ? fresh.isError || (fresh.exitCode !== undefined && fresh.exitCode !== 0)
             : lookup.resultStatus === 'completed'
-                ? action.status === 'DONE' && (fresh.exitCode === undefined || fresh.exitCode === 0)
+                ? !fresh.isError && (fresh.exitCode === undefined || fresh.exitCode === 0)
                 : true;
         if (!statusCompatible) return false;
         if (liveResult?.stdout !== undefined) {
             return fresh.stdout === liveResult.stdout
                 && (liveResult.exitCode === undefined || fresh.exitCode === undefined || fresh.exitCode === liveResult.exitCode);
         }
-        return lookup.resultStatus === 'failed' && action.status === 'ERROR';
+        return lookup.resultStatus === 'failed' && fresh.isError;
     }))) {
         return { kind: 'none' };
     }
