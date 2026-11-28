@@ -478,6 +478,7 @@
     <string name="chat_question_awaiting">Awaiting response</string>
     <string name="chat_question_answered">Answered</string>
     <string name="chat_question_handled">Question handled</string>
+    <string name="chat_question_skipped">Question skipped</string>
     <string name="chat_question_canceled">Question canceled</string>
     <string name="chat_question_failed">Question failed</string>
     <string name="chat_question_submitting">Submitting answer…</string>
@@ -489,6 +490,7 @@
     <string name="chat_question_optional">Optional</string>
     <string name="chat_question_other_answer">Other answer</string>
     <string name="chat_question_hide_note">Hide note</string>
+    <string name="chat_question_skip">Skip</string>
     <string name="chat_question_previous">Previous question</string>
     <string name="chat_question_submit">Submit answer</string>
     <string name="chat_question_next">Next question</string>

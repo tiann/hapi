@@ -119,14 +119,13 @@ export class PermissionRequestNotFoundError extends Error {
     }
 }
 
-// Matches on the specific shared message rather than treating any error on
-// the Permission RPC method as "not found" — a future, unrelated throw in
-// handlePermissionResponse's success path should surface as a genuine error,
-// not get relabeled as a stale request.
-function isPermissionRequestNotFoundResponse(response: unknown): boolean {
-    if (!response || typeof response !== 'object') return false
+export class PermissionResponseRejectedError extends Error {}
+
+function assertPermissionResponseAccepted(response: unknown, requestId: string): void {
+    if (!response || typeof response !== 'object') return
     const error = (response as Record<string, unknown>).error
-    return error === PERMISSION_REQUEST_NOT_FOUND_MESSAGE
+    if (error === PERMISSION_REQUEST_NOT_FOUND_MESSAGE) throw new PermissionRequestNotFoundError(requestId)
+    if (typeof error === 'string') throw new PermissionResponseRejectedError(error)
 }
 
 export type RpcCommandResponse = CommandResponse
@@ -189,9 +188,7 @@ export class RpcGateway {
             decision,
             answers
         })
-        if (isPermissionRequestNotFoundResponse(response)) {
-            throw new PermissionRequestNotFoundError(requestId)
-        }
+        assertPermissionResponseAccepted(response, requestId)
     }
 
     async denyPermission(
@@ -204,9 +201,7 @@ export class RpcGateway {
             approved: false,
             decision
         })
-        if (isPermissionRequestNotFoundResponse(response)) {
-            throw new PermissionRequestNotFoundError(requestId)
-        }
+        assertPermissionResponseAccepted(response, requestId)
     }
 
     async abortSession(sessionId: string): Promise<void> {

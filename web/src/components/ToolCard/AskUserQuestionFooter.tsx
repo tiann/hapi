@@ -49,7 +49,7 @@ function computeAnswersForQuestion(
     }
 
     const other = otherText.trim()
-    if (otherSelected && other.length > 0) {
+    if (question.allowFreeText && otherSelected && other.length > 0) {
         answers.push(other)
     }
 
@@ -157,6 +157,7 @@ export function AskUserQuestionFooter(props: {
 
     const validateQuestion = (idx: number): string[] | null => {
         if (questions.length === 0) {
+            if (useStableQuestionIds) return null
             const text = fallbackText.trim()
             return text.length > 0 ? [text] : null
         }
@@ -342,7 +343,7 @@ export function AskUserQuestionFooter(props: {
                 </div>
             ) : null}
 
-            {questions.length === 0 ? (
+            {questions.length === 0 ? (useStableQuestionIds ? null :
                 <div className="mt-3">
                     <div className="text-sm text-[var(--app-hint)]">
                         {t('tool.askUserQuestion.fallback')}

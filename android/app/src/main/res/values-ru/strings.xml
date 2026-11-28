@@ -492,6 +492,7 @@
     <string name="chat_question_awaiting">Ожидание ответа</string>
     <string name="chat_question_answered">Отвечено</string>
     <string name="chat_question_handled">Вопрос обработан</string>
+    <string name="chat_question_skipped">Вопрос пропущен</string>
     <string name="chat_question_canceled">Вопрос отменён</string>
     <string name="chat_question_failed">Вопрос не выполнен</string>
     <string name="chat_question_submitting">Отправка ответа…</string>
@@ -503,6 +504,7 @@
     <string name="chat_question_optional">Необязательно</string>
     <string name="chat_question_other_answer">Другой ответ</string>
     <string name="chat_question_hide_note">Скрыть примечание</string>
+    <string name="chat_question_skip">Пропустить</string>
     <string name="chat_question_previous">Предыдущий вопрос</string>
     <string name="chat_question_submit">Отправить ответ</string>
     <string name="chat_question_next">Следующий вопрос</string>
