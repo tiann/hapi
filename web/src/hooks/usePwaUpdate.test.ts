@@ -7,7 +7,7 @@ import {
     setupRegistrationUpdateChecks,
     usePwaUpdate,
 } from '@/hooks/usePwaUpdate'
-import { getSyntaxGrammarsCacheName } from '@/lib/swStaticCache'
+import { getHapiStaticCacheName, getSyntaxGrammarsCacheName } from '@/lib/swStaticCache'
 
 const registerSWMock = vi.fn()
 const serviceWorkerListeners = new Map<string, Set<EventListener>>()
@@ -245,16 +245,18 @@ describe('usePwaUpdate', () => {
         vi.useRealTimers()
     })
 
-    it('cleans outdated client static caches on startup when app version changes and triggers registration.update on checkForUpdates', async () => {
+    it('cleans outdated client static caches on startup while preserving grammars for worker migration and triggers registration.update on checkForUpdates', async () => {
         const scope = new URL(import.meta.env.BASE_URL || '/', window.location.origin).href
-        const oldCache = getSyntaxGrammarsCacheName('0.36.4-deadbeef', scope)
-        const currentCache = getSyntaxGrammarsCacheName(`${__APP_VERSION__}-keep1234`, scope)
+        const oldStaticCache = getHapiStaticCacheName('0.36.4-deadbeef', scope)
+        const currentStaticCache = getHapiStaticCacheName(`${__APP_VERSION__}-keep1234`, scope)
+        const oldSyntaxCache = getSyntaxGrammarsCacheName('0.36.4-deadbeef', scope)
         window.localStorage.setItem('hapi:static-cache-version', '0.36.4')
         const deleteMock = vi.fn(async () => true)
         const keysMock = vi.fn(async () => [
             'syntax-grammars',
-            oldCache,
-            currentCache,
+            oldStaticCache,
+            currentStaticCache,
+            oldSyntaxCache,
             'api-sessions',
         ])
         const legacyEntryDeleteMock = vi.fn(async () => true)
@@ -282,10 +284,11 @@ describe('usePwaUpdate', () => {
             await Promise.resolve()
         })
 
-        expect(legacyEntryDeleteMock).toHaveBeenCalledWith({ url: `${scope}assets/shiki-old.js` })
+        expect(legacyEntryDeleteMock).not.toHaveBeenCalled()
         expect(deleteMock).not.toHaveBeenCalledWith('syntax-grammars')
-        expect(deleteMock).toHaveBeenCalledWith(oldCache)
-        expect(deleteMock).not.toHaveBeenCalledWith(currentCache)
+        expect(deleteMock).not.toHaveBeenCalledWith(oldSyntaxCache)
+        expect(deleteMock).toHaveBeenCalledWith(oldStaticCache)
+        expect(deleteMock).not.toHaveBeenCalledWith(currentStaticCache)
         expect(deleteMock).not.toHaveBeenCalledWith('api-sessions')
         expect(window.localStorage.getItem('hapi:static-cache-version')).toBe(__APP_VERSION__)
 

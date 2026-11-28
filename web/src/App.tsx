@@ -42,7 +42,8 @@ import { RunnerVersionSkewBanner } from '@/components/RunnerVersionSkewBanner'
 import { LoadingState } from '@/components/LoadingState'
 import { ToastContainer } from '@/components/ToastContainer'
 import { PwaUpdateProvider, usePwaUpdateContext } from '@/lib/pwa-update-context'
-import { getSafeLocalStorage, recordHubWebBuildId, shouldCheckSwUpdateForHubHealth } from '@/lib/swStaticCache'
+import { fetchThroughAuthProxy } from '@/api/authProxy'
+import { getSafeLocalStorage, fetchPublicHubHealth, recordHubWebBuildId, shouldCheckSwUpdateForHubHealth, type HubHealthProbe } from '@/lib/swStaticCache'
 import { ToastProvider, useAddToast } from '@/lib/toast-context'
 import { getNotificationClickHref, NOTIFICATION_CLICK_ACK_TYPE } from '@/lib/notificationClick'
 import type { SyncEvent } from '@/types/api'
@@ -90,36 +91,44 @@ function AppInner() {
 
     const refreshHubHealth = useCallback((options?: { resetOnError?: boolean }) => {
         const requestSeq = ++healthRequestSeqRef.current
-        if (!api) {
-            setTitleSuggestionAvailable(false)
-            return
-        }
-        if (options?.resetOnError) {
+        if (!api || options?.resetOnError) {
             setTitleSuggestionAvailable(false)
         }
 
-        void api.getHealth()
-            .then((health) => {
-                if (healthRequestSeqRef.current !== requestSeq) {
-                    return
-                }
+        const handleHealthResponse = (health: HubHealthProbe | null) => {
+            if (!health || healthRequestSeqRef.current !== requestSeq) {
+                return
+            }
+            if (api) {
                 setTitleSuggestionAvailable(health.capabilities?.titleSuggestion === true)
-                const appVersion = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '0.0.0'
-                const storage = getSafeLocalStorage()
-                if (shouldCheckSwUpdateForHubHealth({
-                    baseUrl,
-                    windowOrigin: window.location.origin,
-                    appVersion,
-                    health,
-                    storage,
-                })) {
-                    void checkForUpdates().then((succeeded) => {
-                        if (succeeded) {
-                            recordHubWebBuildId(storage, health.webBuildId)
-                        }
-                    })
-                }
+            }
+            const appVersion = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '0.0.0'
+            const storage = getSafeLocalStorage()
+            if (shouldCheckSwUpdateForHubHealth({
+                baseUrl,
+                windowOrigin: window.location.origin,
+                appVersion,
+                health,
+                storage,
+            })) {
+                void checkForUpdates().then((succeeded) => {
+                    if (succeeded) {
+                        recordHubWebBuildId(storage, health.webBuildId)
+                    }
+                })
+            }
+        }
+
+        const healthPromise: Promise<HubHealthProbe | null> = api
+            ? api.getHealth()
+            : fetchPublicHubHealth({
+                baseUrl,
+                windowOrigin: window.location.origin,
+                fetchImpl: fetchThroughAuthProxy,
             })
+
+        void healthPromise
+            .then(handleHealthResponse)
             .catch(() => {
                 if (options?.resetOnError && healthRequestSeqRef.current === requestSeq) {
                     setTitleSuggestionAvailable(false)
@@ -359,7 +368,7 @@ function AppInner() {
                     endSync()
                 }
             })
-    }, [api, queryClient, selectedSessionId, startSync, endSync, reportSseConnect])
+    }, [api, queryClient, refreshHubHealth, selectedSessionId, startSync, endSync, reportSseConnect])
 
     const handleSseDisconnect = useCallback((reason: string) => {
         // Only show reconnecting banner if we've already connected once

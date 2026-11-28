@@ -6,6 +6,7 @@ import {
     cleanupClientStaticCachesOnVersionChange,
     cleanupOutdatedStaticCaches,
     computeStaticCacheVersion,
+    fetchPublicHubHealth,
     getHapiStaticCacheName,
     getSafeCacheStorage,
     getSafeLocalStorage,
@@ -54,6 +55,8 @@ function createFakeCacheStorage(
                 }),
                 put: vi.fn(async (req: RequestInfo | URL) => {
                     const url = typeof req === 'string' ? req : req instanceof URL ? req.href : req.url
+                    cacheEntries.set(name, entries)
+                    keys.add(name)
                     entries.add(url)
                 }),
             }
@@ -262,23 +265,35 @@ describe('cleanupClientStaticCachesOnVersionChange', () => {
         expect(storage.getItem(STATIC_CACHE_VERSION_STORAGE_KEY)).toBe('0.36.4')
     })
 
-    it('cleans outdated static caches directly and records new version when no service worker is active while preserving sibling scopes', async () => {
+    it('cleans outdated static caches directly while preserving grammar caches for replacement worker migration', async () => {
         const scopeA = 'https://example.com/'
         const scopeB = 'https://example.com/hapi-preview/'
-        const oldCacheA = getSyntaxGrammarsCacheName('0.36.4-11112222', scopeA)
-        const currentCacheA = getSyntaxGrammarsCacheName('0.36.5-33334444', scopeA)
-        const siblingCacheB = getSyntaxGrammarsCacheName('0.36.4-11112222', scopeB)
+        const oldStaticCacheA = getHapiStaticCacheName('0.36.4-11112222', scopeA)
+        const currentStaticCacheA = getHapiStaticCacheName('0.36.5-33334444', scopeA)
+        const siblingStaticCacheB = getHapiStaticCacheName('0.36.4-11112222', scopeB)
+        const oldSyntaxCacheA = getSyntaxGrammarsCacheName('0.36.4-11112222', scopeA)
+        const currentSyntaxCacheA = getSyntaxGrammarsCacheName('0.36.5-33334444', scopeA)
         const storage = createMemoryStorage({ [STATIC_CACHE_VERSION_STORAGE_KEY]: '0.36.4' })
         const cacheStorage = createFakeCacheStorage(
             [
                 'syntax-grammars',
-                oldCacheA,
-                currentCacheA,
-                siblingCacheB,
+                oldStaticCacheA,
+                currentStaticCacheA,
+                siblingStaticCacheB,
+                oldSyntaxCacheA,
+                `workbox-precache-v1-${scopeA}`,
+                `workbox-precache-v1-${scopeB}`,
                 'api-sessions',
             ],
             {
-                'syntax-grammars': [`${scopeA}assets/shiki-old.js`],
+                'syntax-grammars': [
+                    `${scopeA}assets/shiki-ts.js`,
+                    `${scopeB}assets/shiki-other.js`,
+                ],
+                [oldSyntaxCacheA]: [
+                    `${scopeA}assets/shiki-ts.js`,
+                    `${scopeA}assets/shiki-removed.js`,
+                ],
             },
         )
         const serviceWorker = {
@@ -296,17 +311,41 @@ describe('cleanupClientStaticCachesOnVersionChange', () => {
 
         expect(result).toEqual({
             versionChanged: true,
-            deletedCaches: [oldCacheA],
+            deletedCaches: [oldStaticCacheA, `workbox-precache-v1-${scopeA}`],
             delegatedToWorker: false,
         })
         expect(storage.getItem(STATIC_CACHE_VERSION_STORAGE_KEY)).toBe('0.36.5')
-        expect(cacheStorage.remainingEntries('syntax-grammars')).toEqual([])
-        expect(cacheStorage.remaining()).toEqual([
-            'syntax-grammars',
-            currentCacheA,
-            siblingCacheB,
-            'api-sessions',
+        // Grammar caches remain intact until a replacement SW activates and migrates reusable entries.
+        expect(cacheStorage.remainingEntries('syntax-grammars')).toEqual([
+            `${scopeA}assets/shiki-ts.js`,
+            `${scopeB}assets/shiki-other.js`,
         ])
+        expect(cacheStorage.remainingEntries(oldSyntaxCacheA)).toEqual([
+            `${scopeA}assets/shiki-ts.js`,
+            `${scopeA}assets/shiki-removed.js`,
+        ])
+
+        // Simulate the replacement SW activating with the new build manifest and migrating reusable grammars.
+        const reusableUrls = new Set([`${scopeA}assets/shiki-ts.js`])
+        await cleanupOutdatedStaticCaches(cacheStorage, '0.36.5-33334444', {
+            scope: scopeA,
+            async migrateGrammars(name, requests) {
+                const source = await cacheStorage.open(name)
+                const destination = await cacheStorage.open(currentSyntaxCacheA)
+                for (const request of requests) {
+                    if (!reusableUrls.has(request.url)) continue
+                    await destination.put(request)
+                }
+                void source
+            },
+        })
+
+        expect(cacheStorage.remainingEntries(currentSyntaxCacheA)).toEqual([`${scopeA}assets/shiki-ts.js`])
+        expect(cacheStorage.remainingEntries('syntax-grammars')).toEqual([`${scopeB}assets/shiki-other.js`])
+        expect(cacheStorage.remaining()).not.toContain(oldSyntaxCacheA)
+        expect(cacheStorage.remaining()).toContain(siblingStaticCacheB)
+        expect(cacheStorage.remaining()).toContain(`workbox-precache-v1-${scopeB}`)
+        expect(cacheStorage.remaining()).toContain('api-sessions')
     })
 })
 
@@ -400,5 +439,46 @@ describe('shouldCheckSwUpdateForHubHealth and recordHubWebBuildId', () => {
             health: { version: '0.36.6', webBuildId: 'build-2' },
             storage,
         })).toBe(false)
+    })
+})
+
+describe('fetchPublicHubHealth', () => {
+    it('fetches unauthenticated /health with no-store for same-origin hubs', async () => {
+        const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+            status: 'ok',
+            version: '0.36.6',
+            webBuildId: 'build-2',
+        }), { status: 200 }))
+
+        const health = await fetchPublicHubHealth({
+            baseUrl: '',
+            windowOrigin: 'https://hapi.example',
+            fetchImpl: fetchMock,
+        })
+
+        expect(fetchMock).toHaveBeenCalledWith('/health', { cache: 'no-store' })
+        expect(health).toEqual({
+            status: 'ok',
+            version: '0.36.6',
+            webBuildId: 'build-2',
+        })
+    })
+
+    it('skips fetching /health for cross-origin hubs and ignores non-ok responses', async () => {
+        const fetchMock = vi.fn(async () => new Response('unavailable', { status: 503 }))
+
+        await expect(fetchPublicHubHealth({
+            baseUrl: 'https://hub.other.example',
+            windowOrigin: 'https://tiann.github.io',
+            fetchImpl: fetchMock,
+        })).resolves.toBeNull()
+        expect(fetchMock).not.toHaveBeenCalled()
+
+        await expect(fetchPublicHubHealth({
+            baseUrl: 'https://hapi.example',
+            windowOrigin: 'https://hapi.example',
+            fetchImpl: fetchMock,
+        })).resolves.toBeNull()
+        expect(fetchMock).toHaveBeenCalledWith('https://hapi.example/health', { cache: 'no-store' })
     })
 })

@@ -97,22 +97,23 @@ function matchesVersionSuffix(
 export function isOutdatedStaticCacheName(
     cacheName: string,
     currentVersion: string,
-    options?: { matchPrefixOnly?: boolean; scope?: string },
+    options?: { matchPrefixOnly?: boolean; scope?: string; preserveGrammarCaches?: boolean },
 ): boolean {
     if (cacheName === SYNTAX_GRAMMARS_LEGACY_CACHE_NAME) {
-        return !options?.scope
+        return !options?.scope && !options?.preserveGrammarCaches
     }
 
     if (options?.scope && isOutdatedScopedWorkboxPrecache(cacheName, options.scope)) {
         return true
     }
 
-    const prefixes = options?.scope
-        ? [
-            `${SYNTAX_GRAMMARS_CACHE_PREFIX}${computeScopeTag(options.scope)}-`,
-            `${HAPI_STATIC_CACHE_PREFIX}${computeScopeTag(options.scope)}-`,
+    const scopePrefix = options?.scope ? `${computeScopeTag(options.scope)}-` : ''
+    const prefixes = options?.preserveGrammarCaches
+        ? [`${HAPI_STATIC_CACHE_PREFIX}${scopePrefix}`]
+        : [
+            `${SYNTAX_GRAMMARS_CACHE_PREFIX}${scopePrefix}`,
+            `${HAPI_STATIC_CACHE_PREFIX}${scopePrefix}`,
         ]
-        : [SYNTAX_GRAMMARS_CACHE_PREFIX, HAPI_STATIC_CACHE_PREFIX]
 
     for (const prefix of prefixes) {
         if (!cacheName.startsWith(prefix)) {
@@ -161,7 +162,7 @@ async function cleanupLegacyUnscopedSyntaxCache(
 export async function cleanupOutdatedStaticCaches(
     cacheStorage: CacheStorageLike | undefined,
     currentVersion: string,
-    options?: { matchPrefixOnly?: boolean; scope?: string } & RetirementHooks,
+    options?: { matchPrefixOnly?: boolean; scope?: string; preserveGrammarCaches?: boolean } & RetirementHooks,
 ): Promise<string[]> {
     if (!cacheStorage) {
         return []
@@ -184,7 +185,7 @@ export async function cleanupOutdatedStaticCaches(
         deleted.push(...outdated)
     }
 
-    if (options?.scope && keys.includes(SYNTAX_GRAMMARS_LEGACY_CACHE_NAME)) {
+    if (options?.scope && !options?.preserveGrammarCaches && keys.includes(SYNTAX_GRAMMARS_LEGACY_CACHE_NAME)) {
         await cleanupLegacyUnscopedSyntaxCache(cacheStorage, options.scope, options)
     }
 
@@ -232,7 +233,9 @@ export async function cleanupClientStaticCachesOnVersionChange(options: {
         deletedCaches = await cleanupOutdatedStaticCaches(
             options.cacheStorage,
             normalizedVersion,
-            { matchPrefixOnly: true, scope: options.scope },
+            // Leave grammar caches intact during client-side fallback so the replacement
+            // service worker can migrate reusable entries once it activates.
+            { matchPrefixOnly: true, scope: options.scope, preserveGrammarCaches: true },
         )
     } catch {
         deletedCaches = []
@@ -245,6 +248,45 @@ export async function cleanupClientStaticCachesOnVersionChange(options: {
     }
 
     return { versionChanged: true, deletedCaches, delegatedToWorker: false }
+}
+
+export type HubHealthProbe = {
+    version?: string
+    webBuildId?: string | null
+    capabilities?: {
+        titleSuggestion?: boolean
+    }
+}
+
+export function buildPublicHealthUrl(baseUrl: string): string {
+    if (!baseUrl) {
+        return '/health'
+    }
+    try {
+        return new URL('/health', baseUrl).toString()
+    } catch {
+        return '/health'
+    }
+}
+
+export async function fetchPublicHubHealth(options: {
+    baseUrl: string
+    windowOrigin: string
+    fetchImpl?: (input: string, init?: RequestInit) => Promise<Response>
+}): Promise<HubHealthProbe | null> {
+    if (!isSameOriginUrl(options.baseUrl, options.windowOrigin)) {
+        return null
+    }
+    const fetchFn = options.fetchImpl ?? fetch
+    const response = await fetchFn(buildPublicHealthUrl(options.baseUrl), { cache: 'no-store' })
+    if (!response.ok) {
+        return null
+    }
+    const payload = await response.json() as unknown
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+        return null
+    }
+    return payload as HubHealthProbe
 }
 
 export function isSameOriginUrl(targetUrl: string, windowOrigin: string): boolean {
