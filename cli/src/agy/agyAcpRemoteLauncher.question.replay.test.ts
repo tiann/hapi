@@ -11,6 +11,7 @@ import { AgyAcpRemoteLauncher } from './agyAcpRemoteLauncher';
 import { createAgyAcpBackend } from './utils/agyAcpBackend';
 
 vi.mock('@/ui/ink/RemoteModeDisplay', () => ({ RemoteModeDisplay: () => null }));
+vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({ buildHapiMcpBridge: async () => ({ server: { stop: () => {} }, mcpServers: {} }) }));
 vi.mock('@/ui/logger', () => ({ logger: { debug: vi.fn(), warn: vi.fn(), info: vi.fn() } }));
 
 type Frame = { t: number; direction: string; message: Record<string, unknown> };
