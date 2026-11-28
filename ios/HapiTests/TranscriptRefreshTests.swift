@@ -23,6 +23,7 @@ final class TranscriptRefreshTests: XCTestCase {
     final class Driver {
         var rows = (0..<80).map { Row(id: String($0)) }
         var version = 0
+        var appearanceVersion = 0
         var basePath = "/before"
         var dark = false
         var locale = Locale(identifier: "en")
@@ -55,7 +56,8 @@ final class TranscriptRefreshTests: XCTestCase {
             let basePath = driver.basePath
             AnchoredTranscriptList(
                 items: driver.rows, historyVersion: driver.version, jumpToken: 0,
-                historyControlID: "history", onViewport: { _ in },
+                historyControlID: "history", appearanceVersion: driver.appearanceVersion,
+                onViewport: { _ in },
                 onLayout: { version, _ in driver.layouts.append(version) }
             ) { row in
                 AnyView(ProbeRow(row: row, basePath: basePath, driver: driver))
@@ -154,24 +156,52 @@ final class TranscriptRefreshTests: XCTestCase {
 
     func testEnvironmentOnlyChangesReachVisibleRows() async throws {
         let driver = Driver()
-        let (window, controller, view) = try host(driver)
+        let (window, _, view) = try host(driver)
         defer { window.isHidden = true }
         await settle { driver.layouts.contains(0) }
         await browse(view, index: 25)
-        #if DEBUG
-        let configurations = controller.cellConfigurationCount
-        #endif
         // No item or closure capture changes: only the environment does.
         driver.dark = true
         await settle { driver.samples["25"]?.dark == true }
         XCTAssertEqual(driver.samples["25"]?.dark, true, "A theme change must reach hosted rows")
-        #if DEBUG
-        XCTAssertEqual(controller.cellConfigurationCount, configurations)
-        #endif
         window.setDynamicTypeSize(.accessibility2)
         await settle { driver.samples["25"]?.size == .accessibility2 }
         let cell = try XCTUnwrap(view.cellForItem(at: IndexPath(item: 25, section: 0)))
         XCTAssertEqual(cell.frame.height, 180, accuracy: 1, "A system text size change must re-measure rows")
+    }
+
+    func testAppearanceVersionReconfiguresHostedRowsAfterForegrounding() async throws {
+        let driver = Driver()
+        let (window, controller, view) = try host(driver)
+        defer { window.isHidden = true }
+        await settle { driver.layouts.contains(0) }
+        await browse(view, index: 25)
+        let cell = try XCTUnwrap(view.cellForItem(at: IndexPath(item: 25, section: 0)))
+        let offset = cell.frame.minY - view.contentOffset.y
+        #if DEBUG
+        let configurations = controller.cellConfigurationCount
+        #endif
+
+        driver.appearanceVersion += 1
+        #if DEBUG
+        await settle { controller.cellConfigurationCount > configurations }
+        #endif
+        XCTAssertEqual(cell.frame.minY - view.contentOffset.y, offset, accuracy: 1,
+                       "Foreground refresh must preserve the reading position")
+
+        driver.dark = true
+        driver.appearanceVersion += 1
+        await settle {
+            driver.samples["25"]?.dark == true
+        }
+
+        XCTAssertTrue(driver.samples["25"]?.dark == true,
+                      "Foreground appearance changes must refresh the hosted row environment")
+        XCTAssertTrue(cell === view.cellForItem(at: IndexPath(item: 25, section: 0)))
+        #if DEBUG
+        XCTAssertGreaterThan(controller.cellConfigurationCount, configurations,
+                             "Foreground appearance changes must reinstall visible hosted rows")
+        #endif
     }
 
     func testEqualItemsReceiveLatestEnvironmentValueCapturesAndActions() async throws {
@@ -184,9 +214,8 @@ final class TranscriptRefreshTests: XCTestCase {
         let configurations = controller.cellConfigurationCount
         #endif
         driver.basePath = "/after"
-        driver.dark = true
         driver.actionToken = 1
-        let expected = Sample(basePath: "/after", dark: true, size: .large, locale: "en", direction: .leftToRight)
+        let expected = Sample(basePath: "/after", dark: false, size: .large, locale: "en", direction: .leftToRight)
         await settle { driver.samples["25"] == expected }
         XCTAssertEqual(driver.samples["25"], expected)
         #if DEBUG
@@ -199,7 +228,7 @@ final class TranscriptRefreshTests: XCTestCase {
         driver.locale = Locale(identifier: "ar")
         driver.direction = .rightToLeft
         window.setDynamicTypeSize(.accessibility2)
-        let recycled = Sample(basePath: "/after", dark: true, size: .accessibility2, locale: "ar", direction: .rightToLeft)
+        let recycled = Sample(basePath: "/after", dark: false, size: .accessibility2, locale: "ar", direction: .rightToLeft)
         await settle { driver.samples["25"] == recycled }
         let cell = try XCTUnwrap(view.cellForItem(at: IndexPath(item: 25, section: 0)))
         XCTAssertEqual(cell.frame.height, 180, accuracy: 1, "Environment-only changes must still self-size")

@@ -18,6 +18,7 @@ public struct AnchoredTranscriptList<Item: Identifiable & Equatable>: UIViewCont
     public var items: [Item]
     public var historyVersion: Int
     public var jumpToken: Int
+    public var appearanceVersion: Int
     public var historyControlID: String
     public var isInspectionPresented: Bool
     public var onViewport: (TranscriptViewport) -> Void
@@ -28,6 +29,7 @@ public struct AnchoredTranscriptList<Item: Identifiable & Equatable>: UIViewCont
     fileprivate var environment = EnvironmentValues()
 
     public init(items: [Item], historyVersion: Int, jumpToken: Int, historyControlID: String,
+                appearanceVersion: Int = 0,
                 isInspectionPresented: Bool = false,
                 onViewport: @escaping (TranscriptViewport) -> Void,
                 onLayout: @escaping (Int, Bool) -> Void,
@@ -37,6 +39,7 @@ public struct AnchoredTranscriptList<Item: Identifiable & Equatable>: UIViewCont
         self.items = items
         self.historyVersion = historyVersion
         self.jumpToken = jumpToken
+        self.appearanceVersion = appearanceVersion
         self.historyControlID = historyControlID
         self.isInspectionPresented = isInspectionPresented
         self.onViewport = onViewport
@@ -299,11 +302,6 @@ private final class TranscriptCollectionView: UICollectionView {
     }
 }
 
-/// Keep hosting roots alive across unrelated transcript updates. The small
-/// SwiftUI wrapper reads the latest builder and inherited environment,
-/// including action captures. SwiftUI can diff the resulting row instead of UIKit
-/// reinstalling every visible hosting configuration and measuring it again.
-@MainActor @Observable
 /// Lets the keyboard-dismiss tap run alongside cell gestures instead of
 /// waiting for them to fail.
 private final class SimultaneousGestureDelegate: NSObject, UIGestureRecognizerDelegate {
@@ -311,6 +309,11 @@ private final class SimultaneousGestureDelegate: NSObject, UIGestureRecognizerDe
                            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
 }
 
+/// Keep hosting roots alive across unrelated transcript updates. The small
+/// SwiftUI wrapper reads the latest builder and inherited environment,
+/// including action captures. SwiftUI can diff the resulting row instead of UIKit
+/// reinstalling every visible hosting configuration and measuring it again.
+@MainActor @Observable
 private final class TranscriptContent<Item> {
     var render: (Item) -> AnyView = { _ in AnyView(EmptyView()) }
     var environment = EnvironmentValues()
@@ -384,7 +387,7 @@ public final class TranscriptCollectionController<Item: Identifiable & Equatable
             let width = HapiReadingLayout.contentWidth(in: view.bounds.width)
             cell.contentConfiguration = UIHostingConfiguration {
                 TranscriptHostedRow(item: item, content: self.content)
-                    .id(id)
+                    .id("\(self.configuration?.appearanceVersion ?? 0):\(id)")
                     .frame(width: width, alignment: .leading)
             }.margins(.all, 0)
             cell.backgroundColor = .clear
@@ -455,11 +458,21 @@ public final class TranscriptCollectionController<Item: Identifiable & Equatable
                 || $0.environment.locale != next.environment.locale
                 || $0.environment.layoutDirection != next.environment.layoutDirection
         } ?? true
+        let appearanceChanged = configuration.map {
+            $0.appearanceVersion != next.appearanceVersion
+                || $0.environment.colorScheme != next.environment.colorScheme
+                || $0.environment.hapiTheme != next.environment.hapiTheme
+        } ?? true
         let spacing = next.items.enumerated().map { index, item in
             max(0, next.spacingBefore(index > 0 ? next.items[index - 1] : nil, item))
         }
         let spacingChanged = configuredSpacing != spacing
-        let changed = next.items.filter { contentWidthChanged || metricsChanged || values[$0.id] != $0 }.map(\.id)
+        // Hosted rows have independent SwiftUI roots. Updating their captured
+        // environment does not invalidate already configured collection cells,
+        // so an appearance change must explicitly reconfigure existing rows.
+        let changed = next.items.filter {
+            contentWidthChanged || metricsChanged || appearanceChanged || values[$0.id] != $0
+        }.map(\.id)
         let structureChanged = items.map(\.id) != next.items.map(\.id)
         let jump = next.jumpToken != lastJumpToken
         lastJumpToken = next.jumpToken

@@ -35,6 +35,7 @@ enum TranscriptRow: Identifiable, Equatable {
 
 struct ChatTranscriptView: View {
     @Environment(\.scenePhase) private var scenePhase
+    @State private var appearanceVersion = 0
     let model: ChatModel
 
     private var rows: [TranscriptRow] {
@@ -57,6 +58,7 @@ struct ChatTranscriptView: View {
             historyVersion: model.historyVersion,
             jumpToken: model.jumpToLatestToken,
             historyControlID: TranscriptRow.historyID,
+            appearanceVersion: appearanceVersion,
             isInspectionPresented: model.isInspectingContent,
             onViewport: { viewport in
                 model.readingViewportChanged(
@@ -72,6 +74,9 @@ struct ChatTranscriptView: View {
         ) { row in
             // The list bridges the current environment into its hosting roots.
             AnyView(rowView(row))
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { appearanceVersion &+= 1 }
         }
         .overlay(alignment: .bottomTrailing) {
             if model.showsJumpToLatest {
