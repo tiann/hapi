@@ -396,7 +396,9 @@ export function createWebApp(options: {
     app.route('/api', createFeaturesRoutes())
     app.route('/api', createPasskeyManagementRoutes(passkeyDeps))
     app.route('/api', createEventsRoutes(options.getSseManager, options.getSyncEngine, options.getVisibilityTracker))
-    app.route('/api', createSessionsRoutes(options.getSyncEngine))
+    app.route('/api', createSessionsRoutes(options.getSyncEngine, {
+        getSessionScheduleCursor: (namespace) => options.getSseManager()?.getSnapshotCursor(namespace)
+    }))
     app.route('/api', createMessagesRoutes(options.getSyncEngine))
     app.route('/api', createPermissionsRoutes(options.getSyncEngine))
     app.route('/api', createMachinesRoutes(options.getSyncEngine, { dataDir: configuration.dataDir }))

@@ -144,7 +144,13 @@ export type AuthResponse = {
     }
 }
 
-export type SessionsResponse = { sessions: SessionSummary[]; serverTime?: number }
+export type SessionsResponse = {
+    sessions: SessionSummary[]
+    /** SSE position included in this snapshot's scheduled-message fields. */
+    sessionScheduleCursor?: string
+    /** Hub epoch milliseconds at response time, used to age job heartbeats. */
+    serverTime?: number
+}
 export type ScratchlistSessionIdsResponse = { sessionIds: string[] }
 export type SessionContentMatch = {
     messageId: string

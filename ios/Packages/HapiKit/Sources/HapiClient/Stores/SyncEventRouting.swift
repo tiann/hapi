@@ -2,17 +2,15 @@ import Foundation
 import HapiProtocol
 
 /// Fan-out from an SSE subscription's event stream to the stores — the
-/// session-list half of the event routing, mirroring the global-scope rules
-/// of `web/src/hooks/useSSE.ts` via the Android port
-/// (`SyncEventRouter` + `StoreSyncTargets`):
+/// session-list half of the event routing, following the same native scope
+/// rules as Android's `SyncEventRouter` and `StoreSyncTargets`:
 ///
 /// - session lifecycle events → `SessionListStoring.applySessionEvent`;
 /// - `machine-updated` → `MachineListStoring.applyMachineEvent`;
-/// - global-scope message-stream events refresh the session list where the
-///   web invalidates it (`messages-invalidated`, `messages-consumed`,
+/// - global-scope message-stream events refresh the native session list
+///   for hub-computed fields (`messages-invalidated`, `messages-consumed`,
 ///   `message-cancelled`, `scheduled-matured`, and a `message-received`
-///   carrying `scheduledAt` — they all move the hub-computed
-///   scheduled/queued fields the client cannot derive);
+///   carrying `scheduledAt`);
 /// - `toast` → the injected callback;
 /// - a `gap` handshake verdict triggers the full REST resync (session list +
 ///   cached details + machines); `ok` means the hub replays every missed
