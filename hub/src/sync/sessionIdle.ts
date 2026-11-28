@@ -62,19 +62,12 @@ export function hasDurableLiveWork(session: Session): boolean {
     // that miss the CLI's turn-scoped thinking flag).
     if (session.derivedToolWork === true) return true
     const currentMarker = session.metadata?.hostStartMarker
+    // In-memory count is the current worker's report (zeroed on host replace).
+    if ((session.backgroundTaskCount ?? 0) > 0) return true
     // Durable background snapshot for the *current* worker only (#2021
     // current-marker-only / #2657). Prior-gen records may remain in metadata
     // for debugging but must not strand Archive forever.
     const background = session.metadata?.backgroundWork
-    const foreignBackground = Boolean(
-        background
-        && Array.isArray(background.tasks)
-        && background.tasks.length > 0
-        && !latchIsCurrentGeneration(background.hostStartMarker, currentMarker),
-    )
-    // In-memory count can linger after host replace while durable stays
-    // prior-gen — ignore that stale count when markers disagree (#2657).
-    if ((session.backgroundTaskCount ?? 0) > 0 && !foreignBackground) return true
     if (
         background
         && Array.isArray(background.tasks)

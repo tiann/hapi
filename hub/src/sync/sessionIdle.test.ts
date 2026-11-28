@@ -86,7 +86,9 @@ describe('hasDurableLiveWork', () => {
         }))).toBe(false)
     })
 
-    it('ignores stale in-memory background count when durable is prior-gen (#2657)', () => {
+    it('treats in-memory background count as current-worker live work even if durable is prior-gen', () => {
+        // After replace, in-memory count is zeroed; a non-zero count means the
+        // current worker reported tasks and must block Archive.
         expect(hasDurableLiveWork(session({
             backgroundTaskCount: 1,
             backgroundTasks: [{ id: 'bg-1', type: 'local_bash', description: 'sleep' }],
@@ -99,7 +101,7 @@ describe('hasDurableLiveWork', () => {
                     hostStartMarker: 'worker-A',
                 },
             },
-        }))).toBe(false)
+        }))).toBe(true)
     })
 
     it('treats metadata.waiting as durable external block (#2020)', () => {

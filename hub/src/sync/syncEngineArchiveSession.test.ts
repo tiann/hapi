@@ -1140,6 +1140,63 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(cache().getSession(sessionId)?.metadata?.backgroundWork?.hostStartMarker).toBe('worker-A')
     })
 
+    it('refuses Archive when the replacement reports its own background work (#2021 current-gen)', async () => {
+        const sessionId = insertActiveSession('sess-replacement-bg', 'machine-x', 7101, {
+            flavor: 'agy',
+        })
+        const before = cache().getSession(sessionId)!
+        expect(store.sessions.updateSessionMetadata(
+            sessionId,
+            { ...before.metadata!, hostStartMarker: 'worker-A', hostPid: 7101 },
+            before.metadataVersion,
+            NAMESPACE,
+        ).result).toBe('success')
+        cache().refreshSession(sessionId)
+        cache().setBackgroundTasks(sessionId, [
+            { id: 'bg-a', type: 'local_bash', description: 'A sleep' },
+        ])
+
+        const current = cache().getSession(sessionId)!
+        const replaced = {
+            ...current.metadata!,
+            hostPid: 7102,
+            hostStartMarker: 'worker-B',
+        }
+        const update = store.sessions.updateSessionMetadata(
+            sessionId,
+            replaced,
+            current.metadataVersion,
+            NAMESPACE,
+        )
+        if (update.result !== 'success') throw new Error('metadata update failed')
+        engine.handleRealtimeEvent({
+            type: 'session-updated',
+            sessionId,
+            data: { metadata: { version: update.version, value: replaced } },
+        })
+
+        // B claims the durable slot with its own work.
+        cache().setBackgroundTasks(sessionId, [
+            { id: 'bg-b', type: 'local_bash', description: 'B sleep' },
+        ])
+        expect(cache().getSession(sessionId)!.metadata?.backgroundWork?.hostStartMarker).toBe('worker-B')
+
+        setKillSessionMissingTarget()
+        let stopCalled = false
+        const gateway = engine as unknown as {
+            rpcGateway: { stopRunnerSession: unknown; probeRunnerSessionExit: unknown }
+        }
+        gateway.rpcGateway.stopRunnerSession = async () => {
+            stopCalled = true
+            return 'already_gone'
+        }
+
+        const error = await engine.archiveSession(sessionId).catch(error => error)
+        expect(error).toBeInstanceOf(ArchiveCleanupError)
+        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
+        expect(stopCalled).toBe(false)
+    })
+
     it('archives background-only work when Runner reports already_gone after expiry (#2021 Approach)', async () => {
         // Antigravity settles the tool row when backgrounding, then only
         // re-emits background_tasks_changed on membership change. Expiry keeps

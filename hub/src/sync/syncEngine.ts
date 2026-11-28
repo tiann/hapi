@@ -1037,9 +1037,11 @@ export class SyncEngine {
         }
         // Do NOT retire sticky tool work or clear durable background /
         // unresolvedTurn on generation replace. The previous wrapper may have
-        // left a detached agent group (or Codex app-server) still running;
-        // Archive must probe session-scoped exit before clearing (#2021 Approach).
+        // left a detached agent group (or Codex app-server) still running
+        // (#2021 / #2657). Zero in-memory background count so a stale A count
+        // cannot be mistaken for B's work under current-marker-only.
         // Refresh derivedToolWork from the transcript so the guard stays honest.
+        this.sessionCache.clearInMemoryBackgroundTasks(after.id)
         this.sessionCache.noteDerivedWork(after.id, this.store.messages.getLiveToolWork(after.id))
         // Steer admission ownership is OpenCode/Claude only; Cursor/Codex keep
         // their separate delivery owner (see steerDeliveryLifecycle tests).

@@ -164,17 +164,24 @@ it('keeps prior-generation backgroundWork and unresolvedTurn across host replace
         expect(afterIdle.metadata?.backgroundWork?.hostStartMarker).toBe('worker-A')
         expect(afterIdle.metadata?.backgroundWork?.tasks).toHaveLength(1)
 
-        // Idle clear / thinking latch from B also must not steal or wipe A.
+        // Idle clear from B must not wipe A's durable snapshot.
         cache.setBackgroundTasks(session.id, [])
+        const afterIdleClear = engine.getSession(session.id)!
+        expect(afterIdleClear.metadata?.backgroundWork?.hostStartMarker).toBe('worker-A')
+        expect(afterIdleClear.metadata?.backgroundWork?.tasks).toHaveLength(1)
+
+        // B claiming its own turn/background may overwrite the durable slot so
+        // the current-gen Archive precondition stays enforceable.
         cache.setUnresolvedTurn(session.id, true)
-        const afterSteal = engine.getSession(session.id)!
-        expect(afterSteal.metadata?.backgroundWork?.hostStartMarker).toBe('worker-A')
-        expect(afterSteal.metadata?.backgroundWork?.tasks).toHaveLength(1)
+        cache.setBackgroundTasks(session.id, [{ id: 'bg-b', type: 'local_bash', description: 'B work' }])
+        const afterClaim = engine.getSession(session.id)!
         expect(
-            typeof afterSteal.metadata?.unresolvedTurn === 'object'
-                ? afterSteal.metadata.unresolvedTurn.hostStartMarker
+            typeof afterClaim.metadata?.unresolvedTurn === 'object'
+                ? afterClaim.metadata.unresolvedTurn.hostStartMarker
                 : undefined,
-        ).toBe('worker-A')
+        ).toBe('worker-B')
+        expect(afterClaim.metadata?.backgroundWork?.hostStartMarker).toBe('worker-B')
+        expect(afterClaim.metadata?.backgroundWork?.tasks?.[0]?.id).toBe('bg-b')
     } finally { engine.stop(); store.close() }
 })
 

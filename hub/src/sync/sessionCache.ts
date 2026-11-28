@@ -949,6 +949,27 @@ export class SessionCache {
         }
     }
 
+    /**
+     * Drop in-memory background task UI state without touching durable
+     * `metadata.backgroundWork`. Used on worker replacement so a stale prior
+     * count cannot satisfy the current-gen Archive guard (#2657).
+     */
+    clearInMemoryBackgroundTasks(sessionId: string): void {
+        const session = this.sessions.get(sessionId)
+        if (!session) return
+        if ((session.backgroundTaskCount ?? 0) === 0
+            && (session.backgroundTasks?.length ?? 0) === 0) {
+            return
+        }
+        session.backgroundTasks = []
+        session.backgroundTaskCount = 0
+        this.publisher.emit({
+            type: 'session-updated',
+            sessionId,
+            data: { backgroundTaskCount: 0, backgroundTasks: [] } satisfies SessionPatch
+        })
+    }
+
     setBackgroundTasks(sessionId: string, tasks: BackgroundTask[]): void {
         const session = this.sessions.get(sessionId)
         if (!session) return
@@ -970,9 +991,14 @@ export class SessionCache {
             const durableMarker = durable && typeof durable === 'object'
                 ? durable.hostStartMarker
                 : undefined
-            // Replacement must not erase a prior generation's durable evidence
-            // with an idle clear or a new task list (#2021 Approach).
-            if (isForeignGenerationLatch(durableMarker, hostStartMarker)) {
+            // Idle clear from a replacement must not erase a prior generation's
+            // durable snapshot. Non-empty reports from the current worker may
+            // overwrite the slot so B can enforce the current-gen Archive
+            // precondition (#2021 / #2657).
+            if (
+                tasks.length === 0
+                && isForeignGenerationLatch(durableMarker, hostStartMarker)
+            ) {
                 this.recordAgentProgress(sessionId)
                 this.publisher.emit({
                     type: 'session-updated',
@@ -1024,11 +1050,13 @@ export class SessionCache {
         const hostStartMarker = session.metadata.hostStartMarker
         if (unresolved) {
             const alreadyLatched = Boolean(existing && typeof existing === 'object')
-            if (alreadyLatched) {
-                // Keep a prior-generation latch; a replacement must not steal
-                // ownership of the only Archive evidence (#2021 Approach).
+            const existingMarker = typeof existing === 'object' ? existing.hostStartMarker : undefined
+            if (alreadyLatched && !isForeignGenerationLatch(existingMarker, hostStartMarker)) {
+                // Same-generation latch already present.
                 return
             }
+            // Current worker may claim the slot (overwrite foreign) so its
+            // own turn is visible to Archive (#2021 current-gen guarantee).
             const metadata = {
                 ...session.metadata,
                 unresolvedTurn: {
@@ -1053,7 +1081,7 @@ export class SessionCache {
         }
         if (!existing) return
         // Idle heartbeat from a replacement must not clear the previous
-        // worker's latch — that is the kill-direction hole (#2021 Approach).
+        // worker's latch when the current worker has not claimed the slot.
         if (isForeignGenerationLatch(
             typeof existing === 'object' ? existing.hostStartMarker : undefined,
             hostStartMarker,
