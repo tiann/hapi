@@ -23,7 +23,7 @@ import type { AgentFlavor, BackgroundTask, CodexCollaborationMode, CopilotAgentM
 import { hasConversationMessageContent, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { Server } from 'socket.io'
 import { createHash, randomUUID } from 'node:crypto'
-import type { BranchConversationRequest, BranchConversationResponse } from '@hapi/protocol/apiTypes'
+import { BranchConversationAgentSchema, resolveBranchSourceDirectory, type BranchConversationRequest, type BranchConversationResponse } from '@hapi/protocol/apiTypes'
 import { branchSessionId, buildBranchPrompt } from './branchTranscript'
 import type { Store, CancelQueuedMessageResult } from '../store'
 import type { StoredMessage } from '../store/types'
@@ -2612,27 +2612,41 @@ export class SyncEngine {
                         ? { warning: 'Launch outcome is uncertain. Inspect this child before starting another branch.' } : {}) }
             }
             this.assertConversationHistoryIdle(source, false, false)
-            if (!['claude', 'codex'].includes(source.metadata?.flavor ?? 'claude')) {
-                throw new Error('Portable branches currently support Claude Code and Codex source sessions')
+            const sourceAgent = BranchConversationAgentSchema.safeParse(source.metadata?.flavor ?? 'claude').data
+            if (!sourceAgent) {
+                throw new Error('Portable branches require a Claude Code, Codex, or Cursor source session')
+            }
+            if (request.agent === 'cursor' && request.workspace === 'worktree') {
+                throw new Error('Branching into Cursor requires the current directory')
             }
             const machineId = source.metadata?.machineId
-            const directory = source.metadata?.path
+            const directory = resolveBranchSourceDirectory(source.metadata)
             const machine = machineId ? this.getMachineByNamespace(machineId, namespace) : undefined
             if (!machineId || !directory || !machine?.active) throw new Error('Source machine must be online')
+            if (sourceAgent === 'cursor' && request.sourceDirectory !== directory) {
+                throw new Error('Confirm the Cursor source directory before branching')
+            }
             if (request.model) {
-                const catalog = request.agent === 'claude'
-                    ? await this.listClaudeModelsForMachine(machineId)
-                    : await this.listCodexModelsForMachine(machineId)
-                const models = 'availableModels' in catalog
-                    ? catalog.availableModels?.map(model => model.value)
-                    : 'models' in catalog ? catalog.models?.map(model => model.id) : []
-                if (!catalog.success || !models?.includes(request.model)) throw new Error('Selected model is not available on the source machine')
+                let models: string[] | undefined
+                if (request.agent === 'cursor') {
+                    const catalog = await this.listCursorModelsForMachine(machineId)
+                    if (catalog.success) models = catalog.availableModels?.map(model => model.modelId)
+                } else if (request.agent === 'claude') {
+                    const catalog = await this.listClaudeModelsForMachine(machineId)
+                    if (catalog.success) models = catalog.availableModels?.map(model => model.value)
+                } else {
+                    const catalog = await this.listCodexModelsForMachine(machineId)
+                    if (catalog.success) models = catalog.models?.map(model => model.id)
+                }
+                if (!models?.includes(request.model)) throw new Error('Selected model is not available on the source machine')
             }
             // Catalog discovery is asynchronous; reject if a new turn began meanwhile.
             const latestSource = this.getSessionByNamespace(sessionId, namespace)
             if (!latestSource) throw new Error('Source session no longer exists')
             this.assertConversationHistoryIdle(latestSource, false, false)
-            if (latestSource.metadata?.machineId !== machineId || latestSource.metadata?.path !== directory) {
+            if ((latestSource.metadata?.flavor ?? 'claude') !== sourceAgent
+                || latestSource.metadata?.machineId !== machineId
+                || resolveBranchSourceDirectory(latestSource.metadata) !== directory) {
                 throw new Error('Source location changed; reopen the branch dialog')
             }
             // Freeze the invoked prefix before any asynchronous spawn work. Pending
@@ -2665,8 +2679,10 @@ export class SyncEngine {
                 const spawn = await this.rpcGateway.spawnSession(
                     machineId, directory, request.agent, request.model,
                     undefined, undefined, request.workspace === 'worktree' ? 'worktree' : 'simple',
-                    request.worktreeName, undefined, undefined, undefined, undefined,
-                    undefined, undefined, undefined, 'remote', undefined, childId
+                    request.worktreeName, undefined, undefined, request.agent === 'cursor' ? 'default' : undefined, undefined,
+                    undefined, undefined, undefined, 'remote', undefined, childId, undefined,
+                    // The confirmed Cursor workspace may have disappeared since the dialog opened.
+                    sourceAgent === 'cursor' ? false : undefined
                 )
                 if (spawn.type !== 'success') {
                     if (spawn.childStarted === false) {

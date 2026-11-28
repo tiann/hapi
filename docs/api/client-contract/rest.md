@@ -100,10 +100,10 @@ Conversation history APIs (iOS has UI for them; Android does not): `POST /api/se
 
 Source: `hub/src/web/routes/sessions.ts`; schema `BranchConversationRequestSchema` (`shared/src/apiTypes.ts`).
 
-`POST /api/sessions/:id/branch` accepts `{requestId, messageLocalId? | messageId?, boundary?: 'before'|'after', agent: 'claude'|'codex', model?, workspace?: 'current'|'worktree', worktreeName?, instruction}`. Invalid options return `400`; a rejected launch returns `409 {error}`.
+`POST /api/sessions/:id/branch` accepts `{requestId, messageLocalId? | messageId?, boundary?: 'before'|'after', agent: 'claude'|'codex'|'cursor', model?, workspace?: 'current'|'worktree', worktreeName?, sourceDirectory?, instruction}`. Invalid options return `400`; a rejected launch returns `409 {error}`.
 
 - `requestId` is a UUID. Reusing it with identical options returns the same child, including after a hub restart; different options are rejected. Keep it when retrying a lost response.
-- The source may be active or inactive, but must be idle, have no queued input, and belong to the authenticated namespace. Its machine must be online for a new launch. Initial sources and targets are Claude Code and Codex.
+- The source may be active or inactive, but must be idle, have no queued input, and belong to the authenticated namespace. Its machine must be online for a new launch. Sources and destinations include Claude Code, Codex and Cursor. For a Cursor source, send the exact directory the operator confirmed in `sourceDirectory`. Use the recorded `metadata.worktree.worktreePath` when present, or `metadata.path` otherwise. A Cursor destination requires `workspace: 'current'`.
 - `messageLocalId` (client local id) or `messageId` (hub message id; specify at most one) identifies an invoked user message. `before` excludes it; `after` includes it and subsequent output up to the next invoked user message. Omitting the id selects the idle tail.
 - A fresh target receives one queued user prompt containing allowlisted visible prose/tool observations and the required new `instruction`. Native session ids, reasoning, private system events and pending input are not copied. Attachments and references larger than 256 KiB are rejected rather than silently omitted/truncated.
 - Files are not rewound. `current` shares the source directory; `worktree` uses the existing runner worktree behavior at current Git HEAD and does not copy uncommitted changes.

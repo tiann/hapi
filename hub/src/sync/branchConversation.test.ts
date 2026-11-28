@@ -10,14 +10,20 @@ const request: BranchConversationRequest = {
     requestId: 'b428e5be-dc54-4edc-9903-59250c1b5c31', messageLocalId: 'second', boundary: 'before',
     agent: 'codex', model: 'target-model', workspace: 'worktree', instruction: 'Try the other implementation'
 }
-function fixture() {
+function fixture(flavor: 'claude' | 'cursor' = 'claude') {
     const store = new Store(':memory:')
     const io = { of: () => ({ to: () => ({ emit() {} }) }) }
     const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
     engine.getOrCreateMachine('machine', { host: 'test', platform: 'linux', happyCliVersion: 'test' }, null, 'default')
     engine.handleMachineAlive({ machineId: 'machine', time: Date.now() })
     const source = engine.getOrCreateSession('source', {
-        path: '/tmp/work', host: 'test', machineId: 'machine', flavor: 'claude', claudeSessionId: 'private-native-id'
+        path: '/tmp/work', host: 'test', machineId: 'machine', flavor,
+        ...(flavor === 'cursor'
+            ? {
+                cursorSessionId: 'private-cursor-id', cursorSessionProtocol: 'acp', preferredPermissionMode: 'yolo',
+                worktree: { basePath: '/tmp/work', branch: 'cursor-branch', name: 'cursor-branch', worktreePath: '/tmp/cursor-worktree' }
+            }
+            : { claudeSessionId: 'private-native-id' })
     }, { controlledByUser: false }, 'default')
     engine.handleSessionAlive({ sid: source.id, time: Date.now(), thinking: false, mode: 'remote' })
     for (const id of ['first', 'second']) {
@@ -26,6 +32,7 @@ function fixture() {
     }
     const rpc = (engine as unknown as { rpcGateway: RpcGateway }).rpcGateway
     rpc.listCodexModelsForMachine = async () => ({ success: true, models: [{ id: 'target-model', displayName: 'Target', isDefault: true }] })
+    rpc.listCursorModelsForMachine = async () => ({ success: true, availableModels: [{ modelId: 'cursor-model[fast=true]' }] })
     return { store, engine, source, rpc }
 }
 describe('portable branch lifecycle', () => {
@@ -60,6 +67,7 @@ describe('portable branch lifecycle', () => {
             expect(args[6]).toBe('worktree')
             expect(args[8]).toBeUndefined() // never resume the source native id
             expect(args[12]).toBeUndefined() // fresh, never reopen
+            expect(args[19]).toBeUndefined()
             const childId = args[17]!
             // Exercise the same UUID/adopt contract used by bootstrapSession;
             // an arbitrary hash would be ignored and mint an unrelated row.
@@ -86,6 +94,56 @@ describe('portable branch lifecycle', () => {
             expect(store.messages.getAllMessages(result.sessionId)).toHaveLength(1)
             expect(store.messages.getAllMessages(source.id)).toHaveLength(2)
             expect(await engine.branchConversation(source.id, 'default', { ...request, instruction: 'Different' })).toMatchObject({ type: 'error' })
+        } finally { engine.stop() }
+    })
+    it('branches Cursor history with the selected wire model and default permissions', async () => {
+        const { store, engine, source, rpc } = fixture('cursor')
+        store.messages.addMessage(source.id, {
+            role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'Visible Cursor reply' } }
+        })
+        store.messages.addMessage(source.id, {
+            role: 'agent', content: { type: 'codex', data: { type: 'reasoning', message: 'PRIVATE_REASONING' } }
+        })
+        const options = {
+            ...request, agent: 'cursor', model: 'cursor-model[fast=true]', workspace: 'current', boundary: 'after',
+            sourceDirectory: '/tmp/cursor-worktree'
+        } as const
+        let spawned = 0
+        rpc.spawnSession = async (...args) => {
+            spawned++
+            expect(args.slice(1, 13)).toEqual([
+                '/tmp/cursor-worktree', 'cursor', 'cursor-model[fast=true]', undefined, undefined, 'simple', undefined,
+                undefined, undefined, 'default', undefined, undefined
+            ])
+            expect(args[19]).toBe(false)
+            return { type: 'success', sessionId: args[17]! }
+        }
+        try {
+            expect(BranchConversationRequestSchema.safeParse(options).success).toBe(true)
+            expect(await engine.branchConversation(source.id, 'default', { ...options, workspace: 'worktree' })).toEqual({
+                type: 'error', message: 'Branching into Cursor requires the current directory'
+            })
+            for (const sourceDirectory of [undefined, '/tmp/work']) {
+                expect(await engine.branchConversation(source.id, 'default', { ...options, sourceDirectory })).toEqual({
+                    type: 'error', message: 'Confirm the Cursor source directory before branching'
+                })
+            }
+            expect(await engine.branchConversation(source.id, 'default', { ...options, model: 'target-model' })).toEqual({
+                type: 'error', message: 'Selected model is not available on the source machine'
+            })
+            expect(spawned).toBe(0)
+            const result = await engine.branchConversation(source.id, 'default', options)
+            if (result.type !== 'success') throw new Error(result.message)
+            expect(result.warning).toBeUndefined()
+            const prompt = JSON.stringify(store.messages.getAllMessages(result.sessionId))
+            expect(prompt).toContain('Visible Cursor reply')
+            expect(prompt).not.toContain('PRIVATE_REASONING')
+            expect(prompt).not.toContain('private-cursor-id')
+            expect(engine.getSession(result.sessionId)?.metadata).toMatchObject({
+                flavor: 'cursor', conversationBranch: { sourceSessionId: source.id, state: 'started' }
+            })
+            expect(await engine.branchConversation(source.id, 'default', options)).toEqual(result)
+            expect(spawned).toBe(1)
         } finally { engine.stop() }
     })
     it('keeps ambiguous children and never respawns an idempotent retry', async () => {
