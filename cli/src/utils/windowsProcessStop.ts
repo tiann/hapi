@@ -77,9 +77,10 @@ export function windowsGenerationMayBeAlive(table: WindowsProcessTable | null, p
     return Boolean(entry && (!entry.marker || !marker || entry.marker === marker))
 }
 
+export type ProcessStopSignalPhase = 'root' | 'descendant' | 'verified-rebound-descendant'
 export type WindowsStopReport = { confirmed: boolean; phase: string; elapsedMs: number; snapshots: number }
 export async function stopWindowsProcessTree(rootPid: number, force: boolean, report?: (result: WindowsStopReport) => void,
-    callerDeadlineMs?: number): Promise<boolean> {
+    callerDeadlineMs?: number, canSignal?: (phase?: ProcessStopSignalPhase) => boolean): Promise<boolean> {
     // Includes command startup, queries, signalling and verification, independent
     // of tree size. Each async child is killed when its remaining budget expires.
     const started = performance.now()
@@ -93,11 +94,17 @@ export async function stopWindowsProcessTree(rootPid: number, force: boolean, re
     // process's performance origin. Cap budgets without comparing origins.
     const remaining = () => Math.max(0, Math.min(deadline - performance.now(),
         callerDeadlineMs === undefined ? Infinity : callerDeadlineMs - monotonicTimeMs()))
-    const signal = async (pid: number, hard: boolean, tree: boolean) => {
+    const signal = async (pid: number, hard: boolean, tree: boolean,
+        signalPhase: ProcessStopSignalPhase = pid === rootPid ? 'root' : 'descendant'): Promise<'vetoed' | 'sent' | 'failed'> => {
+        if (canSignal && !canSignal(signalPhase)) {
+            phase = 'binding-veto'
+            return 'vetoed'
+        }
         phase = 'signal'
-        return execute(windowsSystemTool('taskkill'), [
+        const output = await execute(windowsSystemTool('taskkill'), [
             ...(hard ? ['/F'] : []), ...(tree ? ['/T'] : []), '/PID', String(pid),
         ], Math.min(5_000, remaining()))
+        return output === null ? 'failed' : 'sent'
     }
     if (!remaining()) return finish(false)
     const initial = await readWindowsProcessTable(Math.min(15_000, remaining()))
@@ -136,14 +143,24 @@ export async function stopWindowsProcessTree(rootPid: number, force: boolean, re
     refresh(initial)
     if (!unresolved.size) return finish(true)
 
+    const originalRootExitedAfterVeto = async () => {
+        const table = await snapshot()
+        if (table) refresh(table)
+        phase = 'binding-veto'
+        return table !== null && !unresolved.has(rootPid)
+    }
+
     // Recheck the root's generation immediately before tree-wide signalling.
     let current = await snapshot()
     if (!current) return finish(false)
     refresh(current)
     const rootMarker = members.get(rootPid)
     if (unresolved.has(rootPid) && rootMarker && current.get(rootPid)?.marker === rootMarker) {
-        const softAccepted = await signal(rootPid, force, true)
-        if (!force && softAccepted !== null) {
+        const result = await signal(rootPid, force, true)
+        // The binding can disappear after a snapshot when the wrapper exits.
+        // Never proceed based on a veto alone: verify the original generation.
+        if (result === 'vetoed' && !await originalRootExitedAfterVeto()) return finish(false)
+        if (!force && result === 'sent') {
             const graceDeadline = performance.now() + Math.min(2_000, remaining())
             while (unresolved.size && performance.now() < graceDeadline) {
                 current = await snapshot()
@@ -186,9 +203,37 @@ export async function stopWindowsProcessTree(rootPid: number, force: boolean, re
             if (!current) return finish(false)
             refresh(current)
             if (unresolved.has(rootPid) && current.get(rootPid)?.marker === rootMarker) {
-                await signal(rootPid, true, true)
+                if (await signal(rootPid, true, true) === 'vetoed' && !await originalRootExitedAfterVeto()) return finish(false)
             }
         }
+    }
+
+    const stopReboundDescendant = async (pid: number, expected: string): Promise<boolean> => {
+        // CIM and the direct probe use the same fixed-width UTC creation marker.
+        // A numeric parent PID alone cannot prove ancestry through PID reuse.
+        const isTimestamp = (marker?: string | null): marker is string =>
+            !!marker && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z$/.test(marker)
+        if (pid === rootPid || !isTimestamp(rootMarker) || !isTimestamp(expected)
+            || initial.get(pid)?.marker !== expected || !canSignal?.('verified-rebound-descendant')) return false
+        for (let child = pid; child !== rootPid;) {
+            const entry = initial.get(child)
+            const parent = entry && initial.get(entry.parentPid)
+            if (!entry || !isTimestamp(entry.marker) || !isTimestamp(parent?.marker) || parent.marker >= entry.marker) return false
+            child = entry.parentPid
+        }
+        phase = 'rebound-descendant-probe'; snapshots++
+        const table = await readWindowsProcessTable(Math.min(10_000, remaining()), [rootPid, pid])
+        if (!table) return false
+        const descendant = table.get(pid)
+        if (!descendant || (descendant.marker && descendant.marker !== expected)) {
+            unresolved.delete(pid)
+            return true
+        }
+        const replacement = table.get(rootPid)?.marker
+        // The original child predates this root generation and cannot belong to
+        // it. Signal only the original PID, never the unchecked subtree (/T).
+        if (descendant.marker !== expected || !isTimestamp(replacement) || replacement <= expected) return false
+        return await signal(pid, true, false, 'verified-rebound-descendant') !== 'vetoed'
     }
 
     // A missing intermediate process disconnects a survivor from the root's
@@ -206,6 +251,10 @@ export async function stopWindowsProcessTree(rootPid: number, force: boolean, re
         if (!unresolved.size) return finish(true)
         const expected = unresolved.get(pid)
         if (!expected || current.get(pid)?.marker !== expected) continue
+        if (pid !== rootPid && canSignal && !canSignal('descendant')) {
+            if (!await stopReboundDescendant(pid, expected)) return finish(false)
+            continue
+        }
         phase = 'survivor-subtree-snapshot'; snapshots++
         const subtree = await readWindowsProcessTable(Math.min(15_000, remaining()))
         if (!subtree) return finish(false)
@@ -229,7 +278,9 @@ export async function stopWindowsProcessTree(rootPid: number, force: boolean, re
         current = await snapshot()
         if (!current) return finish(false)
         refresh(current)
-        if (unresolved.has(pid) && current.get(pid)?.marker === expected) await signal(pid, true, true)
+        if (unresolved.has(pid) && current.get(pid)?.marker === expected
+            && await signal(pid, true, true) === 'vetoed'
+            && !(pid === rootPid ? await originalRootExitedAfterVeto() : await stopReboundDescendant(pid, expected))) return finish(false)
         for (const child of unresolved.keys()) {
             if (!scheduled.has(child)) { scheduled.add(child); pendingSignals.push(child) }
         }

@@ -10,7 +10,12 @@ const mocks = vi.hoisted(() => ({
     readRuntimes: vi.fn(),
     findRuntime: vi.fn(),
     reapOrphans: vi.fn<typeof import('./orphanReap')['reapRunnerSpawnedOrphans']>(),
+    findOrphanTargets: vi.fn<typeof import('./orphanReap')['findStopSessionOrphanTargets']>(),
     kill: vi.fn(),
+    windows: vi.fn(() => false),
+    startMarker: vi.fn(() => 'generation'),
+    threadGroupId: vi.fn((pid: number) => pid),
+    bootId: vi.fn(() => 'boot'),
 }))
 
 vi.mock('./controlServer', () => ({ startRunnerControlServer: mocks.controlServer }))
@@ -33,24 +38,48 @@ vi.mock('@/codex/shared/registry', () => ({
 }))
 vi.mock('@/runner/orphanReap', () => ({
     reapRunnerSpawnedOrphans: mocks.reapOrphans,
-    findStopSessionOrphanTargets: vi.fn(),
+    findStopSessionOrphanTargets: mocks.findOrphanTargets,
 }))
 vi.mock('@/utils/process', async importOriginal => ({
     ...await importOriginal<typeof import('@/utils/process')>(),
-    isWindows: () => false,
+    isWindows: mocks.windows,
     isProcessAlive: () => true,
-    getProcessStartMarker: () => 'generation',
+    getProcessStartMarker: mocks.startMarker,
+    getProcessThreadGroupId: mocks.threadGroupId,
+    getSystemBootId: mocks.bootId,
     killProcess: mocks.kill,
     killProcessTreeByPid: mocks.kill,
     killProcessByChildProcess: mocks.kill,
 }))
 
 import { configuration } from '@/configuration'
-import { startRunner } from './run'
+import { classifyObservedRecoveredProcessGeneration, startRunner } from './run'
+
+describe('persisted session heartbeat generation', () => {
+    it('classifies Windows persisted sessions from the heartbeat snapshot without per-PID probes', () => {
+        mocks.windows.mockReturnValue(true)
+        mocks.startMarker.mockClear()
+        mocks.threadGroupId.mockClear()
+        mocks.bootId.mockClear()
+        try {
+            expect(classifyObservedRecoveredProcessGeneration(
+                42,
+                { processStartMarker: 'generation', bootId: 'recorded-boot' },
+                { alive: true, startMarker: 'generation' },
+            )).toBe('verified')
+            expect(mocks.startMarker).not.toHaveBeenCalled()
+            expect(mocks.threadGroupId).not.toHaveBeenCalled()
+            expect(mocks.bootId).not.toHaveBeenCalled()
+        } finally {
+            mocks.windows.mockReturnValue(false)
+        }
+    })
+})
 
 describe('runner stop confirmation after shared Codex tracking loss', () => {
     let stopSession: Parameters<typeof startRunnerControlServer>[0]['stopSession']
     let reportSession: Parameters<typeof startRunnerControlServer>[0]['onHappySessionWebhook']
+    let getChildren: Parameters<typeof startRunnerControlServer>[0]['getChildren']
     let record: CodexRuntimeRecord
     let home: string
 
@@ -61,6 +90,7 @@ describe('runner stop confirmation after shared Codex tracking loss', () => {
         mocks.controlServer.mockImplementation(async handlers => {
             stopSession = handlers.stopSession
             reportSession = handlers.onHappySessionWebhook
+            getChildren = handlers.getChildren
             throw captured
         })
         // Stop startup at control-server registration. Exercise its real closure
@@ -121,8 +151,50 @@ describe('runner stop confirmation after shared Codex tracking loss', () => {
     it('lets verified exit confirm stop despite an unrelated protected wrapper', async () => {
         record.sessions = {}
         reportSession('other', { hostPid: 4242, startedBy: 'terminal', capabilities: { concurrentClients: true } } as Parameters<typeof reportSession>[1])
+        expect(getChildren()).toEqual(expect.arrayContaining([expect.objectContaining({ pid: 4242, happySessionId: 'other' })]))
         await expect(stopSession('exited')).resolves.toBe('already_gone')
         await expect(stopSession('target')).resolves.toBe('unknown')
+    })
+
+    it('never signals a wrapper that registers during an orphan-only stop scan', async () => {
+        const sessionId = 'registers-during-scan'
+        const pid = 4243
+        record.sessions = {}
+        mocks.findOrphanTargets.mockImplementationOnce(async (id, shouldSkip) => {
+            reportSession(id, { hostPid: pid, startedBy: 'terminal' } as Parameters<typeof reportSession>[1])
+            expect(getChildren()).toEqual(expect.arrayContaining([expect.objectContaining({ pid, happySessionId: id })]))
+            expect(shouldSkip(id, pid)).toBe(true)
+            return []
+        })
+        mocks.reapOrphans.mockImplementationOnce(async (id, options) => {
+            const target = { pid, startMarker: 'generation', needsPublicationDrain: false } as const
+            expect(await options?.findTargets?.(id)).toEqual([])
+            // A registration during discovery must also veto a candidate that
+            // has already left discovery when preparation or signalling runs.
+            expect(await options?.prepare?.(target)).toBe(false)
+            expect(await options?.killTree?.(pid)).toBe(false)
+            return 'still_alive'
+        })
+        await expect(stopSession(sessionId)).resolves.toBe('still_alive')
+        expect(mocks.kill).not.toHaveBeenCalled()
+    })
+
+    it('reports an argv-matched runner generation adopted during discovery as still alive', async () => {
+        const pid = 4244
+        const sessionId = 'adopted-during-stop'
+        record.sessions[sessionId] = { ...record.sessions.target }
+        const { reapRunnerSpawnedOrphans } = await vi.importActual<typeof import('./orphanReap')>('./orphanReap')
+        const target = { pid, startMarker: 'generation', needsPublicationDrain: false } as const
+        mocks.findOrphanTargets.mockImplementationOnce(async (id, shouldSkip) => {
+            reportSession(id, { hostPid: pid, startedBy: 'runner', hostStartMarker: 'generation' } as Parameters<typeof reportSession>[1])
+            expect(getChildren()).toEqual(expect.arrayContaining([expect.objectContaining({ pid, happySessionId: id })]))
+            return shouldSkip(id, pid) ? [] : [target]
+        })
+        mocks.reapOrphans.mockImplementationOnce((id, options) => reapRunnerSpawnedOrphans(id, {
+            ...options, getStartMarker: () => 'generation', isAlive: () => true,
+        }))
+        await expect(stopSession(sessionId)).resolves.toBe('still_alive')
+        expect(mocks.kill).not.toHaveBeenCalled()
     })
 
     it('still refuses when the orphan sweep cannot establish exit', async () => {
@@ -136,6 +208,32 @@ describe('runner stop confirmation after shared Codex tracking loss', () => {
         record.hub = configuration.apiUrl
         record.authHash = 'another-auth'
         await expect(stopSession('target')).resolves.toBe('unknown')
+    })
+
+    it.each(['ESRCH', 'EPERM'])('rechecks a changed raw binding without signalling a replacement (%s)', async code => {
+        const pid = code === 'ESRCH' ? 45454 : 45455;
+        mocks.threadGroupId.mockReturnValueOnce(pid);
+        record.sessions = {};
+        const scan = Promise.withResolvers<CodexRuntimeRecord[]>();
+        const scanStarted = Promise.withResolvers<void>();
+        // First registry probe is for the logical root; the second follows
+        // capturePidBinding in the raw PID path.
+        mocks.readRuntimes.mockResolvedValueOnce([]).mockImplementationOnce(() => {
+            scanStarted.resolve();
+            return scan.promise;
+        });
+        const stop = stopSession(`PID-${pid}`);
+        await scanStarted.promise;
+        reportSession(`replacement-${code}`, { hostPid: pid, startedBy: 'terminal' } as Parameters<typeof reportSession>[1]);
+        const killProbe = vi.spyOn(process, 'kill').mockImplementation(() => { throw Object.assign(new Error(code), { code }); });
+        try {
+            scan.resolve([]);
+            await expect(stop).resolves.toBe(code === 'ESRCH' ? 'already_gone' : 'unknown');
+            expect(killProbe).toHaveBeenCalledWith(pid, 0);
+            expect(mocks.kill).not.toHaveBeenCalled();
+        } finally {
+            killProbe.mockRestore();
+        }
     })
 
     it('keeps raw PID confirmation fail-closed without a start marker', async () => {

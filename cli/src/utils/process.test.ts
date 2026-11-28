@@ -10,7 +10,8 @@ vi.mock('cross-spawn', () => ({
     }
 }))
 
-import { getHapiRunnerProcessIdentity, killProcess, killProcessTreeByPid } from './process'
+import { getHapiRunnerProcessIdentity, killProcess, killProcessByChildProcessSync, killProcessTreeByPid } from './process'
+import type { ChildProcess } from 'node:child_process'
 import { monotonicTimeMs } from './time'
 import { windowsSystemTool } from './windowsSystemTools'
 
@@ -63,6 +64,15 @@ describe('preparation signal deadline on POSIX', () => {
         expect(await killProcessTreeByPid(5544, false, undefined, monotonicTimeMs() - 1)).toBe(false)
         expect(vi.mocked(process.kill).mock.calls.filter(([, signal]) => signal !== 0)).toEqual([])
     })
+    it('does not force-stop a PID that acquired a sibling during the grace period', async () => {
+        let isolated = true
+        const stopped = killProcess(5544, false, undefined, () => isolated)
+        isolated = false
+        await vi.advanceTimersByTimeAsync(2500)
+        expect(await stopped).toBe(false)
+        expect(vi.mocked(process.kill).mock.calls.filter(([, signal]) => signal !== 0)).toEqual([[5544, 'SIGTERM']])
+    })
+
     it('does not escalate to SIGKILL after the lease expires during the graceful wait', async () => {
         const stopped = killProcess(5544, false, monotonicTimeMs() + 100)
         await vi.advanceTimersByTimeAsync(2500)
@@ -257,6 +267,34 @@ describe('getHapiRunnerProcessIdentity on Windows', () => {
 })
 
 describe('killProcess on Windows (orphanReap / stopSession)', () => {
+    it('rechecks the binding before forcing a Windows root that survives soft stop', async () => {
+        vi.useFakeTimers()
+        let isolated = true
+        spawnSyncMock.mockImplementation((command: string, args: string[] = []) => {
+            if (command === windowsSystemTool('tasklist')) return completed('hapi.exe 7788 Console')
+            if (command === windowsSystemTool('taskkill') && !args.includes('/F')) isolated = false
+            return completed('')
+        })
+        const stop = killProcess(7788, false, undefined, () => isolated)
+        await vi.advanceTimersByTimeAsync(2500)
+        expect(await stop).toBe(false)
+        expect(spawnSyncMock.mock.calls.filter(([command]) => command === windowsSystemTool('taskkill'))).toHaveLength(1)
+        expect(spawnSyncMock.mock.calls.some(([cmd, args]) => cmd === windowsSystemTool('taskkill') && args.includes('/F'))).toBe(false)
+    })
+
+    it('issues exit-hook taskkill synchronously before returning', () => {
+        spawnSyncMock.mockImplementation((command: string, args: string[] = []) => completed(command === windowsSystemTool('tasklist') ? 'hapi.exe 9901 Console' : '', command === windowsSystemTool('taskkill') && !args.includes('/F') ? 1 : 0))
+        killProcessByChildProcessSync({ pid: 9901, exitCode: null, signalCode: null } as ChildProcess)
+        const calls = spawnSyncMock.mock.calls.filter(call => call[0] === windowsSystemTool('taskkill'))
+        expect(calls).toHaveLength(2)
+        expect(calls[0][1]).toEqual(['/T', '/PID', '9901'])
+        expect(calls[1][1]).toEqual(['/F', '/T', '/PID', '9901'])
+    })
+    it('never signals an already-exited child from an exit hook', () => {
+        killProcessByChildProcessSync({ pid: 9901, exitCode: 0, signalCode: null } as ChildProcess)
+        killProcessByChildProcessSync({ pid: 9901, exitCode: null, signalCode: 'SIGTERM' } as ChildProcess)
+        expect(spawnSyncMock).not.toHaveBeenCalled()
+    })
     it('includes slow liveness probes in the graceful shutdown deadline', async () => {
         let graceStarted: number | undefined
         let alive = true
@@ -544,6 +582,11 @@ describe('killProcess on Windows (orphanReap / stopSession)', () => {
 })
 
 describe('killProcessTreeByPid on POSIX (pgrep tree scan)', () => {
+    it('signals the owned child and descendants synchronously on exit', () => {
+        spawnSyncMock.mockImplementation((_command: string, args: string[]) => ({ ...completed(''), stdout: args[1] === '100' ? '200' : '' }))
+        killProcessByChildProcessSync({ pid: 100, exitCode: null, signalCode: null } as ChildProcess)
+        expect(vi.mocked(process.kill).mock.calls).toEqual([[200, 'SIGTERM'], [100, 'SIGTERM']])
+    })
     beforeEach(() => {
         setPlatform('linux')
         spawnSyncMock.mockReset()
