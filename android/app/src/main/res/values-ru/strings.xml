@@ -165,6 +165,16 @@
 
     <!-- Usage dashboard -->
     <string name="settings_usage">Использование</string>
+    <string name="quota_title">Квоты аккаунтов CLI</string>
+    <string name="quota_empty">Нет машин онлайн с установленными аккаунтами CLI.</string>
+    <string name="quota_runner">Обновите раннер на этой машине, чтобы видеть квоты аккаунтов CLI.</string>
+    <string name="quota_remaining">Осталось %1$d%% (использовано %2$d%%)</string>
+    <string name="quota_resets">Сброс: %1$s</string>
+    <string name="quota_unauthenticated">Не выполнен вход</string>
+    <string name="quota_custom_provider">Свой эндпоинт / API-ключ</string>
+    <string name="quota_error">Квота недоступна</string>
+    <string name="quota_older_hub">Обновите хаб, чтобы увидеть квоты аккаунтов CLI.</string>
+    <string name="quota_stale">Не удалось обновить квоты. Показаны ранее полученные данные.</string>
     <string name="settings_usage_range_7d">7 дней</string>
     <string name="settings_usage_range_30d">30 дней</string>
     <string name="settings_usage_range_all">За всё время</string>

@@ -172,6 +172,16 @@
 
     <!-- Usage dashboard -->
     <string name="settings_usage">Token 用量</string>
+    <string name="quota_title">CLI 账号额度</string>
+    <string name="quota_empty">暂无在线机器或可用 CLI 账号。</string>
+    <string name="quota_runner">请更新此机器上的 runner 以查看 CLI 账号额度。</string>
+    <string name="quota_remaining">剩余 %1$d%%（已用 %2$d%%）</string>
+    <string name="quota_resets">重置时间：%1$s</string>
+    <string name="quota_unauthenticated">未登录</string>
+    <string name="quota_custom_provider">自定义接口 / API Key</string>
+    <string name="quota_error">无法获取额度</string>
+    <string name="quota_older_hub">请更新 Hub 以查看 CLI 账号额度。</string>
+    <string name="quota_stale">刷新失败。当前显示上次获取的额度。</string>
     <string name="settings_usage_range_7d">近 7 天</string>
     <string name="settings_usage_range_30d">近 30 天</string>
     <string name="settings_usage_range_all">全部时间</string>

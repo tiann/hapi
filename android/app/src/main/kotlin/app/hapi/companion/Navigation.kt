@@ -1028,6 +1028,7 @@ private class UsageViewModelHolder(hubGraph: HubGraph) : ViewModel() {
 
     val viewModel = UsageViewModel(
         gateway = hubGraph.session.api::getUsageSummary,
+        loadQuotas = hubGraph.session.api::getUsageQuotas,
         scope = scope,
     )
 

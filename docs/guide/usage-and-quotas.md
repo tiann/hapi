@@ -74,6 +74,8 @@ The **CLI account quotas** section at the top of **Settings → Token usage** as
 
 **Refresh quotas** forces a fresh read on every machine. Otherwise the runner caches results for about a minute, and the page does not refetch on its own.
 
+On Android, open **Settings → Usage → CLI account quotas** and tap **Refresh** for a fresh reading.
+
 ### Which agents report quotas
 
 | Agent | Source | Notes |
