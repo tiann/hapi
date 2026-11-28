@@ -32,6 +32,18 @@ function stringIdList(value: unknown): string[] {
     return value.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
 }
 
+/** Prior-generation durable latch vs the session's current worker marker. */
+function isForeignGenerationLatch(
+    latchMarker: unknown,
+    currentMarker: unknown,
+): boolean {
+    return typeof latchMarker === 'string'
+        && latchMarker.length > 0
+        && typeof currentMarker === 'string'
+        && currentMarker.length > 0
+        && latchMarker !== currentMarker
+}
+
 /**
  * Merge hub-owned OpenCode childToolWork across session-row replacement.
  * Destination (replacement) running markers win over source settlements for the
@@ -954,6 +966,21 @@ export class SessionCache {
         // (or empty identity) fails MetadataSchema and nulls the whole blob (#2021 Major).
         if (session.metadata) {
             const hostStartMarker = session.metadata.hostStartMarker
+            const durable = session.metadata.backgroundWork
+            const durableMarker = durable && typeof durable === 'object'
+                ? durable.hostStartMarker
+                : undefined
+            // Replacement must not erase a prior generation's durable evidence
+            // with an idle clear or a new task list (#2021 Approach).
+            if (isForeignGenerationLatch(durableMarker, hostStartMarker)) {
+                this.recordAgentProgress(sessionId)
+                this.publisher.emit({
+                    type: 'session-updated',
+                    sessionId,
+                    data: { backgroundTaskCount: tasks.length, backgroundTasks: tasks } satisfies SessionPatch
+                })
+                return
+            }
             const metadata = {
                 ...session.metadata,
                 backgroundWork: tasks.length > 0
@@ -994,18 +1021,13 @@ export class SessionCache {
         const session = this.sessions.get(sessionId)
         if (!session?.metadata) return
         const existing = session.metadata.unresolvedTurn
+        const hostStartMarker = session.metadata.hostStartMarker
         if (unresolved) {
-            const hostStartMarker = session.metadata.hostStartMarker
             const alreadyLatched = Boolean(existing && typeof existing === 'object')
             if (alreadyLatched) {
-                const sameOwner = !(
-                    typeof hostStartMarker === 'string'
-                    && hostStartMarker.length > 0
-                    && typeof existing?.hostStartMarker === 'string'
-                    && existing.hostStartMarker.length > 0
-                    && existing.hostStartMarker !== hostStartMarker
-                )
-                if (sameOwner) return
+                // Keep a prior-generation latch; a replacement must not steal
+                // ownership of the only Archive evidence (#2021 Approach).
+                return
             }
             const metadata = {
                 ...session.metadata,
@@ -1030,6 +1052,14 @@ export class SessionCache {
             return
         }
         if (!existing) return
+        // Idle heartbeat from a replacement must not clear the previous
+        // worker's latch — that is the kill-direction hole (#2021 Approach).
+        if (isForeignGenerationLatch(
+            typeof existing === 'object' ? existing.hostStartMarker : undefined,
+            hostStartMarker,
+        )) {
+            return
+        }
         const metadata = {
             ...session.metadata,
             unresolvedTurn: null,

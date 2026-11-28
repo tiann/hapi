@@ -150,6 +150,31 @@ it('keeps prior-generation backgroundWork and unresolvedTurn across host replace
         expect(after.metadata?.backgroundWork?.hostStartMarker).toBe('worker-A')
         expect(after.metadata?.unresolvedTurn).toBeTruthy()
         expect(store.messages.lookupQueuedMessage(session.id, 'pending').status).toBe('dispatching')
+
+        // Replacement's first idle heartbeat must not erase the prior latch —
+        // that was the Approach kill-direction hole (#2021).
+        engine.handleSessionAlive({ sid: session.id, time: Date.now(), thinking: false })
+        const afterIdle = engine.getSession(session.id)!
+        expect(afterIdle.metadata?.unresolvedTurn).toBeTruthy()
+        expect(
+            typeof afterIdle.metadata?.unresolvedTurn === 'object'
+                ? afterIdle.metadata.unresolvedTurn.hostStartMarker
+                : undefined,
+        ).toBe('worker-A')
+        expect(afterIdle.metadata?.backgroundWork?.hostStartMarker).toBe('worker-A')
+        expect(afterIdle.metadata?.backgroundWork?.tasks).toHaveLength(1)
+
+        // Idle clear / thinking latch from B also must not steal or wipe A.
+        cache.setBackgroundTasks(session.id, [])
+        cache.setUnresolvedTurn(session.id, true)
+        const afterSteal = engine.getSession(session.id)!
+        expect(afterSteal.metadata?.backgroundWork?.hostStartMarker).toBe('worker-A')
+        expect(afterSteal.metadata?.backgroundWork?.tasks).toHaveLength(1)
+        expect(
+            typeof afterSteal.metadata?.unresolvedTurn === 'object'
+                ? afterSteal.metadata.unresolvedTurn.hostStartMarker
+                : undefined,
+        ).toBe('worker-A')
     } finally { engine.stop(); store.close() }
 })
 
