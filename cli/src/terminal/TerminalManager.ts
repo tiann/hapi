@@ -32,6 +32,7 @@ const SENSITIVE_ENV_KEYS = new Set([
     'HAPI_API_URL',
     'HAPI_HTTP_MCP_URL',
     'TELEGRAM_BOT_TOKEN',
+    'QQBOT_APP_SECRET',
     'OPENAI_API_KEY',
     'ANTHROPIC_API_KEY',
     'GEMINI_API_KEY',
@@ -123,7 +124,8 @@ export function buildFilteredEnv(source: NodeJS.ProcessEnv = process.env): NodeJ
         if (!value) {
             continue
         }
-        if (SENSITIVE_ENV_KEYS.has(key) || AGENT_CONTEXT_ENV_KEYS.has(key)) {
+        const sensitiveKey = process.platform === 'win32' ? key.toUpperCase() : key
+        if (SENSITIVE_ENV_KEYS.has(sensitiveKey) || AGENT_CONTEXT_ENV_KEYS.has(key)) {
             continue
         }
         env[key] = value

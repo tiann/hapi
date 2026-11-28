@@ -73,6 +73,43 @@
       "default": false,
       "description": "Only send ServerChan notifications when no visible HAPI connection exists in the namespace. ENV: SERVERCHAN_BACKGROUND_ONLY"
     },
+    "qqBot": {
+      "type": "object",
+      "description": "Opt-in QQ Bot direct-message notifications. Environment overrides are not written to this file.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable proactive QQ Bot DMs. Credentials and an explicit publicUrl must be set here or in the environment. ENV: QQBOT_NOTIFICATION"
+        },
+        "appId": {
+          "type": "string",
+          "pattern": "^[0-9]+$",
+          "description": "QQ Bot App ID. ENV: QQBOT_APP_ID"
+        },
+        "appSecret": {
+          "type": "string",
+          "minLength": 1,
+          "description": "QQ Bot App Secret. For secrets, prefer ENV: QQBOT_APP_SECRET"
+        },
+        "userOpenId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "description": "Recipient's user OpenID for this bot. ENV: QQBOT_USER_OPENID"
+        },
+        "namespace": {
+          "type": "string",
+          "minLength": 1,
+          "default": "default",
+          "description": "Only send notifications for sessions in this namespace. ENV: QQBOT_NAMESPACE"
+        },
+        "backgroundOnly": {
+          "type": "boolean",
+          "default": false,
+          "description": "Suppress notifications when a visible HAPI connection exists in the namespace. ENV: QQBOT_BACKGROUND_ONLY"
+        }
+      }
+    },
     "androidPushMode": {
       "type": "string",
       "enum": [

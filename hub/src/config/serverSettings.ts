@@ -9,6 +9,7 @@
  */
 
 import { getSettingsFile, updateSettings } from './settings'
+import { resolveQqBotSettings, type QqBotOptions } from './qqBotSettings'
 
 const OLD_SETTINGS_FIELDS = ['webappHost', 'webappPort', 'webappUrl'] as const
 
@@ -37,6 +38,7 @@ export interface ServerSettings {
     serverChanSendKey: string | null
     serverChanNotification: boolean
     serverChanBackgroundOnly: boolean
+    qqBot: QqBotOptions | null
     listenHost: string
     listenPort: number
     publicUrl: string
@@ -337,6 +339,8 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
                     serverChanSendKey,
                     serverChanNotification,
                     serverChanBackgroundOnly,
+                    // Unlike legacy notification settings, QQ env overrides stay in memory.
+                    qqBot: resolveQqBotSettings(settings.qqBot, process.env, sources.publicUrl === 'default' ? undefined : publicUrl),
                     listenHost,
                     listenPort,
                     publicUrl,

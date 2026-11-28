@@ -26,6 +26,7 @@ import { TunnelManager } from './tunnel'
 import { refreshRejectedRelayAuthKey, resolveRelayAuthKey } from './tunnel/relayAuth'
 import { waitForTunnelTlsReady } from './tunnel/tlsGate'
 import { ServerChanChannel } from './serverchan/channel'
+import { QqBotChannel } from './qqbot/channel'
 import QRCode from 'qrcode'
 import type { Server as BunServer } from 'bun'
 import type { WebSocketData } from '@socket.io/bun-engine'
@@ -170,6 +171,10 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
         console.log('[Hub] ServerChan: disabled (no SERVERCHAN_SENDKEY)')
     }
 
+    if (config.qqBot) {
+        console.log(`[Hub] QQ Bot notifications: enabled (background-only: ${config.qqBot.backgroundOnly ? 'on' : 'off'})`)
+    }
+
     // Display tunnel status
     if (relayFlag.enabled) {
         console.log(`[Hub] Tunnel: enabled (${relayFlag.source}), API: ${relayApiDomain}`)
@@ -274,6 +279,12 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
         if (config.telegramNotification) {
             notificationChannels.push(happyBot)
         }
+    }
+
+    if (config.qqBot) {
+        notificationChannels.push(new QqBotChannel(
+            config.qqBot, config.publicUrl, visibilityTracker, id => syncEngine?.getSession(id)
+        ))
     }
 
     notificationHub = new NotificationHub(syncEngine, notificationChannels)

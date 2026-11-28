@@ -6,6 +6,7 @@
  */
 
 import chalk from 'chalk'
+import { isObject } from '@hapi/protocol'
 import { configuration } from '@/configuration'
 import { readSettings } from '@/persistence'
 import { checkIfRunnerRunningAndCleanupStaleState } from '@/runner/controlClient'
@@ -48,10 +49,12 @@ export function getEnvironmentInfo(): Record<string, any> {
 }
 
 export function redactSettingsForDisplay(settings: Record<string, unknown>): Record<string, unknown> {
+    const qqBot = settings.qqBot
     return {
         ...settings,
         cliApiToken: settings.cliApiToken ? '***' : undefined,
-        extraHeaders: settings.extraHeaders === undefined ? undefined : '***'
+        extraHeaders: settings.extraHeaders === undefined ? undefined : '***',
+        ...(isObject(qqBot) && Object.hasOwn(qqBot, 'appSecret') ? { qqBot: { ...qqBot, appSecret: '***' } } : {})
     }
 }
 

@@ -8,14 +8,24 @@ import type {
 import type { NotificationSendContext } from './notificationSendContext'
 import { extractMessageEventType } from './eventParsing'
 
+type ReadyAttempt = { generation: number; postStarted: boolean }
+type ReadyDispatch = {
+    thinking: boolean
+    generation: number
+    inFlight: number
+    attempts: Map<NotificationChannel, ReadyAttempt>
+}
+
 export class NotificationHub {
     private readonly channels: NotificationChannel[]
     private readonly readyCooldownMs: number
     private readonly permissionDebounceMs: number
     private readonly modelErrorRetryDelaysMs: number[]
     private readonly lastKnownRequests: Map<string, Set<string>> = new Map()
-    private readonly notificationDebounce: Map<string, NodeJS.Timeout> = new Map()
+    private readonly notificationDebounce = new Map<string, { timer: NodeJS.Timeout; requestIds: Set<string> }>()
     private readonly lastReadyNotificationAt: Map<string, number> = new Map()
+    // Also retain superseded, unsent attempts until the cooldown's next dispatch or session cleanup.
+    private readonly readyDispatches = new Map<string, ReadyDispatch>()
     /**
      * sessionId -> the `eventId` of the last `lastModelError` we already
      * notified for. Fire ONCE per distinct error event; subsequent
@@ -74,12 +84,13 @@ export class NotificationHub {
             this.unsubscribeSyncEvents = null
         }
 
-        for (const timer of this.notificationDebounce.values()) {
+        for (const { timer } of this.notificationDebounce.values()) {
             clearTimeout(timer)
         }
         this.notificationDebounce.clear()
         this.lastKnownRequests.clear()
         this.lastReadyNotificationAt.clear()
+        this.readyDispatches.clear()
         this.lastModelErrorNotifiedId.clear()
         for (const timer of this.modelErrorRetryTimers.values()) {
             clearTimeout(timer)
@@ -106,6 +117,12 @@ export class NotificationHub {
                 this.checkForModelErrorNotification(session)
                 return
             }
+            const readyDispatch = this.readyDispatches.get(session.id)
+            if (readyDispatch) {
+                // Native agent turns do not always have an activeTurnStartedAt timestamp.
+                if (session.thinking && !readyDispatch.thinking) readyDispatch.generation++
+                readyDispatch.thinking = session.thinking
+            }
             this.checkForPermissionNotification(session)
             // Model-error gating: fire when metadata.lastModelError.eventId
             // differs from what we last notified for this session.
@@ -119,6 +136,7 @@ export class NotificationHub {
         }
 
         if (event.type === 'session-ended' && event.sessionId) {
+            this.readyDispatches.delete(event.sessionId)
             if (event.reason === 'completed') {
                 this.sendSessionCompletion(event.sessionId, event.reason).catch((error) => {
                     console.error('[NotificationHub] Failed to send session completion notification:', error)
@@ -138,13 +156,14 @@ export class NotificationHub {
     }
 
     private clearSessionState(sessionId: string, removeModelErrorWatermark = false): void {
-        const existingTimer = this.notificationDebounce.get(sessionId)
-        if (existingTimer) {
-            clearTimeout(existingTimer)
+        const existing = this.notificationDebounce.get(sessionId)
+        if (existing) {
+            clearTimeout(existing.timer)
             this.notificationDebounce.delete(sessionId)
         }
         this.lastKnownRequests.delete(sessionId)
         this.lastReadyNotificationAt.delete(sessionId)
+        this.readyDispatches.delete(sessionId)
         if (removeModelErrorWatermark) {
             this.lastModelErrorNotifiedId.delete(sessionId)
             this.clearModelErrorRetry(sessionId)
@@ -340,45 +359,35 @@ export class NotificationHub {
             return
         }
 
-        const newRequestIds = new Set(Object.keys(requests))
-        const oldRequestIds = this.lastKnownRequests.get(session.id) || new Set()
+        const currentIds = Object.keys(requests)
+        const previousIds = this.lastKnownRequests.get(session.id)
+        this.lastKnownRequests.set(session.id, new Set(currentIds))
 
-        let hasNewRequests = false
-        for (const requestId of newRequestIds) {
-            if (!oldRequestIds.has(requestId)) {
-                hasNewRequests = true
-                break
-            }
-        }
+        const addedIds = currentIds.filter(id => !previousIds?.has(id))
+        if (addedIds.length === 0) return
 
-        this.lastKnownRequests.set(session.id, newRequestIds)
-
-        if (!hasNewRequests) {
-            return
-        }
-
-        const existingTimer = this.notificationDebounce.get(session.id)
-        if (existingTimer) {
-            clearTimeout(existingTimer)
-        }
+        const existing = this.notificationDebounce.get(session.id)
+        if (existing) clearTimeout(existing.timer)
+        const requestIds = existing?.requestIds ?? new Set<string>()
+        for (const id of addedIds) requestIds.add(id)
 
         const timer = setTimeout(() => {
             this.notificationDebounce.delete(session.id)
-            this.sendPermissionNotification(session.id).catch((error) => {
+            this.sendPermissionNotification(session.id, [...requestIds]).catch((error) => {
                 console.error('[NotificationHub] Failed to send permission notification:', error)
             })
         }, this.permissionDebounceMs)
 
-        this.notificationDebounce.set(session.id, timer)
+        this.notificationDebounce.set(session.id, { timer, requestIds })
     }
 
-    private async sendPermissionNotification(sessionId: string): Promise<void> {
+    private async sendPermissionNotification(sessionId: string, requestIds: readonly string[]): Promise<void> {
         const session = this.getNotifiableSession(sessionId)
         if (!session) {
             return
         }
 
-        await this.notifyPermission(session)
+        await this.notifyPermission(session, requestIds)
     }
 
     private async sendReadyNotification(sessionId: string): Promise<void> {
@@ -390,11 +399,19 @@ export class NotificationHub {
         const now = Date.now()
         const last = this.lastReadyNotificationAt.get(sessionId) ?? 0
         if (now - last < this.readyCooldownMs) {
+            const dispatch = this.readyDispatches.get(sessionId)
+            if (!dispatch) return
+            const replacements: NotificationChannel[] = []
+            for (const [channel, attempt] of dispatch.attempts) {
+                if (dispatch.generation !== attempt.generation && !attempt.postStarted) replacements.push(channel)
+            }
+            // Do not resend other channels or extend their existing cooldown.
+            if (replacements.length > 0) await this.notifyReady(session, replacements)
             return
         }
         this.lastReadyNotificationAt.set(sessionId, now)
 
-        await this.notifyReady(session)
+        await this.notifyReady(session, this.channels)
     }
 
     private async sendSessionCompletion(sessionId: string, reason: SessionEndReason): Promise<void> {
@@ -406,19 +423,59 @@ export class NotificationHub {
         await this.notifySessionCompletion(session, reason)
     }
 
-    private async notifyReady(session: Session): Promise<void> {
-        const ctx: NotificationSendContext = { nativeGate: { sent: false } }
-        for (const channel of this.channels) {
-            try {
-                await channel.sendReady(session, ctx)
-            } catch (error) {
-                console.error('[NotificationHub] Failed to send ready notification:', error)
+    private async notifyReady(session: Session, channels: readonly NotificationChannel[]): Promise<void> {
+        const id = session.id
+        const dispatch: ReadyDispatch = this.readyDispatches.get(id)
+            ?? { thinking: session.thinking, generation: 0, inFlight: 0, attempts: new Map() }
+        this.readyDispatches.set(id, dispatch)
+        const generation = dispatch.generation
+        dispatch.inFlight++
+        const isSuperseded = () => dispatch.generation !== generation || this.readyDispatches.get(id) !== dispatch
+        const readyState = {
+            thinking: session.thinking,
+            activeTurnStartedAt: session.activeTurnStartedAt,
+            isSuperseded
+        }
+        const ctx: NotificationSendContext = { nativeGate: { sent: false }, readyState }
+        // Reserve all opted-in deliveries before the first channel can block on I/O.
+        const planned = channels.map(channel => {
+            const attempt = channel.replaceUnsentReady ? { generation, postStarted: false } : undefined
+            if (attempt) dispatch.attempts.set(channel, attempt)
+            return { channel, attempt }
+        })
+        try {
+            for (const { channel, attempt } of planned) {
+                try {
+                    await channel.sendReady(session, attempt ? {
+                        ...ctx,
+                        readyState: {
+                            ...readyState,
+                            isSuperseded: () => isSuperseded() || dispatch.attempts.get(channel) !== attempt,
+                            onPostStarted: () => { attempt.postStarted = true }
+                        }
+                    } : ctx)
+                } catch (error) {
+                    console.error('[NotificationHub] Failed to send ready notification:', error)
+                } finally {
+                    // Keep only a superseded attempt that never reached a message POST.
+                    if (attempt && dispatch.attempts.get(channel) === attempt
+                        && (attempt.postStarted || dispatch.generation === generation)) {
+                        dispatch.attempts.delete(channel)
+                    }
+                }
+            }
+        } finally {
+            if (--dispatch.inFlight === 0 && dispatch.attempts.size === 0 && this.readyDispatches.get(id) === dispatch) {
+                this.readyDispatches.delete(id)
             }
         }
     }
 
-    private async notifyPermission(session: Session): Promise<void> {
-        const ctx: NotificationSendContext = { nativeGate: { sent: false } }
+    private async notifyPermission(session: Session, requestIds: readonly string[]): Promise<void> {
+        const ctx: NotificationSendContext = {
+            nativeGate: { sent: false },
+            permissionRequestIds: requestIds
+        }
         for (const channel of this.channels) {
             try {
                 await channel.sendPermissionRequest(session, ctx)

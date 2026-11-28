@@ -12,6 +12,9 @@
  * - SERVERCHAN_SENDKEY: Server酱 SendKey/AppKey for push notifications
  * - SERVERCHAN_NOTIFICATION: Enable/disable Server酱 notifications (default: true)
  * - SERVERCHAN_BACKGROUND_ONLY: Only send Server酱 notifications without visible HAPI clients (default: false)
+ * - QQBOT_NOTIFICATION: Enable outbound QQ bot direct messages (default: false)
+ * - QQBOT_APP_ID, QQBOT_APP_SECRET, QQBOT_USER_OPENID: QQ bot credentials and recipient
+ * - QQBOT_NAMESPACE, QQBOT_BACKGROUND_ONLY: Scope and visibility filters for QQ bot notifications
  * - HAPI_LISTEN_HOST: Host/IP to bind the HTTP service (default: 127.0.0.1)
  * - HAPI_LISTEN_PORT: Port for HTTP service (default: 3006)
  * - HAPI_PUBLIC_URL: Public URL for external access (e.g., Telegram Mini App)
@@ -35,6 +38,7 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { getOrCreateCliApiToken } from './config/cliApiToken'
+import type { QqBotOptions } from './config/qqBotSettings'
 import { applyProviderCredentialsFromSettings } from './config/providerCredentials'
 import { getSettingsFile, updateSettings } from './config/settings'
 import { loadServerSettings, type ServerSettings, type ServerSettingsResult } from './config/serverSettings'
@@ -82,6 +86,9 @@ class Configuration {
 
     /** Only send Server酱 notifications when no visible HAPI client exists */
     public readonly serverChanBackgroundOnly: boolean
+
+    /** Optional outbound QQ bot direct-message destination. */
+    public readonly qqBot: QqBotOptions | null
 
     /** CLI auth token (shared secret) */
     public cliApiToken: string
@@ -152,6 +159,7 @@ class Configuration {
         this.serverChanSendKey = serverSettings.serverChanSendKey
         this.serverChanNotification = serverSettings.serverChanNotification
         this.serverChanBackgroundOnly = serverSettings.serverChanBackgroundOnly
+        this.qqBot = serverSettings.qqBot
         this.listenHost = serverSettings.listenHost
         this.listenPort = serverSettings.listenPort
         this.publicUrl = serverSettings.publicUrl
