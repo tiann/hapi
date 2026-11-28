@@ -2,17 +2,18 @@ import { mergeClaudeSessionIdHistory, mergeReadState } from '@hapi/protocol'
 import { SESSION_LIFECYCLE_IDLE, SESSION_LIFECYCLE_RUNNING } from '@hapi/protocol'
 import { AgentStateSchema, ExternalRefsSchema, MetadataSchema, SessionPatchSchema, TeamStateSchema } from '@hapi/protocol/schemas'
 import type { BackgroundTask, CodexCollaborationMode, CopilotAgentMode, ExternalRef, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
-import type { SessionTurnEndReason, SessionTurnTrigger, Store } from '../store'
+import type { SessionTurnEndReason, SessionTurnTrigger, Store, StoredSession } from '../store'
 import type { TransferSessionJobsResult } from '../store/sessionJobs'
 import { clampAliveTime } from './aliveTime'
 import { EventPublisher } from './eventPublisher'
-import { extractTodoWriteTodosFromMessageContent, TodosSchema } from './todos'
+import { findLatestStructuredTodos, TodosSchema } from './todos'
 import { InvalidExternalRefsError } from './externalRefErrors'
 import { resolveSessionIdleTimeoutMs, shouldClearKeepaliveIdle, shouldMarkKeepaliveIdle } from './sessionIdle'
 
 export { InvalidExternalRefsError } from './externalRefErrors'
 
 const QUEUED_MESSAGE_THINKING_GRACE_MS = 15_000
+export const STRUCTURED_TODOS_BACKFILL_MIGRATION_ID = 'structured-session-todos-v1'
 // A turn the hub closed when it restarted is picked up again if the agent
 // carries on with it this soon after the restart, instead of starting a new one.
 const TURN_RECOVERY_WINDOW_MS = 10 * 60_000
@@ -339,34 +340,24 @@ export class SessionCache {
 
     /**
      * After fork hydrate / rewind truncate, re-scan the transcript for the
-     * latest TodoWrite (or clear todos). Bypasses the one-shot backfill flag
+     * latest structured task update (or clear todos). Bypasses the one-shot backfill flag
      * and the normal `setSessionTodos` monotonic guard. Watermark still
      * ratchets inside `replaceSessionTodos` — do not pass the remaining
      * message's older `createdAt` as the SSE version.
      */
-    rebuildTodosFromTranscript(sessionId: string): void {
-        const stored = this.store.sessions.getSession(sessionId)
-        if (!stored) return
-
-        this.todoBackfillAttemptedSessionIds.delete(sessionId)
-        const messages = this.store.messages.getAllMessages(sessionId)
-        let foundTodos: unknown | null = null
-        for (let i = messages.length - 1; i >= 0; i -= 1) {
-            const message = messages[i]
-            if (!message) continue
-            const todos = extractTodoWriteTodosFromMessageContent(message.content)
-            if (todos) {
-                foundTodos = todos
-                break
-            }
-        }
-        this.store.sessions.replaceSessionTodos(
-            sessionId,
-            foundTodos,
-            stored.namespace
-        )
+    rebuildTodosFromTranscript(sessionId: string, options: { touchUpdatedAt?: boolean } = {}): void {
+        if (!this.persistTodosFromTranscript(sessionId, options)) return
         this.todoBackfillAttemptedSessionIds.add(sessionId)
         this.refreshSession(sessionId)
+    }
+
+    /** Persist without refreshing or publishing cache state inside a transaction. */
+    persistTodosFromTranscript(sessionId: string, options: { touchUpdatedAt?: boolean } = {}): boolean {
+        const stored = this.store.sessions.getSession(sessionId)
+        if (!stored) return false
+        const latest = findLatestStructuredTodos(this.store, sessionId)
+        return this.store.sessions.replaceSessionTodos(sessionId, latest?.todos ?? null, stored.namespace,
+            latest?.source, options)
     }
 
     refreshSession(sessionId: string): Session | null {
@@ -390,20 +381,9 @@ export class SessionCache {
 
         const existing = this.sessions.get(sessionId)
 
-        if (stored.todos === null && !this.todoBackfillAttemptedSessionIds.has(sessionId)) {
+        if (!this.todoBackfillAttemptedSessionIds.has(sessionId)) {
+            stored = this.backfillStructuredTodosForSession(stored)
             this.todoBackfillAttemptedSessionIds.add(sessionId)
-            const messages = this.store.messages.getMessages(sessionId, 200)
-            for (let i = messages.length - 1; i >= 0; i -= 1) {
-                const message = messages[i]
-                const todos = extractTodoWriteTodosFromMessageContent(message.content)
-                if (todos) {
-                    const updated = this.store.sessions.setSessionTodos(sessionId, todos, message.createdAt, stored.namespace)
-                    if (updated) {
-                        stored = this.store.sessions.getSession(sessionId) ?? stored
-                    }
-                    break
-                }
-            }
         }
 
         const metadata = (() => {
@@ -488,9 +468,51 @@ export class SessionCache {
 
     reloadAll(): void {
         const sessions = this.store.sessions.getSessions()
+        if (!this.store.migrations.isCompleted(STRUCTURED_TODOS_BACKFILL_MIGRATION_ID)) {
+            this.backfillStructuredTodos(sessions)
+            this.store.migrations.markCompleted(STRUCTURED_TODOS_BACKFILL_MIGRATION_ID)
+        }
         for (const session of sessions) {
+            this.todoBackfillAttemptedSessionIds.add(session.id)
             this.refreshSession(session.id)
         }
+    }
+
+    private backfillStructuredTodos(sessions: StoredSession[]): void {
+        for (const stored of sessions) {
+            const refreshed = this.backfillStructuredTodosForSession(stored)
+            this.todoBackfillAttemptedSessionIds.add(refreshed.id)
+        }
+    }
+
+    private backfillStructuredTodosForSession(stored: StoredSession): StoredSession {
+        const latest = findLatestStructuredTodos(this.store, stored.id)
+        if (!latest || !this.isNewerTodoSource(latest.source, stored)) {
+            return stored
+        }
+
+        const updated = this.store.sessions.setSessionTodos(
+            stored.id,
+            latest.todos,
+            latest.source,
+            stored.namespace,
+            { touchUpdatedAt: false }
+        )
+        if (!updated) {
+            if (this.store.sessions.getSession(stored.id)) {
+                throw new Error(`Failed to backfill structured tasks for session ${stored.id}`)
+            }
+            return stored
+        }
+        return this.store.sessions.getSession(stored.id) ?? stored
+    }
+
+    private isNewerTodoSource(source: { at: number; seq: number }, stored: StoredSession): boolean {
+        if (stored.todosSourceAt === null || stored.todosSourceSeq === null) {
+            return true
+        }
+        return source.at > stored.todosSourceAt
+            || (source.at === stored.todosSourceAt && source.seq > stored.todosSourceSeq)
     }
 
     setSessionPinned(sessionId: string, pinned: boolean): void {
@@ -2149,7 +2171,35 @@ export class SessionCache {
         }
         if (!metadataTransferred) throw new Error('Failed to preserve session metadata during merge')
 
-        const movedMessages = this.store.messages.mergeSessionMessages(oldSessionId, newSessionId)
+        const movedMessages = this.store.runInTransaction(() => {
+            const moved = this.store.messages.mergeSessionMessages(oldSessionId, newSessionId)
+            const mergedTasks = findLatestStructuredTodos(this.store, newSessionId)
+            if (mergedTasks) {
+                // A rewound source can retain a high replay barrier even though the
+                // plan it displays is older. Select visible todos from actual merged
+                // history; carry the barrier independently of that selection.
+                const oldBarrier = oldStored.todosSourceAt === null ? null
+                    : { at: oldStored.todosSourceAt, seq: oldStored.todosSourceSeq ?? -1 }
+                const source = oldBarrier && (oldBarrier.at > mergedTasks.source.at
+                    || (oldBarrier.at === mergedTasks.source.at && oldBarrier.seq > mergedTasks.source.seq))
+                    ? oldBarrier : mergedTasks.source
+                if (!this.store.sessions.replaceSessionTodos(newSessionId, mergedTasks.todos, namespace, source,
+                    { touchUpdatedAt: false })) throw new Error('Failed to persist merged session tasks')
+            } else if (oldStored.todos !== null && oldStored.todosUpdatedAt !== null) {
+                this.store.sessions.setSessionTodos(
+                    newSessionId,
+                    oldStored.todos,
+                    {
+                        at: oldStored.todosSourceAt ?? oldStored.todosUpdatedAt,
+                        seq: oldStored.todosSourceSeq ?? -1
+                    },
+                    namespace,
+                    { touchUpdatedAt: false, throwOnError: true }
+                )
+            }
+
+            return moved
+        })
         this.syncReadState(newSessionId)
         if (!options.deleteOldSession) this.syncReadState(oldSessionId)
         // mergeSessions deletes the source. mergeSessionHistory keeps it alive
@@ -2343,15 +2393,6 @@ export class SessionCache {
                     throw new Error('Failed to preserve session pin during merge')
                 }
             }
-        }
-
-        if (oldStored.todos !== null && oldStored.todosUpdatedAt !== null) {
-            this.store.sessions.setSessionTodos(
-                newSessionId,
-                oldStored.todos,
-                oldStored.todosUpdatedAt,
-                namespace
-            )
         }
 
         // Merge agentState: union requests/completedRequests from both sessions so pending

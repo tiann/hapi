@@ -19,6 +19,7 @@ import { PASSKEY_CREDENTIALS_TABLE_SQL, PasskeyStore } from './passkeyStore'
 import { TurnStore } from './turnStore'
 import { UsageStore } from './usageStore'
 import { WorkGraphStore } from './workGraphStore'
+import { MigrationStore } from './migrationStore'
 import {
     backfillMessageContentSearchLookup,
     backfillMessageContentSearchShortIndex,
@@ -36,6 +37,7 @@ export type {
     StoredScratchlistEntry,
     StoredSessionJob,
     StoredSession,
+    SessionTodoSource,
     StoredUser,
     VersionedUpdateResult
 } from './types'
@@ -54,13 +56,14 @@ export { TurnStore } from './turnStore'
 export type { SessionTurn, SessionTurnEndReason, SessionTurnTrigger } from './turns'
 export { UsageStore } from './usageStore'
 export { WorkGraphStore } from './workGraphStore'
+export { MigrationStore } from './migrationStore'
 export {
     WorkGraphNotFoundError,
     WorkGraphPrincipalError,
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 36
+const SCHEMA_VERSION: number = 37
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -79,6 +82,7 @@ const REQUIRED_TABLES = [
     'events',
     'event_links',
     'session_turns',
+    'migration_state',
     'session_redirects',
     'passkey_credentials'
 ] as const
@@ -101,6 +105,7 @@ export class Store {
     readonly usage: UsageStore
     readonly turns: TurnStore
     readonly workGraph: WorkGraphStore
+    readonly migrations: MigrationStore
 
     /**
      * Filesystem path of the underlying SQLite database, or ':memory:' for
@@ -159,6 +164,7 @@ export class Store {
         this.usage = new UsageStore(this.db)
         this.turns = new TurnStore(this.db)
         this.workGraph = new WorkGraphStore(this.db)
+        this.migrations = new MigrationStore(this.db)
     }
 
     /**
@@ -410,6 +416,7 @@ export class Store {
             33: () => this.migrateFromV33ToV34(),
             34: () => this.migrateFromV34ToV35(),
             35: () => this.migrateFromV35ToV36(),
+            36: () => this.migrateFromV36ToV37(),
         })
 
         if (currentVersion === 0) {
@@ -454,6 +461,7 @@ export class Store {
             this.migrateFromV33ToV34()
             this.migrateFromV34ToV35()
             this.migrateFromV35ToV36()
+            this.migrateFromV36ToV37()
             this.ensureUsageScanParserVersion()
             this.setUserVersion(SCHEMA_VERSION)
             return
@@ -501,6 +509,8 @@ export class Store {
                 service_tier TEXT,
                 todos TEXT,
                 todos_updated_at INTEGER,
+                todos_source_at INTEGER,
+                todos_source_seq INTEGER,
                 team_state TEXT,
                 team_state_updated_at INTEGER,
                 pinned INTEGER NOT NULL DEFAULT 0,
@@ -748,6 +758,11 @@ export class Store {
             CREATE UNIQUE INDEX IF NOT EXISTS idx_session_turns_one_open
                 ON session_turns(session_id)
                 WHERE ended_at IS NULL;
+
+            CREATE TABLE IF NOT EXISTS migration_state (
+                migration_id TEXT PRIMARY KEY,
+                completed_at INTEGER NOT NULL
+            );
         `)
         createMessageContentSearchTable(this.db)
     }
@@ -1122,34 +1137,6 @@ export class Store {
         }
     }
 
-    /** v23→v24: add the iOS push envelope key. */
-    private migrateFromV23ToV24(): void {
-        const fcmColumns = this.db.prepare('PRAGMA table_info(fcm_devices)').all() as Array<{ name: string }>
-        if (fcmColumns.length > 0 && !fcmColumns.some((column) => column.name === 'push_key')) {
-            this.db.exec('ALTER TABLE fcm_devices ADD COLUMN push_key TEXT')
-        }
-    }
-
-    /** v24→v25: add durable unknown-delivery state for steers. */
-    private migrateFromV24ToV25(): void {
-        const messageColumns = this.getMessageColumnNames()
-        if (messageColumns.size > 0 && !messageColumns.has('delivery_state')) {
-            this.db.exec("ALTER TABLE messages ADD COLUMN delivery_state TEXT NOT NULL DEFAULT 'queued'")
-        }
-    }
-
-    /** v25→v26: make empty immediate-queue heartbeat replay an indexed lookup. */
-    private migrateFromV25ToV26(): void {
-        this.db.exec(`
-            CREATE INDEX IF NOT EXISTS idx_messages_immediate_queued
-                ON messages(session_id, seq)
-                WHERE invoked_at IS NULL
-                  AND local_id IS NOT NULL
-                  AND scheduled_at IS NULL
-                  AND delivery_state = 'queued';
-        `)
-    }
-
     /**
      * A2A Layer 1 / P1 (#1374) + P3 substrate: hub work-graph ledger tables.
      * Namespace + principal_json required on every events row.
@@ -1208,6 +1195,34 @@ export class Store {
         `)
     }
 
+    /** v23→v24: add the iOS push envelope key. */
+    private migrateFromV23ToV24(): void {
+        const columns = this.db.prepare('PRAGMA table_info(fcm_devices)').all() as Array<{ name: string }>
+        if (columns.length > 0 && !columns.some((column) => column.name === 'push_key')) {
+            this.db.exec('ALTER TABLE fcm_devices ADD COLUMN push_key TEXT')
+        }
+    }
+
+    /** v24→v25: add durable unknown-delivery state for steers. */
+    private migrateFromV24ToV25(): void {
+        const messageColumns = this.getMessageColumnNames()
+        if (messageColumns.size > 0 && !messageColumns.has('delivery_state')) {
+            this.db.exec("ALTER TABLE messages ADD COLUMN delivery_state TEXT NOT NULL DEFAULT 'queued'")
+        }
+    }
+
+    /** v25→v26: make empty immediate-queue heartbeat replay an indexed lookup. */
+    private migrateFromV25ToV26(): void {
+        this.db.exec(`
+            CREATE INDEX IF NOT EXISTS idx_messages_immediate_queued
+                ON messages(session_id, seq)
+                WHERE invoked_at IS NULL
+                  AND local_id IS NOT NULL
+                  AND scheduled_at IS NULL
+                  AND delivery_state = 'queued';
+        `)
+    }
+
     /**
      * v26→v27: keep the session-list future-scheduled lookup indexed and
      * initialize the derived message-content search tables.
@@ -1222,8 +1237,7 @@ export class Store {
                   AND delivery_state = 'queued';
         `)
         createMessageContentSearchTable(this.db)
-        if (this.getMessageColumnNames().size === 0) return
-        rebuildMessageContentSearch(this.db)
+        if (this.hasMessageContentSearchSourceSchema()) rebuildMessageContentSearch(this.db)
     }
 
     private migrateFromV26ToV30(): void {
@@ -1235,7 +1249,7 @@ export class Store {
     /** Complete the derived message-content index lookup added after v27. */
     private migrateFromV27ToV28(): void {
         createMessageContentSearchTable(this.db)
-        backfillMessageContentSearchLookup(this.db)
+        if (this.hasMessageContentSearchSourceSchema()) backfillMessageContentSearchLookup(this.db)
         if (this.getSessionColumnNames().size === 0) return
         this.db.exec(`
             CREATE TABLE IF NOT EXISTS session_turns (
@@ -1262,7 +1276,7 @@ export class Store {
     /** Add the indexed short-query n-gram table to the message-content index. */
     private migrateFromV28ToV29(): void {
         createMessageContentSearchTable(this.db)
-        backfillMessageContentSearchShortIndex(this.db)
+        if (this.hasMessageContentSearchSourceSchema()) backfillMessageContentSearchShortIndex(this.db)
         const columns = this.getSessionColumnNames()
         if (columns.size === 0 || columns.has('last_user_message_at')) return
         this.db.transaction(() => {
@@ -1275,6 +1289,11 @@ export class Store {
 
     /** v29→v30: add read-state revisions. */
     private migrateFromV29ToV30(): void {
+        // Branch databases labeled v28 may predate upstream turn columns.
+        const hasSessionTurns = this.db.prepare(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_turns'"
+        ).get()
+        if (!hasSessionTurns) this.migrateFromV27ToV28()
         const columns = this.getSessionColumnNames()
         for (const name of ['content_revision', 'read_revision', 'read_state_version', 'manual_unread']) {
             if (columns.size > 0 && !columns.has(name)) {
@@ -1291,7 +1310,13 @@ export class Store {
     /** v30→v31: create and backfill the message-content search index. */
     private migrateFromV30ToV31(): void {
         createMessageContentSearchTable(this.db)
-        if (this.getMessageColumnNames().size > 0) rebuildMessageContentSearch(this.db)
+        if (this.hasMessageContentSearchSourceSchema()) rebuildMessageContentSearch(this.db)
+    }
+
+
+    private hasMessageContentSearchSourceSchema(): boolean {
+        const columns = this.getMessageColumnNames()
+        return ['id', 'session_id', 'content', 'created_at', 'seq', 'invoked_at'].every((name) => columns.has(name))
     }
 
     private getSessionColumnNames(): Set<string> {
@@ -1350,6 +1375,7 @@ export class Store {
      * Also ensures upstream read-state columns for older fork tips.
      */
     private migrateFromV32ToV33(): void {
+        this.migrateFromV31ToV32()
         this.migrateFromV29ToV30()
         this.migrateFromV30ToV31()
         const cols = this.db.prepare('PRAGMA table_info(session_jobs)').all() as Array<{ name: string }>
@@ -1390,6 +1416,28 @@ export class Store {
             CREATE INDEX IF NOT EXISTS idx_session_redirects_namespace_new
                 ON session_redirects(namespace, new_id);
         `)
+    }
+    /** v36→v37: add structured-task source positions and durable backfill state. */
+    private migrateFromV36ToV37(): void {
+        // Both upstream and earlier PR builds used v36 for their own changes.
+        // The passkey table creation is idempotent for both layouts.
+        this.migrateFromV35ToV36()
+        this.db.exec(`
+            CREATE TABLE IF NOT EXISTS migration_state (
+                migration_id TEXT PRIMARY KEY,
+                completed_at INTEGER NOT NULL
+            );
+        `)
+
+        const columns = this.getSessionColumnNames()
+        if (columns.size > 0) {
+            if (!columns.has('todos_source_at')) {
+                this.db.exec('ALTER TABLE sessions ADD COLUMN todos_source_at INTEGER')
+            }
+            if (!columns.has('todos_source_seq')) {
+                this.db.exec('ALTER TABLE sessions ADD COLUMN todos_source_seq INTEGER')
+            }
+        }
     }
 
     /** v35→v36: WebAuthn credentials that can be exchanged for a web JWT. */

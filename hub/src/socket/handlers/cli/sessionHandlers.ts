@@ -6,7 +6,7 @@ import type { AgentState, BackgroundTask, CodexCollaborationMode, Metadata, Perm
 import { getToolCallId, isRedundantGoalStatusEventContent } from '@hapi/protocol/messages'
 import type { Store, StoredSession } from '../../../store'
 import type { SyncEvent } from '../../../sync/syncEngine'
-import { extractTodoWriteTodosFromMessageContent } from '../../../sync/todos'
+import { extractSessionTodosFromMessageContent } from '../../../sync/todos'
 import { extractTeamStateFromMessageContent, applyTeamStateDelta } from '../../../sync/teams'
 import { extractBackgroundTasks } from '../../../sync/backgroundTasks'
 import { shouldRecordSessionActivity } from '../../../sync/sessionActivity'
@@ -198,22 +198,46 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             return
         }
 
-        const wasStored = Boolean(localId && store.messages.lookupQueuedMessage(sid, localId).status !== 'absent')
-        // ACP agents re-emit one tool call under a stable callId for every
-        // state tick. When that callId is still live in the session tail, fold
-        // the tick into the call's existing row instead of appending another
-        // one, and broadcast the merged row under its original id/seq so
-        // clients upsert it in place. Peer CLIs in the session room dedupe
-        // that re-emit by message id, harmlessly: only user rows reach a
-        // consumer there (onUserMessage), agent rows do not.
-        const callId = getToolCallId(content)
-        const stored = callId !== null && !wasStored
-            ? store.messages.upsertToolCallMessage(sid, content, callId, localId, createdAt)
-            : store.messages.addMessageSweepingLiveSnapshots(sid, content, localId, undefined, createdAt)
+        const { stored, wasStored, todos, todosUpdated } = store.runInTransaction(() => {
+            const wasStored = Boolean(localId && store.messages.lookupQueuedMessage(sid, localId).status !== 'absent')
+            // ACP agents re-emit one tool call under a stable callId for every
+            // state tick. When that callId is still live in the session tail, fold
+            // the tick into the call's existing row instead of appending another
+            // one, and broadcast the merged row under its original id/seq so
+            // clients upsert it in place. Peer CLIs in the session room dedupe
+            // that re-emit by message id, harmlessly: only user rows reach a
+            // consumer there (onUserMessage), agent rows do not.
+            const callId = getToolCallId(content)
+            const stored = callId !== null && !wasStored
+                ? store.messages.upsertToolCallMessage(sid, content, callId, localId, createdAt)
+                : store.messages.addMessageSweepingLiveSnapshots(sid, content, localId, undefined, createdAt)
+            const msg = stored.message
+            // Use the committed row for duplicate events: replay must not
+            // overwrite the original content. Source position prevents an
+            // older replay from replacing a newer plan.
+            const todos = extractSessionTodosFromMessageContent(msg.content)
+            const todosUpdated = todos !== null && store.sessions.setSessionTodos(
+                sid, todos, { at: msg.createdAt, seq: msg.seq }, session.namespace,
+                { allowSameSource: stored.updated && !wasStored, touchUpdatedAt: false, throwOnError: true }
+            )
+            return { stored, wasStored, todos, todosUpdated }
+        })
         const msg = stored.message
+        if (todosUpdated && todos !== null) {
+            const snapshot = store.sessions.getSession(sid)
+            if (snapshot) {
+                onWebappEvent?.({
+                    type: 'session-updated', sessionId: sid,
+                    data: {
+                        todos: { version: snapshot.todosUpdatedAt ?? msg.createdAt, value: todos },
+                        updatedAt: snapshot.updatedAt,
+                    },
+                })
+            }
+        }
         // A merged row keeps its first snapshot's createdAt for stable
         // ordering, but derived todo/team versions must strictly advance
-        // (setSessionTodos/setSessionTeamState gate on *_updated_at < candidate),
+        // (setSessionTeamState gates on team_state_updated_at < candidate),
         // so stamp them at merge time instead.
         const derivedAt = stored.updated ? Math.max(Date.now(), msg.createdAt + 1) : msg.createdAt
         // A merged row keeps its first snapshot's createdAt for stable
@@ -244,25 +268,6 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
 
         if (shouldRecordSessionActivity(content)) {
             onSessionActivity?.(sid, msg.createdAt)
-        }
-
-        const todos = extractTodoWriteTodosFromMessageContent(content)
-        if (todos) {
-            const updated = store.sessions.setSessionTodos(sid, todos, derivedAt, session.namespace)
-            if (updated) {
-                const stored = store.sessions.getSession(sid)
-                onWebappEvent?.({
-                    type: 'session-updated',
-                    sessionId: sid,
-                    data: {
-                        todos: {
-                            version: stored?.todosUpdatedAt ?? msg.createdAt,
-                            value: todos
-                        },
-                        updatedAt: stored?.updatedAt ?? msg.createdAt
-                    }
-                })
-            }
         }
 
         const teamDelta = extractTeamStateFromMessageContent(content)

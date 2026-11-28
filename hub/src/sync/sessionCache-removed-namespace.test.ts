@@ -55,7 +55,8 @@ describe('refreshSession session-removed namespace', () => {
             ,
             messages: {
                 hasConversationContent: () => false,
-                getMessages: () => []
+                getMessages: () => [],
+                getMessagesBeforeSeq: () => []
             }
         } as unknown as Store
 

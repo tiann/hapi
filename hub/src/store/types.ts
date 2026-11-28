@@ -1,5 +1,10 @@
 import type { SessionReadState } from '@hapi/protocol'
 
+export type SessionTodoSource = {
+    at: number
+    seq: number
+}
+
 export type StoredSession = {
     contentRevision?: number
     readState?: SessionReadState
@@ -22,6 +27,8 @@ export type StoredSession = {
     serviceTier: string | null
     todos: unknown | null
     todosUpdatedAt: number | null
+    todosSourceAt: number | null
+    todosSourceSeq: number | null
     teamState: unknown | null
     teamStateUpdatedAt: number | null
     active: boolean

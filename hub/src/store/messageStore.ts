@@ -45,6 +45,7 @@ import {
     addMessageSweepingLiveSnapshots,
     deleteLiveTextSnapshots,
     getAllMessages,
+    getMessagesBeforeSeq,
     getMessagesAfterSeq,
     getMaxSeq,
     getMinSeq,
@@ -136,6 +137,10 @@ export class MessageStore {
         return getAllMessages(this.db, sessionId)
     }
 
+    getMessagesBeforeSeq(sessionId: string, beforeSeq?: number, limit: number = 200): StoredMessage[] {
+        return getMessagesBeforeSeq(this.db, sessionId, beforeSeq, limit)
+    }
+
     getMessagesAfterSeq(sessionId: string, afterSeq: number): StoredMessage[] {
         return getMessagesAfterSeq(this.db, sessionId, afterSeq)
     }
@@ -168,8 +173,8 @@ export class MessageStore {
         return getDeliverableMessagesAfter(this.db, sessionId, afterSeq, now, limit)
     }
 
-    getMessagesByPosition(sessionId: string, limit: number, before?: { at: number; seq: number }): StoredMessage[] {
-        return getMessagesByPosition(this.db, sessionId, limit, before)
+    getMessagesByPosition(sessionId: string, limit: number, before?: { at: number; seq: number }, order?: 'display' | 'created'): StoredMessage[] {
+        return getMessagesByPosition(this.db, sessionId, limit, before, order)
     }
 
     getMessagesAfterPosition(

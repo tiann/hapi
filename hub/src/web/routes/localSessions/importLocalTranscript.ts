@@ -6,6 +6,7 @@ import type { LocalTranscript } from '@hapi/protocol/localTranscript'
 import type { Machine, SyncEngine } from '../../../sync/syncEngine'
 import type { Store, StoredMessage, StoredSession } from '../../../store'
 import { ImportedMessageConflictError } from '../../../store/messages'
+import { persistImportedSessionTodos } from './rebuildImportedSessionTodos'
 import { matchAnchored } from './matchAnchored'
 import { collectImportCandidates, matchContentPrefix } from './matchContentPrefix'
 import type { HubLocalSessionSource } from './sources'
@@ -447,6 +448,9 @@ export function runLocalImportSync(options: {
                     return next
                 })
 
+                // Even a zero-row retry can repair a database written by an
+                // older Hub that committed the transcript but not its tasks.
+                persistImportedSessionTodos(store, stored.id, namespace)
                 return {
                     hapiSessionId: stored.id,
                     appended,

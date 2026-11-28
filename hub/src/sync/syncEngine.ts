@@ -96,7 +96,7 @@ import { SessionEnumerationCache } from './sessionEnumerationCache'
 import { ingestNotifySummaryFromMessage } from './workGraphNotifyIngest'
 import { MetadataSchema, type OpenCodeRewindOperation } from '@hapi/protocol/schemas'
 import type { OpenCodeRewindReport } from '@hapi/protocol/apiTypes'
-import { extractTodoWriteTodosFromMessageContent } from './todos'
+import { findLatestStructuredTodos } from './todos'
 import {
     readAutoBridgeTransientModelErrorsEnabled,
     writeAutoBridgeTransientModelErrorsEnabled
@@ -1159,6 +1159,11 @@ export class SyncEngine {
 
     recordSessionActivity(sessionId: string, updatedAt: number): void {
         this.sessionCache.recordSessionActivity(sessionId, updatedAt)
+    }
+
+    /** Rebuild structured task state after a transcript is imported directly. */
+    rebuildSessionTodos(sessionId: string, options?: { touchUpdatedAt?: boolean }): void {
+        this.sessionCache.rebuildTodosFromTranscript(sessionId, options)
     }
 
     /**
@@ -3437,9 +3442,13 @@ export class SyncEngine {
         truncateFromLocalId: string,
         discardedThroughSeq?: number
     ): void {
-        this.store.messages.truncateMessagesFromLocalId(sessionId, truncateFromLocalId, [], discardedThroughSeq)
+        this.store.runInTransaction(() => {
+            this.store.messages.truncateMessagesFromLocalId(sessionId, truncateFromLocalId, [], discardedThroughSeq)
+            if (!this.sessionCache.persistTodosFromTranscript(sessionId)) {
+                throw new Error('Failed to persist tasks for rewound transcript')
+            }
+        })
         this.scrubHistoryLocators(sessionId, namespace)
-        this.sessionCache.rebuildTodosFromTranscript(sessionId)
         this.markClaudeRewindCutApplied(sessionId, namespace, truncateFromLocalId)
         this.eventPublisher.emit({
             type: 'messages-invalidated',
@@ -3763,8 +3772,8 @@ export class SyncEngine {
             const updated = this.store.sessions.updateSessionMetadata(sessionId, { ...nextMetadata, opencodeRewind: next }, current.metadataVersion, namespace)
             if (updated.result !== 'success') throw new Error('OpenCode rewind metadata CAS failed')
             if (invalidated) {
-                const todos = this.store.messages.getAllMessages(sessionId).map(m => extractTodoWriteTodosFromMessageContent(m.content)).filter(Boolean).at(-1) ?? null
-                this.store.sessions.replaceSessionTodos(sessionId, todos, namespace)
+                const latest = findLatestStructuredTodos(this.store, sessionId)
+                this.store.sessions.replaceSessionTodos(sessionId, latest?.todos ?? null, namespace, latest?.source ?? null)
             }
             return next
         })

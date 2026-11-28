@@ -21,9 +21,15 @@ export type SessionStatusTerminal = {
     startedAt: number | null
 }
 
+export type SessionStatusTaskProgress = {
+    completed: number
+    total: number
+}
+
 export type SessionStatusData = {
     goal: ThreadGoal | null
     tasks: TodoItem[]
+    taskProgress: SessionStatusTaskProgress | null
     subagents: SessionStatusSubagent[]
     terminals: SessionStatusTerminal[]
 }
@@ -120,9 +126,17 @@ export function buildSessionStatusData(args: {
     backgroundTasks?: readonly BackgroundTask[]
 }): SessionStatusData | null {
     const tools = collectToolBlocks(args.blocks)
+    const allTasks = args.tasks ?? []
+    const tasks = allTasks.filter((task) => task.status !== 'completed')
     const data: SessionStatusData = {
         goal: args.goal ?? null,
-        tasks: args.tasks ? [...args.tasks] : [],
+        tasks,
+        taskProgress: allTasks.length > 0
+            ? {
+                completed: allTasks.filter((task) => task.status === 'completed').length,
+                total: allTasks.length
+            }
+            : null,
         subagents: tools
             .map(subagentFromBlock)
             .filter((subagent): subagent is SessionStatusSubagent => subagent !== null),
@@ -130,7 +144,7 @@ export function buildSessionStatusData(args: {
     }
 
     return data.goal
-        || data.tasks.length > 0
+        || data.taskProgress !== null
         || data.subagents.length > 0
         || data.terminals.length > 0
         ? data

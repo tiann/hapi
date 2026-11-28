@@ -32,6 +32,7 @@ jobs:
                   image-preview-back.spec.ts
                   opencode-fork-buttons.spec.ts
                   auth-network-recovery.spec.ts
+                  session-tasks.spec.ts
             # playwright.config.ts already sets `trace: 'retain-on-failure'` and
             # the html reporter on CI, but nothing collected the output, so every
             # trace died with the runner — leaving CI-only Playwright failures

@@ -29,6 +29,36 @@ function seedTwoTurns(store: Store, session: { id: string }) {
 }
 
 describe('Claude rewind hub integration', () => {
+    it('rolls back transcript and task changes together if the Claude rewind checklist cannot be written', async () => {
+        const { store, engine } = createEngine()
+        try {
+            const session = engine.getOrCreateSession('claude-rewind-task-atomicity', {
+                path: '/tmp/project', host: 'localhost', flavor: 'claude',
+                capabilities: { conversationHistory: { rewindToMessage: true } }
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: session.id, time: Date.now(), mode: 'remote' })
+            seedTwoTurns(store, session)
+            const plan = store.messages.addMessage(session.id, {
+                role: 'agent', content: { type: 'output', data: { type: 'assistant', message: { content: [
+                    { type: 'tool_use', name: 'ExitPlanMode', input: { plan: '- Discarded task' } }
+                ] } } }
+            })
+            engine.rebuildSessionTodos(session.id)
+            const before = store.messages.getAllMessages(session.id)
+            expect(before.some(message => message.id === plan.id)).toBe(true)
+            expect(engine.getSession(session.id)?.todos?.[0]?.content).toBe('Discarded task')
+            const replace = store.sessions.replaceSessionTodos.bind(store.sessions)
+            store.sessions.replaceSessionTodos = () => false
+            try {
+                const internal = engine as unknown as { rpcGateway: { rewindConversation: () => Promise<unknown> } }
+                internal.rpcGateway.rewindConversation = async () => ({ success: true, truncateFromLocalId: 'local-t2' })
+                expect(await engine.rewindConversation(session.id, 'default', 'local-t2')).toMatchObject({ type: 'error', hydrateFailed: true })
+            } finally { store.sessions.replaceSessionTodos = replace }
+            expect(store.messages.getAllMessages(session.id).map(message => message.id)).toEqual(before.map(message => message.id))
+            expect(engine.getSession(session.id)?.todos?.[0]?.content).toBe('Discarded task')
+        } finally { engine.stop(); store.close() }
+    })
+
     it('truncates the hub at rewind-RPC success and keeps a prompt sent afterwards with its reply', async () => {
         const { store, engine } = createEngine()
         try {

@@ -1,3 +1,4 @@
+import type { Store } from '../store'
 import { isObject } from '@hapi/protocol'
 import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import { TodoItemSchema, TodosSchema } from '@hapi/protocol/schemas'
@@ -5,6 +6,91 @@ import type { TodoItem } from '@hapi/protocol/types'
 
 export { TodoItemSchema, TodosSchema }
 export type { TodoItem }
+
+function normalizeTodoStatus(value: unknown): TodoItem['status'] {
+    if (typeof value !== 'string') return 'pending'
+    const status = value.trim().toLowerCase().replace(/[\s-]+/g, '_')
+    if (status === 'completed' || status === 'complete' || status === 'done') return 'completed'
+    if (status === 'in_progress' || status === 'inprogress' || status === 'active' || status === 'running') {
+        return 'in_progress'
+    }
+    return 'pending'
+}
+
+function normalizeTodoPriority(value: unknown): TodoItem['priority'] {
+    if (value === 'high' || value === 'low') return value
+    return 'medium'
+}
+
+function extractText(value: Record<string, unknown>): string | null {
+    for (const key of ['content', 'step', 'text', 'title', 'description']) {
+        const candidate = value[key]
+        if (typeof candidate !== 'string') continue
+        const text = candidate.trim()
+        if (text) return text
+    }
+    return null
+}
+
+function normalizePlanEntries(candidate: unknown): TodoItem[] | null {
+    if (!Array.isArray(candidate)) return null
+
+    const todos: TodoItem[] = []
+    candidate.forEach((entry, index) => {
+        if (typeof entry === 'string') {
+            const content = entry.trim()
+            if (!content) return
+            todos.push({
+                content,
+                priority: 'medium',
+                status: 'pending',
+                id: `plan-${index + 1}`
+            })
+            return
+        }
+
+        if (!isObject(entry)) return
+        const content = extractText(entry)
+        if (!content) return
+        const id = typeof entry.id === 'string' && entry.id.trim()
+            ? entry.id.trim()
+            : `plan-${index + 1}`
+        todos.push({
+            content,
+            priority: normalizeTodoPriority(entry.priority),
+            status: normalizeTodoStatus(entry.status ?? entry.state),
+            id
+        })
+    })
+
+    const parsed = TodosSchema.safeParse(todos)
+    return parsed.success ? parsed.data : null
+}
+
+function extractTodosFromPlanText(value: unknown, allowSingleStep = false): TodoItem[] | null {
+    if (typeof value !== 'string') return null
+
+    const listLines = value.split(/\r?\n/).flatMap((line) => {
+        const match = line.match(/^(\s*)(?:[-*+]\s+|\d+[.)]\s+)(.+?)\s*$/)
+        if (!match?.[2]) return []
+        return [{ indent: match[1]?.length ?? 0, content: match[2] }]
+    })
+
+    if (listLines.length === 0) return allowSingleStep && value.trim() ? normalizePlanEntries([value.trim()]) : null
+    const topLevelIndent = Math.min(...listLines.map((line) => line.indent))
+    return normalizePlanEntries(
+        listLines
+            .filter((line) => line.indent === topLevelIndent)
+            .map(({ content }) => {
+                const checkbox = /^\[([ xX])\]\s+(.+)$/.exec(content)
+                return checkbox ? { content: checkbox[2], status: checkbox[1] === ' ' ? 'pending' : 'completed' } : content
+            })
+    )
+}
+
+function isPlanExitToolName(value: unknown): boolean {
+    return value === 'ExitPlanMode' || value === 'exit_plan_mode'
+}
 
 function extractTodosFromClaudeOutput(content: Record<string, unknown>): TodoItem[] | null {
     if (content.type !== 'output') return null
@@ -18,38 +104,69 @@ function extractTodosFromClaudeOutput(content: Record<string, unknown>): TodoIte
     const modelContent = message.content
     if (!Array.isArray(modelContent)) return null
 
+    let planExitSeen = false
+    let planText: string | null = null
+    let explicitPlan: string | null = null
     for (const block of modelContent) {
-        if (!isObject(block) || block.type !== 'tool_use') continue
+        if (!isObject(block)) continue
+        if (block.type === 'text' && typeof block.text === 'string') {
+            planText ??= block.text
+            continue
+        }
+        if (block.type !== 'tool_use') continue
         const name = typeof block.name === 'string' ? block.name : null
-        if (name !== 'TodoWrite') continue
         const input = 'input' in block ? (block as Record<string, unknown>).input : null
-        if (!isObject(input)) continue
+        if (name === 'TodoWrite') {
+            if (!isObject(input)) continue
 
-        const todosCandidate = input.todos
-        const parsed = TodosSchema.safeParse(todosCandidate)
-        if (parsed.success) {
-            return parsed.data
+            const todosCandidate = input.todos
+            const parsed = TodosSchema.safeParse(todosCandidate)
+            if (parsed.success) {
+                return parsed.data
+            }
+            continue
+        }
+        if (isPlanExitToolName(name)) {
+            planExitSeen = true
+            if (isObject(input) && typeof input.plan === 'string') {
+                explicitPlan = input.plan
+            }
         }
     }
 
-    return null
+    return planExitSeen ? extractTodosFromPlanText(explicitPlan ?? planText, explicitPlan !== null) : null
 }
 
 function extractTodosFromCodexMessage(content: Record<string, unknown>): TodoItem[] | null {
     if (content.type !== 'codex') return null
 
     const data = isObject(content.data) ? content.data : null
-    if (!data || data.type !== 'tool-call') return null
+    if (!data) return null
+
+    if (data.type === 'plan_update') {
+        const plan = data.plan ?? data.update ?? data.items ?? data.steps
+        return normalizePlanEntries(Array.isArray(plan) ? plan : isObject(plan) ? plan.plan ?? plan.items ?? plan.steps : plan)
+    }
+
+    if (data.type !== 'tool-call') return null
 
     const name = typeof data.name === 'string' ? data.name : null
-    if (name !== 'TodoWrite') return null
-
     const input = 'input' in data ? (data as Record<string, unknown>).input : null
-    if (!isObject(input)) return null
+    if (name === 'update_plan') {
+        return normalizePlanEntries(isObject(input) ? input.plan : null)
+    }
+    if (name === 'TodoWrite') {
+        if (!isObject(input)) return null
 
-    const todosCandidate = input.todos
-    const parsed = TodosSchema.safeParse(todosCandidate)
-    return parsed.success ? parsed.data : null
+        const todosCandidate = input.todos
+        const parsed = TodosSchema.safeParse(todosCandidate)
+        return parsed.success ? parsed.data : null
+    }
+    if (isPlanExitToolName(name)) {
+        return extractTodosFromPlanText(isObject(input) ? input.plan : null, true)
+    }
+
+    return null
 }
 
 function extractTodosFromAcpMessage(content: Record<string, unknown>): TodoItem[] | null {
@@ -58,34 +175,10 @@ function extractTodosFromAcpMessage(content: Record<string, unknown>): TodoItem[
     const data = isObject(content.data) ? content.data : null
     if (!data || data.type !== 'plan') return null
 
-    const entries = data.entries
-    if (!Array.isArray(entries)) return null
-
-    const todos: TodoItem[] = []
-    entries.forEach((entry, index) => {
-        if (!isObject(entry)) return
-        const contentValue = typeof entry.content === 'string' ? entry.content : null
-        const priorityValue = typeof entry.priority === 'string' ? entry.priority : null
-        const statusValue = typeof entry.status === 'string' ? entry.status : null
-        if (!contentValue || !priorityValue || !statusValue) return
-        if (priorityValue !== 'high' && priorityValue !== 'medium' && priorityValue !== 'low') return
-        if (statusValue !== 'pending' && statusValue !== 'in_progress' && statusValue !== 'completed') return
-
-        const idValue = typeof entry.id === 'string' ? entry.id : `plan-${index + 1}`
-
-        todos.push({
-            content: contentValue,
-            priority: priorityValue,
-            status: statusValue,
-            id: idValue
-        })
-    })
-
-    const parsed = TodosSchema.safeParse(todos)
-    return parsed.success ? parsed.data : null
+    return normalizePlanEntries(data.entries)
 }
 
-export function extractTodoWriteTodosFromMessageContent(messageContent: unknown): TodoItem[] | null {
+export function extractSessionTodosFromMessageContent(messageContent: unknown): TodoItem[] | null {
     const record = unwrapRoleWrappedRecordEnvelope(messageContent)
     if (!record) return null
 
@@ -96,4 +189,27 @@ export function extractTodoWriteTodosFromMessageContent(messageContent: unknown)
     return extractTodosFromClaudeOutput(record.content)
         ?? extractTodosFromCodexMessage(record.content)
         ?? extractTodosFromAcpMessage(record.content)
+}
+
+const STRUCTURED_TODOS_BACKFILL_PAGE_SIZE = 200
+
+type StructuredTodosSnapshot = { todos: TodoItem[]; source: { at: number; seq: number } }
+
+export function findLatestStructuredTodos(store: Store, sessionId: string): StructuredTodosSnapshot | null {
+    // Walk the existing (session_id, seq) index once, retaining the newest
+    // source by creation time and sequence even for imported out-of-order rows.
+    let beforeSeq: number | undefined
+    let latest: StructuredTodosSnapshot | null = null
+    while (true) {
+        const page = store.messages.getMessagesBeforeSeq(sessionId, beforeSeq, STRUCTURED_TODOS_BACKFILL_PAGE_SIZE)
+        for (const message of page) {
+            const at = message.createdAt
+            const seq = message.seq
+            if (latest && (at < latest.source.at || (at === latest.source.at && seq <= latest.source.seq))) continue
+            const todos = extractSessionTodosFromMessageContent(message.content)
+            if (todos) latest = { todos, source: { at, seq } }
+        }
+        if (page.length < STRUCTURED_TODOS_BACKFILL_PAGE_SIZE) return latest
+        beforeSeq = page[0]!.seq
+    }
 }

@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from 'bun:test'
 import type { LocalTranscript } from '@hapi/protocol/localTranscript'
 import type { Machine, SyncEngine } from '../../../sync/syncEngine'
+import { SessionCache } from '../../../sync/sessionCache'
+import type { EventPublisher } from '../../../sync/eventPublisher'
 import { Store } from '../../../store'
 import { OPENCODE_LOCAL_SESSION_SOURCE, PI_LOCAL_SESSION_SOURCE, CODEX_LOCAL_SESSION_SOURCE, CLAUDE_LOCAL_SESSION_SOURCE } from './sources'
 import { importLocalTranscript } from './importLocalTranscript'
@@ -71,7 +73,9 @@ function harness() {
     const store = new Store(':memory:')
     const events: unknown[] = []
     const appliedConfigs: Array<Record<string, unknown>> = []
+    const cache = new SessionCache(store, { emit: () => {} } as unknown as EventPublisher)
     const engine = {
+        rebuildSessionTodos: (id: string, options?: { touchUpdatedAt?: boolean }) => cache.rebuildTodosFromTranscript(id, options),
         recordSessionActivity: (sessionId: string, updatedAt: number) => {
             store.sessions.touchSessionUpdatedAt(sessionId, updatedAt, 'default')
         },
@@ -118,6 +122,54 @@ describe('generic local import', () => {
             archiveReason: 'Imported from local OpenCode history'
         })
         expect(store.messages.getAllMessages(session!.id)).toHaveLength(2)
+    })
+
+    it('rebuilds session tasks when importing structured Codex plan history', async () => {
+        const { store, engine } = harness()
+        stores.push(store)
+        const outcome = await importLocalTranscript({
+            store,
+            engine,
+            namespace: 'default',
+            source: CODEX_LOCAL_SESSION_SOURCE,
+            transcript: codexTranscript('codex-plan', [{
+                role: 'agent',
+                content: {
+                    type: 'codex',
+                    data: { type: 'tool-call', name: 'update_plan', input: { plan: [{ step: 'Imported task', status: 'in_progress' }] } },
+                },
+            }]),
+            machine: machine(),
+        })
+        expect(outcome).toMatchObject({ action: 'created', appended: 1 })
+        expect(store.sessions.getSession(outcome.hapiSessionId!)?.todos).toEqual([
+            { content: 'Imported task', priority: 'medium', status: 'in_progress', id: 'plan-1' },
+        ])
+    })
+
+    it('rolls back an import if task persistence fails and repairs an already imported plan on retry', async () => {
+        const { store, engine } = harness()
+        stores.push(store)
+        const transcript = codexTranscript('atomic-plan', [{
+            role: 'agent', content: { type: 'codex', data: {
+                type: 'tool-call', name: 'update_plan', input: { plan: [{ step: 'Durable plan', status: 'pending' }] },
+            } },
+        }])
+        const importPlan = () => importLocalTranscript({ store, engine, namespace: 'default',
+            source: CODEX_LOCAL_SESSION_SOURCE, transcript, machine: machine() })
+        const replace = store.sessions.replaceSessionTodos.bind(store.sessions)
+        store.sessions.replaceSessionTodos = () => false
+        expect(await importPlan()).toMatchObject({ error: { code: 'import_failed' } })
+        expect(store.sessions.getSessionsByNamespace('default')).toHaveLength(0)
+        store.sessions.replaceSessionTodos = replace
+        const first = await importPlan()
+        expect(first).toMatchObject({ action: 'created', appended: 1 })
+        const id = first.hapiSessionId!
+        store.sessions.replaceSessionTodos(id, null, 'default')
+        expect(await importPlan()).toMatchObject({ action: 'unchanged', appended: 0, hapiSessionId: id })
+        expect(store.sessions.getSession(id)?.todos).toEqual([
+            { content: 'Durable plan', priority: 'medium', status: 'pending', id: 'plan-1' },
+        ])
     })
 
     it('is idempotent: the second import reports unchanged', async () => {

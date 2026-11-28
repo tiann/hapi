@@ -857,6 +857,27 @@ export function getMessages(
     return rows.reverse().map(toStoredMessage)
 }
 
+export function getMessagesBeforeSeq(
+    db: Database,
+    sessionId: string,
+    beforeSeq?: number,
+    limit: number = 200
+): StoredMessage[] {
+    const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(200, limit)) : 200
+    const beforeClause = beforeSeq === undefined ? '' : 'AND seq < ?'
+    const params = beforeSeq === undefined
+        ? [sessionId, safeLimit]
+        : [sessionId, beforeSeq, safeLimit]
+    const rows = db.prepare(`
+        SELECT * FROM messages
+        WHERE session_id = ? ${beforeClause}
+        ORDER BY seq DESC
+        LIMIT ?
+    `).all(...params) as DbMessageRow[]
+
+    return rows.reverse().map(toStoredMessage)
+}
+
 export function getAllMessages(
     db: Database,
     sessionId: string
@@ -1122,14 +1143,16 @@ export function getMessagesByPosition(
     db: Database,
     sessionId: string,
     limit: number,
-    before?: MessagePosition
+    before?: MessagePosition,
+    order: 'display' | 'created' = 'display'
 ): StoredMessage[] {
     const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(200, limit)) : 200
+    const positionSql = order === 'created' ? 'created_at' : 'COALESCE(invoked_at, created_at)'
     const beforeClause = before
-        ? 'AND (COALESCE(invoked_at, created_at) < @beforeAt OR (COALESCE(invoked_at, created_at) = @beforeAt AND seq < @beforeSeq))'
+        ? `AND (${positionSql} < @beforeAt OR (${positionSql} = @beforeAt AND seq < @beforeSeq))`
         : ''
     const rows = prepareCached(db, `
-        SELECT *, COALESCE(invoked_at, created_at) AS position_at
+        SELECT *, ${positionSql} AS position_at
         FROM messages
         WHERE session_id = @sessionId
           ${beforeClause}
@@ -1820,13 +1843,19 @@ export function mergeSessionMessages(
     const oldMaxSeq = getMaxSeq(db, fromSessionId)
     const newMaxSeq = getMaxSeq(db, toSessionId)
 
-    try {
-        db.exec('BEGIN')
+    return db.transaction(() => {
 
         if (newMaxSeq > 0 && oldMaxSeq > 0) {
             prepareCached(db,
                 'UPDATE messages SET seq = seq + ? WHERE session_id = ?'
             ).run(oldMaxSeq, toSessionId)
+            db.prepare(`
+                UPDATE sessions
+                SET todos_source_seq = todos_source_seq + @offset
+                WHERE id = @sessionId
+                  AND todos_source_at IS NOT NULL
+                  AND todos_source_seq >= 0
+            `).run({ offset: oldMaxSeq, sessionId: toSessionId })
         }
 
         const collisions = prepareCached(db, `
@@ -1887,12 +1916,8 @@ export function mergeSessionMessages(
             bumpMessageEpoch(db, toSessionId)
         }
 
-        db.exec('COMMIT')
         return { moved: result.changes, oldMaxSeq, newMaxSeq }
-    } catch (error) {
-        db.exec('ROLLBACK')
-        throw error
-    }
+    })()
 }
 
 /**

@@ -1,9 +1,11 @@
 import { describe, expect, it, mock } from 'bun:test'
+import type { Database } from 'bun:sqlite'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import { Store, type StoredSession } from '../../../store'
 import type { SyncEvent } from '../../../sync/syncEngine'
 import type { CliSocketWithData } from '../../socketTypes'
 import { registerSessionHandlers } from './sessionHandlers'
+import { findLatestStructuredTodos } from '../../../sync/todos'
 
 class FakeSocket {
     readonly roomEvents: Array<{ room: string; event: string; data: unknown }> = []
@@ -335,6 +337,60 @@ describe('cli session handlers', () => {
         expect(webEvents).toHaveLength(0)
     })
 
+    it('keeps newer tasks on replay and rebuild after a delayed consumption acknowledgement', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('delayed-plan-ack', {}, null, 'default')
+        const socket = new FakeSocket()
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store, resolveSessionAccess: () => ({ ok: true, value: session }), emitAccessError() {},
+        })
+        const plan = (localId: string, createdAt: number) => ({ sid: session.id, localId, createdAt,
+            message: { role: 'agent', content: { type: 'codex', data: {
+                type: 'plan_update', plan: [{ step: localId, status: 'pending' }],
+            } } } })
+        const first = plan('old', 1000)
+        try {
+            socket.trigger('message', first)
+            socket.trigger('message', plan('new', 2000))
+            socket.trigger('messages-consumed', { sid: session.id, localIds: ['old'] })
+            expect(store.messages.getAllMessages(session.id).find(row => row.localId === 'old')?.invokedAt).toBeGreaterThan(2000)
+            socket.trigger('message', first)
+            expect(store.sessions.getSession(session.id)?.todos).toMatchObject([{ content: 'new' }])
+            expect(findLatestStructuredTodos(store, session.id)?.todos).toMatchObject([{ content: 'new' }])
+        } finally { store.close() }
+    })
+
+    it('rolls back a live plan message if its checklist cannot be persisted, then repairs a missing snapshot on replay', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('transactional-plan', {}, null, 'default')
+        const socket = new FakeSocket()
+        const events: SyncEvent[] = []
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store, resolveSessionAccess: () => ({ ok: true, value: session }), emitAccessError() {},
+            onWebappEvent: event => events.push(event),
+        })
+        const message = { sid: session.id, localId: 'plan-1', message: { role: 'agent', content: {
+            type: 'codex', data: { type: 'plan_update', plan: [{ step: 'Preserve this task', status: 'in_progress' }] },
+        } } }
+        const db = (store as unknown as { db: Database }).db
+        db.exec(`CREATE TRIGGER fail_task_write BEFORE UPDATE OF todos ON sessions
+            BEGIN SELECT RAISE(ABORT, 'fixture interrupted task write'); END`)
+        try {
+            expect(() => socket.trigger('message', message)).toThrow('fixture interrupted task write')
+            expect(store.messages.getAllMessages(session.id)).toHaveLength(0)
+            expect(events).toEqual([])
+            db.exec('DROP TRIGGER fail_task_write')
+            socket.trigger('message', message)
+            expect(store.messages.getAllMessages(session.id)).toHaveLength(1)
+            expect(store.sessions.getSession(session.id)?.todos).toMatchObject([{ content: 'Preserve this task' }])
+            // Reproduces an already-imported row from before atomic writes.
+            db.query('UPDATE sessions SET todos = NULL, todos_source_at = NULL, todos_source_seq = NULL WHERE id = ?').run(session.id)
+            socket.trigger('message', message)
+            expect(store.sessions.getSession(session.id)?.todos).toMatchObject([{ content: 'Preserve this task' }])
+            expect(events.filter(event => event.type === 'message-received')).toHaveLength(1)
+        } finally { store.close() }
+    })
+
     it('emits a structured todos patch when a TodoWrite message lands (closes second half of #884)', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('todos-session', { path: '/tmp', host: 'h' }, null, 'default')
@@ -393,6 +449,104 @@ describe('cli session handlers', () => {
         })
         expect(typeof (sessionUpdated.data as { updatedAt?: number }).updatedAt).toBe('number')
         expect((sessionUpdated.data as { updatedAt?: number }).updatedAt).toBeGreaterThan(0)
+    })
+
+    it('emits a structured todos patch when a Codex update_plan message lands', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('codex-plan-session', { path: '/tmp', host: 'h' }, null, 'default')
+        const socket = new FakeSocket()
+        const webEvents: SyncEvent[] = []
+
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+            emitAccessError: () => {
+                throw new Error('unexpected access error')
+            },
+            onWebappEvent: (event) => {
+                webEvents.push(event)
+            }
+        })
+
+        socket.trigger('message', {
+            sid: session.id,
+            message: {
+                role: 'agent',
+                content: {
+                    type: 'codex',
+                    data: {
+                        type: 'tool-call',
+                        name: 'update_plan',
+                        input: {
+                            plan: [
+                                { step: 'Inspect', status: 'completed' },
+                                { step: 'Fix', status: 'in_progress' }
+                            ]
+                        }
+                    }
+                }
+            }
+        })
+
+        const sessionUpdated = webEvents.find((e) => e.type === 'session-updated')
+        expect(sessionUpdated).toBeDefined()
+        if (!sessionUpdated || sessionUpdated.type !== 'session-updated') return
+        expect(sessionUpdated.data).toMatchObject({
+            todos: {
+                version: expect.any(Number),
+                value: [
+                    { content: 'Inspect', status: 'completed', id: 'plan-1' },
+                    { content: 'Fix', status: 'in_progress', id: 'plan-2' }
+                ]
+            }
+        })
+    })
+
+    it('keeps the later live plan when replay messages share a createdAt timestamp', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('same-ms-live-plan-session', { path: '/tmp', host: 'h' }, null, 'default')
+        const socket = new FakeSocket()
+        const webEvents: SyncEvent[] = []
+
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+            emitAccessError: () => {
+                throw new Error('unexpected access error')
+            },
+            onWebappEvent: (event) => {
+                webEvents.push(event)
+            }
+        })
+
+        const sendPlan = (step: string, status: 'pending' | 'in_progress') => {
+            socket.trigger('message', {
+                sid: session.id,
+                createdAt: 2_000,
+                message: {
+                    role: 'agent',
+                    content: {
+                        type: 'codex',
+                        data: {
+                            type: 'tool-call',
+                            name: 'update_plan',
+                            input: { plan: [{ step, status }] }
+                        }
+                    }
+                }
+            })
+        }
+
+        sendPlan('First snapshot', 'pending')
+        sendPlan('Later snapshot', 'in_progress')
+
+        const stored = store.sessions.getSession(session.id)
+        expect(stored?.todos).toEqual([
+            { content: 'Later snapshot', priority: 'medium', status: 'in_progress', id: 'plan-1' }
+        ])
+        expect(stored?.todosSourceAt).toBe(2_000)
+        expect(stored?.todosSourceSeq).toBe(2)
+        expect(webEvents.filter((event) => event.type === 'session-updated')).toHaveLength(2)
     })
 
     it('emits a structured metadata patch on update-metadata RPC (closes second half of #884)', () => {
