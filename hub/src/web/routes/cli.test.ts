@@ -421,6 +421,61 @@ describe('cli lazy session creation', () => {
         expect(getOrCreateSession).not.toHaveBeenCalled()
     })
 
+    it('rejects session create with malformed metadata.waiting (#2616)', async () => {
+        const getOrCreateSession = mock(() => ({ id: sessionId }))
+        const app = createApp({
+            getOrCreateSession
+        } as never)
+
+        const response = await app.request('/cli/sessions', {
+            method: 'POST',
+            headers: {
+                ...authHeaders(),
+                'content-type': 'application/json'
+            },
+            body: JSON.stringify({
+                id: sessionId,
+                tag: 'lazy-tag',
+                metadata: {
+                    path: '/tmp/project',
+                    waiting: { reason: 'watch CI' }
+                }
+            })
+        })
+
+        expect(response.status).toBe(400)
+        expect(await response.json()).toEqual({ error: 'Invalid metadata.waiting' })
+        expect(getOrCreateSession).not.toHaveBeenCalled()
+    })
+
+    it('rejects session adopt with malformed metadata.waiting (#2616)', async () => {
+        const adoptPreallocatedSession = mock(() => ({ id: sessionId }))
+        const app = createApp({
+            adoptPreallocatedSession
+        } as never)
+
+        const response = await app.request('/cli/sessions', {
+            method: 'POST',
+            headers: {
+                ...authHeaders(),
+                'content-type': 'application/json'
+            },
+            body: JSON.stringify({
+                id: sessionId,
+                adopt: true,
+                tag: 'adopt-tag',
+                metadata: {
+                    path: '/tmp/project',
+                    waiting: { reason: 'missing since' }
+                }
+            })
+        })
+
+        expect(response.status).toBe(400)
+        expect(await response.json()).toEqual({ error: 'Invalid metadata.waiting' })
+        expect(adoptPreallocatedSession).not.toHaveBeenCalled()
+    })
+
     it('rejects an embedded machine owned by another namespace', async () => {
         const getOrCreateMachine = mock(() => ({ id: 'machine-1' }))
         const getOrCreateSession = mock(() => ({ id: sessionId }))
