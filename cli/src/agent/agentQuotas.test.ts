@@ -400,17 +400,17 @@ describe('agentQuotas parsers and probes', () => {
         })
 
         const first = await getAgentQuotasResponse({ env: {} })
-        expect(first.accounts.map((a) => a.status)).toEqual(['unavailable', 'unavailable', 'unavailable'])
-        expect(availabilitySpy).toHaveBeenCalledTimes(3)
+        expect(first.accounts.map((a) => a.status)).toEqual(Array(4).fill('unavailable'))
+        expect(availabilitySpy).toHaveBeenCalledTimes(4)
 
         const second = await getAgentQuotasResponse({ env: {} })
         expect(second.fetchedAt).toBe(first.fetchedAt)
-        expect(availabilitySpy).toHaveBeenCalledTimes(3)
+        expect(availabilitySpy).toHaveBeenCalledTimes(4)
 
         recordCodexRateLimitsUpdate({ rateLimits: {} })
         const third = await getAgentQuotasResponse({ env: {} })
-        expect(availabilitySpy).toHaveBeenCalledTimes(6)
-        expect(third.accounts).toHaveLength(3)
+        expect(availabilitySpy).toHaveBeenCalledTimes(8)
+        expect(third.accounts).toHaveLength(4)
     })
 
     it('handles unavailable status in probeAgyQuota and probeClaudeQuota directly', async () => {

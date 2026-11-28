@@ -1,5 +1,5 @@
 ---
-description: "Track agent working time with hapi usage, token usage per session, and Claude, Codex and Antigravity plan quotas and rate limits."
+description: "Track agent working time with hapi usage, token usage per session, and Claude, Codex, Cursor and Antigravity plan quotas and rate limits."
 ---
 
 # Usage and quotas
@@ -78,6 +78,7 @@ The **CLI account quotas** section at the top of **Settings → Token usage** as
 |-------|--------|-------|
 | Claude Code | Reads the plan's 5-hour and 7-day windows on demand from Claude Code (the same data as its `/usage` command), plus `rate_limit` events observed during Claude turns | Expired login shows **Not signed in**. A custom endpoint or API key with no plan window shows **Custom endpoint / API key** |
 | Codex | Asks the Codex app-server for the account and its rate limits, plus rate-limit updates observed during Codex turns | Shows plan and credits; additional named limits appear as separate groups. API-key accounts without plan windows show **Custom endpoint / API key** |
+| Cursor | Reads the current billing period through the same Dashboard service as Cursor CLI using the runner's existing Cursor login | Included plan, Auto and API pools when reported. Plans without included quota can use the linked Cursor dashboard. |
 | Antigravity | Runs Antigravity's `/usage` command headlessly | Windows are grouped by model group |
 
 Other agents do not report account quotas. Agents that are not installed on a machine are hidden from the list.
@@ -90,7 +91,7 @@ In a web chat, a compact chip next to the context meter shows the current agent'
 
 - The chip turns amber at 20% remaining or less, and red at 5% or less.
 - It refreshes every 2 minutes and hides itself if a read fails rather than show stale numbers.
-- It appears only when the account reports an account-wide 5-hour or weekly window — in practice **Claude Code** and **Codex**. Antigravity's per-model-group windows stay in Settings.
+- Claude Code and Codex show account-wide 5-hour and weekly windows when reported. Cursor shows the included pool for its current billing cycle. Antigravity's per-model-group windows stay in Settings.
 - It needs a runner with quota support on the session's machine.
 
 The iOS and Android apps do not show account quotas yet.

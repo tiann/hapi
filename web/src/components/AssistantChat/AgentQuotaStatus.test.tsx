@@ -76,6 +76,14 @@ describe('selectComposerQuotaBuckets', () => {
     })
 })
 
+it('shows only the included Cursor pool at the composer', () => {
+    const included = bucket({ id: 'included', label: 'Included plan usage' })
+    const result: AgentQuotasResponse = { fetchedAt: 1, accounts: [
+        { agent: 'cursor', available: true, status: 'ok', updatedAt: 1, buckets: [bucket({ id: 'api' }), included] }
+    ] }
+    expect(selectComposerQuotaBuckets(result, 'cursor')).toEqual([included])
+})
+
 describe('quota countdown formatting', () => {
     const minute = 60_000
     const hour = 60 * minute

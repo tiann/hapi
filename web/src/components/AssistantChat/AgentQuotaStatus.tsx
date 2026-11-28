@@ -25,6 +25,7 @@ export function selectComposerQuotaBuckets(
     if (!response || !agentFlavor) return []
     const account = response.accounts.find((entry) => entry.agent === agentFlavor)
     if (!account || account.status !== 'ok') return []
+    if (agentFlavor === 'cursor') return account.buckets.filter(bucket => bucket.id === 'included')
     return Object.keys(WINDOW_SHORT_LABELS).flatMap((window) => {
         const bucket = account.buckets.find((entry) => !entry.group && entry.window === window)
         return bucket ? [bucket] : []
@@ -106,7 +107,8 @@ export function AgentQuotaStatus(props: { machineId: string; agentFlavor: string
     if (buckets.length === 0) return null
 
     const parts = buckets.map((bucket) => {
-        const head = `${WINDOW_SHORT_LABELS[bucket.window ?? '']} ${Math.round(bucket.usedPercent)}%`
+        const period = props.agentFlavor === 'cursor' ? t('settings.usage.quotas.billingCycle') : WINDOW_SHORT_LABELS[bucket.window ?? '']
+        const head = `${period} ${Math.round(bucket.usedPercent)}%`
         return {
             id: bucket.id,
             text: bucket.resetsAt && bucket.resetsAt > now
