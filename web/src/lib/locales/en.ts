@@ -1,4 +1,15 @@
 export default {
+  'searchHistory.optInNotSaved': 'Could not turn on search history. No searches will be recorded until the setting is saved.',
+  'searchHistory.deleteNotSaved': 'Could not delete saved searches. The entries are still stored. Try again.',
+  'searchHistory.title': 'Search history',
+  'searchHistory.local': 'Stored only in this browser for the current Hub and account. History is not synced across devices.',
+  'searchHistory.description': 'Save recent session, file, and outline searches. Turning this off hides history and stops saving; existing entries are kept.',
+  'searchHistory.recent': 'Recent searches',
+  'searchHistory.clear': 'Clear history',
+  'searchHistory.optOutNotSaved': 'Could not save this opt-out. Recording is paused here, but other tabs may still be saving searches.',
+  'searchHistory.retryOptOut': 'Retry turning off',
+  'searchHistory.clearAll': 'Clear search history',
+  'searchHistory.remove': 'Remove search: {query}',
   // Loading states
   'loading': 'Loading…',
   'authorizing': 'Authorizing…',

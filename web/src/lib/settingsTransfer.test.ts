@@ -44,6 +44,8 @@ const NOT_SETTINGS_KEYS = new Set([
     'hapi-mention-inactive-collapsed',
     'hapi-session-list-machine-filter',
     'hapi.scratchlist-collapsed.v1.',
+    'hapi.searchHistory.v1.',
+    'hapi-search-history-coordination',
     // Onboarding and dismissals
     'hapi.nativeAppPromo.v1',
     'hapi.fue.v1.',

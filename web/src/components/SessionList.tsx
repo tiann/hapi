@@ -4,6 +4,7 @@ import * as Popover from '@radix-ui/react-popover'
 import { SessionListScrollAnchor } from './SessionListScrollAnchor'
 import type { SessionContentSearchResponse, SessionSummary } from '@/types/api'
 import type { ApiClient } from '@/api/client'
+import { useSearchHistoryField } from '@/components/SearchHistory'
 import {
     buildSessionSearchScoreIndex,
     compareSessionsBySearchRelevance,
@@ -937,6 +938,7 @@ export function shouldShowPinnedDivider(sessions: SessionSummary[], index: numbe
 }
 
 export function SessionListSearch(props: {
+    enableHistory?: boolean
     searchRef?: (node: HTMLDivElement | null) => void
     value: string
     onChange: (value: string) => void
@@ -964,6 +966,9 @@ export function SessionListSearch(props: {
     const [searchMatchModeOpen, setSearchMatchModeOpen] = useState(false)
 
     const inputRef = useRef<HTMLInputElement>(null)
+    const history = useSearchHistoryField('sessions', props.value, props.onChange, inputRef, {
+        enabled: props.enableHistory === true, wrapperHandlesBlur: true, suppressSuggestions: searchMatchModeOpen,
+    })
     const collapsedButtonRef = useRef<HTMLButtonElement>(null)
     const scopeButtonRef = useRef<HTMLButtonElement>(null)
     const scopeFue = useFue('session-list-search-scope')
@@ -1139,7 +1144,10 @@ export function SessionListSearch(props: {
                 type="button"
                 aria-label={t('sessions.search.scope.toggle')}
                 aria-expanded={searchMatchModeOpen}
-                onClick={() => setSearchMatchModeOpen(open => !open)}
+                onClick={() => {
+                    history.dismissSuggestions()
+                    setSearchMatchModeOpen(open => !open)
+                }}
                 className="flex h-full w-auto items-center gap-0.5 border-r border-[var(--app-border)] px-1.5 text-xs leading-none text-[var(--app-hint)] transition-colors hover:text-[var(--app-fg)]"
             >
                 <span className="shrink-0 whitespace-nowrap leading-none">
@@ -1251,7 +1259,9 @@ export function SessionListSearch(props: {
                         <button
                             type="button"
                             onClick={() => {
-                                props.onChange('')
+                                history.clearQuery()
+                                // The clear button unmounts with the query; keep focus on
+                                // the collapsed search trigger instead of dropping to body.
                                 collapsedButtonRef.current?.focus()
                             }}
                             data-toolbar-chrome=""
@@ -1285,6 +1295,7 @@ export function SessionListSearch(props: {
                 // and collapses the search bar out from under it.
                 if (related?.closest('[data-fue-callout]')) return
                 if (!event.currentTarget.contains(related as Node | null)) {
+                    history.onClearButtonBlur(event)
                     props.onExpandedChange(false)
                 }
             }}
@@ -1299,7 +1310,7 @@ export function SessionListSearch(props: {
                     ref={inputRef}
                     type="search"
                     value={props.value}
-                    onChange={(event) => props.onChange(event.target.value)}
+                    {...history.inputProps}
                     placeholder={searchMode === 'content'
                         ? t('sessions.search.content.placeholder')
                         : t('sessions.search.placeholder')}
@@ -1314,10 +1325,13 @@ export function SessionListSearch(props: {
                     <button
                         type="button"
                         onClick={() => {
-                            props.onChange('')
+                            history.clearQuery()
+                            // The clear button unmounts with the query; keep focus off <body>
+                            // so a later outside click still routes blur through the wrapper.
                             inputRef.current?.focus()
                         }}
                         className="session-list-search-clear-endcap flex min-h-[48px] min-w-[48px] shrink-0 items-center justify-center border-l border-[var(--app-border)] bg-[var(--app-subtle-bg)] text-[var(--app-hint)] transition-colors hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] focus-visible:ring-inset"
+                        onMouseDown={(event) => { if (event.button === 0) event.preventDefault() }}
                         title={t('sessions.search.clear')}
                         aria-label={t('sessions.search.clear')}
                     >
@@ -1325,6 +1339,7 @@ export function SessionListSearch(props: {
                     </button>
                 ) : null}
             </div>
+            {history.suggestions}
 
             {showDateFilter ? datePicker : null}
 
@@ -3301,6 +3316,7 @@ export function SessionList(props: {
                 >
                     {showSearch ? (
                         <SessionListSearch
+                            enableHistory
                             searchRef={setSearchNode}
                             value={searchQuery}
                             onChange={setSearchQuery}

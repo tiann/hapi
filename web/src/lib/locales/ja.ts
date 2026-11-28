@@ -1,4 +1,8 @@
 export default {
+  'searchHistory.optInNotSaved': '検索履歴を有効にできませんでした。設定が保存されるまで検索は記録されません。',
+  'searchHistory.deleteNotSaved': '保存済みの検索を削除できませんでした。履歴は残っています。もう一度お試しください。',
+  'searchHistory.optOutNotSaved': '無効化の設定を保存できませんでした。このタブでの記録は停止していますが、他のタブでは続く場合があります。',
+  'searchHistory.retryOptOut': '無効化を再試行',
   // 読み込み状態
   'loading': '読み込み中…',
   'authorizing': '認証中…',

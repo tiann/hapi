@@ -1,5 +1,6 @@
 import { createContext, useContext, type ReactNode } from 'react'
 import type { ApiClient } from '@/api/client'
+import { getSearchHistoryKey, SearchHistoryProvider } from '@/lib/search-history'
 
 type AppContextValue = {
     api: ApiClient
@@ -16,7 +17,9 @@ export function AppContextProvider(props: {
 }) {
     return (
         <AppContext.Provider value={props.value}>
-            {props.children}
+            <SearchHistoryProvider storageKey={getSearchHistoryKey(props.value.baseUrl, props.value.token)}>
+                {props.children}
+            </SearchHistoryProvider>
         </AppContext.Provider>
     )
 }

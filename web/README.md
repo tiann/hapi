@@ -116,6 +116,16 @@ The Hub persists and enforces the lock across clients, restarts, and resume.
 - File search with ripgrep.
 - Navigate to file viewer.
 
+### Search history
+
+Completed searches are saved on Enter or when leaving a search field. Saving an unfinished search when closing the browser tab is best effort: the browser may close the page before a pending write completes.
+
+- Session-list, file, and conversation-outline search each keep up to 20 recent queries.
+- Focus an empty search field to recall a query, remove an entry, or clear that field's history. Arrow keys navigate suggestions; Escape dismisses them.
+- Queries are recorded on Enter, leaving the field, or closing/navigating away from the view. Intermediate keystrokes and unfinished IME composition are not recorded.
+- Settings → General → Search history controls saving and suggestions for all three fields. It is disabled by default; enabling opts in to saving, and disabling preserves existing entries. Clear search history removes all three lists for the current Hub/account.
+- History stays in this browser's localStorage, partitioned by Hub, user, and namespace. It does not sync across devices. Search remains usable when browser storage is unavailable.
+
 ### File viewer (`src/routes/sessions/file.tsx`)
 
 - File content display with syntax highlighting.
