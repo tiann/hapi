@@ -32,6 +32,7 @@ import { RUNNER_CAPABILITIES } from '@hapi/protocol'
 import type { RunnerState, Machine, MachineMetadata } from './types'
 import { RunnerStateSchema, MachineMetadataSchema } from './types'
 import { getInstalledCliMtimeMs } from '@/runner/controlClient'
+import type { StopSessionOptions } from '@/runner/stopSessionRequests'
 import { backoff } from '@/utils/time'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 import { RpcHandlerManager } from './rpc/RpcHandlerManager'
@@ -104,7 +105,7 @@ type MachineRpcHandlers = {
     spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>
     stopSession: (
         sessionId: string,
-        opts?: { processStartMarker?: string }
+        opts?: StopSessionOptions
     ) => Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'>
     requestShutdown: () => void
 }
@@ -685,7 +686,7 @@ export class ApiMachineClient {
 
             switch (result.type) {
                 case 'success':
-                    return { type: 'success', sessionId: result.sessionId }
+                    return { type: 'success', sessionId: result.sessionId, ...(result.reusedChild ? { reusedChild: true } : {}) }
                 case 'requestToApproveDirectoryCreation':
                     return { type: 'requestToApproveDirectoryCreation', directory: result.directory }
                 case 'error':
@@ -694,6 +695,7 @@ export class ApiMachineClient {
                         errorMessage: result.errorMessage,
                         code: result.code,
                         agent: result.agent,
+                        ...(result.reusedChild ? { reusedChild: true } : {}),
                     }
             }
         })
@@ -709,6 +711,20 @@ export class ApiMachineClient {
                 typeof processStartMarker === 'string' ? { processStartMarker } : undefined
             )
             return { status }
+        })
+
+        this.rpcHandlerManager.registerHandler(RPC_METHODS.StopUnreachableSession, async (params: any) => {
+            const { sessionId, pid, requestId, directory } = params || {}
+            if (typeof sessionId !== 'string' || !Number.isInteger(pid) || pid <= 0 || typeof requestId !== 'string') {
+                throw new Error('Session ID, pid and request ID are required')
+            }
+            // Decline before confirmation or signal when the resume directory is refused.
+            if (typeof directory !== 'string' || !directory) return { status: 'still_alive' }
+            const resolvedDirectory = await this.pathPolicy.resolveForCheck(directory)
+            if (!this.pathPolicy.isWithinSpawnRoots(resolvedDirectory)) {
+                return { status: 'still_alive' }
+            }
+            return { status: await stopSession(sessionId, { recovery: { requestId, pid } }) }
         })
 
         this.rpcHandlerManager.registerHandler(RPC_METHODS.StopRunner, () => {

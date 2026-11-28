@@ -862,6 +862,59 @@ describe('ApiMachineClient SpawnHappySession handler', () => {
             client.shutdown()
         }
     })
+
+    it('reports reused outcomes and forwards a recovery stop for one process', async () => {
+        const machine = makeMachine('machine-spawn-reused')
+        const client = new ApiMachineClient('cli-token', machine, [workspaceRoot])
+        const stopSession = vi.fn(async () => 'still_alive' as const)
+        const spawnSession = vi.fn()
+            .mockResolvedValueOnce({ type: 'success' as const, sessionId: 'session-1', reusedChild: true as const })
+            .mockResolvedValueOnce({ type: 'error' as const, errorMessage: 'Session webhook timeout', reusedChild: true as const })
+        client.setRPCHandlers({ spawnSession, stopSession, requestShutdown: vi.fn() })
+        const manager = (client as unknown as {
+            rpcHandlerManager: { handleRequest: (req: { method: string; params: string }) => Promise<string> }
+        }).rpcHandlerManager
+
+        try {
+            await expect(callSpawnHappySession(client, machine.id, { directory: workspaceRoot, agent: 'opencode' }))
+                .resolves.toEqual({ type: 'success', sessionId: 'session-1', reusedChild: true })
+            await expect(callSpawnHappySession(client, machine.id, { directory: workspaceRoot, agent: 'opencode' }))
+                .resolves.toMatchObject({ type: 'error', reusedChild: true })
+
+            const raw = await manager.handleRequest({
+                method: `${machine.id}:stop-unreachable-session`,
+                params: JSON.stringify({ sessionId: 'session-1', pid: 4242, requestId: 'r1', directory: workspaceRoot })
+            })
+            expect(JSON.parse(raw)).toEqual({ status: 'still_alive' })
+            expect(stopSession).toHaveBeenCalledWith('session-1', { recovery: { requestId: 'r1', pid: 4242 } })
+        } finally {
+            client.shutdown()
+        }
+    })
+
+    it('declines a recovery stop outside workspace roots without asking to stop anything', async () => {
+        const machine = makeMachine('machine-recovery-outside')
+        const client = new ApiMachineClient('cli-token', machine, [workspaceRoot])
+        const stopSession = vi.fn(async () => 'still_alive' as const)
+        client.setRPCHandlers({ spawnSession: vi.fn(), stopSession, requestShutdown: vi.fn() })
+        const manager = (client as unknown as {
+            rpcHandlerManager: { handleRequest: (req: { method: string; params: string }) => Promise<string> }
+        }).rpcHandlerManager
+
+        try {
+            const raw = await manager.handleRequest({
+                method: `${machine.id}:stop-unreachable-session`,
+                params: JSON.stringify({
+                    sessionId: 'session-1', pid: 4242, requestId: 'r-outside',
+                    directory: '/tmp/definitely-outside-roots'
+                })
+            })
+            expect(JSON.parse(raw)).toEqual({ status: 'still_alive' })
+            expect(stopSession).not.toHaveBeenCalled()
+        } finally {
+            client.shutdown()
+        }
+    })
 })
 
 describe('ApiMachineClient keepAlive lifecycle', () => {

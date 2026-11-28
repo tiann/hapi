@@ -347,3 +347,17 @@ describe('RpcGateway preview boundary error surfacing', () => {
             .resolves.toEqual({ nativeTurnId: 'turn-2', cutBeforeLocalId: 'u2' })
     })
 })
+
+describe('RpcGateway launch stamp pruning', () => {
+    it('drops launch timestamps older than the recovery quiet window on read', () => {
+        const { gateway } = createGateway()
+        const launched = (gateway as unknown as { launchedAt: Map<string, number> }).launchedAt
+        const now = Date.now()
+        launched.set('old-session', now - 120_000)
+        launched.set('recent-session', now - 1_000)
+
+        expect(gateway.lastLaunchAt('old-session')).toBeUndefined()
+        expect(launched.has('old-session')).toBe(false)
+        expect(gateway.lastLaunchAt('recent-session')).toBe(now - 1_000)
+    })
+})

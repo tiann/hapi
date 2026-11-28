@@ -107,6 +107,10 @@ import { getSettingsFile, readSettingsOrThrowCached } from '../config/settings'
 type PiResumeAttempt = NonNullable<NonNullable<Session['metadata']>['piResumeAttempt']>
 type PtyResumeAttempt = NonNullable<NonNullable<Session['metadata']>['ptyResumeAttempt']>
 
+// Two 30s keepalive-expiry windows, and four times the 15s activation wait a
+// booting child gets after a spawn request.
+const UNREACHABLE_WRAPPER_QUIET_MS = 60_000
+
 export type { Session, SyncEvent } from '@hapi/protocol/types'
 export type { Machine } from './machineCache'
 export type { SyncEventListener } from './eventPublisher'
@@ -232,6 +236,12 @@ export class SyncEngine {
     // can still be honored for the exact killed generation while its archive
     // is in flight.
     private readonly archiveDrainedGenerations = new Map<string, { machineId: string; pid: number; processStartMarker: string }>()
+    // Recovery stops in flight, by request id: the one wrapper process a
+    // reopen asked a runner to stop because the hub could not reach it.
+    private readonly recoveryStops = new Map<string, { sessionId: string; machineId: string; pid: number }>()
+    // A wrapper spawned before this hub process started may still be booting;
+    // this hub has no record of when it was requested.
+    private readonly startedAt = Date.now()
     private readonly eventPublisher: EventPublisher
     private readonly sessionCache: SessionCache
     private readonly machineCache: MachineCache
@@ -5420,7 +5430,7 @@ export class SyncEngine {
         return await promise
     }
 
-    private async resumeSessionUnlocked(sessionId: string, namespace: string, opts?: { permissionMode?: PermissionMode }): Promise<ResumeSessionResult> {
+    private async resumeSessionUnlocked(sessionId: string, namespace: string, opts?: { permissionMode?: PermissionMode, recoverUnreachableWrapper?: Session }): Promise<ResumeSessionResult> {
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
             return {
@@ -5637,6 +5647,11 @@ export class SyncEngine {
             if (flavor === 'codex' && resumeToken) {
                 this.sessionReadyIds.delete(access.sessionId)
                 this.writeCodexResumePending(access.sessionId, namespace, { machineId: targetMachine.id, nativeSessionId: resumeToken })
+            }
+            // Stop an unreachable runner wrapper only after every resume
+            // preflight passed, immediately before the spawn it would block.
+            if (opts?.recoverUnreachableWrapper) {
+                await this.stopUnreachableRunnerWrapper(opts.recoverUnreachableWrapper, directory)
             }
             const spawnResult = await this.rpcGateway.spawnSession(
                 targetMachine.id,
@@ -6070,12 +6085,60 @@ export class SyncEngine {
         // Not active and not archived (e.g. brand-new session that has not yet connected,
         // or one that ended without writing archive metadata). Forward to resume so the
         // operator still gets one-click revival.
-        const resumeResult = await this.resumeSessionUnlocked(access.sessionId, namespace)
+        const resumeResult = await this.resumeSessionUnlocked(access.sessionId, namespace, {
+            recoverUnreachableWrapper: session,
+        })
         if (resumeResult.type === 'error') {
             return resumeResult
         }
 
         return { type: 'success', sessionId: resumeResult.sessionId, resumed: true }
+    }
+
+    /**
+     * A runner child that lost its hub socket but never exited keeps the
+     * runner's spawn dedupe for this id, so resume would only rejoin it.
+     * Stop it first once it has been unreachable past the quiet period; a
+     * child from a recent spawn request may still be booting and is kept.
+     */
+    private async stopUnreachableRunnerWrapper(session: Session, directory: string): Promise<void> {
+        const metadata = session.metadata
+        const machineId = metadata?.machineId
+        if (session.active || !metadata || !machineId) return
+        if (metadata.flavor === 'codex') return
+        if (metadata.startedBy !== 'runner' && metadata.startedFromRunner !== true) return
+        const pid = metadata.hostPid
+        if (!(typeof pid === 'number' && pid > 0)) return
+        const quietSince = Math.max(session.activeAt, this.rpcGateway.lastLaunchAt(session.id) ?? 0, this.startedAt)
+        if (Date.now() - quietSince < UNREACHABLE_WRAPPER_QUIET_MS) return
+        if (this.rpcGateway.isSessionConnected(session.id)) return
+
+        const requestId = randomUUID()
+        this.recoveryStops.set(requestId, { sessionId: session.id, machineId, pid })
+        const log = { sessionId: session.id, machineId, pid }
+        try {
+            const status = await this.rpcGateway.stopUnreachableSession(machineId, session.id, pid, requestId, directory)
+            console.warn(`[reopen] Stop of an unreachable runner wrapper before resume: ${status}`, log)
+        } catch (error) {
+            // A runner without this RPC keeps today's path; resume below
+            // reports any machine or spawn failure.
+            console.warn('[reopen] Stop of an unreachable runner wrapper before resume failed', {
+                ...log, error: error instanceof Error ? error.message : String(error)
+            })
+        } finally {
+            this.recoveryStops.delete(requestId)
+        }
+    }
+
+    /**
+     * The runner asks once, right before it signals the wrapper of a recovery
+     * stop. Allow it only for that live request and process, and only while
+     * the hub still cannot reach any wrapper of the session.
+     */
+    confirmRecoveryStop(sessionId: string, machineId: string, pid: number, requestId: string): boolean {
+        const request = this.recoveryStops.get(requestId)
+        return request?.sessionId === sessionId && request.machineId === machineId && request.pid === pid
+            && !this.openCodeRewindPending(sessionId) && !this.rpcGateway.isSessionConnected(sessionId)
     }
 
     async handoffSessionToLocal(sessionId: string, namespace: string): Promise<LocalHandoffResult> {

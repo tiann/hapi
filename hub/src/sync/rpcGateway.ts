@@ -78,6 +78,8 @@ const MODEL_LIST_RPC_TIMEOUT_MS = 120_000
 // Codex can spend 30s awaiting startup after preflight and process creation.
 const CODEX_SPAWN_RPC_TIMEOUT_MS = 60_000
 const UPLOAD_CHUNK_RPC_TIMEOUT_MS = 60_000
+// Launch stamps older than the reopen recovery quiet window no longer gate a stop.
+const RECOVERY_LAUNCH_TTL_MS = 60_000
 
 export class RunnerStopRpcError extends Error {
     constructor(readonly timedOut: boolean, cause: unknown) {
@@ -171,6 +173,30 @@ export class RpcGateway {
         private readonly io: Server,
         private readonly rpcRegistry: RpcRegistry
     ) {
+    }
+
+    // When a spawn last may have started a process for a HAPI id, so a child
+    // that may still be booting is never taken for an unreachable one. A
+    // runner answering with an already running child does not count.
+    private readonly launchedAt = new Map<string, number>()
+    private readonly spawnsInFlight = new Map<string, number>()
+
+    private pruneLaunchedAt(now: number): void {
+        for (const [sessionId, at] of this.launchedAt) {
+            if (now - at >= RECOVERY_LAUNCH_TTL_MS) this.launchedAt.delete(sessionId)
+        }
+    }
+
+    lastLaunchAt(sessionId: string): number | undefined {
+        const now = Date.now()
+        this.pruneLaunchedAt(now)
+        return this.spawnsInFlight.has(sessionId) ? now : this.launchedAt.get(sessionId)
+    }
+
+    /** True while any CLI socket for this session is connected or still serves its KillSession RPC. */
+    isSessionConnected(sessionId: string): boolean {
+        if (this.rpcRegistry.getSocketIdForMethod(`${sessionId}:${RPC_METHODS.KillSession}`)) return true
+        return (this.io.of('/cli').adapter.rooms.get(`session:${sessionId}`)?.size ?? 0) > 0
     }
 
     async approvePermission(
@@ -284,6 +310,23 @@ export class RpcGateway {
         throw new Error('Unexpected stop-session response')
     }
 
+    /**
+     * Ask the runner to stop the wrapper process `pid` that the hub cannot
+     * reach. Throws RpcTargetMissingError when the runner predates this RPC.
+     */
+    async stopUnreachableSession(
+        machineId: string,
+        sessionId: string,
+        pid: number,
+        requestId: string,
+        directory: string
+    ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.StopUnreachableSession, { sessionId, pid, requestId, directory })
+        const status = result && typeof result === 'object' ? (result as { status?: unknown }).status : undefined
+        if (status === 'stopped' || status === 'already_gone' || status === 'still_alive' || status === 'unknown') return status
+        throw new Error('Unexpected stop-unreachable-session response')
+    }
+
     async handoffSessionToLocal(sessionId: string): Promise<void> {
         await this.sessionRpc(sessionId, RPC_METHODS.HandoffLocal, {})
     }
@@ -346,6 +389,11 @@ export class RpcGateway {
             childStarted?: boolean
         }
     > {
+        const requestedSessionId = reservedSessionId ?? existingSessionId
+        if (requestedSessionId) this.spawnsInFlight.set(requestedSessionId, (this.spawnsInFlight.get(requestedSessionId) ?? 0) + 1)
+        // An unknown outcome may have started a process.
+        let launched = true
+        let launchedSessionId = requestedSessionId
         try {
             const result = await this.machineRpc(
                 machineId,
@@ -379,6 +427,8 @@ export class RpcGateway {
             if (result && typeof result === 'object') {
                 const obj = result as Record<string, unknown>
                 if (obj.type === 'success' && typeof obj.sessionId === 'string') {
+                    launched = obj.reusedChild !== true
+                    launchedSessionId = obj.sessionId
                     return { type: 'success', sessionId: obj.sessionId }
                 }
                 if (obj.type === 'error' && typeof obj.errorMessage === 'string') {
@@ -387,6 +437,7 @@ export class RpcGateway {
                         : undefined
                     const unavailableAgent = typeof obj.agent === 'string' ? obj.agent as AgentFlavor : undefined
                     const childStarted = obj.childStarted === false ? false : undefined
+                    launched = childStarted !== false && obj.reusedChild !== true
                     return {
                         type: 'error',
                         message: obj.errorMessage,
@@ -396,6 +447,7 @@ export class RpcGateway {
                     }
                 }
                 if (obj.type === 'requestToApproveDirectoryCreation' && typeof obj.directory === 'string') {
+                    launched = false
                     return {
                         type: 'error',
                         message: `Directory creation requires approval: ${obj.directory}`,
@@ -423,6 +475,17 @@ export class RpcGateway {
             // Ambiguous: the machine RPC may have started a child before failing.
             // Do not claim childStarted: false — hub keeps the stub.
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }
+        } finally {
+            if (requestedSessionId) {
+                const remaining = (this.spawnsInFlight.get(requestedSessionId) ?? 1) - 1
+                if (remaining > 0) this.spawnsInFlight.set(requestedSessionId, remaining)
+                else this.spawnsInFlight.delete(requestedSessionId)
+            }
+            if (launched && launchedSessionId) {
+                const now = Date.now()
+                this.pruneLaunchedAt(now)
+                this.launchedAt.set(launchedSessionId, now)
+            }
         }
     }
 

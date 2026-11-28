@@ -298,6 +298,19 @@ app.post('/sessions/:id/prepare-local-resume', async (c) => {
         }
     })
 
+    app.post('/sessions/:id/recovery-stop', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) return c.json({ error: 'Not ready' }, 503)
+        const access = resolveSessionForNamespace(engine, c.req.param('id'), c.get('namespace'))
+        if (!access.ok) return c.json({ error: access.error }, access.status)
+        const body = z.object({ machineId: z.string().min(1), pid: z.number().int().positive(), requestId: z.string().min(1) })
+            .safeParse(await c.req.json().catch(() => null))
+        if (!body.success) return c.json({ error: 'Invalid body' }, 400)
+        return c.json({
+            confirmed: engine.confirmRecoveryStop(access.sessionId, body.data.machineId, body.data.pid, body.data.requestId)
+        })
+    })
+
     app.post('/sessions/:id/handoff-local', async (c) => {
         const engine = getSyncEngine()
         if (!engine) {

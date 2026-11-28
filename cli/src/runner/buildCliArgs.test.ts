@@ -520,7 +520,7 @@ describe('createSpawnDeduplicator', () => {
         })
 
         await expect(dedupe({ directory: '/tmp', existingSessionId: 'fresh-hapi-session' })).resolves.toEqual({
-            type: 'error', errorMessage: 'Session fresh-hapi-session is still starting'
+            type: 'error', errorMessage: 'Session fresh-hapi-session is still starting', reusedChild: true
         })
         expect(calls).toBe(0)
     })
@@ -540,10 +540,10 @@ describe('createSpawnDeduplicator', () => {
         expect(calls).toBe(1)
         resolveSpawn?.({ type: 'success', sessionId: 'fresh-hapi-session' })
         await expect(first).resolves.toEqual({ type: 'success', sessionId: 'fresh-hapi-session' })
-        await expect(concurrentRetry).resolves.toEqual({ type: 'success', sessionId: 'fresh-hapi-session' })
+        await expect(concurrentRetry).resolves.toEqual({ type: 'success', sessionId: 'fresh-hapi-session', reusedChild: true })
 
         await expect(dedupe({ directory: '/tmp', existingSessionId: 'fresh-hapi-session' })).resolves.toEqual({
-            type: 'success', sessionId: 'fresh-hapi-session'
+            type: 'success', sessionId: 'fresh-hapi-session', reusedChild: true
         })
         expect(calls).toBe(1)
     })
@@ -573,7 +573,8 @@ describe('createSpawnDeduplicator', () => {
 
         const options = { directory: '/tmp', existingSessionId: 'fresh-hapi-session' }
         await expect(dedupe(options)).resolves.toEqual({ type: 'error', errorMessage: 'Session webhook timeout' })
-        await expect(dedupe(options)).resolves.toEqual({ type: 'error', errorMessage: 'Session webhook timeout' })
+        // The retry got the live child's outcome; no process started for it.
+        await expect(dedupe(options)).resolves.toEqual({ type: 'error', errorMessage: 'Session webhook timeout', reusedChild: true })
         expect(calls).toBe(1)
 
         dedupe.onChildExited('fresh-hapi-session')
@@ -595,11 +596,37 @@ describe('createSpawnDeduplicator', () => {
 
         // stopSession() has only requested termination; the child can still be alive.
         dedupe.markChildStopping('fresh-hapi-session')
-        await expect(dedupe(options)).resolves.toEqual({ type: 'success', sessionId: 'fresh-hapi-session' })
+        await expect(dedupe(options)).resolves.toEqual({ type: 'success', sessionId: 'fresh-hapi-session', reusedChild: true })
         expect(calls).toBe(1)
 
         dedupe.onChildExited('fresh-hapi-session')
         await expect(dedupe(options)).resolves.toEqual({ type: 'success', sessionId: 'fresh-hapi-session' })
+        expect(calls).toBe(2)
+    })
+
+    it('holds a same-id spawn while a stop is still running, even after the exit released the child', async () => {
+        let calls = 0
+        let dedupe!: ReturnType<typeof createSpawnDeduplicator>
+        dedupe = createSpawnDeduplicator(async (options) => {
+            calls += 1
+            dedupe.markChildAlive(options.existingSessionId!)
+            return { type: 'success' as const, sessionId: 'fresh-hapi-session' }
+        })
+        const options = { directory: '/tmp', existingSessionId: 'fresh-hapi-session' }
+        await dedupe(options)
+
+        let finishStop!: () => void
+        dedupe.holdWhile('fresh-hapi-session', new Promise<void>(resolve => { finishStop = resolve }))
+        // The exit listener fires while the stop still sweeps orphans.
+        dedupe.onChildExited('fresh-hapi-session')
+        let settled = false
+        const respawn = dedupe(options).finally(() => { settled = true })
+        await new Promise(resolve => setTimeout(resolve, 10))
+        expect(settled).toBe(false)
+        expect(calls).toBe(1)
+
+        finishStop()
+        await expect(respawn).resolves.toEqual({ type: 'success', sessionId: 'fresh-hapi-session' })
         expect(calls).toBe(2)
     })
 })

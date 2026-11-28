@@ -12,6 +12,8 @@ export const RPC_METHODS = {
     HandoffLocal: 'handoff-local',
     SpawnHappySession: 'spawn-happy-session',
     StopSession: 'stop-session',
+    /** Stop one wrapper process the hub cannot reach; the runner confirms with the hub right before signalling. */
+    StopUnreachableSession: 'stop-unreachable-session',
     StopRunner: 'stop-runner',
     ListMachineDirectory: 'list-directory',
     PathExists: 'path-exists',

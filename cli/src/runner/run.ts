@@ -16,7 +16,7 @@ import { isBunCompiled } from '@/projectPath';
 import { describeChildFatalContext } from './childFatalDiagnostics';
 import { writeRunnerState, RunnerLocallyPersistedState, readRunnerState, acquireRunnerLock, releaseRunnerLock } from '@/persistence';
 import { getCliArgs } from '@/utils/cliArgs';
-import { getProcessStartMarker, getSystemBootId, getProcessThreadGroupId, normalizeBootId, isProcessAlive, isWindows, killProcess, killProcessByChildProcess, killProcessTreeByPid } from '@/utils/process';
+import { collectProcessTree, getProcessStartMarker, getSystemBootId, getProcessThreadGroupId, normalizeBootId, isProcessAlive, isWindows, killProcess, killProcessByChildProcess, killProcessTreeByPid, type ProcessTree } from '@/utils/process';
 import { findStopSessionOrphanTargets, listWindowsProcessesWithCommandLine, reapRunnerSpawnedOrphans } from '@/runner/orphanReap';
 import { decideUntrackedRunnerWebhook } from '@/runner/lateRunnerWebhook';
 import { cleanupFailedStartupAfterExit, sessionStartupTimeout, waitForRecoverableStartup } from './sessionStartup';
@@ -47,11 +47,14 @@ import { resolveWorkspaceRoots } from '@/utils/workspaceRoot';
 import { hashRunnerCliApiToken, hashRunnerExtraHeaders } from './runnerIdentity';
 import { readRuntimes, runtimeMayBeAlive, runtimeAuthHash } from '@/codex/shared/registry';
 import { readWindowsProcessTable } from '@/utils/windowsProcessStop';
-import { coalesceStopRequests } from './stopSessionRequests';
+import { coalesceStopRequests, type StopSessionOptions } from './stopSessionRequests';
 import { scheduleCursorModelsPrewarm } from '@/modules/common/cursorModelsPrewarm';
 import { isLinkedGitWorktree } from '@/utils/isLinkedGitWorktree';
 import { agentUnavailableMessage, getAgentAvailability } from '@/agent/agentAvailability';
 import { copyCodexConfigFile, resolveCodexHome } from '@/codex/utils/codexHome';
+
+// A wrapper can reconnect and withdraw hub approval; never signal long after it was granted.
+const RECOVERY_SIGNAL_DEADLINE_MS = 2_000;
 
 /**
  * Deduplicates a preallocated HAPI-row spawn only while its child is alive.
@@ -63,6 +66,8 @@ export type SpawnDeduplicator = ((options: SpawnSessionOptions) => Promise<Spawn
   markChildAlive: (existingSessionId: string) => void
   markChildStopping: (existingSessionId: string) => void
   onChildExited: (existingSessionId: string) => void
+  /** Spawns for this id wait until `operation` settles (a stop still verifying or sweeping). */
+  holdWhile: (existingSessionId: string, operation: Promise<unknown>) => void
 }
 
 export function createSpawnDeduplicator(
@@ -70,15 +75,21 @@ export function createSpawnDeduplicator(
 ): SpawnDeduplicator {
   const completedOrInFlight = new Map<string, Promise<SpawnSessionResult>>();
   const childState = new Map<string, 'alive' | 'stopping'>();
+  const holds = new Map<string, Promise<unknown>>();
 
   const dedupe = async (options: SpawnSessionOptions): Promise<SpawnSessionResult> => {
     const key = options.existingSessionId ?? options.reservedSessionId;
     if (!key) {
       return await spawnOnce(options);
     }
+    for (let hold = holds.get(key); hold; hold = holds.get(key)) {
+      await hold.catch(() => {});
+    }
     const existing = completedOrInFlight.get(key);
     if (existing) {
-      return await existing;
+      const result = await existing;
+      // Tell the hub no process started for this request.
+      return result.type === 'requestToApproveDirectoryCreation' ? result : { ...result, reusedChild: true };
     }
 
     const task = spawnOnce(options);
@@ -112,6 +123,12 @@ export function createSpawnDeduplicator(
   dedupe.onChildExited = (existingSessionId: string) => {
     childState.delete(existingSessionId);
     completedOrInFlight.delete(existingSessionId);
+  };
+  dedupe.holdWhile = (existingSessionId: string, operation: Promise<unknown>) => {
+    const hold = Promise.all([holds.get(existingSessionId), operation.catch(() => {})]).finally(() => {
+      if (holds.get(existingSessionId) === hold) holds.delete(existingSessionId);
+    });
+    holds.set(existingSessionId, hold);
   };
   return dedupe;
 }
@@ -1239,12 +1256,32 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     // suppression only while their own exit event is still pending.
     const attemptStopSession = async (
       sessionId: string,
-      opts?: { processStartMarker?: string },
+      opts?: StopSessionOptions,
       terminated: Set<number> = new Set<number>()
     ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
+      if (opts?.recovery && process.platform === 'win32') {
+        // Recovery stops are not supported on Windows; leave the wrapper alone.
+        logger.debug('[RUNNER RUN] Declining a recovery stop on Windows');
+        return 'still_alive';
+      }
       logger.debug(`[RUNNER RUN] Attempting to stop session ${sessionId}`);
       const signalDeadlines = new Map<number, number>();
+      let recoveryApprovedAt: number | undefined;
       const prepareSessionStop = async (id: string, pid: number, expectedMarker?: string): Promise<boolean> => {
+        if (opts?.recovery) {
+          // A recovery stop signals only the named process, and only if the
+          // hub still cannot reach it right now. It cannot drain anyway.
+          if (pid !== opts.recovery.pid) return false;
+          if (!isProcessAlive(pid)) return true;
+          try {
+            const approved = await (await ApiClient.create()).confirmRecoveryStop(id, machineId, pid, opts.recovery.requestId);
+            if (approved) recoveryApprovedAt = monotonicTimeMs();
+            return approved;
+          } catch (error) {
+            logger.debug(`[RUNNER RUN] Session ${id} recovery stop unconfirmed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            return false;
+          }
+        }
         if (!isProcessAlive(pid)) return true;
         const flavor = pidToTrackedSession.get(pid)?.happySessionMetadataFromLocalWebhook?.flavor
           ?? persistedResumeProcesses.get(pid)?.flavor;
@@ -1343,6 +1380,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       const finishWithOrphanSweep = async (
         base: 'stopped' | 'already_gone' | 'unknown'
       ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
+        // A recovery stop signals only the one process the hub named.
+        if (opts?.recovery) return base;
         const liveRuntimes = await readLiveRuntimesForStop();
         if (liveRuntimes === null) return 'still_alive';
         const protectedTrackedPids = trackedSharedWrapperPidsWithSiblings(
@@ -1371,6 +1410,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
       const { findRuntime } = await import('@/codex/shared/registry');
       const sharedRuntime = await findRuntime(sessionId);
+      // A shared runtime stops its root without a per-process confirmation.
+      if (sharedRuntime && opts?.recovery) return 'still_alive';
       if (sharedRuntime) {
         try {
           const { runtimeControl } = await import('@/codex/shared/frontend');
@@ -1550,18 +1591,29 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
               }
             }
             try {
-              if (!await prepareSessionStop(sessionId, pid, persistedResumeProcesses.get(pid)?.processStartMarker)) return 'still_alive';
+              // Capture the tree before asking the hub: the synchronous pgrep
+              // scan must not run between approval and the first signal.
+              const recoveryTree: ProcessTree | undefined = opts?.recovery ? collectProcessTree(pid) : undefined;
+              const verifiedMarker = persistedResumeProcesses.get(pid)?.processStartMarker;
+              if (!await prepareSessionStop(sessionId, pid, verifiedMarker)) return 'still_alive';
               // Preparation can outlive the target generation (same recheck as
               // the raw-PID path): never signal a dead or recycled PID.
               if (!isProcessAlive(pid)) return await finishWithOrphanSweep('already_gone');
               const trackedMarker = persistedResumeProcesses.get(pid)?.processStartMarker;
-              if (trackedMarker && getProcessStartMarker(pid) !== trackedMarker) return 'unknown';
+              const expectedMarker = verifiedMarker ?? trackedMarker;
+              if (expectedMarker && getProcessStartMarker(pid) !== expectedMarker) return 'unknown';
+              if (opts?.recovery && pidToTrackedSession.get(pid) !== session) return 'unknown';
+              if (opts?.recovery && (recoveryApprovedAt === undefined
+                || monotonicTimeMs() - recoveryApprovedAt > RECOVERY_SIGNAL_DEADLINE_MS)) {
+                logger.debug(`[RUNNER RUN] Recovery approval for ${sessionId} expired before signalling ${pid}`);
+                return 'still_alive';
+              }
               const reportStop: Parameters<typeof killProcessTreeByPid>[2] = report => {
                 logger.debug('[RUNNER RUN] Windows tree stop confirmation', { sessionId, pid, ...report });
               };
               const treeStopped = session.childProcess
-                ? await killProcessByChildProcess(session.childProcess, false, reportStop, signalDeadlines.get(pid))
-                : await killProcessTreeByPid(pid, false, reportStop, signalDeadlines.get(pid));
+                ? await killProcessByChildProcess(session.childProcess, false, reportStop, signalDeadlines.get(pid), undefined, recoveryTree)
+                : await killProcessTreeByPid(pid, false, reportStop, signalDeadlines.get(pid), undefined, recoveryTree);
               if (!treeStopped) {
                 logger.debug(`[RUNNER RUN] Process tree for session ${sessionId} is still alive after stop request`);
                 return 'still_alive';
@@ -1611,7 +1663,13 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           pidToConfirmedSessionId.delete(pid);
           if (persistedResumeProcesses.delete(pid)) persistResumeProcesses();
           logger.debug(`[RUNNER RUN] Removed terminated session ${sessionId} from tracking`);
-          return await finishWithOrphanSweep('stopped');
+          const status = await finishWithOrphanSweep('stopped');
+          // Exit is proven. An adopted child has no exit event and would
+          // otherwise keep answering spawns for its id until the next
+          // heartbeat. Release only after the sweep: a new child for this id
+          // started during the sweep would match its argv scan.
+          releaseRecoveredSpawnDedupe(pid, existingSessionIdByChildPid, spawnSession);
+          return status;
         }
       }
 
@@ -1687,6 +1745,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       // excluding PIDs that still host active shared sibling roots (registry
       // and/or in-memory tracked wrappers).
       {
+        // A recovery stop signals only the requested pid, never an argv match.
+        if (opts?.recovery) return 'still_alive';
         const liveRuntimes = await readLiveRuntimesForStop();
         if (liveRuntimes === null) return 'still_alive';
         const protectedTrackedPids = trackedSharedWrapperPidsWithSiblings(
@@ -1748,12 +1808,17 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     // must not suppress its later real unexpected exit.
     const stopSession = coalesceStopRequests(async (
       sessionId: string,
-      opts?: { processStartMarker?: string }
+      opts?: StopSessionOptions
     ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
       const intentional = markIntentionalStop(sessionId);
       const terminated = new Set<number>();
+      const attempt = attemptStopSession(sessionId, opts, terminated);
+      // The child's exit can release its spawn dedupe while this stop still
+      // verifies the tree or sweeps argv orphans; a new child for the id
+      // started then would be swept. Spawns for the id wait for the stop.
+      spawnSession.holdWhile(sessionId, attempt);
       try {
-        return await attemptStopSession(sessionId, opts, terminated);
+        return await attempt;
       } finally {
         for (const pid of intentional.marked) {
           if (!(intentional.withExitListener.has(pid) && terminated.has(pid))) intentionallyStoppedPids.delete(pid);
