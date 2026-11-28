@@ -6,6 +6,9 @@ type TestNode = {
     value?: string
     url?: string
     children?: TestNode[]
+    data?: {
+        hProperties?: Record<string, unknown>
+    }
 }
 
 function transform(text: string): TestNode[] {
@@ -181,7 +184,9 @@ describe('remarkFilePathLinks — explicit markdown links', () => {
 
     it('rewrites a relative link with a #fragment, stripping it from the target', () => {
         const nodes = transformNodes([linkNode('docs/foo.md#section')])
-        expect(linkedPath(nodes.find((n) => n.type === 'link')!)).toBe('docs/foo.md')
+        const link = nodes.find((n) => n.type === 'link')!
+        expect(linkedPath(link)).toBe('docs/foo.md')
+        expect(link.data?.hProperties?.['data-hapi-markdown-href']).toBe('docs/foo.md#section')
     })
 
     it('does not rewrite POSIX absolute file links (containment needs session cwd in <A>)', () => {

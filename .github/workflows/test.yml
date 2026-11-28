@@ -6,7 +6,7 @@ on:
 
 jobs:
     browser:
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-24.04
         steps:
             - uses: actions/checkout@v4
             - uses: oven-sh/setup-bun@v2
@@ -32,6 +32,8 @@ jobs:
                   image-preview-back.spec.ts
                   opencode-fork-buttons.spec.ts
                   auth-network-recovery.spec.ts
+            - run: cd web && bunx playwright install --with-deps chromium
+            - run: cd web && bunx playwright test --config playwright.config.ts e2e/markdown-table.spec.ts e2e/markdown-table-mobile.spec.ts
             # playwright.config.ts already sets `trace: 'retain-on-failure'` and
             # the html reporter on CI, but nothing collected the output, so every
             # trace died with the runner — leaving CI-only Playwright failures

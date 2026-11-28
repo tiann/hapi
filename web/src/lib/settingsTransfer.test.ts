@@ -43,6 +43,12 @@ const NOT_SETTINGS_KEYS = new Set([
     'hapi-mention-inactive-collapsed',
     'hapi-session-list-machine-filter',
     'hapi.scratchlist-collapsed.v1.',
+    // Per-table wrapping is keyed by table identity, not a global preference.
+    'hapi-table-wrap:v1',
+    // False positives from the literal scanner: link prefixes and export filename.
+    'hapi-file:',
+    'hapi-file-candidate:',
+    'hapi-table.csv',
     // Onboarding and dismissals
     'hapi.nativeAppPromo.v1',
     'hapi.fue.v1.',

@@ -32,6 +32,8 @@ function markdownImageFallback(props: { label?: string; source: string; classNam
             aria-label={props.label || 'Image unavailable'}
             title={props.source}
             data-hapi-markdown-image-fallback="true"
+            data-hapi-markdown-src={props.source}
+            data-hapi-markdown-alt={props.label ?? ''}
             className={cn('aui-md-img-fallback my-3 text-[var(--app-hint)]', props.className)}
         >
             {props.label || 'Image unavailable'}
@@ -39,12 +41,14 @@ function markdownImageFallback(props: { label?: string; source: string; classNam
     )
 }
 
-function markdownImageLoading(props: { label?: string; className?: string }) {
+function markdownImageLoading(props: { label?: string; source: string; className?: string }) {
     return (
         <span
             role="img"
             aria-label={props.label || 'Loading image'}
             data-hapi-markdown-image-loading="true"
+            data-hapi-markdown-src={props.source}
+            data-hapi-markdown-alt={props.label ?? ''}
             className={cn('aui-md-img-loading my-3 text-[var(--app-hint)]', props.className)}
         >
             {props.label || 'Loading image'}
@@ -121,7 +125,7 @@ export function ChatMarkdownImage(props: ComponentPropsWithoutRef<'img'>) {
     }, [api, localPath, sessionId, source.kind, sourceKey, workspacePath])
 
     if (localPath && state.key === sourceKey && !state.failed && !state.dataUrl) {
-        return markdownImageLoading({ label: alt, className })
+        return markdownImageLoading({ label: alt, source: typeof src === 'string' ? src : '', className })
     }
 
     if (state.key !== sourceKey || state.failed) {
@@ -146,7 +150,10 @@ export function ChatMarkdownImage(props: ComponentPropsWithoutRef<'img'>) {
             disabled={!state.loaded}
             loading="lazy"
             referrerPolicy="no-referrer"
-            thumbnailProps={imageProps}
+            thumbnailProps={{
+                ...imageProps,
+                ...(typeof src === 'string' ? { 'data-hapi-markdown-src': src } : {}),
+            }}
             imageStyle={imageProps.style}
             buttonClassName="my-3 inline-block max-w-full cursor-zoom-in rounded-xl text-left disabled:cursor-default"
             imageClassName={cn('aui-md-img block max-w-full rounded-xl', className)}
