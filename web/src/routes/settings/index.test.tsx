@@ -29,6 +29,7 @@ const hubSettingsFixture = {
     sessionSummaryContract: false,
     sessionSummaryInChat: false,
     autoBridgeTransientModelErrors: false,
+    followUpDefault: 'queue' as const,
     peerSpawnDefaults: {
         agent: 'claude' as const,
         permissionMode: 'bypassPermissions' as const,
@@ -440,10 +441,24 @@ describe('responsive settings pages', () => {
         expect(await screen.findByRole('checkbox', { name: 'Automatically bridge transient model errors' })).toBeInTheDocument()
     })
 
+    it('updates the Hub follow-up default from the Chat input settings', async () => {
+        updateHubSettings.mockResolvedValueOnce({ ...hubSettingsFixture, followUpDefault: 'steer' })
+        renderPage(<SettingsChatPage />)
+
+        const options = within(await screen.findByRole('radiogroup', { name: 'Follow-up default' }))
+        expect(options.getByRole('radio', { name: 'Queue' })).toBeChecked()
+        const steer = options.getByRole('radio', { name: 'Steer' })
+        fireEvent.click(steer)
+
+        await waitFor(() => expect(steer).toBeChecked())
+        expect(updateHubSettings).toHaveBeenCalledExactlyOnceWith({ followUpDefault: 'steer' })
+    })
+
     it('hides the auto-bridge setting from tenant namespaces', () => {
         context.token = `x.${btoa(JSON.stringify({ ns: 'tenant' }))}.x`
         renderPage(<SettingsChatPage />)
         expect(screen.queryByRole('checkbox', { name: 'Automatically bridge transient model errors' })).not.toBeInTheDocument()
+        expect(screen.queryByRole('radiogroup', { name: 'Follow-up default' })).not.toBeInTheDocument()
         expect(getHubSettings).not.toHaveBeenCalled()
     })
 

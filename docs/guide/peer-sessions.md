@@ -58,7 +58,7 @@ Agents are told to wake a peer only when you asked for it or the handed-off work
 
 ### Waiting for a reply
 
-Pass `waitForReply: true` to `ping_peer` or `spawn_peer` and the calling agent can end its turn. When the peer's turn ends, HAPI posts the peer's latest reply back into the calling session as a new message, which starts the caller's next turn:
+Pass `waitForReply: true` to `ping_peer` or `spawn_peer` and the calling agent can end its turn. When the peer's turn ends, HAPI posts the peer's latest reply back into the calling session as a new message. A completed answer can reach the caller during its current turn on a runner that advertises guarded follow-ups. An idle caller receives it as its next turn:
 
 - If the peer took further messages before finishing, the reply to your task and the peer's latest reply are both included.
 - If the task is canceled before it runs, or the peer stops without replying, the caller is told so.

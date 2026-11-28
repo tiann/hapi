@@ -70,6 +70,7 @@ const harness = vi.hoisted(() => ({
     metadataUpdates: [] as Array<Record<string, unknown>>,
     disconnectImpl: null as null | (() => Promise<void>),
     permissionCancelError: null as Error | null,
+    pendingDecision: false,
     permissionCancelReasons: [] as string[],
     serverStopError: null as Error | null,
     eventStreamOptions: [] as Array<{
@@ -171,11 +172,13 @@ vi.mock('./utils/opencodeBackend', () => ({
                 harness.thoughtLevelOption = { ...harness.thoughtLevelOption, currentValue: value };
             }
         }),
-        prompt: vi.fn(async (_sessionId: string, content: PromptContent[], onMessage?: (message: unknown) => void) => {
+        prompt: vi.fn(async (_sessionId: string, content: PromptContent[], onMessage?: (message: unknown) => void,
+            options?: { timing?: { onSent?: () => void; onAnswered?: () => void } }) => {
             harness.promptOnMessage = onMessage ?? null;
             harness.promptContents.push(content);
             harness.events.push('prompt:start');
             harness.promptCount++;
+            options?.timing?.onSent?.();
             if (harness.hangPrompt) {
                 await new Promise<void>((resolve) => {
                     harness.resolvePrompt = resolve;
@@ -185,6 +188,7 @@ vi.mock('./utils/opencodeBackend', () => ({
             } else {
                 await new Promise<void>((resolve) => setImmediate(resolve));
             }
+            options?.timing?.onAnswered?.();
             harness.events.push('prompt:end');
         }),
         isPromptRequestInFlight: vi.fn(() =>
@@ -264,6 +268,7 @@ vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({
 
 vi.mock('./utils/permissionHandler', () => ({
     OpencodePermissionHandler: class {
+        hasPendingPermissionRequests(): boolean { return harness.pendingDecision; }
         beginTurn(): void {}
         async cancelAll(reason?: string): Promise<void> { harness.permissionCancelReasons.push(String(reason)); harness.cleanupEvents.push('cleanup:permission'); if (harness.permissionCancelError) throw harness.permissionCancelError; }
     }
@@ -699,7 +704,7 @@ function createSessionStub(
         }
     };
 
-    return { killHandlers, session, sessionEvents, sentAgentMessages, deliveryEvents, agentMessages: sentAgentMessages, claudeSessionMessages, rpcHandlers, setModel, setModelReasoningEffort, pushKeepAlive, emitMessagesConsumedCalls, thinkingChangeCalls, steeringActiveCalls, steerIndeterminateCalls, steerStateImpl };
+    return { killHandlers, session, agentState, sessionEvents, sentAgentMessages, deliveryEvents, agentMessages: sentAgentMessages, claudeSessionMessages, rpcHandlers, setModel, setModelReasoningEffort, pushKeepAlive, emitMessagesConsumedCalls, thinkingChangeCalls, steeringActiveCalls, steerIndeterminateCalls, steerStateImpl };
 
 }
 
@@ -5694,6 +5699,54 @@ describe('opencodeRemoteLauncher mid-turn steer', () => {
         return { steering, releaseState };
     }
 
+    it('waits for preparation of the specified follow-up, then soft-steers the observed turn once', async () => {
+        let release!: () => void;
+        const preparing = new Promise<void>(resolve => { release = resolve; });
+        const preparingMessage = vi.fn((id: string) => id === 'follow-up' ? preparing : undefined);
+        const { stub, releasePrompt, runPromise } = await startTurn({ launcherOptions: { preparingMessage } });
+        const followUp = stub.rpcHandlers.get('steer-follow-up-message') as SteerHandler;
+        try {
+            const expectedFollowUpTurnId = stub.agentState.followUpSteerTurnId;
+            expect(expectedFollowUpTurnId).toEqual(expect.any(String));
+            const payload = { localId: 'follow-up', expectedFollowUpTurnId };
+            await expect(followUp({ ...payload, expectedFollowUpTurnId: 'previous turn' })).resolves.toMatchObject({ steered: false });
+            expect(preparingMessage).not.toHaveBeenCalled();
+            const pending = followUp(payload);
+            expect(preparingMessage).toHaveBeenCalledWith('follow-up');
+            expect(harness.softSteerCalls).toEqual([]);
+            stub.session.queue.push('check the parser', createMode(), 'follow-up');
+            release();
+            await expect(pending).resolves.toEqual({ steered: true });
+            await expect(followUp(payload)).resolves.toMatchObject({ steered: false });
+            expect(harness.softSteerCalls).toHaveLength(1);
+        } finally {
+            release();
+            await stopTurn(stub, releasePrompt, runPromise);
+        }
+    });
+
+    it('restores a guarded follow-up when a decision appears while persisting dispatch', async () => {
+        let release!: () => void;
+        const { stub, releasePrompt, runPromise } = await startTurn();
+        const followUp = stub.rpcHandlers.get('steer-follow-up-message') as SteerHandler;
+        try {
+            harness.deferSteerState = new Promise<void>(resolve => { release = resolve; });
+            stub.session.queue.push('check the parser', createMode(), 'follow-up');
+            const pending = followUp({ localId: 'follow-up', expectedFollowUpTurnId: stub.agentState.followUpSteerTurnId });
+            await vi.waitFor(() => expect(harness.steerStateCalls).toContainEqual({ localIds: ['follow-up'], state: 'dispatching' }));
+            harness.pendingDecision = true;
+            release();
+            await expect(pending).resolves.toEqual({ steered: false, error: 'Waiting for a user decision' });
+            expect(stub.session.queue.peekByLocalId('follow-up')?.message).toBe('check the parser');
+            expect(harness.softSteerCalls).toEqual([]);
+        } finally {
+            harness.pendingDecision = false;
+            harness.deferSteerState = null;
+            release?.();
+            await stopTurn(stub, releasePrompt, runPromise);
+        }
+    });
+
     it('composition: refuses steering under a managed rewind gate before queue reservation', async () => {
         const gate = new OpenCodeRuntimeGate();
         const { stub, releasePrompt, runPromise } = await startTurn({ runtimeGate: gate });
@@ -6434,7 +6487,7 @@ describe('opencodeRemoteLauncher mid-turn steer', () => {
         }
     });
 
-    it('v2 durably admits without ACP soft prompt and consumes only its delivered identity', async () => {
+    it.each(['steer-queued-message', 'steer-follow-up-message'])('v2 %s durably admits and consumes only its delivered identity', async (method) => {
         harness.detectedVersion = 'v2';
         harness.discoveredPort = 48274;
         harness.discoveredPassword = 'synthetic-password';
@@ -6447,7 +6500,8 @@ describe('opencodeRemoteLauncher mid-turn steer', () => {
         const { stub, releasePrompt, runPromise } = await startTurn();
         try {
             stub.session.queue.push('correction', createMode(), 'v2-steer');
-            await expect(steerHandlerOf(stub)({ localId: 'v2-steer' })).resolves.toEqual({ steered: true });
+            const steer = stub.rpcHandlers.get(method) as SteerHandler;
+            await expect(steer({ localId: 'v2-steer', expectedFollowUpTurnId: stub.agentState.followUpSteerTurnId })).resolves.toEqual({ steered: true });
             expect(harness.softSteerCalls).toEqual([]);
             expect(stub.emitMessagesConsumedCalls).toEqual([]);
             const event = harness.eventStreamOptions.at(-1)!.onEvent!;

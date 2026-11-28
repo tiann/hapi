@@ -34,11 +34,12 @@ export function useAnchoredMenu(options: {
      * (menu's left edge at the pointer).
      */
     align?: 'center' | 'start'
+    preferAbove?: boolean
 }): {
     menuRef: RefObject<HTMLDivElement | null>
     menuStyle: CSSProperties | undefined
 } {
-    const { isOpen, onClose, anchorPoint, align = 'center' } = options
+    const { isOpen, onClose, anchorPoint, align = 'center', preferAbove = false } = options
     const menuRef = useRef<HTMLDivElement | null>(null)
     const [menuPosition, setMenuPosition] = useState<MenuPosition | null>(null)
 
@@ -55,7 +56,8 @@ export function useAnchoredMenu(options: {
 
         const spaceBelow = viewportHeight - anchorPoint.y
         const spaceAbove = anchorPoint.y
-        const openAbove = spaceBelow < height + gap && spaceAbove > spaceBelow
+        const openAbove = (preferAbove && spaceAbove >= height + gap)
+            || (spaceBelow < height + gap && spaceAbove > spaceBelow)
 
         let top = openAbove ? anchorPoint.y - height - gap : anchorPoint.y + gap
         // Center the menu on a trigger button, or start its left edge at a
@@ -69,7 +71,7 @@ export function useAnchoredMenu(options: {
         left = Math.min(Math.max(left, padding), viewportWidth - width - padding)
 
         setMenuPosition({ top, left, transformOrigin })
-    }, [align, anchorPoint])
+    }, [align, anchorPoint, preferAbove])
 
     useLayoutEffect(() => {
         if (!isOpen) return

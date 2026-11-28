@@ -59,7 +59,7 @@ export class SharedCodexProjection {
     private readonly compactionSummaries: CodexCompactionSummaryLookup;
     private summaryThread: unknown;
     constructor(private readonly session: ApiSessionClient, readonly threadId: string,
-        private readonly committed: (id: string, content?: unknown) => Promise<void | Array<{ id: string; input: unknown }>>,
+        private readonly committed: (id: string, content?: unknown, turnId?: string) => Promise<void | Array<{ id: string; input: unknown }>>,
         private readonly parentThreadId?: string, private readonly readSummaryThread?: () => Promise<unknown>,
         private readonly observeItem?: (threadId: string, item: unknown) => void) {
         this.compactionSummaries = new CodexCompactionSummaryLookup(threadId);
@@ -163,7 +163,7 @@ export class SharedCodexProjection {
         if (!this.parentThreadId && (method === 'item/started' || method === 'item/completed') && item.type === 'userMessage') {
             const id = string(item.clientId ?? item.clientUserMessageId) ?? (itemId ? `codex:${this.threadId}:user:${itemId}` : undefined);
             if (id) {
-                const aliases = await this.committed(id, item.content);
+                const aliases = await this.committed(id, item.content, turnId);
                 for (const member of aliases ?? [{ id, input: item.content }]) {
                     const firstInTurn = turnId ? [...this.turns].find(([, value]) => value === turnId)?.[0] : undefined;
                     if (turnId) this.turns.set(member.id, turnId);

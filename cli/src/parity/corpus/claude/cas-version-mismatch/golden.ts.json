@@ -32,6 +32,7 @@
       "<uuid:1>:ripgrep",
       "<uuid:1>:set-session-config",
       "<uuid:1>:statFiles",
+      "<uuid:1>:steer-follow-up-message",
       "<uuid:1>:steer-queued-message",
       "<uuid:1>:switch",
       "<uuid:1>:uploadAbort",
@@ -1159,6 +1160,7 @@
           {
             "agentState": {
               "controlledByUser": false,
+              "followUpSteerTurnId": "<uuid:9>",
               "startingMode": "remote",
               "steeringActive": true
             },
@@ -1175,6 +1177,7 @@
             "agentState": {
               "completedRequests": {},
               "controlledByUser": false,
+              "followUpSteerTurnId": "<uuid:9>",
               "startingMode": "remote",
               "steeringActive": true
             },
@@ -1188,6 +1191,7 @@
             "agentState": {
               "completedRequests": {},
               "controlledByUser": false,
+              "followUpSteerTurnId": "<uuid:9>",
               "startingMode": "remote",
               "steeringActive": true
             },
@@ -1204,6 +1208,7 @@
             "agentState": {
               "completedRequests": {},
               "controlledByUser": false,
+              "followUpSteerTurnId": null,
               "startingMode": "remote",
               "steeringActive": false
             },
@@ -1217,6 +1222,7 @@
             "agentState": {
               "completedRequests": {},
               "controlledByUser": false,
+              "followUpSteerTurnId": null,
               "startingMode": "remote",
               "steeringActive": false
             },

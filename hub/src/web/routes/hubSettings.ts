@@ -20,6 +20,7 @@ function toHubSettings(settings: Settings): HubSettingsResponse {
         sessionSummaryInChat: settings.sessionSummaryInChat === true,
         autoBridgeTransientModelErrors: settings.autoBridgeTransientModelErrors === true,
         translateInputByDefault: settings.translateInputByDefault === true,
+        followUpDefault: settings.followUpDefault ?? 'steer',
         peerSpawnDefaults: mergePeerSpawnDefaults(settings.peerSpawnDefaults)
     }
 }
@@ -51,7 +52,8 @@ export function createHubSettingsRoutes(
             parsed.data.sessionSummaryContract,
             parsed.data.sessionSummaryInChat,
             parsed.data.autoBridgeTransientModelErrors,
-            parsed.data.translateInputByDefault
+            parsed.data.translateInputByDefault,
+            parsed.data.followUpDefault
         ].filter((value) => value !== undefined).length
         if (providedFieldCount > 1) {
             return c.json({ error: 'Update one hub setting per request' }, 400)
@@ -95,6 +97,9 @@ export function createHubSettingsRoutes(
             }
             if (parsed.data.translateInputByDefault !== undefined) {
                 settings.translateInputByDefault = parsed.data.translateInputByDefault
+            }
+            if (parsed.data.followUpDefault !== undefined) {
+                settings.followUpDefault = parsed.data.followUpDefault
             }
             if (parsed.data.peerSpawnDefaults !== undefined) {
                 settings.peerSpawnDefaults = applyPeerSpawnDefaultsPatch(

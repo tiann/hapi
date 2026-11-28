@@ -1,13 +1,17 @@
+import { createPortal } from 'react-dom'
+import { useAnchoredMenu, type AnchoredMenuPoint } from '@/hooks/useAnchoredMenu'
+import { useLongPress } from '@/hooks/useLongPress'
+import type { MessageDeliveryMode } from '@hapi/protocol'
 import { ComposerPrimitive, useAui } from '@assistant-ui/react'
 import type { ConversationStatus } from '@/realtime/types'
 import { useTranslation } from '@/lib/use-translation'
-import { ScheduleIcon } from '@/components/icons'
+import { CheckIcon, ScheduleIcon } from '@/components/icons'
 import { AttachmentPicker } from './AttachmentPicker'
 import { ScheduleTimePicker } from './ScheduleTimePicker'
 import type { PendingSchedule } from './ScheduleTimePicker'
 import { useFue } from '@/lib/use-fue'
 import { FueCallout, FueDot } from '@/components/Fue'
-import { Children, isValidElement, useCallback, useRef, useState, type ReactElement, type ReactNode, type Ref } from 'react'
+import { Children, isValidElement, useCallback, useEffect, useId, useRef, useState, type ReactElement, type ReactNode, type Ref } from 'react'
 import { useComposerToolbarLayout, type ComposerToolbarItemId, type ComposerToolbarLayout } from '@/hooks/useComposerToolbarLayout'
 import { useNarrowViewport } from '@/hooks/useNarrowViewport'
 import type { ComposerSendIntent } from '@/lib/messageDelivery'
@@ -593,6 +597,8 @@ export function UnifiedButton(props: {
     dictationCanDirectSend?: boolean
     controlsDisabled: boolean
     onSend: (intent?: ComposerSendIntent) => void
+    followUpDefault?: MessageDeliveryMode
+    followUpTurnId?: string
     onVoiceToggle: () => void
     voiceLabel?: string
     /**
@@ -678,12 +684,69 @@ export function UnifiedButton(props: {
             : !hasText && !props.voiceEnabled && !isVoiceActive
     )
 
+    const sendButtonRef = useRef<HTMLButtonElement | null>(null)
+    const menuId = useId()
+    const [menuPoint, setMenuPoint] = useState<(AnchoredMenuPoint & { turnId: string }) | null>(null)
+    const followUpDefault = !isDisabled && hasText && !isVoiceActive && !routesToScratchlist && props.followUpTurnId
+        ? props.followUpDefault
+        : undefined
+    const menuTurn = followUpDefault === undefined ? null : props.followUpTurnId ?? null
+    const currentMenuTurn = useRef(menuTurn)
+    currentMenuTurn.current = menuTurn
+    const menuOpen = menuPoint !== null && menuTurn !== null && menuPoint.turnId === menuTurn
+    const closeMenu = useCallback(() => setMenuPoint(null), [])
+    useEffect(() => {
+        if (menuPoint !== null && !menuOpen) closeMenu()
+    }, [closeMenu, menuOpen, menuPoint])
+    const { menuRef, menuStyle } = useAnchoredMenu({
+        isOpen: menuOpen,
+        onClose: closeMenu,
+        anchorPoint: menuPoint ?? { x: 0, y: 0 },
+        preferAbove: true,
+    })
+    const openMenu = useCallback(() => {
+        const rect = sendButtonRef.current?.getBoundingClientRect()
+        if (menuTurn !== null && menuTurn === currentMenuTurn.current && rect) {
+            setMenuPoint({ x: rect.left + rect.width / 2, y: rect.top, turnId: menuTurn })
+        }
+    }, [menuTurn])
+    const longPress = useLongPress({
+        interaction: 'touch-only-native-click',
+        longPressEnabled: followUpDefault !== undefined,
+        disabled: isDisabled,
+        onLongPress: openMenu,
+        onClick: handleClick,
+    })
+
     return (
         <>
             <button
+                ref={sendButtonRef}
                 type="button"
-                onClick={handleClick}
+                onClick={longPress.onClick}
+                onTouchStart={longPress.onTouchStart}
+                onTouchMove={longPress.onTouchMove}
+                onTouchEnd={longPress.onTouchEnd}
+                onTouchCancel={longPress.onTouchCancel}
+                onContextMenu={(event) => {
+                    longPress.onContextMenu(event)
+                    if (followUpDefault) {
+                        if (!event.defaultPrevented) openMenu()
+                        event.preventDefault()
+                    }
+                }}
+                onKeyDown={(event) => {
+                    if (followUpDefault && (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))) {
+                        event.preventDefault()
+                        openMenu()
+                    }
+                }}
                 disabled={isDisabled}
+                aria-haspopup={followUpDefault ? 'menu' : undefined}
+                aria-keyshortcuts={followUpDefault ? 'Shift+F10' : undefined}
+                aria-expanded={followUpDefault ? menuOpen : undefined}
+                aria-controls={menuOpen ? menuId : undefined}
+                style={followUpDefault ? { WebkitTouchCallout: 'none' } : undefined}
                 aria-label={ariaLabel}
                 title={ariaLabel}
                 data-testid="composer-unified-button"
@@ -692,6 +755,53 @@ export function UnifiedButton(props: {
             >
                 {icon}
             </button>
+            {menuOpen ? createPortal(
+                <div
+                    ref={menuRef}
+                    id={menuId}
+                    role="menu"
+                    aria-label={t('composer.followUp.options')}
+                    className="fixed z-[61] box-border w-max max-w-[calc(100vw-16px)] rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-1 shadow-lg animate-menu-pop"
+                    style={menuStyle}
+                    onKeyDown={(event) => {
+                        if (event.key === 'Escape' || event.key === 'Tab') {
+                            event.stopPropagation()
+                            closeMenu()
+                            sendButtonRef.current?.focus()
+                        } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+                            event.preventDefault()
+                            const items = event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')
+                            const first = items[0]
+                            const last = items[items.length - 1]
+                            if (event.key === 'Home' || (event.key !== 'End' && event.target === last)) first?.focus()
+                            else last?.focus()
+                        }
+                    }}
+                >
+                    {(['queue', 'steer'] as const).map((intent) => (
+                        <button
+                            key={intent}
+                            type="button"
+                            role="menuitem"
+                            tabIndex={-1}
+                            className="flex min-h-11 w-full items-center justify-between gap-3 rounded-md px-3 text-left text-sm hover:bg-[var(--app-subtle-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                            onClick={() => {
+                                closeMenu()
+                                props.onSend(intent)
+                            }}
+                        >
+                            {t(`composer.followUp.${intent}`)}
+                            {intent === followUpDefault ? (
+                                <>
+                                    <CheckIcon className="size-4" aria-hidden="true" />
+                                    <span className="sr-only">{t('composer.followUp.default')}</span>
+                                </>
+                            ) : null}
+                        </button>
+                    ))}
+                </div>,
+                document.body,
+            ) : null}
             {isDictation && isConnected && props.dictationCanDirectSend ? (
                 // Explicit send action while dictation is connected: mouse/touch
                 // users must be able to reach the session-bound stopAndSend path

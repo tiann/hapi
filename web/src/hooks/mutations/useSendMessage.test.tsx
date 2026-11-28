@@ -137,6 +137,27 @@ describe('useSendMessage', () => {
         )
     })
 
+    it('drops the follow-up override and turn token when a send resumes the session', async () => {
+        const sendMock = vi.fn(async () => {})
+        const api = createMockApi(sendMock)
+        const { result } = renderHook(
+            () => useSendMessage(api, 'session-A', {
+                resolveSessionId: async () => ({ sessionId: 'session-B', resumed: true }),
+            }),
+            { wrapper: createWrapper() },
+        )
+
+        act(() => {
+            void result.current.sendMessage('a follow-up', undefined, null, 'queue', 'steer', 'turn-A')
+        })
+
+        await waitFor(() => {
+            expect(sendMock).toHaveBeenCalledExactlyOnceWith(
+                'session-B', 'a follow-up', 'local-id-1', undefined, null, 'queue',
+            )
+        })
+    })
+
     it('calls onSuccess with resolved session ID, not the original', async () => {
         const onSuccess = vi.fn()
         const api = createMockApi()

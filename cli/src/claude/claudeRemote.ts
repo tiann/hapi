@@ -244,8 +244,8 @@ export async function claudeRemote(opts: {
     let steerTarget: ClaudeSteerTarget | null = null;
     let responseClosed = false;
     let inputEnded = false;
-    const setSteerable = (open: boolean) => {
-        if (open === (steerTarget !== null)) return;
+    const setSteerable = (open: boolean, newTurn = false) => {
+        if (!newTurn && open === (steerTarget !== null)) return;
         if (!open) {
             steerTarget = null;
             opts.onSteerTargetChange?.(null);
@@ -1083,6 +1083,7 @@ export async function claudeRemote(opts: {
                     // The turn ended before Claude reached a tool boundary for
                     // a steered message; it starts a follow-up turn for it.
                     logger.debug(`${debugPrefix} result #${resultSeq} received with ${pendingSteers.size} pending steer(s); turn continues`);
+                    setSteerable(true, true);
                     // The delivered prompt is complete; a later stream failure
                     // must recover only the outstanding steer, not replay it.
                     opts.onResultAccepted?.();

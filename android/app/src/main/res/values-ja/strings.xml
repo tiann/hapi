@@ -356,7 +356,9 @@
     <string name="chat_composer_send">送信</string>
     <string name="chat_composer_abort">現在のターンを停止</string>
     <string name="chat_mention_suggestions">メンション候補</string>
-    <string name="chat_send_steer">現在のターンに割り込んで送信</string>
+    <string name="chat_send_queue">次のターンに送信</string>
+    <string name="chat_send_steer">現在のターンに追加</string>
+    <string name="chat_send_default">%1$s（既定）</string>
     <string name="chat_schedule_send">送信を予約</string>
     <string name="chat_schedule_capsule">予約 · %1$s</string>
     <string name="chat_schedule_clear">予約を解除</string>

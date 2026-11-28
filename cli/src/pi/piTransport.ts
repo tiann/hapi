@@ -1,8 +1,18 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { logger } from '@/ui/logger';
 import { JsonLineParser } from '@/utils/jsonLineParser';
 import { PiAgentEventSchema } from './schemas';
 import type { PiAgentEvent, PiRpcCommand } from './types';
+
+/** Older Pi releases can skip the rest of a tool batch when a steer arrives. */
+export function supportsPiToolBoundarySteering(versionOutput: string): boolean {
+    const version = /^v?(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.exec(versionOutput.trim());
+    if (!version) return false;
+    const [, major, minor, patch, prerelease] = version;
+    if (Number(major) !== 0) return Number(major) > 0;
+    if (Number(minor) !== 58) return Number(minor) > 58;
+    return Number(patch) > 4 || (Number(patch) === 4 && !prerelease);
+}
 
 export interface PiTransportOptions {
     command: string;
@@ -25,6 +35,14 @@ export class PiTransport extends JsonLineParser {
     constructor(options: PiTransportOptions) {
         super();
         this.options = options;
+    }
+
+    supportsToolBoundarySteering(): Promise<boolean> {
+        return new Promise((resolve) => {
+            execFile(this.options.command, ['--version'], {
+                cwd: this.options.cwd, env: this.options.env, timeout: 5_000, maxBuffer: 4_096, windowsHide: true,
+            }, (error, output) => resolve(!error && supportsPiToolBoundarySteering(output)));
+        });
     }
 
     start(): void {

@@ -357,7 +357,7 @@ struct ChatInteractorTests {
 
     // MARK: Send
 
-    @Test func optimisticSendHappyPathPostsQueueDeliveryAndSettlesToSent() async throws {
+    @Test func optimisticSendUsesHubDefaultAndSettlesToSent() async throws {
         let harness = try await ChatInteractionHarness()
 
         harness.interactor.setComposerText("hello agent")
@@ -367,7 +367,7 @@ struct ChatInteractorTests {
             await harness.row(localId: "local-1")?.status == .sent
         })
         let sends = await harness.performer.bodies("POST", pathSuffix: "/api/sessions/sess-1/messages")
-        #expect(sends == [#"{"deliveryMode":"queue","localId":"local-1","text":"hello agent"}"#])
+        #expect(sends == [#"{"followUpIntent":"default","localId":"local-1","text":"hello agent"}"#])
         // Optimistic until the SSE echo replaces it.
         #expect(await harness.row(localId: "local-1")?.id == "local-1")
         #expect(harness.interactor.composerText.isEmpty)
@@ -378,13 +378,55 @@ struct ChatInteractorTests {
         let harness = try await ChatInteractionHarness(detail: chatDetail(thinking: true))
 
         harness.interactor.setComposerText("steer this")
-        harness.interactor.sendMessage(steer: true)
+        harness.interactor.sendMessage(followUpIntent: .steer, expectedFollowUpTurnId: "observed-turn")
 
         #expect(await eventually {
             await harness.row(localId: "local-1")?.status == .queued
         })
         let sends = await harness.performer.bodies("POST", pathSuffix: "/api/sessions/sess-1/messages")
-        #expect(sends == [#"{"deliveryMode":"steer","localId":"local-1","text":"steer this"}"#])
+        #expect(sends == [#"{"expectedFollowUpTurnId":"observed-turn","followUpIntent":"steer","localId":"local-1","text":"steer this"}"#])
+    }
+
+    @Test func ordinaryPiFollowUpUsesTheObservedTurn() async throws {
+        let state = AgentState(followUpSteerTurnId: "pi-turn")
+        let harness = try await ChatInteractionHarness(detail: chatDetail(flavor: "pi", thinking: true, agentState: state))
+        harness.interactor.followUpDefault = .steer
+        #expect(harness.interactor.effectiveFollowUpDefault == .steer)
+        harness.interactor.setComposerText("update")
+        harness.interactor.sendMessage()
+        #expect(await eventually { await harness.row(localId: "local-1")?.status == .queued })
+        let sends = await harness.performer.bodies("POST", pathSuffix: "/api/sessions/sess-1/messages")
+        #expect(sends == [#"{"expectedFollowUpTurnId":"pi-turn","followUpIntent":"default","localId":"local-1","text":"update"}"#])
+    }
+
+    @Test(arguments: [false, true])
+    func livePiKeepsExplicitLegacySteerAndShowsQueueAsDefault(borrowedAttachment: Bool) async throws {
+        let harness = try await ChatInteractionHarness(detail: chatDetail(flavor: "pi", thinking: true))
+        harness.interactor.followUpDefault = .steer
+        #expect(harness.interactor.canChooseFollowUpMode)
+        #expect(harness.interactor.effectiveFollowUpDefault == .queue)
+        if borrowedAttachment {
+            harness.interactor.attachments.restoreScratchlist([
+                ScratchlistAttachment(id: "attachment-1", filename: "notes.txt", mimeType: "text/plain", size: 2,
+                    path: "hapi-hub:scratchlist/default/sess-1/attachment-1")
+            ])
+            await harness.performer.serve("POST", "/api/sessions/sess-1/upload", json: #"{"success":true,"path":"/uploads/notes.txt"}"#)
+        }
+
+        harness.interactor.setComposerText("steer Pi")
+        harness.interactor.sendMessage(followUpIntent: .steer)
+
+        #expect(await eventually { await harness.row(localId: "local-1")?.status == .queued })
+        let sends = await harness.performer.bodies("POST", pathSuffix: "/api/sessions/sess-1/messages")
+        #expect(sends.count == 1)
+        let body = try #require(sends.first)
+        let json = try #require(JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any])
+        #expect(json["deliveryMode"] as? String == "steer")
+        #expect(json["followUpIntent"] == nil)
+        #expect(json["expectedFollowUpTurnId"] == nil)
+        #expect(json["localId"] as? String == "local-1")
+        #expect(json["text"] as? String == "steer Pi")
+        #expect(body.contains("/uploads/notes.txt") == borrowedAttachment)
     }
 
     @Test func failedSendMarksTheRowFailedAndRetryRefiresWithTheSameLocalId() async throws {
@@ -479,12 +521,13 @@ struct ChatInteractorTests {
     }
 
     /// The canonical send body for one `preparedShot` upload.
-    private func attachmentSendBody(text: String, filename: String = "shot.jpg") -> String {
+    private func attachmentSendBody(text: String, filename: String = "shot.jpg", isRetry: Bool = false) -> String {
         let preview = AttachmentPolicy.dataUrl(mimeType: "image/jpeg", bytes: Data([7, 7]))
+        let delivery = isRetry ? #""deliveryMode":"queue""# : #""followUpIntent":"default""#
         return "{\"attachments\":[{\"filename\":\"\(filename)\",\"id\":\"att-1\","
             + "\"mimeType\":\"image/jpeg\",\"path\":\"/uploads/\(filename)\","
             + "\"previewUrl\":\"\(preview)\",\"size\":3}],"
-            + "\"deliveryMode\":\"queue\",\"localId\":\"local-1\",\"text\":\"\(text)\"}"
+            + "\(delivery),\"localId\":\"local-1\",\"text\":\"\(text)\"}"
     }
 
     @Test func inactiveAttachmentResumesAndRetriesEvenWithStaleActiveState() async throws {
@@ -714,11 +757,12 @@ struct ChatInteractorTests {
         })
 
         let sends = await harness.performer.bodies("POST", pathSuffix: "/api/sessions/sess-1/messages")
-        #expect(sends.count == 2)
-        // Attachments round-tripped through the optimistic row's wire JSON —
-        // the retry body is byte-identical (canonical sorted keys).
-        #expect(sends[0] == sends[1])
-        #expect(sends[1].contains("/uploads/shot.jpg"))
+        // The retry preserves the original text, local ID and attachment. It
+        // explicitly queues because the original active turn may have ended.
+        #expect(sends == [
+            attachmentSendBody(text: "try again"),
+            attachmentSendBody(text: "try again", isRetry: true),
+        ])
     }
 
     @Test func removingAReadyChipDeletesTheHubUploadAndDiscardDropsTheRest() async throws {
@@ -1328,7 +1372,7 @@ struct ChatInteractorTests {
         harness.interactor.setPendingSchedule(.delay(minutes: 30))
         harness.interactor.setComposerText("ship it")
 
-        harness.interactor.sendMessage(steer: true)
+        harness.interactor.sendMessage(followUpIntent: .steer)
 
         #expect(await eventually {
             await harness.performer.bodies("POST", pathSuffix: "/api/sessions/sess-1/messages") == [

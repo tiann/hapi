@@ -169,6 +169,7 @@ describe('UnifiedButton — default send intent', () => {
                 controlsDisabled={false}
                 onSend={onSend}
                 onVoiceToggle={() => {}}
+                followUpTurnId={overrides.followUpDefault ? 'turn-A' : undefined}
                 {...overrides}
             />,
         )
@@ -191,9 +192,76 @@ describe('UnifiedButton — default send intent', () => {
         expect(onSend).toHaveBeenCalledWith('default')
     })
 
-    it('keeps touch tap, desktop mouse hold, and desktop right-click on normal behavior', () => {
+    it('opens send options by right-click and keyboard, then sends just the selected override', () => {
+        const { onSend, button } = renderSendButton({ followUpDefault: 'queue' })
+
+        fireEvent.contextMenu(button)
+        expect(screen.getByRole('menuitem', { name: 'Queue Default' })).toBeInTheDocument()
+        expect(onSend).not.toHaveBeenCalled()
+        fireEvent.keyDown(screen.getByRole('menuitem', { name: 'Steer' }), { key: 'Escape' })
+        expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+        expect(button).toHaveFocus()
+        expect(onSend).not.toHaveBeenCalled()
+
+        fireEvent.keyDown(button, { key: 'F10', shiftKey: true })
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Steer' }))
+        expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+        expect(onSend).toHaveBeenCalledExactlyOnceWith('steer')
+    })
+
+    it('dismisses an open menu or pending touch hold when the active turn changes', () => {
         vi.useFakeTimers()
-        const { onSend, button } = renderSendButton()
+        const props = {
+            canSend: true,
+            voiceStatus: 'disconnected' as const,
+            voiceEnabled: false,
+            controlsDisabled: false,
+            onSend: vi.fn(),
+            onVoiceToggle: vi.fn(),
+        }
+        const buttonFor = (turnId?: string) => (
+            <I18nProvider>
+                <UnifiedButton {...props} followUpDefault={turnId ? 'queue' : undefined} followUpTurnId={turnId} />
+            </I18nProvider>
+        )
+        const view = render(buttonFor('turn-A'))
+        fireEvent.contextMenu(getButton('Send'))
+        expect(screen.getByRole('menu')).toBeInTheDocument()
+
+        view.rerender(buttonFor('turn-B'))
+        expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+        view.rerender(buttonFor('turn-A'))
+        expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+
+        const button = getButton('Send')
+        fireEvent.touchStart(button, { touches: [{ clientX: 10, clientY: 10 }] })
+        view.rerender(buttonFor('turn-B'))
+        act(() => vi.advanceTimersByTime(500))
+        fireEvent.touchEnd(button)
+        fireEvent.click(button, { detail: 1 })
+        expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+        expect(props.onSend).not.toHaveBeenCalled()
+    })
+
+    it('opens send options on touch hold without sending on release', () => {
+        vi.useFakeTimers()
+        const { onSend, button } = renderSendButton({ followUpDefault: 'steer' })
+
+        fireEvent.touchStart(button, { touches: [{ clientX: 10, clientY: 10 }] })
+        act(() => vi.advanceTimersByTime(500))
+        expect(screen.getByRole('menu')).toBeInTheDocument()
+
+        fireEvent.touchEnd(button)
+        fireEvent.click(button, { detail: 1 })
+        expect(onSend).not.toHaveBeenCalled()
+        expect(screen.getByRole('menuitem', { name: 'Steer Default' })).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Queue' }))
+        expect(onSend).toHaveBeenCalledExactlyOnceWith('queue')
+    })
+
+    it('keeps touch tap and desktop left-mouse hold as regular sends', () => {
+        vi.useFakeTimers()
+        const { onSend, button } = renderSendButton({ followUpDefault: 'steer' })
 
         fireEvent.touchStart(button, { touches: [{ clientX: 10, clientY: 10 }] })
         fireEvent.touchEnd(button, { changedTouches: [{ clientX: 10, clientY: 10 }] })
@@ -203,12 +271,11 @@ describe('UnifiedButton — default send intent', () => {
         act(() => vi.advanceTimersByTime(500))
         fireEvent.mouseUp(button, { button: 0, clientX: 10, clientY: 10 })
         fireEvent.click(button)
-        const contextMenuWasNotPrevented = fireEvent.contextMenu(button, { clientX: 10, clientY: 10 })
+        expect(screen.queryByRole('menu')).not.toBeInTheDocument()
 
         expect(onSend).toHaveBeenCalledTimes(2)
         expect(onSend).toHaveBeenNthCalledWith(1, 'default')
         expect(onSend).toHaveBeenNthCalledWith(2, 'default')
-        expect(contextMenuWasNotPrevented).toBe(true)
     })
 })
 

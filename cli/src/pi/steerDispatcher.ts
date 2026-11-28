@@ -7,12 +7,14 @@ import type { PiPreparedPrompt } from './promptQueue';
 export type PiPreparedSteer = PiPreparedPrompt & {
     /** Active Pi generation observed when this message arrived at HAPI. */
     targetStreamingGeneration: number | null;
+    expectedFollowUpTurnId?: string;
 };
 
 type ActiveSteer = {
     entry: PiPreparedSteer;
     cancelled: boolean;
     nativeSent: boolean;
+    claiming?: boolean;
 };
 
 /**
@@ -31,6 +33,7 @@ export class PiSteerDispatcher {
         transport: PiTransport;
         conversationHistory: PiConversationHistory;
         enqueuePrompt: (prompt: PiPreparedPrompt) => void;
+        canSteerFollowUp?: (expectedTurnId: string) => boolean;
         onIndeterminateTimeout: (error: PiRpcTimeoutError) => void;
         /** Re-attempt normal prompt pumping after local steer work drains. */
         onPendingStateChange?: () => void;
@@ -59,7 +62,7 @@ export class PiSteerDispatcher {
             this.options.onPendingStateChange?.();
             return true;
         }
-        if (this.active?.entry.localId === localId && !this.active.nativeSent) {
+        if (this.active?.entry.localId === localId && !this.active.nativeSent && !this.active.claiming) {
             this.active.cancelled = true;
             this.options.onPendingStateChange?.();
             return true;
@@ -71,7 +74,7 @@ export class PiSteerDispatcher {
     stop(): void {
         this.stopped = true;
         this.entries.length = 0;
-        if (this.active && !this.active.nativeSent) this.active.cancelled = true;
+        if (this.active && !this.active.nativeSent && !this.active.claiming) this.active.cancelled = true;
         // Shutdown must never wake the ordinary prompt pump: transport error
         // handlers call stop() before cleanup marks the runner terminal.
     }
@@ -90,6 +93,19 @@ export class PiSteerDispatcher {
     }
 
     private async dispatch(active: ActiveSteer): Promise<void> {
+        const { expectedFollowUpTurnId, localId } = active.entry;
+        const guarded = expectedFollowUpTurnId !== undefined && localId !== undefined;
+        const canFollowUp = () => !guarded || this.options.canSteerFollowUp?.(expectedFollowUpTurnId) === true;
+        const restore = async (): Promise<void> => {
+            if (guarded && active.claiming && !await this.options.session.client.setSteerDeliveryState([localId], 'queued')) {
+                this.options.session.client.emitSteerIndeterminate([localId]);
+                return;
+            }
+            if (!this.stopped && !active.cancelled) {
+                const { message, images, outboundSequence } = active.entry;
+                this.options.enqueuePrompt({ message, images, outboundSequence, ...(localId ? { localId } : {}) });
+            }
+        };
         try {
             await this.options.session.runRuntimeMutation(async () => {
                 if (this.stopped || active.cancelled) return;
@@ -103,14 +119,22 @@ export class PiSteerDispatcher {
                     !this.options.session.isReady
                     || currentGeneration === null
                     || currentGeneration !== active.entry.targetStreamingGeneration
+                    || !canFollowUp()
                 ) {
-                    this.options.enqueuePrompt({
-                        message: active.entry.message,
-                        images: active.entry.images,
-                        outboundSequence: active.entry.outboundSequence,
-                        ...(active.entry.localId ? { localId: active.entry.localId } : {}),
-                    });
+                    await restore();
                     return;
+                }
+                if (guarded) {
+                    active.claiming = true;
+                    const persisted = await this.options.session.client.setSteerDeliveryState([localId], 'dispatching');
+                    if (!persisted) {
+                        this.options.session.client.emitSteerIndeterminate([localId]);
+                        return;
+                    }
+                    if (this.stopped || active.cancelled || !canFollowUp()) {
+                        await restore();
+                        return;
+                    }
                 }
 
                 // Pi appends a user entry for both prompt and steer. Record it
@@ -118,14 +142,21 @@ export class PiSteerDispatcher {
                 // FIFO-correlated even with identical message text.
                 this.options.conversationHistory.registerUserEntry(active.entry.localId);
                 active.nativeSent = true;
-                await sendPiRpcAndWait(this.options.session, this.options.transport, {
+                const reply = await sendPiRpcAndWait(this.options.session, this.options.transport, {
                     type: 'steer',
                     message: active.entry.message,
                     ...(active.entry.images.length > 0 ? { images: active.entry.images } : {}),
                 });
 
                 if (this.stopped) return;
-                if (active.entry.localId) this.options.session.emitMessagesConsumed([active.entry.localId]);
+                if (localId) {
+                    // Pi correlates the RPC ACK, but gives history entries its own
+                    // IDs. This receipt means native acceptance, not model pickup.
+                    const handled = reply !== null && typeof reply === 'object'
+                        && 'disposition' in reply && reply.disposition === 'handled';
+                    if (guarded && handled) this.options.conversationHistory.rejectPendingEntry(localId);
+                    this.options.session.emitMessagesConsumed([localId], guarded && !handled ? { steered: true } : undefined);
+                }
             }, { poisonOnError: (error) => error instanceof PiRpcTimeoutError });
         } catch (error) {
             // Transport teardown rejects outstanding RPCs. Its cleanup owns the
@@ -142,20 +173,17 @@ export class PiSteerDispatcher {
             // consuming the hub row — a promoted queued message must not be
             // lost just because the steer was rejected.
             if (!(error instanceof PiRpcTimeoutError)) {
-                this.options.enqueuePrompt({
-                    message: active.entry.message,
-                    images: active.entry.images,
-                    outboundSequence: active.entry.outboundSequence,
-                    ...(active.entry.localId ? { localId: active.entry.localId } : {}),
-                });
+                await restore();
                 this.options.session.sendSessionEvent({ type: 'message', message: `Pi steer failed: ${detail}` });
                 return;
             }
 
             // Indeterminate timeout: Pi may or may not have accepted the
-            // steer. Keep the fail-closed handling (consume + escalate) rather
-            // than risking a duplicate delivery via the prompt FIFO.
-            if (active.entry.localId) {
+            // steer. Hold a guarded row for reconciliation; preserve legacy
+            // consumption for explicit Pi delivery. Never enqueue a second copy.
+            if (guarded) {
+                this.options.session.client.emitSteerIndeterminate([localId]);
+            } else if (active.entry.localId) {
                 this.options.session.emitMessagesConsumed(
                     [active.entry.localId],
                     { clearQueuedThinkingGrace: true },

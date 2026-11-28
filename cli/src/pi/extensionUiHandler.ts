@@ -148,6 +148,10 @@ export class PiExtensionUiHandler {
         });
     }
 
+    get hasPendingRequests(): boolean {
+        return this.pending.size > 0;
+    }
+
     handle(request: PiExtensionUiRequest): void {
         switch (request.method) {
             case 'notify':

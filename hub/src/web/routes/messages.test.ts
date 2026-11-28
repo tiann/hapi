@@ -307,6 +307,28 @@ describe('POST /api/sessions/:id/messages — #2 scheduledAt upper bound', () =>
 })
 
 describe('POST /api/sessions/:id/messages — deliveryMode', () => {
+    it('forwards the explicit composer default intent', async () => {
+        const { app, sentMessages } = createApp({})
+        const response = await app.request('/api/sessions/session-1/messages', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ text: 'follow-up', followUpIntent: 'default' })
+        })
+        expect(response.status).toBe(200)
+        expect(sentMessages[0]?.payload).toMatchObject({ followUpIntent: 'default' })
+    })
+
+    it('forwards the turn observed during a one-shot override', async () => {
+        const { app, sentMessages } = createApp({})
+        const response = await app.request('/api/sessions/session-1/messages', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ text: 'correction', followUpIntent: 'steer', expectedFollowUpTurnId: 'turn-1' })
+        })
+        expect(response.status).toBe(200)
+        expect(sentMessages[0]?.payload).toMatchObject({ followUpIntent: 'steer', expectedFollowUpTurnId: 'turn-1' })
+    })
+
     it('forwards an immediate steer intent to the hub', async () => {
         const { app, sentMessages } = createApp({})
 

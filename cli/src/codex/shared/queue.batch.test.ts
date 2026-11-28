@@ -99,6 +99,60 @@ async function fixture() {
     return { queue, consumed, uncertain, mirror, directory, ...server };
 }
 
+it.each(['single', 'batch'])('keeps a guarded %s admission pending until the original client ID appears in native history', async shape => {
+    const f = await fixture();
+    const batchKey = shape === 'batch' ? 'same-mode' : undefined;
+    await f.queue.enqueue('correction', text('fix'), false, batchKey);
+    if (batchKey) await f.queue.enqueue('sibling', text('later'), false, batchKey);
+    await expect(f.queue.steer('correction', 'observed-turn', undefined, () => null)).resolves.toEqual({ steered: true });
+    await f.queue.reconcile();
+    expect(f.consumed).not.toHaveBeenCalled();
+    expect(f.queue.state('correction')).toBe('awaitingPickup');
+    await expect(f.queue.steer('correction', 'observed-turn', undefined, () => null)).resolves.toEqual({ steered: true });
+    await expect(f.queue.cancel('correction')).resolves.toBe('indeterminate');
+    await f.queue.enqueue('correction', text('fix'), false, batchKey);
+    expect(f.native).toHaveLength(batchKey ? 1 : 0);
+    if (batchKey) expect(f.native[0].input).toEqual(text('later'));
+
+    const reloaded = new SharedCodexQueue(f.client, 'thread', join(f.directory, 'ledger.json'), f.consumed, f.uncertain);
+    await reloaded.load();
+    await reloaded.reconcile();
+    expect(reloaded.state('correction')).toBe('unknown');
+    expect(f.uncertain).toHaveBeenCalledWith(['correction']);
+    await reloaded.enqueue('correction', text('fix'), false, batchKey);
+    expect(f.calls.filter(call => call.method === 'turn/steer')).toHaveLength(1);
+    expect(f.native).toHaveLength(batchKey ? 1 : 0);
+    await reloaded.committed('correction', text('fix'), 'observed-turn');
+    expect(f.consumed).toHaveBeenCalledWith(['correction'], true);
+});
+
+it('holds admission without pickup for resolution after the target ends and accepts a later native receipt', async () => {
+    const f = await fixture();
+    await f.queue.enqueue('correction', text('fix'));
+    await f.queue.steer('correction', 'target', undefined, () => null);
+    await f.queue.finishUnconfirmedSteers(id => id === 'earlier');
+    expect(f.queue.state('correction')).toBe('awaitingPickup');
+    await f.queue.finishUnconfirmedSteers(id => id === 'target');
+    expect(f.queue.state('correction')).toBe('unknown');
+    expect(f.uncertain).toHaveBeenCalledWith(['correction']);
+    expect(f.consumed).not.toHaveBeenCalled();
+    await f.queue.committed('correction', text('fix'), 'other-native-turn');
+    expect(f.consumed).toHaveBeenCalledExactlyOnceWith(['correction']);
+});
+
+it('preserves a native pickup that races a lost guarded steer response', async () => {
+    const f = await fixture();
+    await f.queue.enqueue('correction', text('fix'));
+    f.overrides.set('turn/steer', async () => {
+        await f.queue.committed('correction', text('fix'), 'target');
+        throw lost('ack lost');
+    });
+    await expect(f.queue.steer('correction', 'target', undefined, () => null)).resolves.toEqual({ steered: true });
+    expect(f.queue.state('correction')).toBe('consumed');
+    expect(f.consumed).toHaveBeenCalledExactlyOnceWith(['correction'], true);
+    expect(f.uncertain).not.toHaveBeenCalled();
+});
+
 it('returns [] and flags the pending members for unproven batch content without a synthetic row', async () => {
     const { queue, consumed, uncertain, native } = await fixture();
     await queue.enqueue('original-A', text('MARKER-A'), false, 'same-mode');

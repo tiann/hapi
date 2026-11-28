@@ -3,6 +3,7 @@ import { act, renderHook } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type { Session } from '@/types/api'
 import { useHappyRuntime } from './assistant-runtime'
+import type { ComposerSendIntentRef } from './messageDelivery'
 
 describe('assistant-ui composer snapshots', () => {
     it('carries transcript echo eligibility from user blocks into message metadata', () => {
@@ -20,6 +21,29 @@ describe('assistant-ui composer snapshots', () => {
         expect(messages[0]?.metadata.custom).toMatchObject({ sourceMessageId: 'echo', isTranscriptEcho: true })
         expect(messages[1]?.metadata.custom).toMatchObject({ sourceMessageId: 'terminal', isTranscriptEcho: false })
     })
+    it('consumes the original turn token once even after the runtime sees another turn', async () => {
+        const onSendMessage = vi.fn()
+        const pendingSendIntentRef: ComposerSendIntentRef = {
+            current: { intent: 'steer', expectedFollowUpTurnId: 'turn-A' },
+        }
+        const { result, rerender } = renderHook(({ turnId }) => useHappyRuntime({
+            session: { id: 'session', active: true, thinking: true, agentState: { followUpSteerTurnId: turnId } } as Session,
+            blocks: [], messagesVersion: 0, historyVersion: 0, isSending: false,
+            onSendMessage, onAbort: vi.fn(async () => {}), pendingSendIntentRef,
+        }), { initialProps: { turnId: 'turn-A' } })
+        act(() => result.current.thread.composer.setText('a follow-up'))
+
+        let applicationSend: void | Promise<void>
+        act(() => { applicationSend = result.current.thread.composer.send() })
+        rerender({ turnId: 'turn-B' })
+        await act(async () => applicationSend)
+
+        expect(onSendMessage).toHaveBeenCalledExactlyOnceWith('a follow-up', undefined, null, {
+            intent: 'steer', expectedFollowUpTurnId: 'turn-A',
+        })
+        expect(pendingSendIntentRef.current).toEqual({ intent: 'default' })
+    })
+
     it('keeps snapshots stable and updates running state without a composer edit', async () => {
         const onSendMessage = vi.fn()
         const onAbort = vi.fn(async () => {})
@@ -55,7 +79,7 @@ describe('assistant-ui composer snapshots', () => {
         expect(result.current.snapshot.canCancel).toBe(false)
 
         await act(async () => result.current.composer.send())
-        expect(onSendMessage).toHaveBeenCalledExactlyOnceWith('dictated words', undefined, null, 'default')
+        expect(onSendMessage).toHaveBeenCalledExactlyOnceWith('dictated words', undefined, null, { intent: 'default' })
         expect(result.current.snapshot.text).toBe('')
         expect(result.current.composer.getState()).toBe(result.current.snapshot)
     })

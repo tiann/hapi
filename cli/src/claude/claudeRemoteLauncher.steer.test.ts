@@ -12,7 +12,8 @@ const harness = vi.hoisted(() => ({
     deliveries: [] as Array<(delivered: boolean) => void>,
     endTurn: null as (() => void) | null,
     signal: null as AbortSignal | null,
-    denyPendingForSteer: vi.fn()
+    denyPendingForSteer: vi.fn(),
+    hasPendingPermissionRequests: vi.fn(() => false)
 }))
 
 vi.mock('./claudeRemote', () => ({
@@ -50,6 +51,7 @@ vi.mock('./utils/permissionHandler', () => ({
         isAborted(): boolean { return false }
         handleModeChange(): void {}
         denyPendingForSteer = harness.denyPendingForSteer
+        hasPendingPermissionRequests = harness.hasPendingPermissionRequests
     }
 }))
 
@@ -136,12 +138,14 @@ async function startTurn() {
     const launched = claudeRemoteLauncher(session as any)
     await vi.waitFor(() => expect(client.agentState().steeringActive).toBe(true))
     const steer = (localId: string) => client.rpcHandlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId })
+    const steerFollowUp = (localId: string, expectedFollowUpTurnId: unknown = client.agentState().followUpSteerTurnId) =>
+        client.rpcHandlers.get(RPC_METHODS.SteerFollowUpMessage)!({ localId, expectedFollowUpTurnId })
     const stop = async () => {
         client.rpcHandlers.get(RPC_METHODS.Switch)?.()
         await launched
         session.stopKeepAlive()
     }
-    return { client, queue, steer, stop, onNativeInputSubmitted }
+    return { client, queue, steer, steerFollowUp, stop, onNativeInputSubmitted }
 }
 
 describe('claudeRemoteLauncher steer', () => {
@@ -152,6 +156,7 @@ describe('claudeRemoteLauncher steer', () => {
         harness.endTurn = null
         harness.signal = null
         harness.denyPendingForSteer.mockClear()
+        harness.hasPendingPermissionRequests.mockReset()
     })
 
     it('writes the queued row into the running turn and acks it once Claude picks it up', async () => {
@@ -203,11 +208,52 @@ describe('claudeRemoteLauncher steer', () => {
         }
     })
 
+    it('steers a composer follow-up into its matching turn without denying permissions', async () => {
+        const { client, queue, steerFollowUp, stop } = await startTurn()
+        try {
+            expect(client.agentState().followUpSteerTurnId).toEqual(expect.any(String))
+            queue.push('Also run lint', DEFAULT_MODE, 'follow-up')
+
+            await expect(steerFollowUp('follow-up', 'an old turn')).resolves.toMatchObject({ steered: false })
+            expect(queue.pendingLocalIds()).toEqual(['follow-up'])
+            await expect(steerFollowUp('follow-up')).resolves.toEqual({ steered: true })
+            expect(harness.steered).toEqual(['Also run lint'])
+            expect(harness.denyPendingForSteer).not.toHaveBeenCalled()
+        } finally {
+            await stop()
+        }
+    })
+
+    it.each([false, true])('keeps the follow-up queued when a permission is pending (after reservation: %s)', async afterReservation => {
+        const { client, queue, steerFollowUp, stop } = await startTurn()
+        try {
+            queue.push('Also run lint', DEFAULT_MODE, 'follow-up')
+            if (afterReservation) {
+                client.setSteerDeliveryState.mockImplementationOnce(async () => {
+                    harness.hasPendingPermissionRequests.mockReturnValue(true)
+                    return true
+                })
+            } else {
+                harness.hasPendingPermissionRequests.mockReturnValue(true)
+            }
+
+            await expect(steerFollowUp('follow-up')).resolves.toEqual({ steered: false, error: 'Waiting for a user decision' })
+            expect(harness.steered).toEqual([])
+            expect(harness.denyPendingForSteer).not.toHaveBeenCalled()
+            expect(queue.pendingLocalIds()).toEqual(['follow-up'])
+            if (afterReservation) expect(client.setSteerDeliveryState).toHaveBeenLastCalledWith(['follow-up'], 'queued')
+            else expect(client.setSteerDeliveryState).not.toHaveBeenCalled()
+        } finally {
+            await stop()
+        }
+    })
+
     it('reports no steerable turn once the turn has ended', async () => {
         const { client, queue, steer, stop } = await startTurn()
         try {
             harness.endTurn!()
             await vi.waitFor(() => expect(client.agentState().steeringActive).toBe(false))
+            expect(client.agentState().followUpSteerTurnId).toBe(null)
             queue.push('Late', DEFAULT_MODE, 'late')
             await expect(steer('late')).resolves.toEqual({ steered: false, error: 'No active steerable turn' })
         } finally {

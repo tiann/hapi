@@ -69,7 +69,7 @@ import { groupModelsByProvider } from './piModelGroups'
 import type { ApiClient } from '@/api/client'
 import { useVoiceInputPreferences } from '@/hooks/useVoiceInputPreferences'
 import { useDictation } from '@/hooks/useDictation'
-import { resolveMessageDeliveryMode, type ComposerSendIntent } from '@/lib/messageDelivery'
+import { resolveMessageDeliveryMode, type ComposerSendIntent, type ComposerSendIntentRef } from '@/lib/messageDelivery'
 import type { MessageDeliveryMode } from '@hapi/protocol'
 import { moveAttachmentId, orderItemsById, reconcileAttachmentOrder, replaceAttachmentId, type AttachmentDropPosition } from '@/lib/attachmentOrder'
 import type { AttachmentRetryHandler } from './AttachmentItem'
@@ -416,7 +416,9 @@ export function HappyComposer(props: {
      * SessionChat owns this ref so the composer never retains an explicit
      * queue request after a scratchlist/scheduled/failed early path.
      */
-    pendingSendIntentRef?: MutableRefObject<ComposerSendIntent>
+    pendingSendIntentRef?: ComposerSendIntentRef
+    followUpDefault?: MessageDeliveryMode
+    followUpTurnId?: string
     /** Shared order ref consumed by useHappyRuntime when the message is sent. */
     attachmentOrderRef?: MutableRefObject<string[]>
     /** Chip hover / aria-label resolver (SessionChat → useSessions). */
@@ -721,6 +723,10 @@ export function HappyComposer(props: {
             scratchlistMode: props.scratchlistMode ?? false,
         })
     const canSend = (hasText || hasAnyAttachments) && attachmentsReady && !controlsDisabled
+    const followUpDefault = canSend && pendingSchedule == null && !props.scratchlistMode && !sendError && props.followUpTurnId
+        && !trimmed.startsWith('/') && effectiveVoiceStatus !== 'connected' && effectiveVoiceStatus !== 'connecting'
+        ? props.followUpDefault
+        : undefined
 
     useEffect(() => {
         if (!sessionId) return
@@ -1171,7 +1177,7 @@ export function HappyComposer(props: {
         : handleUserClearSchedule
 
     const resetPendingSendIntent = useCallback(() => {
-        if (pendingSendIntentRef) pendingSendIntentRef.current = 'default'
+        if (pendingSendIntentRef) pendingSendIntentRef.current = { intent: 'default' }
     }, [pendingSendIntentRef])
 
     const handleSend = useCallback(async (intent: ComposerSendIntent = 'default') => {
@@ -1215,8 +1221,8 @@ export function HappyComposer(props: {
         // queue retries remain queue, while an ordinary fresh send always
         // starts from the explicit/default argument. Capture it before the
         // mandatory early-path reset below, then consume it at send time.
-        const restoredIntent = intent === 'default'
-            ? (pendingSendIntentRef?.current ?? 'default')
+        const restoredIntent = intent === 'default' && pendingSendIntentRef?.current.intent === 'queue'
+            ? 'queue'
             : intent
         // The runtime consumes this ref from assistant-ui's onNew callback.
         // Clear any prior one-shot value before paths that do not call send(),
@@ -1289,7 +1295,14 @@ export function HappyComposer(props: {
             }
             // Must be adjacent to send(): useHappyRuntime consumes and resets
             // this ref synchronously from assistant-ui's onNew callback.
-            if (pendingSendIntentRef) pendingSendIntentRef.current = effectiveIntent
+            if (pendingSendIntentRef) {
+                pendingSendIntentRef.current = {
+                    intent: effectiveIntent,
+                    expectedFollowUpTurnId: pendingSchedule == null && effectiveIntent !== 'queue'
+                        ? props.followUpTurnId
+                        : undefined,
+                }
+            }
             // The editor is a transient full-screen editing surface. Collapse
             // when the submit action is dispatched, rather than waiting for a
             // queued or slow network request to settle.
@@ -1333,6 +1346,7 @@ export function HappyComposer(props: {
         dictation.stopAndSend,
         props.sessionId,
         props.agentFlavor,
+        props.followUpTurnId,
         props.thinking,
         active,
         props.resolveSessionIdForVoice,
@@ -1389,6 +1403,15 @@ export function HappyComposer(props: {
 
         // Shift+Enter inserts a newline (textarea default; rich path inserts <br>).
         if (key === 'Enter' && e.shiftKey) {
+            return
+        }
+
+        if (key === 'Enter' && e.altKey && !e.ctrlKey && !e.metaKey && followUpDefault) {
+            e.preventDefault()
+            if (!e.repeat) {
+                flushAndSend('alternate')
+                setShowContinueHint(false)
+            }
             return
         }
 
@@ -1494,6 +1517,7 @@ export function HappyComposer(props: {
         showSettings,
         dismissSettingsWithFocus,
         flushAndSend,
+        followUpDefault,
         isExpanded,
         handleExpandedToggle,
     ])
@@ -2598,6 +2622,8 @@ export function HappyComposer(props: {
                                 dictationCanDirectSend={dictationCanDirectSend}
                                 controlsDisabled={controlsDisabled}
                                 onSend={handleSend}
+                                followUpDefault={followUpDefault}
+                                followUpTurnId={props.followUpTurnId}
                                 onVoiceToggle={effectiveVoiceToggle ?? (() => {})}
                                 voiceLabel={dictationActive ? t('composer.dictate') : undefined}
                                 fillHeight={primaryFillHeight}

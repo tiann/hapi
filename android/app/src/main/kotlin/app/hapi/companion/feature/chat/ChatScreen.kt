@@ -124,6 +124,7 @@ internal fun ChatScreen(
     val jumpToken by viewModel.jumpToken.collectAsState()
     val jumpingLatest by viewModel.jumpingLatest.collectAsState()
     val composerState by viewModel.composer.collectAsState()
+    val hubSettings by viewModel.hubSettings.collectAsState()
     val pendingSchedule by viewModel.pendingSchedule.collectAsState()
     val codexPlanActions by viewModel.codexPlanActions.collectAsState()
     val queuedRows by viewModel.queuedRows.collectAsState()
@@ -352,11 +353,12 @@ internal fun ChatScreen(
                         onEdit = viewModel::editQueuedMessage,
                         onCancel = viewModel::cancelQueuedMessage,
                     )
+                    val presentedSteerTurn = composerState.followUpSteerTurnId
                     ChatComposer(
                         state = composerState,
+                        followUpDefaultIsSteer = presentedSteerTurn != null && hubSettings.followUpDefault == "steer",
                         onTextChange = viewModel::onComposerChange,
-                        onSend = { viewModel.sendMessage() },
-                        onSendSteer = { viewModel.sendMessage(steer = true) },
+                        onSend = { intent -> viewModel.sendMessage(intent, presentedSteerTurn) },
                         onAbort = viewModel::abortSession,
                         attachments = attachmentItems,
                         onAddAttachment = { attachmentSheetOpen = true },

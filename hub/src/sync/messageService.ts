@@ -973,7 +973,7 @@ export class MessageService {
             scheduledAt?: number | null
             deliveryMode?: MessageDeliveryMode
         }
-    ): Promise<{ actualSessionId: string; createdAt: number }> {
+    ): Promise<{ actualSessionId: string; createdAt: number; insertedMessageId?: string }> {
         const metadata = this.store.sessions.getSession(sessionId)?.metadata
         // An explicit per-session choice wins; otherwise the hub-wide default
         // decides (read inside the chain so it cannot reorder prompts).
@@ -1038,7 +1038,7 @@ export class MessageService {
             deliveryMode?: MessageDeliveryMode
         },
         translation?: { translatedFrom: string } | { translationFailed: true }
-    ): Promise<{ actualSessionId: string; createdAt: number }> {
+    ): Promise<{ actualSessionId: string; createdAt: number; insertedMessageId?: string }> {
         // Defence-in-depth invariant for non-REST callers (Telegram bot, MCP,
         // internal callers).  Attachment paths live under the CLI session's
         // upload directory which `cleanupUploadDir` purges on session end; a
@@ -1139,7 +1139,11 @@ export class MessageService {
                 ...(msg.deliveryPending ? { deliveryPending: true as const } : {})
             }
         })
-        return { actualSessionId, createdAt: msg.createdAt }
+        return {
+            actualSessionId,
+            createdAt: msg.createdAt,
+            ...(inserted.inserted ? { insertedMessageId: msg.id } : {})
+        }
     }
 
     /**

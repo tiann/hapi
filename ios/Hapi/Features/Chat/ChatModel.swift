@@ -293,19 +293,18 @@ final class ChatModel {
             self?.scheduleRecompute()
         }
         interactor.activate()
-        if featuresTask == nil {
-            featuresTask = Task { [weak self] in
-                guard let api = self?.hub.api else { return }
-                guard let features = try? await api.features() else {
-                    // Retry on the next start (e.g. opened while offline).
-                    self?.featuresTask = nil
-                    return
-                }
+        featuresTask = Task { [weak self] in
+            guard let api = self?.hub.api else { return }
+            async let features = try? api.features()
+            async let settings = try? api.hubSettings()
+            let hubSettings = await settings
+            if let hubSettings, !Task.isCancelled {
+                self?.interactor.followUpDefault = hubSettings.followUpDefault ?? .queue
+            }
+            if let features = await features, !Task.isCancelled {
                 self?.inputTranslationAvailable = features.isInputTranslationAvailable
-                // Sessions without an explicit choice follow the hub default.
-                if features.isInputTranslationAvailable,
-                   let settings = try? await api.hubSettings() {
-                    self?.interactor.translateInputByDefault = settings.isTranslateInputByDefault
+                if features.isInputTranslationAvailable, let hubSettings {
+                    self?.interactor.translateInputByDefault = hubSettings.isTranslateInputByDefault
                 }
             }
         }
@@ -352,6 +351,8 @@ final class ChatModel {
     func stop() {
         guard isActive else { return }
         isActive = false
+        featuresTask?.cancel()
+        featuresTask = nil
         syncTailFollowing()
         displayedReadRevision = nil
         statesTask?.cancel()

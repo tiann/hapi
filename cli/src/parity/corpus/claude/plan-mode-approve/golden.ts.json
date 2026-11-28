@@ -32,6 +32,7 @@
       "<uuid:1>:ripgrep",
       "<uuid:1>:set-session-config",
       "<uuid:1>:statFiles",
+      "<uuid:1>:steer-follow-up-message",
       "<uuid:1>:steer-queued-message",
       "<uuid:1>:switch",
       "<uuid:1>:uploadAbort",
@@ -801,6 +802,7 @@
           {
             "agentState": {
               "controlledByUser": false,
+              "followUpSteerTurnId": "<uuid:7>",
               "startingMode": "remote",
               "steeringActive": true
             },
@@ -813,6 +815,7 @@
           {
             "agentState": {
               "controlledByUser": false,
+              "followUpSteerTurnId": "<uuid:7>",
               "startingMode": "remote",
               "steeringActive": true
             },
@@ -828,6 +831,7 @@
           {
             "agentState": {
               "controlledByUser": false,
+              "followUpSteerTurnId": "<uuid:7>",
               "requests": {
                 "tool-1": {
                   "arguments": {
@@ -849,6 +853,7 @@
           {
             "agentState": {
               "controlledByUser": false,
+              "followUpSteerTurnId": "<uuid:7>",
               "requests": {
                 "tool-1": {
                   "arguments": {
@@ -900,7 +905,7 @@
                   "timestamp": "<ts>",
                   "type": "user",
                   "userType": "external",
-                  "uuid": "<uuid:7>",
+                  "uuid": "<uuid:8>",
                   "version": "0.0.0"
                 },
                 "type": "output"
@@ -937,12 +942,12 @@
                     "model": "sonnet",
                     "role": "assistant"
                   },
-                  "parentUuid": "<uuid:8>",
+                  "parentUuid": "<uuid:9>",
                   "sessionId": "<uuid:4>",
                   "timestamp": "<ts>",
                   "type": "assistant",
                   "userType": "external",
-                  "uuid": "<uuid:9>",
+                  "uuid": "<uuid:10>",
                   "version": "0.0.0"
                 },
                 "type": "output"
@@ -969,7 +974,7 @@
                   "cwd": "<tmp>/project",
                   "durationMs": 1,
                   "isSidechain": false,
-                  "parentUuid": "<uuid:9>",
+                  "parentUuid": "<uuid:10>",
                   "resultSummary": {
                     "duration_ms": 1,
                     "num_turns": 1,
@@ -980,7 +985,7 @@
                   "timestamp": "<ts>",
                   "type": "system",
                   "userType": "external",
-                  "uuid": "<uuid:10>",
+                  "uuid": "<uuid:11>",
                   "version": "0.0.0"
                 },
                 "type": "output"
@@ -1005,7 +1010,7 @@
                 "data": {
                   "type": "ready"
                 },
-                "id": "<uuid:11>",
+                "id": "<uuid:12>",
                 "type": "event"
               },
               "role": "agent"
@@ -1290,6 +1295,7 @@
                 }
               },
               "controlledByUser": false,
+              "followUpSteerTurnId": "<uuid:7>",
               "requests": {},
               "startingMode": "remote",
               "steeringActive": true
@@ -1314,6 +1320,7 @@
                 }
               },
               "controlledByUser": false,
+              "followUpSteerTurnId": "<uuid:7>",
               "requests": {},
               "startingMode": "remote",
               "steeringActive": true
@@ -1341,6 +1348,7 @@
                 }
               },
               "controlledByUser": false,
+              "followUpSteerTurnId": null,
               "requests": {},
               "startingMode": "remote",
               "steeringActive": false
@@ -1365,6 +1373,7 @@
                 }
               },
               "controlledByUser": false,
+              "followUpSteerTurnId": null,
               "requests": {},
               "startingMode": "remote",
               "steeringActive": false
@@ -1392,6 +1401,7 @@
                 }
               },
               "controlledByUser": false,
+              "followUpSteerTurnId": null,
               "requests": {},
               "startingMode": "remote",
               "steeringActive": false
@@ -1416,6 +1426,7 @@
                 }
               },
               "controlledByUser": false,
+              "followUpSteerTurnId": null,
               "requests": {},
               "startingMode": "remote",
               "steeringActive": false
@@ -1443,6 +1454,7 @@
                 }
               },
               "controlledByUser": false,
+              "followUpSteerTurnId": null,
               "requests": {},
               "startingMode": "remote",
               "steeringActive": false
@@ -1467,6 +1479,7 @@
                 }
               },
               "controlledByUser": false,
+              "followUpSteerTurnId": null,
               "requests": {},
               "startingMode": "remote",
               "steeringActive": false
@@ -1494,6 +1507,7 @@
                 }
               },
               "controlledByUser": false,
+              "followUpSteerTurnId": "<uuid:13>",
               "requests": {},
               "startingMode": "remote",
               "steeringActive": true
@@ -1518,6 +1532,7 @@
                 }
               },
               "controlledByUser": false,
+              "followUpSteerTurnId": "<uuid:13>",
               "requests": {},
               "startingMode": "remote",
               "steeringActive": true
@@ -1545,6 +1560,7 @@
                 }
               },
               "controlledByUser": false,
+              "followUpSteerTurnId": null,
               "requests": {},
               "startingMode": "remote",
               "steeringActive": false
@@ -1569,6 +1585,7 @@
                 }
               },
               "controlledByUser": false,
+              "followUpSteerTurnId": null,
               "requests": {},
               "startingMode": "remote",
               "steeringActive": false
@@ -1944,7 +1961,7 @@
             "role": "user"
           },
           "type": "user",
-          "uuid": "<uuid:12>"
+          "uuid": "<uuid:14>"
         },
         {
           "request": {
@@ -2003,7 +2020,7 @@
           },
           "tool_use_id": "tool-1",
           "type": "tool-result",
-          "uuid": "<uuid:7>"
+          "uuid": "<uuid:8>"
         }
       ],
       "createdAt": "<ts>",
@@ -2020,10 +2037,10 @@
       "agentTimestamp": "<ts>",
       "content": [
         {
-          "parentUUID": "<uuid:8>",
+          "parentUUID": "<uuid:9>",
           "text": "Recorded answer",
           "type": "text",
-          "uuid": "<uuid:9>"
+          "uuid": "<uuid:10>"
         }
       ],
       "createdAt": "<ts>",

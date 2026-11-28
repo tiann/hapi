@@ -527,11 +527,17 @@ describe('runOpencode set-session-config handler', () => {
         });
         try {
             userMessageHandler!({ content: { text: 'race prompt' } }, 'race-prompt');
+            const preparingMessage = harness.opencodeLoopArgs[0]!.preparingMessage as (id: string) => Promise<void> | undefined;
+            const preparation = preparingMessage('race-prompt');
+            expect(preparation).toBeInstanceOf(Promise);
+            expect(preparingMessage('other')).toBeUndefined();
             gate.release();
             // The re-check loop must wait again instead of failing admission.
             await vi.waitFor(() => expect(waits).toBe(2));
             gate.release();
-            await vi.waitFor(() => expect(messageQueue.queue.some(item => item.localId === 'race-prompt')).toBe(true));
+            await preparation;
+            expect(preparingMessage('race-prompt')).toBeUndefined();
+            expect(messageQueue.queue.some(item => item.localId === 'race-prompt')).toBe(true);
             // The delivered prompt is cancellable through the queue...
             expect(cancelHandler!('race-prompt')).toBe(true);
             expect(messageQueue.queue.some(item => item.localId === 'race-prompt')).toBe(false);

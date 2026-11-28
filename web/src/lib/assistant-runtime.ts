@@ -6,7 +6,8 @@ import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePic
 import { resolvePendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import {
     consumeComposerSendIntent,
-    type ComposerSendIntent,
+    type ComposerSendIntentRef,
+    type ComposerSendSelection,
 } from '@/lib/messageDelivery'
 import { isObject, safeStringify } from '@hapi/protocol'
 import { renderEventLabel } from '@/chat/presentation'
@@ -905,7 +906,7 @@ export function useHappyRuntime(props: {
         text: string,
         attachments?: AttachmentMetadata[],
         scheduledAt?: number | null,
-        intent?: ComposerSendIntent,
+        selection?: ComposerSendSelection,
     ) => void
     attachmentOrderRef?: React.MutableRefObject<string[]>
     onAbort: () => Promise<void>
@@ -917,7 +918,7 @@ export function useHappyRuntime(props: {
      * `api.composer().send()`; this adapter consumes and resets the mark as
      * soon as assistant-ui emits the corresponding AppendMessage.
      */
-    pendingSendIntentRef?: React.MutableRefObject<ComposerSendIntent>
+    pendingSendIntentRef?: ComposerSendIntentRef
 }) {
     const isRunning = props.isRunning ?? props.session.thinking
     const activeTurnStartedAt = props.session.activeTurnStartedAt ?? null
@@ -1087,7 +1088,7 @@ export function useHappyRuntime(props: {
     })
 
     const onNew = useCallback(async (message: AppendMessage) => {
-        const intent = consumeComposerSendIntent(props.pendingSendIntentRef)
+        const selection = consumeComposerSendIntent(props.pendingSendIntentRef)
         // Reset before any early return so an empty submission, extraction
         // failure, or downstream exception cannot leak an explicit queue
         // gesture into the next ordinary send.
@@ -1106,7 +1107,7 @@ export function useHappyRuntime(props: {
             text,
             orderedAttachments.length > 0 ? orderedAttachments : undefined,
             scheduledAt,
-            intent,
+            selection,
         )
     }, [props.attachmentOrderRef, props.onSendMessage, props.pendingScheduleRef, props.pendingSendIntentRef])
 

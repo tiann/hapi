@@ -10,7 +10,7 @@ import UniformTypeIdentifiers
 /// The chat input card (A-M3a, extended in A-M3f): attachments and the
 /// multiline text field grow above a fixed bottom action row. The trailing
 /// primary action is stateful: Stop while a turn runs with an empty draft,
-/// otherwise Send (long-press offers "Send & steer" during a turn). The card
+/// otherwise Send (long-press offers a choice for this follow-up). The card
 /// also hosts dictation and attachment controls, and a `/` command list
 /// above the card while the input is a lone slash token, plus selection-aware
 /// `@` session/file suggestions.
@@ -584,32 +584,42 @@ struct ChatComposerView: View {
             .accessibilityLabel("Stop the current turn")
         case .send(let enabled):
             let label = sendLabel(enabled: enabled)
+            let presentedTurn = interactor.followUpSteerTurnId
             if scheduled {
                 Button {
-                    interactor.sendMessage()
+                    interactor.sendMessage(followUpIntent: .default, expectedFollowUpTurnId: presentedTurn)
                 } label: {
                     label
                 }
                 .buttonStyle(.plain)
                 .disabled(!enabled)
                 .accessibilityLabel("Schedule send")
-            } else if composer.canSteer && enabled {
-                // Tap sends (queue); long-press opens the deliberate steer intent.
+            } else if interactor.canChooseFollowUpMode && enabled {
                 Menu {
-                    Button("Send & steer into current turn") {
-                        interactor.sendMessage(steer: true)
+                    Button {
+                        interactor.sendMessage(followUpIntent: .queue)
+                    } label: {
+                        followUpLabel("Queue for next turn", isDefault: interactor.effectiveFollowUpDefault == .queue)
+                    }
+                    Button {
+                        interactor.sendMessage(followUpIntent: .steer, expectedFollowUpTurnId: presentedTurn)
+                    } label: {
+                        followUpLabel("Steer current turn", isDefault: interactor.effectiveFollowUpDefault == .steer)
                     }
                 } label: {
                     label
                 } primaryAction: {
-                    interactor.sendMessage()
+                    interactor.sendMessage(followUpIntent: .default, expectedFollowUpTurnId: presentedTurn)
                 }
                 .menuStyle(.button)
+                .menuIndicator(.hidden)
                 .buttonStyle(.plain)
-                .accessibilityLabel("Send — long-press to steer")
+                .accessibilityLabel("Send")
+                .accessibilityHint("Long-press for send options")
+                .id(presentedTurn)
             } else {
                 Button {
-                    interactor.sendMessage()
+                    interactor.sendMessage(followUpIntent: .default, expectedFollowUpTurnId: presentedTurn)
                 } label: {
                     label
                 }
@@ -617,6 +627,16 @@ struct ChatComposerView: View {
                 .disabled(!enabled)
                 .accessibilityLabel("Send")
             }
+        }
+    }
+
+    @ViewBuilder
+    private func followUpLabel(_ title: LocalizedStringKey, isDefault: Bool) -> some View {
+        if isDefault {
+            Label(title, systemImage: "checkmark")
+                .accessibilityValue("Default")
+        } else {
+            Text(title)
         }
     }
 

@@ -7,7 +7,7 @@ import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '@/lib/i18n-context'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
-import type { ComposerSendIntent } from '@/lib/messageDelivery'
+import type { ComposerSendIntent, ComposerSendIntentRef, ComposerSendSelection } from '@/lib/messageDelivery'
 import { HappyComposer, type ComposerSendError } from './HappyComposer'
 
 /**
@@ -33,8 +33,9 @@ const runtime = vi.hoisted(() => ({
         thread: { isRunning: false, isDisabled: false },
     } as FakeRuntimeState,
     setSnapshot: null as null | ((updater: (current: FakeRuntimeState) => FakeRuntimeState) => void),
-    pendingSendIntentRef: null as null | { current: ComposerSendIntent },
+    pendingSendIntentRef: null as ComposerSendIntentRef | null,
     sentIntents: [] as ComposerSendIntent[],
+    sentTurnIds: [] as Array<string | undefined>,
     modelChanges: [] as Array<{ provider: string; modelId: string } | string | null>,
     cancelRun: () => {},
     composerEnterBehavior: 'send' as 'send' | 'newline',
@@ -55,9 +56,10 @@ vi.mock('@assistant-ui/react', async () => {
                 }))
             },
             send: () => {
-                const intent = runtime.pendingSendIntentRef?.current ?? 'default'
-                runtime.sentIntents.push(intent)
-                if (runtime.pendingSendIntentRef) runtime.pendingSendIntentRef.current = 'default'
+                const selection = runtime.pendingSendIntentRef?.current ?? { intent: 'default' }
+                runtime.sentIntents.push(selection.intent)
+                runtime.sentTurnIds.push(selection.expectedFollowUpTurnId)
+                if (runtime.pendingSendIntentRef) runtime.pendingSendIntentRef.current = { intent: 'default' }
                 runtime.setSnapshot!((current) => ({
                     ...current,
                     composer: { text: '', attachments: [] },
@@ -182,6 +184,7 @@ function ComposerHarness(props: {
     initialText: string
     initialSchedule?: PendingSchedule | null
     piRunning?: boolean
+    followUpDefault?: 'queue' | 'steer'
     abortPending?: boolean
     controls: { current: HarnessControls | null }
 }) {
@@ -194,7 +197,7 @@ function ComposerHarness(props: {
     const [isSending, setIsSending] = useState(false)
     const [composerKey, setComposerKey] = useState('composer-a')
     const clearErrorCallsRef = useRef(0)
-    const pendingSendIntentRef = useRef<ComposerSendIntent>('default')
+    const pendingSendIntentRef = useRef<ComposerSendSelection>({ intent: 'default' })
 
     runtime.snapshot = snapshot
     runtime.setSnapshot = setSnapshot
@@ -248,6 +251,8 @@ function ComposerHarness(props: {
                 )}
                 agentFlavor="pi"
                 thinking={props.piRunning}
+                followUpDefault={props.followUpDefault}
+                followUpTurnId={props.followUpDefault ? 'active-observed-turn' : undefined}
                 model="pi-model"
                 piModels={[{ provider: 'pi', modelId: 'pi-model', name: 'Pi model' }]}
                 onModelChange={(model) => runtime.modelChanges.push(model)}
@@ -262,12 +267,14 @@ function renderComposer(
     initialSchedule: PendingSchedule | null = { type: 'absolute', ms: 1234 },
     piRunning = false,
     composerEnterBehavior: 'send' | 'newline' = 'send',
+    followUpDefault?: 'queue' | 'steer',
 ) {
     const controls: { current: HarnessControls | null } = { current: null }
     runtime.sentIntents = []
+    runtime.sentTurnIds = []
     runtime.modelChanges = []
     runtime.composerEnterBehavior = composerEnterBehavior
-    render(<ComposerHarness initialText={initialText} initialSchedule={initialSchedule} piRunning={piRunning} controls={controls} />)
+    render(<ComposerHarness initialText={initialText} initialSchedule={initialSchedule} piRunning={piRunning} followUpDefault={followUpDefault} controls={controls} />)
     return controls
 }
 
@@ -557,15 +564,36 @@ describe('HappyComposer send intent gestures', () => {
         runtime.sentIntents = []
     })
 
-    it('ignores Alt/Option+Enter (the old explicit-queue gesture) entirely', () => {
+    it('ignores Alt/Option+Enter when the turn cannot steer', () => {
         renderComposer('follow-up', null, true)
 
         fireEvent.keyDown(input(), { key: 'Enter', altKey: true })
 
-        // Every send now queues by default (issue #1466); the Alt+Enter
-        // gesture was removed with the Pi automatic steer.
         expect(runtime.sentIntents).toEqual([])
-        expect(runtime.pendingSendIntentRef?.current).toBe('default')
+        expect(runtime.pendingSendIntentRef?.current).toEqual({ intent: 'default' })
+    })
+
+    it.each(['queue', 'steer'] as const)(
+        'asks the Hub for the alternate mode with %s shown as default',
+        (followUpDefault) => {
+            renderComposer('follow-up', null, true, 'newline', followUpDefault)
+
+            fireEvent.keyDown(input(), { key: 'Enter', shiftKey: true })
+            fireEvent.keyDown(input(), { key: 'Enter', altKey: true, isComposing: true })
+            expect(runtime.sentIntents).toEqual([])
+
+            fireEvent.keyDown(input(), { key: 'Enter', altKey: true })
+            expect(runtime.sentIntents).toEqual(['alternate'])
+            expect(runtime.sentTurnIds).toEqual(['active-observed-turn'])
+            expect(runtime.pendingSendIntentRef?.current).toEqual({ intent: 'default' })
+        },
+    )
+
+    it('binds ordinary Enter to the turn visible at submit', () => {
+        renderComposer('correction', null, true, 'send', 'steer')
+        fireEvent.keyDown(input(), { key: 'Enter' })
+        expect(runtime.sentIntents).toEqual(['default'])
+        expect(runtime.sentTurnIds).toEqual(['active-observed-turn'])
     })
 
     it('uses default intent for the configured normal Enter send', () => {
@@ -574,7 +602,8 @@ describe('HappyComposer send intent gestures', () => {
         fireEvent.keyDown(input(), { key: 'Enter' })
 
         expect(runtime.sentIntents).toEqual(['default'])
-        expect(runtime.pendingSendIntentRef?.current).toBe('default')
+        expect(runtime.sentTurnIds).toEqual([undefined])
+        expect(runtime.pendingSendIntentRef?.current).toEqual({ intent: 'default' })
     })
 
     it('sends with Alt+S regardless of the configured Enter behavior', () => {
@@ -583,7 +612,7 @@ describe('HappyComposer send intent gestures', () => {
         fireEvent.keyDown(input(), { key: 's', code: 'KeyS', altKey: true })
 
         expect(runtime.sentIntents).toEqual(['default'])
-        expect(runtime.pendingSendIntentRef?.current).toBe('default')
+        expect(runtime.pendingSendIntentRef?.current).toEqual({ intent: 'default' })
     })
 
     it('matches the logical S key across keyboard layouts', () => {
@@ -592,7 +621,7 @@ describe('HappyComposer send intent gestures', () => {
         fireEvent.keyDown(input(), { key: 's', code: 'KeyO', altKey: true })
 
         expect(runtime.sentIntents).toEqual(['default'])
-        expect(runtime.pendingSendIntentRef?.current).toBe('default')
+        expect(runtime.pendingSendIntentRef?.current).toEqual({ intent: 'default' })
     })
 
     it('does not send Alt+S while an IME composition is active', () => {
@@ -601,7 +630,7 @@ describe('HappyComposer send intent gestures', () => {
         fireEvent.keyDown(input(), { key: 's', code: 'KeyS', altKey: true, isComposing: true })
 
         expect(runtime.sentIntents).toEqual([])
-        expect(runtime.pendingSendIntentRef?.current).toBe('default')
+        expect(runtime.pendingSendIntentRef?.current).toEqual({ intent: 'default' })
     })
 
     it('does not treat modified Alt+S combinations as the send shortcut', () => {
@@ -610,7 +639,7 @@ describe('HappyComposer send intent gestures', () => {
         fireEvent.keyDown(input(), { key: 's', code: 'KeyS', altKey: true, shiftKey: true })
 
         expect(runtime.sentIntents).toEqual([])
-        expect(runtime.pendingSendIntentRef?.current).toBe('default')
+        expect(runtime.pendingSendIntentRef?.current).toEqual({ intent: 'default' })
     })
 
     it('preserves printable Option characters that share the physical S key', () => {
@@ -619,17 +648,17 @@ describe('HappyComposer send intent gestures', () => {
         fireEvent.keyDown(input(), { key: 'ß', code: 'KeyS', altKey: true })
 
         expect(runtime.sentIntents).toEqual([])
-        expect(runtime.pendingSendIntentRef?.current).toBe('default')
+        expect(runtime.pendingSendIntentRef?.current).toEqual({ intent: 'default' })
     })
 
     it('consumes a restored queue retry mark before resetting the shared ref', () => {
         renderComposer('retry queue', null, true)
-        runtime.pendingSendIntentRef!.current = 'queue'
+        runtime.pendingSendIntentRef!.current = { intent: 'queue' }
 
         fireEvent.keyDown(input(), { key: 'Enter' })
 
         expect(runtime.sentIntents).toEqual(['queue'])
-        expect(runtime.pendingSendIntentRef?.current).toBe('default')
+        expect(runtime.pendingSendIntentRef?.current).toEqual({ intent: 'default' })
     })
 
     it('keeps Alt/Option+Enter inert when Pi is idle or a schedule is active', () => {
@@ -642,7 +671,7 @@ describe('HappyComposer send intent gestures', () => {
         renderComposer('scheduled', { type: 'absolute', ms: 1234 }, true)
         fireEvent.keyDown(input(), { key: 'Enter', altKey: true })
         expect(runtime.sentIntents).toEqual([])
-        expect(runtime.pendingSendIntentRef?.current).toBe('default')
+        expect(runtime.pendingSendIntentRef?.current).toEqual({ intent: 'default' })
     })
 })
 

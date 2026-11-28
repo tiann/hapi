@@ -4,19 +4,20 @@ import {
     getRestoredComposerSendIntent,
     getRetryDeliveryMode,
     resolveMessageDeliveryMode,
+    type ComposerSendIntentRef,
 } from './messageDelivery'
 
 describe('consumeComposerSendIntent', () => {
     it('consumes an explicit queue request exactly once', () => {
-        const ref = { current: 'queue' as const }
+        const ref: ComposerSendIntentRef = { current: { intent: 'queue' } }
 
-        expect(consumeComposerSendIntent(ref)).toBe('queue')
-        expect(ref.current).toBe('default')
-        expect(consumeComposerSendIntent(ref)).toBe('default')
+        expect(consumeComposerSendIntent(ref)).toEqual({ intent: 'queue' })
+        expect(ref.current).toEqual({ intent: 'default' })
+        expect(consumeComposerSendIntent(ref)).toEqual({ intent: 'default' })
     })
 
     it('defaults safely when no composer ref is present', () => {
-        expect(consumeComposerSendIntent()).toBe('default')
+        expect(consumeComposerSendIntent()).toEqual({ intent: 'default' })
     })
 })
 
@@ -53,11 +54,11 @@ describe('resolveMessageDeliveryMode', () => {
     })
 
     it('keeps the retry-restore contract: a failed steer retry restores as queue', () => {
-        const ref = { current: getRestoredComposerSendIntent('steer') }
-        const retryIntent = consumeComposerSendIntent(ref)
+        const ref = { current: { intent: getRestoredComposerSendIntent('steer') } }
+        const { intent: retryIntent } = consumeComposerSendIntent(ref)
 
         expect(retryIntent).toBe('queue')
-        expect(ref.current).toBe('default')
+        expect(ref.current).toEqual({ intent: 'default' })
         expect(resolveMessageDeliveryMode({ ...base, intent: retryIntent })).toBe('queue')
     })
 })

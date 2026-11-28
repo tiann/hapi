@@ -35,7 +35,7 @@ function createMockProcess(): ChildProcessWithoutNullStreams & EventEmitter {
     return emitter;
 }
 
-const { PiTransport } = await import('./piTransport');
+const { PiTransport, supportsPiToolBoundarySteering } = await import('./piTransport');
 
 describe('PiTransport', () => {
     let mockProcess: ReturnType<typeof createMockProcess>;
@@ -220,5 +220,14 @@ describe('PiTransport', () => {
             mockProcess.emit('close', null, 'SIGTERM');
             expect(closeHandler).toHaveBeenCalledWith(null, 'SIGTERM');
         });
+    });
+});
+
+describe('Pi tool-boundary steering capability', () => {
+    it.each([
+        ['0.58.3', false], ['0.58.4-beta.1', false], ['0.58.4', true],
+        ['0.87.1', true], ['1.6.1', true], ['unknown', false],
+    ] as const)('checks the native version %s', (version, expected) => {
+        expect(supportsPiToolBoundarySteering(version)).toBe(expected);
     });
 });

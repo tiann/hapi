@@ -27,6 +27,7 @@ interface OpencodeLoopOptions {
     onSessionReady?: (session: OpencodeSession) => void;
     onModelRollback?: (model: string | null) => void;
     onReasoningEffortRollback?: (effort: string | null) => void;
+    preparingMessage?: (localId: string) => Promise<void> | undefined;
     onSteerCancelHandlerChange?: (handler: OpencodeSteerCancelHandler | null) => void;
     onCompactAvailabilityChange?: (available: boolean) => void;
     onClearRequested?: () => Promise<void>;
@@ -89,6 +90,7 @@ export async function opencodeLoop(opts: OpencodeLoopOptions): Promise<void> {
             onModelRollback: opts.onModelRollback,
             onReasoningEffortRollback: opts.onReasoningEffortRollback,
             onCompactAvailabilityChange: opts.onCompactAvailabilityChange,
+            preparingMessage: opts.preparingMessage,
             onSteerCancelHandlerChange: opts.onSteerCancelHandlerChange,
             isLocalIdCancelled: opts.isLocalIdCancelled,
             onClearRequested: opts.onClearRequested,

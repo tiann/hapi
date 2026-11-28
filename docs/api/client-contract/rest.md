@@ -117,7 +117,7 @@ Source: `hub/src/web/routes/messages.ts`; schemas `MessagesQuerySchema`, `SendMe
 | Method & path | Request | Response |
 |---|---|---|
 | `GET /api/sessions/:id/messages` | Query: `limit?` (1–200, default 50), cursor pairs `beforeSeq+beforeAt` \| `afterSeq+afterAt` (+ optional `untilSeq+untilAt`, `epoch` with `after`) | `MessagesResponse` `{messages: DecryptedMessage[], page: {direction, limit, epoch, reset, nextBefore*/nextAfter*, snapshotHead*, hasMore}}` — full cursor semantics in [Pagination](./pagination.md) |
-| `POST /api/sessions/:id/messages` | `{text, localId?, attachments?, scheduledAt?, deliveryMode?: 'queue'\|'steer'}` — text or attachments required; `scheduledAt` requires `localId`, must be ≤ 7 days out, excludes attachments and steer | `{ok: true}` — the message itself arrives via SSE (`message-received`), reconciled by `localId` |
+| `POST /api/sessions/:id/messages` | `{text, localId?, attachments?, scheduledAt?, deliveryMode?, followUpIntent?, expectedFollowUpTurnId?}` — text or attachments required; `scheduledAt` requires `localId` and must be ≤ 7 days out | `{ok: true}` — the message itself arrives via SSE (`message-received`), reconciled by `localId` |
 | `GET /api/sessions/:id/messages/:messageId/context` | — | `MessageContextResponse` `{messages, targetMessageId, page: {epoch, nextBefore*, snapshotHead*, hasMore}}` or `null` when the message is not found — a window around one message (used to jump to a search result) |
 | `DELETE /api/sessions/:id/messages/:messageId` | — | `{status: 'cancelled', localId}` \| `{status: 'invoked', message}` \| `{status: 'busy', localId}` (cancel; `busy` = native delivery/removal is unresolved) |
 | `POST /api/sessions/:id/messages/:messageId/steer` | — | `{status: 'steered', localId}` \| `{status: 'invoked', message}` \| `{status: 'failed', error, localId}` |
@@ -125,6 +125,8 @@ Source: `hub/src/web/routes/messages.ts`; schemas `MessagesQuerySchema`, `SendMe
 | `POST /api/sessions/:id/messages/queued-state` | `{localIds: string[]}` (≤ 1000, deduped) | `{queuedLocalIds: string[], indeterminateLocalIds: string[], invokedLocalMessages: [{localId, invokedAt}]}` — resync after reconnect; preserve indeterminate rows without auto-replaying them |
 
 The hub stamps `sentFrom: 'webapp'` on REST-sent messages server-side; the request body has no such field.
+
+Interactive composers use `followUpIntent: 'default' | 'alternate' | 'queue' | 'steer'`. The Hub reads `followUpDefault` for `default` and uses the other mode for `alternate`. A nonempty `agentState.followUpSteerTurnId` advertises a turn eligible for a Steer attempt. Capture that value as `expectedFollowUpTurnId` when submitting default, alternate, or Steer. A missing or mismatched turn queues the message. The factory default is Steer for ordinary text. The Hub saves the row before attempting delivery, so `{ok: true}` confirms the send, and SSE reports delivery. A retry with the same `localId` keeps the original row. Scheduled messages queue and exclude attachments. Requests without `followUpIntent` use the existing `deliveryMode: 'queue' | 'steer'` contract, which rejects explicit Steer on scheduled messages.
 
 ### Permissions
 
@@ -369,7 +371,7 @@ Source: `hub/src/web/routes/hubSettings.ts`.
 
 | Method & path | Response |
 |---|---|
-| `GET /api/hub-settings` | `{sessionSummaryContract: boolean, sessionSummaryInChat: boolean}` — readable by any namespace |
+| `GET /api/hub-settings` | Includes `{sessionSummaryContract: boolean, sessionSummaryInChat: boolean, followUpDefault?: 'queue'\|'steer'}` — readable by any namespace. Older Hub responses without this field use Queue. |
 
 ### SSE
 

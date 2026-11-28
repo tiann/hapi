@@ -427,7 +427,7 @@ export async function runPi(opts: {
     // starts while the message is preparing, the dispatcher's mismatch check
     // degrades the message to the prompt FIFO instead of steering into a turn
     // the operator never targeted.
-    const steerPendingWhilePreparing = new Map<string, number>();
+    const steerPendingWhilePreparing = new Map<string, { targetStreamingGeneration: number; expectedFollowUpTurnId?: string }>();
     let preparationChain = Promise.resolve();
     let promptCommandInFlight = false;
     let abortInFlight = false;
@@ -608,7 +608,20 @@ export async function runPi(opts: {
         transport.send({ id: promptId, type: 'prompt', message: dequeued.message, ...(dequeued.images.length > 0 ? { images: dequeued.images } : {}) });
     };
 
+    let boundarySteeringSupported = false;
+    let followUpCandidate: string | null = null;
+    const publishFollowUpTurn = (followUpSteerTurnId: string | null): void => {
+        apiSession.updateAgentState((state) => ({ ...state, followUpSteerTurnId }));
+    };
+    void transport.supportsToolBoundarySteering().then((supported) => {
+        boundarySteeringSupported = supported;
+        if (supported && followUpCandidate && !cleanupInitiated) publishFollowUpTurn(followUpCandidate);
+    });
     transportEvents = wireTransportEvents(transport, piSession, pendingLocalIds, {
+        onFollowUpTurnChanged: (id) => {
+            followUpCandidate = id;
+            if (boundarySteeringSupported || id === null) publishFollowUpTurn(id);
+        },
         onStartupFailure: failNativeStartup,
         conversationHistory,
         onReady: () => piSession.runWhenReady(pumpPromptQueue),
@@ -662,7 +675,12 @@ export async function runPi(opts: {
         },
     });
 
+    const canSteerFollowUp = (id: string): boolean => boundarySteeringSupported && piSession.mode === 'remote'
+        && !abortInFlight && !cleanupInitiated && !piSpecialCommandInFlight
+        && transportEvents?.canSteerFollowUp(id) === true;
+
     steerDispatcher = new PiSteerDispatcher({
+        canSteerFollowUp,
         session: piSession,
         transport,
         conversationHistory,
@@ -694,7 +712,10 @@ export async function runPi(opts: {
     // gates flavor/remote/scheduled before reaching this handler. Messages
     // still being prepared are marked for steering and promoted right after
     // preparation completes, so the request is never lost to the FIFO.
-    apiSession.rpcHandlerManager.registerHandler(RPC_METHODS.SteerQueuedMessage, async (payload: unknown) => {
+    const steerQueuedMessage = (payload: unknown, expectedFollowUpTurnId?: string) => {
+        if (expectedFollowUpTurnId !== undefined && !canSteerFollowUp(expectedFollowUpTurnId)) {
+            return { steered: false, error: 'Pi turn changed or is waiting for a user decision' };
+        }
         const localId = payload && typeof payload === 'object'
             && typeof (payload as { localId?: unknown }).localId === 'string'
             ? (payload as { localId: string }).localId
@@ -707,7 +728,7 @@ export async function runPi(opts: {
             if (!piSession.isReady || generation === null) {
                 return { steered: false, error: 'Session is not streaming' };
             }
-            steerPendingWhilePreparing.set(localId, generation);
+            steerPendingWhilePreparing.set(localId, { targetStreamingGeneration: generation, expectedFollowUpTurnId });
             return { steered: true };
         }
         if (!steerDispatcher) {
@@ -719,7 +740,7 @@ export async function runPi(opts: {
         }
         // Slash commands are not steerable prompts: restoring them into the FIFO
         // lets the pump execute them in arrival order once the turn settles.
-        if (isPiSpecialQueued(entry)) {
+        if (isPiSpecialQueued(entry) || (expectedFollowUpTurnId && parseLeadingSlashName(entry.message))) {
             promptQueue.enqueue(entry);
             return { steered: false, error: 'Slash commands cannot be steered' };
         }
@@ -731,8 +752,14 @@ export async function runPi(opts: {
             promptQueue.enqueue(entry);
             return { steered: false, error: 'Session is not streaming' };
         }
-        steerDispatcher.enqueue({ ...entry, targetStreamingGeneration: currentGeneration });
+        steerDispatcher.enqueue({ ...entry, targetStreamingGeneration: currentGeneration, expectedFollowUpTurnId });
         return { steered: true };
+    };
+    apiSession.rpcHandlerManager.registerHandler(RPC_METHODS.SteerQueuedMessage, async (payload) => steerQueuedMessage(payload));
+    apiSession.rpcHandlerManager.registerHandler(RPC_METHODS.SteerFollowUpMessage, async (payload: unknown) => {
+        const id = (payload as { expectedFollowUpTurnId?: unknown } | null)?.expectedFollowUpTurnId;
+        if (typeof id !== 'string' || !id) return { steered: false, error: 'Expected Pi turn is required' };
+        return steerQueuedMessage(payload, id);
     });
 
     apiSession.rpcHandlerManager.registerHandler(RPC_METHODS.RewindConversation, async (payload: unknown) => {
@@ -1209,9 +1236,14 @@ export async function runPi(opts: {
                 // The user pressed Steer while this message was still preparing.
                 // Promote it into the turn observed at request time; if that
                 // turn already ended, the dispatcher degrades it to the FIFO.
-                const targetGeneration = steerPendingWhilePreparing.get(localId)!;
+                const target = steerPendingWhilePreparing.get(localId)!;
                 steerPendingWhilePreparing.delete(localId);
-                steerDispatcher?.enqueue({ ...entry, targetStreamingGeneration: targetGeneration });
+                if (target.expectedFollowUpTurnId && name) {
+                    promptQueue.enqueue(entry);
+                    pumpPromptQueue();
+                } else {
+                    steerDispatcher?.enqueue({ ...entry, ...target });
+                }
             } else {
                 promptQueue.enqueue(entry);
                 pumpPromptQueue();

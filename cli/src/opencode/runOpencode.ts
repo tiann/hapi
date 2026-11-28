@@ -218,7 +218,7 @@ export async function runOpencode(opts: {
     // `cancelByLocalId` would find nothing. Track in-flight localIds so the
     // cancel RPC can ack the cancel during that window and the chain can
     // short-circuit when it resumes.
-    const preparingLocalIds = new Set<string>();
+    const preparingLocalIds = new Map<string, Promise<void>>();
     const cancelledBeforeEnqueue = new Set<string>();
     // Mirrors `cancelledBeforeEnqueue` above, but for the other side of the
     // queued-compact ack: `onCancelQueuedMessage` below can still fire for a
@@ -271,8 +271,7 @@ export async function runOpencode(opts: {
     session.onUserMessage((message, localId) => {
         // Admission is synchronous, including async slash/config preparation.
         let release = runtimeGate.isBlocked() ? undefined : runtimeGate.enterRuntime();
-        if (localId) preparingLocalIds.add(localId);
-        userMessageChain = userMessageChain.then(async () => {
+        const preparing: Promise<void> = userMessageChain.then(async () => {
             const wasCancelled = (): boolean => {
                 if (!localId) return false;
                 return cancelledBeforeEnqueue.delete(localId);
@@ -482,13 +481,15 @@ export async function runOpencode(opts: {
             } finally {
                 release?.();
                 if (localId) {
-                    preparingLocalIds.delete(localId);
+                    if (preparingLocalIds.get(localId) === preparing) preparingLocalIds.delete(localId);
                     cancelledBeforeEnqueue.delete(localId);
                 }
             }
         }).catch((error) => {
             logger.debug('[opencode] User message handler chain failed', error);
         });
+        if (localId) preparingLocalIds.set(localId, preparing);
+        userMessageChain = preparing;
     });
 
     let cancelNativeSteer: OpencodeSteerCancelHandler | null = null;
@@ -606,6 +607,7 @@ export async function runOpencode(opts: {
                 sessionWrapperRef.current = instance;
                 syncSessionMode();
             },
+            preparingMessage: localId => preparingLocalIds.get(localId),
             onSteerCancelHandlerChange: (handler) => { cancelNativeSteer = handler; },
             onCompactAvailabilityChange: (available) => {
                 compactSupported = available;

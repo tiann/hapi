@@ -182,6 +182,8 @@ function asQuestionCard(message: AgentMessage): { message: AgentMessage; shownLa
 export class AgyAcpStartError extends Error {}
 
 type AgyTurn = {
+    followUpId: string | null;
+    livePromptRequests: number;
     modeHash: string;
     aborted: boolean;
     stopReason: string | null;
@@ -361,7 +363,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
     protected async runMainLoop(): Promise<void> {
         const session = this.session;
-        session.client.updateAgentState((state) => ({ ...state, steeringActive: false }));
+        session.client.updateAgentState((state) => ({ ...state, steeringActive: false, followUpSteerTurnId: null }));
         this.messageBuffer.addMessage(
             session.sessionId ? 'Resuming agy session...' : 'Starting agy session...',
             'status'
@@ -371,7 +373,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         session.client.updateMetadata((metadata) => ({ ...metadata, agyProtocol: 'acp' }));
         session.client.rpcHandlerManager.registerHandler(
             RPC_METHODS.SteerQueuedMessage,
-            async (payload: unknown) => await this.handleSteer(payload)
+            async (payload: unknown) => await this.handleSteer(payload, false)
+        );
+        session.client.rpcHandlerManager.registerHandler(
+            RPC_METHODS.SteerFollowUpMessage,
+            async (payload: unknown) => await this.handleSteer(payload, true)
         );
         session.client.rpcHandlerManager.registerHandler(
             RPC_METHODS.ListSlashCommands,
@@ -1082,6 +1088,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             if (!internalWakeup) this.restorePrompt(turn, message);
         };
         const turn: AgyTurn = {
+            followUpId: null,
+            livePromptRequests: 0,
             modeHash,
             aborted: false,
             stopReason: null,
@@ -1223,6 +1231,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     timing: {
                         onSent: () => {
                             turn.sentAt = Date.now();
+                            turn.followUpId = randomUUID();
+                            this.trackNativePrompt(turn, 1);
                             // agy 1.5.11 suppresses `user_message_chunk` for
                             // the client's own `session/prompt`, so waiting for
                             // an echo or first output leaves the message stuck
@@ -1231,6 +1241,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         },
                         onAnswered: () => {
                             turn.answeredAt = Date.now();
+                            if (turn.sentAt !== null) this.trackNativePrompt(turn, -1);
                             turn.answerMain();
                         }
                     }
@@ -1277,7 +1288,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             }
             turn.answerMain();
             if (this.turn === turn) this.turn = null;
-            session.client.updateAgentState((state) => ({ ...state, steeringActive: false }));
+            session.client.updateAgentState((state) => ({ ...state, steeringActive: false, followUpSteerTurnId: null }));
             this.turnPermissionMode = undefined;
             // agy's usage adds up every model call of a request, so it is not a
             // context size: it goes to the response footer, not the context
@@ -1435,11 +1446,24 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
+    // agy can answer the main request as soon as a steer is sent. Its successor
+    // then owns the same turn. The final raw answer closes the window before
+    // the ACP output drain, during which a new prompt would start a new turn.
+    private trackNativePrompt(turn: AgyTurn, delta: 1 | -1): void {
+        turn.livePromptRequests += delta;
+        if (turn.livePromptRequests === 0) turn.followUpId = null;
+        if (this.turn !== turn || turn.aborted || this.shouldExit) return;
+        if (delta === 1 && turn.livePromptRequests !== 1) return;
+        if (delta === -1 && turn.livePromptRequests !== 0) return;
+        const followUpSteerTurnId = turn.followUpId;
+        this.session.client.updateAgentState((state) => ({ ...state, followUpSteerTurnId }));
+    }
+
     /**
      * The hub RPC is answered once the steer request is written: the request
      * itself only completes with the turn, past the hub's RPC timeout.
      */
-    private async handleSteer(payload: unknown): Promise<{ steered: boolean; error?: string }> {
+    private async handleSteer(payload: unknown, followUp: boolean): Promise<{ steered: boolean; error?: string }> {
         const session = this.session;
         const localId = typeof (payload as { localId?: unknown } | null)?.localId === 'string'
             ? (payload as { localId: string }).localId
@@ -1451,11 +1475,15 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         if (!turn || turn.aborted || !backend || !acpSessionId || this.shouldExit) {
             return { steered: false, error: 'No active steerable turn' };
         }
+        const expectedTurnId = (payload as { expectedFollowUpTurnId?: unknown }).expectedFollowUpTurnId;
+        if (followUp && (!turn.followUpId || expectedTurnId !== turn.followUpId)) {
+            return { steered: false, error: 'Active turn changed' };
+        }
         // agy rejects a prompt while an approval or a question is open.
         if (this.permissionHandler?.hasPendingRequests()) {
             return { steered: false, error: 'Antigravity is waiting for your approval or answer; respond to it, then steer' };
         }
-        const taken = session.queue.takeByLocalId(localId);
+        const taken = session.queue.takeByLocalId(localId, { retryIndeterminate: !followUp });
         if (!taken) return { steered: false, error: 'Message not in queue' };
         if (taken.item.isolate) {
             session.queue.restoreReservation(taken);
@@ -1507,7 +1535,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             session.client.emitSteerIndeterminate([localId]);
             return { steered: false, error: 'Steer cancelled' };
         }
-        if (this.turn !== turn || this.backend !== backend || turn.aborted) {
+        if (this.turn !== turn || this.backend !== backend || turn.aborted || this.shouldExit
+            || (followUp && expectedTurnId !== turn.followUpId)) {
             await restoreQueued();
             return { steered: false, error: 'Active turn changed' };
         }
@@ -1546,7 +1575,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         turn.steers.push(settled);
         turn.steersTaken += 1;
         steerCounted = true;
+        this.trackNativePrompt(turn, 1);
         turn.steerAnswers.push(steer.answered.then(() => {
+            this.trackNativePrompt(turn, -1);
             if (this.turn === turn) {
                 turn.answeredAt = Date.now();
             }
@@ -2075,7 +2106,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         }
         if (turn) {
             turn.aborted = true;
-            this.session.client.updateAgentState((state) => ({ ...state, steeringActive: false }));
+            this.session.client.updateAgentState((state) => ({ ...state, steeringActive: false, followUpSteerTurnId: null }));
         }
         if ((turn || wakeupAbort) && this.usesLiveWakeupRendering()) this.discardingStoppedStarts = true;
         const backend = this.backend;
@@ -2188,11 +2219,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
     protected async cleanup(): Promise<void> {
         this.clearAbortHandlers(this.session.client.rpcHandlerManager);
-        this.session.client.rpcHandlerManager.registerHandler(RPC_METHODS.SteerQueuedMessage, async () => ({
-            steered: false,
-            error: 'Session ending'
-        }));
-        this.session.client.updateAgentState((state) => ({ ...state, steeringActive: false }));
+        const ending = async () => ({ steered: false, error: 'Session ending' });
+        this.session.client.rpcHandlerManager.registerHandler(RPC_METHODS.SteerQueuedMessage, ending);
+        this.session.client.rpcHandlerManager.registerHandler(RPC_METHODS.SteerFollowUpMessage, ending);
+        this.session.client.updateAgentState((state) => ({ ...state, steeringActive: false, followUpSteerTurnId: null }));
         await this.permissionHandler?.cancelAll('Session ended');
         this.permissionHandler = null;
         const backend = this.backend;

@@ -347,6 +347,18 @@ describe('ApiClient error mapping', () => {
         })
     })
 
+    it('sends the one-shot follow-up intent separately from legacy delivery mode', async () => {
+        fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({}), { status: 200 }))
+
+        const api = new ApiClient('test-token')
+        await api.sendMessage('session', 'a follow-up', 'local-1', undefined, null, 'queue', 'alternate', 'turn-A')
+
+        const [, init] = fetchMock.mock.calls[0] ?? []
+        expect(JSON.parse(init?.body as string)).toMatchObject({
+            localId: 'local-1', deliveryMode: 'queue', followUpIntent: 'alternate', expectedFollowUpTurnId: 'turn-A',
+        })
+    })
+
     it('posts a steer for a queued message', async () => {
         fetchMock.mockResolvedValueOnce(
             new Response(JSON.stringify({ status: 'steered', localId: 'local-1' }), { status: 200 })

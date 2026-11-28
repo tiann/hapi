@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Session } from "./session";
 import { claudeRemote, type ClaudeSteerTarget, type CompactSummaryPayload } from "./claudeRemote";
 import { convertAgentMessage } from "@/agent/messageConverter";
@@ -59,7 +60,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
     // One-shot respawn requested by a history RPC (rewind): abort the current
     // attempt so the main loop relaunches Claude with the fresh flags.
     private restartRequested = false;
-    private steerTarget: { target: ClaudeSteerTarget; modeHash: string | null; signal: AbortSignal } | null = null;
+    private steerTarget: { target: ClaudeSteerTarget; modeHash: string | null; signal: AbortSignal; id: string } | null = null;
 
     constructor(session: Session) {
         super(process.env.DEBUG ? session.logPath : undefined);
@@ -189,20 +190,26 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
         // Per-message steer from the waiting queue (web "Steer" button), the
         // same as Ctrl+X Ctrl+S in the Claude TUI: the row is written to the
         // running process and Claude folds it in at its next tool boundary.
-        session.client.rpcHandlerManager.registerHandler(
-            RPC_METHODS.SteerQueuedMessage,
-            async (payload: unknown) => {
-                const localId = typeof (payload as { localId?: unknown } | null)?.localId === 'string'
-                    ? (payload as { localId: string }).localId
-                    : '';
-                if (!localId) {
+        const steerQueuedMessage =
+            async (payload: unknown, fromComposer: boolean) => {
+                const { localId, expectedFollowUpTurnId } = (payload ?? {}) as {
+                    localId?: unknown;
+                    expectedFollowUpTurnId?: unknown;
+                };
+                if (typeof localId !== 'string' || !localId) {
                     return { steered: false, error: 'Missing localId' };
                 }
                 const active = this.steerTarget;
                 if (!active || active.signal.aborted) {
                     return { steered: false, error: 'No active steerable turn' };
                 }
-                const taken = session.queue.takeByLocalId(localId);
+                if (fromComposer && expectedFollowUpTurnId !== active.id) {
+                    return { steered: false, error: 'Active turn changed' };
+                }
+                if (fromComposer && permissionHandler.hasPendingPermissionRequests()) {
+                    return { steered: false, error: 'Waiting for a user decision' };
+                }
+                const taken = session.queue.takeByLocalId(localId, { retryIndeterminate: !fromComposer });
                 if (!taken) {
                     return { steered: false, error: 'Message not in queue' };
                 }
@@ -246,6 +253,10 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     await restoreQueuedReservation();
                     return { steered: false, error: 'Active turn changed' };
                 }
+                if (fromComposer && permissionHandler.hasPendingPermissionRequests()) {
+                    await restoreQueuedReservation();
+                    return { steered: false, error: 'Waiting for a user decision' };
+                }
 
                 const deliveredText = session.expandSkillReference(taken.item.message);
                 session.client.notePendingHubPromptEcho(deliveredText, [localId]);
@@ -255,7 +266,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     await restoreQueuedReservation();
                     return { steered: false, error: 'Active turn changed' };
                 }
-                permissionHandler.denyPendingForSteer();
+                if (!fromComposer) permissionHandler.denyPendingForSteer();
                 void delivery.delivered.then(async (delivered) => {
                     if (delivered) {
                         // Agent output preceding the pickup is already in the
@@ -288,8 +299,9 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     logger.debug('[remote]: steered message settlement failed', error);
                 });
                 return { steered: true };
-            }
-        );
+            };
+        session.client.rpcHandlerManager.registerHandler(RPC_METHODS.SteerQueuedMessage, (payload) => steerQueuedMessage(payload, false));
+        session.client.rpcHandlerManager.registerHandler(RPC_METHODS.SteerFollowUpMessage, (payload) => steerQueuedMessage(payload, true));
 
         const sdkToLogConverter = new SDKToLogConverter({
             sessionId: session.sessionId || 'unknown',
@@ -873,9 +885,14 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         },
                         onSteerTargetChange: (target) => {
                             this.steerTarget = target
-                                ? { target, modeHash, signal: controller.signal }
+                                ? { target, modeHash, signal: controller.signal, id: randomUUID() }
                                 : null;
-                            session.client.updateAgentState((state) => ({ ...state, steeringActive: target !== null }));
+                            const followUpSteerTurnId = this.steerTarget?.id ?? null;
+                            session.client.updateAgentState((state) => ({
+                                ...state,
+                                steeringActive: target !== null,
+                                followUpSteerTurnId
+                            }));
                         },
                         signal: controller.signal,
                     });

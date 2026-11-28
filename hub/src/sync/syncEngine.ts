@@ -12,7 +12,7 @@ import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
 } from '@hapi/protocol/runnerCapabilities'
-import type { AbortChunkedUploadResponse, CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, InitChunkedUploadRequest, InitChunkedUploadResponse, MessageContextResponse, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse, UploadChunkResponse } from '@hapi/protocol/apiTypes'
+import type { AbortChunkedUploadResponse, CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, FollowUpIntent, InitChunkedUploadRequest, InitChunkedUploadResponse, MessageContextResponse, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse, UploadChunkResponse } from '@hapi/protocol/apiTypes'
 import { FORK_PREVIEW_TAIL_ROWS, type ForkBoundary, type ForkBoundaryErrorCode, type ForkPreviewRequest, type ForkPreviewResponse, type ForkPreviewRow } from '@hapi/protocol/forkBoundary'
 import type { UsageQueryAgent, UsageQueryAgentSettings, UsageQueryResult, UsageQuerySettingsResponse, UsageQueryTemplate } from '@hapi/protocol/usageQuery'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
@@ -226,6 +226,9 @@ function extractClaudeUserMessageTextFromAgentOutput(content: unknown): string |
 }
 
 export class SyncEngine {
+    // Only guarded follow-ups which have never reached a runner. A restart
+    // drops these hints; the original messages remain safely in the queue.
+    private followUpsAfterDecision: Map<string, { turnId: string; rows: Map<string, string> }> | null = new Map()
     private readonly archiveRequests = new Map<string, Promise<void>>()
     // KillSession's beforeKill drain completes before the CLI's async cleanup
     // closes the session socket, so a runner prepare-stop that loses that race
@@ -311,6 +314,7 @@ export class SyncEngine {
      *  (deleted or archived). The keys are never queried again; without this
      *  the per-session entries would accumulate for the hub's lifetime. */
     private releaseSessionEnumerations(sessionId: string): void {
+        this.followUpsAfterDecision?.delete(sessionId)
         this.slashCommandsEnumeration.releaseSession(sessionId)
         this.skillsEnumeration.releaseSession(sessionId)
         this.modelListCache.releaseSession(sessionId)
@@ -344,6 +348,7 @@ export class SyncEngine {
             onSessionMergedAway: (oldSessionId) => this.releaseSessionEnumerations(oldSessionId)
         })
         this.eventPublisher.subscribe((event) => {
+            if (this.followUpsAfterDecision?.size) this.updateFollowUpsAfterDecision(event)
             if (event.type === 'message-received') {
                 if (isUserInputMessage(event.message.content)) {
                     this.sessionCache.refreshLastUserMessageAt(event.sessionId)
@@ -391,6 +396,7 @@ export class SyncEngine {
     }
 
     stop(): void {
+        this.followUpsAfterDecision = null
         this.automaticTitleSuggestionService.stop()
         this.titleTurnCompletedIds.clear()
         if (this.inactivityTimer) {
@@ -2050,15 +2056,29 @@ export class SyncEngine {
             sentFrom?: 'telegram-bot' | 'webapp' | 'hapi-system'
             scheduledAt?: number | null
             deliveryMode?: MessageDeliveryMode
+            followUpIntent?: FollowUpIntent
+            expectedFollowUpTurnId?: string
         }
     ): Promise<void> {
         if (this.historyActionsInFlight.has(sessionId) || this.openCodeRewindPending(sessionId)) {
             throw new Error('Conversation history action already in progress')
         }
-        if (!this.sessionCache.getSession(sessionId)?.thinking) {
+        const session = this.sessionCache.getSession(sessionId)
+        const activeTurnId = session?.agentState?.followUpSteerTurnId
+        const expectedFollowUpTurnId = session?.active && payload.scheduledAt == null
+            && !payload.text.trimStart().startsWith('/')
+            && (payload.followUpIntent === 'default' || payload.followUpIntent === 'alternate' || payload.followUpIntent === 'steer')
+            && (payload.followUpIntent !== 'default' || !payload.attachments?.length)
+            && activeTurnId === payload.expectedFollowUpTurnId
+            ? activeTurnId
+            : null
+        if (!session?.thinking) {
             this.automaticTitleSuggestionService.onTurnStarted(sessionId)
         }
-        const { actualSessionId, createdAt: activeTurnStartedAt } = await this.messageService.sendMessage(sessionId, payload)
+        const { actualSessionId, createdAt: activeTurnStartedAt, insertedMessageId } = await this.messageService.sendMessage(
+            sessionId,
+            payload.followUpIntent === undefined ? payload : { ...payload, deliveryMode: 'queue' }
+        )
         const current = this.store.sessions.getSession(actualSessionId)
         const metadata = current?.metadata as Record<string, unknown> | null | undefined
         if (current && typeof metadata?.codexImportedAt === 'number') {
@@ -2069,6 +2089,80 @@ export class SyncEngine {
         }
         this.sessionCache.markMessageQueued(actualSessionId, Date.now(), activeTurnStartedAt)
         this.sessionCache.recordSessionActivity(actualSessionId, Date.now())
+        if (insertedMessageId && expectedFollowUpTurnId && actualSessionId === sessionId
+            && (payload.followUpIntent === 'steer'
+                || await this.matchesFollowUpDefault(payload.followUpIntent === 'alternate' ? 'queue' : 'steer'))) {
+            // The durable send is complete even if the runner takes time to confirm steering.
+            this.deliverFollowUpWhenReady(sessionId, insertedMessageId, expectedFollowUpTurnId)
+        }
+    }
+
+    private hasBlockingDecision(session: Session): boolean {
+        return Object.values(session.agentState?.requests ?? {}).some(request =>
+            request.tool !== 'request_user_input' || asRecord(request.arguments)?.isBlocking !== false)
+    }
+
+    private deliverFollowUpWhenReady(sessionId: string, messageId: string, turnId: string): void {
+        const session = this.getSession(sessionId)
+        if (!this.followUpsAfterDecision || !session?.active || session.agentState?.followUpSteerTurnId !== turnId) return
+        if (session.agentState.controlledByUser && !session.metadata?.capabilities?.concurrentClients) return
+        if (this.hasBlockingDecision(session)) {
+            const row = this.store.messages.lookupQueuedMessage(sessionId, messageId)
+            if (row.status !== 'queued' || !row.localId) return
+            let waiting = this.followUpsAfterDecision.get(sessionId)
+            if (waiting?.turnId !== turnId) {
+                waiting = { turnId, rows: new Map() }
+                this.followUpsAfterDecision.set(sessionId, waiting)
+            }
+            waiting.rows.set(row.localId, row.resolvedId)
+            return
+        }
+        void this.steerQueuedMessage(sessionId, messageId, turnId)
+            .catch((error) => console.warn('[follow-up] Failed to attempt steer:', error))
+    }
+
+    private updateFollowUpsAfterDecision(event: SyncEvent): void {
+        if (!this.followUpsAfterDecision || !('sessionId' in event) || !event.sessionId) return
+        const sessionId = event.sessionId
+        const waiting = this.followUpsAfterDecision.get(sessionId)
+        if (!waiting) return
+        if (event.type === 'session-ended' || event.type === 'session-removed' || event.type === 'messages-invalidated') {
+            this.followUpsAfterDecision.delete(sessionId)
+        } else if (event.type === 'messages-consumed' || event.type === 'messages-indeterminate' || event.type === 'message-cancelled') {
+            if (event.type === 'message-cancelled') {
+                for (const [localId, rowId] of waiting.rows) {
+                    if (localId === event.localId || localId === event.messageId || rowId === event.messageId) {
+                        waiting.rows.delete(localId)
+                    }
+                }
+            } else {
+                for (const id of event.localIds) waiting.rows.delete(id)
+            }
+            if (!waiting.rows.size) this.followUpsAfterDecision.delete(sessionId)
+        } else if (event.type === 'session-updated') {
+            const session = this.getSession(sessionId)
+            if (!session?.active || session.agentState?.followUpSteerTurnId !== waiting.turnId
+                || (session.agentState.controlledByUser && !session.metadata?.capabilities?.concurrentClients)) {
+                this.followUpsAfterDecision.delete(sessionId)
+                return
+            }
+            if (this.hasBlockingDecision(session)) return
+            // Drop ownership before dispatch. A late or lost RPC response may
+            // mean the original was delivered, and must never arm another send.
+            this.followUpsAfterDecision.delete(sessionId)
+            for (const id of waiting.rows.values()) this.deliverFollowUpWhenReady(sessionId, id, waiting.turnId)
+        }
+    }
+
+    private async matchesFollowUpDefault(expected: MessageDeliveryMode): Promise<boolean> {
+        const dataDir = this.resolveSettingsDataDir()
+        if (!dataDir) return expected === 'steer'
+        try {
+            const settings = await readSettingsOrThrowCached(getSettingsFile(dataDir))
+            return (settings.followUpDefault ?? 'steer') === expected
+        } catch {
+            return false
+        }
     }
 
     async cancelQueuedMessage(
@@ -2095,12 +2189,17 @@ export class SyncEngine {
      */
     async steerQueuedMessage(
         sessionId: string,
-        messageId: string
+        messageId: string,
+        expectedFollowUpTurnId?: string
     ): Promise<SteerQueuedMessageResponse> {
         if (this.openCodeRewindPending(sessionId)) return { status: 'failed', error: 'OpenCode rewind requires reconciliation', localId: null }
         const session = this.getSession(sessionId)
         if (!session) {
             return { status: 'failed', error: 'Session not found', localId: null }
+        }
+        if (expectedFollowUpTurnId !== undefined
+            && (!session.active || session.agentState?.followUpSteerTurnId !== expectedFollowUpTurnId)) {
+            return { status: 'failed', error: 'Active turn changed', localId: null }
         }
         if (!isSteeringSupportedForSession(session.metadata)) {
             // An agy session gets its ACP marker only once its CLI has picked
@@ -2133,6 +2232,9 @@ export class SyncEngine {
         if (lookup.status === 'invoked') {
             return invokedResponse(lookup.message)
         }
+        if (expectedFollowUpTurnId !== undefined && lookup.status !== 'queued') {
+            return { status: 'failed', error: 'Delivery outcome is pending or unknown', localId: lookup.localId }
+        }
         const { localId, scheduledAt } = lookup
         if (!localId) {
             return { status: 'failed', error: 'Message has no localId', localId: null }
@@ -2144,9 +2246,15 @@ export class SyncEngine {
             return { status: 'failed', error: 'Scheduled messages cannot be steered', localId }
         }
 
+        // An explicit Steer can take ownership of a waiting automatic
+        // follow-up. Losing its reply must never cause automatic replay.
+        const waiting = this.followUpsAfterDecision?.get(sessionId)
+        if (waiting?.rows.delete(localId) && !waiting.rows.size) this.followUpsAfterDecision?.delete(sessionId)
         let failure: string
         try {
-            const result = await this.rpcGateway.steerQueuedMessage(sessionId, localId)
+            const result = expectedFollowUpTurnId === undefined
+                ? await this.rpcGateway.steerQueuedMessage(sessionId, localId)
+                : await this.rpcGateway.steerQueuedMessage(sessionId, localId, expectedFollowUpTurnId)
             const settled = this.store.messages.lookupQueuedMessage(sessionId, messageId)
             if (settled.status === 'invoked') return { status: 'invoked', message: settled.message }
             if (result.steered) {

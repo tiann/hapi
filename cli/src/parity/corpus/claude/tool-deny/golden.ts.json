@@ -32,6 +32,7 @@
       "<uuid:1>:ripgrep",
       "<uuid:1>:set-session-config",
       "<uuid:1>:statFiles",
+      "<uuid:1>:steer-follow-up-message",
       "<uuid:1>:steer-queued-message",
       "<uuid:1>:switch",
       "<uuid:1>:uploadAbort",
@@ -801,6 +802,7 @@
           {
             "agentState": {
               "controlledByUser": false,
+              "followUpSteerTurnId": "<uuid:7>",
               "startingMode": "remote",
               "steeringActive": true
             },
@@ -813,6 +815,7 @@
           {
             "agentState": {
               "controlledByUser": false,
+              "followUpSteerTurnId": "<uuid:7>",
               "startingMode": "remote",
               "steeringActive": true
             },
@@ -828,6 +831,7 @@
           {
             "agentState": {
               "controlledByUser": false,
+              "followUpSteerTurnId": "<uuid:7>",
               "requests": {
                 "tool-1": {
                   "arguments": {
@@ -849,6 +853,7 @@
           {
             "agentState": {
               "controlledByUser": false,
+              "followUpSteerTurnId": "<uuid:7>",
               "requests": {
                 "tool-1": {
                   "arguments": {
@@ -899,7 +904,7 @@
                   "timestamp": "<ts>",
                   "type": "user",
                   "userType": "external",
-                  "uuid": "<uuid:7>",
+                  "uuid": "<uuid:8>",
                   "version": "0.0.0"
                 },
                 "type": "output"
@@ -971,6 +976,7 @@
                 }
               },
               "controlledByUser": false,
+              "followUpSteerTurnId": "<uuid:7>",
               "requests": {},
               "startingMode": "remote",
               "steeringActive": true
@@ -995,6 +1001,7 @@
                 }
               },
               "controlledByUser": false,
+              "followUpSteerTurnId": "<uuid:7>",
               "requests": {},
               "startingMode": "remote",
               "steeringActive": true
@@ -1022,6 +1029,7 @@
                 }
               },
               "controlledByUser": false,
+              "followUpSteerTurnId": null,
               "requests": {},
               "startingMode": "remote",
               "steeringActive": false
@@ -1046,6 +1054,7 @@
                 }
               },
               "controlledByUser": false,
+              "followUpSteerTurnId": null,
               "requests": {},
               "startingMode": "remote",
               "steeringActive": false
@@ -1073,6 +1082,7 @@
                 }
               },
               "controlledByUser": false,
+              "followUpSteerTurnId": null,
               "requests": {},
               "startingMode": "remote",
               "steeringActive": false
@@ -1097,6 +1107,7 @@
                 }
               },
               "controlledByUser": false,
+              "followUpSteerTurnId": null,
               "requests": {},
               "startingMode": "remote",
               "steeringActive": false
@@ -1124,6 +1135,7 @@
                 }
               },
               "controlledByUser": false,
+              "followUpSteerTurnId": null,
               "requests": {},
               "startingMode": "remote",
               "steeringActive": false
@@ -1148,6 +1160,7 @@
                 }
               },
               "controlledByUser": false,
+              "followUpSteerTurnId": null,
               "requests": {},
               "startingMode": "remote",
               "steeringActive": false
@@ -1501,7 +1514,7 @@
           },
           "tool_use_id": "tool-1",
           "type": "tool-result",
-          "uuid": "<uuid:7>"
+          "uuid": "<uuid:8>"
         }
       ],
       "createdAt": "<ts>",

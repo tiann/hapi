@@ -32,6 +32,7 @@
       "<uuid:1>:ripgrep",
       "<uuid:1>:set-session-config",
       "<uuid:1>:statFiles",
+      "<uuid:1>:steer-follow-up-message",
       "<uuid:1>:steer-queued-message",
       "<uuid:1>:switch",
       "<uuid:1>:uploadAbort",
@@ -792,6 +793,7 @@
           {
             "agentState": {
               "controlledByUser": false,
+              "followUpSteerTurnId": "<uuid:7>",
               "startingMode": "remote",
               "steeringActive": true
             },
@@ -804,6 +806,7 @@
           {
             "agentState": {
               "controlledByUser": false,
+              "followUpSteerTurnId": "<uuid:7>",
               "startingMode": "remote",
               "steeringActive": true
             },

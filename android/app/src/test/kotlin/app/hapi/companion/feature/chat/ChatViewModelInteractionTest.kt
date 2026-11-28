@@ -40,10 +40,12 @@ import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.DecryptedMessage
 import app.hapi.protocol.wire.DeleteUploadResponse
 import app.hapi.protocol.wire.FeaturesResponse
+import app.hapi.protocol.wire.FollowUpIntent
 import app.hapi.protocol.wire.InputTranslationFeature
 import app.hapi.protocol.wire.FileSearchItem
 import app.hapi.protocol.wire.FileSearchResponse
 import app.hapi.protocol.wire.HapiJson
+import app.hapi.protocol.wire.HubSettingsResponse
 import app.hapi.protocol.wire.Machine
 import app.hapi.protocol.wire.MessagesPage
 import app.hapi.protocol.wire.MessagesResponse
@@ -243,8 +245,8 @@ private class RecordingChatApi : ChatSessionApi {
     var featuresResult: FeaturesResponse = FeaturesResponse()
     override suspend fun getFeatures(): FeaturesResponse = featuresResult
 
-    var hubSettingsResult: app.hapi.protocol.wire.HubSettingsResponse = app.hapi.protocol.wire.HubSettingsResponse()
-    override suspend fun getHubSettings(): app.hapi.protocol.wire.HubSettingsResponse = hubSettingsResult
+    var hubSettingsResult = HubSettingsResponse()
+    override suspend fun getHubSettings(): HubSettingsResponse = hubSettingsResult
 
     val translateCalls = MutableStateFlow<List<Pair<String, Boolean>>>(emptyList())
     var translateFailure: Exception? = null
@@ -631,7 +633,7 @@ class ChatViewModelInteractionTest {
     // ---------------------------------------------------------------- send --
 
     @Test
-    fun `optimistic send happy path posts queue delivery and settles to sent`() = runTest {
+    fun `optimistic send uses the hub default and settles to sent`() = runTest {
         val harness = InteractionHarness(this)
         harness.viewModel.start()
 
@@ -642,7 +644,8 @@ class ChatViewModelInteractionTest {
         assertEquals(IX_SESSION, sessionId)
         assertEquals("hello agent", request.text)
         assertEquals("local-1", request.localId)
-        assertEquals("queue", request.deliveryMode)
+        assertEquals(FollowUpIntent.Default, request.followUpIntent)
+        assertNull(request.deliveryMode)
         assertNull(request.scheduledAt)
 
         val row = harness.window().state.first { state ->
@@ -659,13 +662,61 @@ class ChatViewModelInteractionTest {
         harness.viewModel.start()
 
         harness.viewModel.setComposerText("steer this")
-        harness.viewModel.sendMessage(steer = true)
+        harness.viewModel.sendMessage(FollowUpIntent.Steer, expectedFollowUpTurnId = "observed-turn")
 
         val (_, request) = harness.api.sendCalls.first { it.isNotEmpty() }.single()
-        assertEquals("steer", request.deliveryMode)
+        assertEquals(FollowUpIntent.Steer, request.followUpIntent)
+        assertEquals("observed-turn", request.expectedFollowUpTurnId)
+        assertNull(request.deliveryMode)
         harness.window().state.first { state ->
             state.messages.any { it.localId == "local-1" && it.status == MessageStatus.Queued }
         }
+    }
+
+    @Test
+    fun `ordinary Pi send carries the observed turn`() = runTest {
+        val harness = InteractionHarness(this, detail(flavor = "pi", thinking = true, agentState = AgentState(followUpSteerTurnId = "pi-turn")))
+        harness.viewModel.start()
+        harness.viewModel.composer.first { it.followUpSteerTurnId == "pi-turn" }
+        harness.viewModel.setComposerText("update")
+        harness.viewModel.sendMessage()
+        val (_, request) = harness.api.sendCalls.first { it.isNotEmpty() }.single()
+        assertEquals(FollowUpIntent.Default, request.followUpIntent)
+        assertEquals("pi-turn", request.expectedFollowUpTurnId)
+    }
+
+    @Test
+    fun `live Pi offers and sends explicit legacy steer`() = runTest {
+        val harness = InteractionHarness(this, detail(flavor = "pi", thinking = true))
+        harness.viewModel.start()
+        harness.viewModel.composer.first { it.canChooseFollowUpMode }
+
+        harness.viewModel.setComposerText("steer Pi")
+        harness.viewModel.sendMessage(FollowUpIntent.Steer)
+        val (_, request) = harness.api.sendCalls.first { it.isNotEmpty() }.single()
+
+        assertEquals("steer", request.deliveryMode)
+        assertNull(request.followUpIntent)
+        assertNull(request.expectedFollowUpTurnId)
+    }
+
+    @Test
+    fun `composer shows the hub default without translation and can queue one follow-up`() = runTest {
+        val session = detail(thinking = true, agentState = AgentState(followUpSteerTurnId = "turn-1"))
+        val harness = InteractionHarness(this, session)
+        harness.api.hubSettingsResult = HubSettingsResponse(followUpDefault = "steer")
+        harness.viewModel.start()
+
+        harness.viewModel.composer.first { it.canChooseFollowUpMode }
+        harness.viewModel.hubSettings.first { it.followUpDefault == "steer" }
+        assertFalse(harness.viewModel.inputTranslationAvailable.value)
+
+        harness.viewModel.setComposerText("send this next")
+        harness.viewModel.sendMessage(FollowUpIntent.Queue)
+        val (_, request) = harness.api.sendCalls.first { it.isNotEmpty() }.single()
+        assertEquals(FollowUpIntent.Queue, request.followUpIntent)
+        assertNull(request.deliveryMode)
+        assertEquals("steer", harness.viewModel.hubSettings.value.followUpDefault)
     }
 
     @Test
@@ -690,6 +741,7 @@ class ChatViewModelInteractionTest {
         assertEquals("local-1", requests[1].localId)
         // Retry never re-binds a steer intent; durable queue only.
         assertEquals("queue", requests[1].deliveryMode)
+        assertNull(requests[1].followUpIntent)
     }
 
     @Test
@@ -1103,13 +1155,14 @@ class ChatViewModelInteractionTest {
 
         harness.viewModel.setComposerText("steer later")
         harness.viewModel.setPendingSchedule(PendingSchedule.Absolute(50_000))
-        harness.viewModel.sendMessage(steer = true)
+        harness.viewModel.sendMessage(FollowUpIntent.Steer)
 
         val (_, request) = harness.api.sendCalls.first { it.isNotEmpty() }.single()
         assertEquals(50_000L, request.scheduledAt)
         // The wire forbids scheduledAt + steer; the web forces the send
         // intent to 'default' while a schedule is pending.
         assertEquals("queue", request.deliveryMode)
+        assertNull(request.followUpIntent)
     }
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
@@ -1850,7 +1903,7 @@ class ChatViewModelInteractionTest {
     fun `translate toggle follows the hub default until the session chooses`() = runTest {
         val harness = InteractionHarness(this)
         harness.api.featuresResult = FeaturesResponse(inputTranslation = InputTranslationFeature(available = true))
-        harness.api.hubSettingsResult = app.hapi.protocol.wire.HubSettingsResponse(translateInputByDefault = true)
+        harness.api.hubSettingsResult = HubSettingsResponse(translateInputByDefault = true)
         harness.viewModel.start()
 
         // No explicit metadata.translateInput: the hub default turns it on.

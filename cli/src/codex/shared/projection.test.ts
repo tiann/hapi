@@ -23,7 +23,7 @@ describe('shared history projection', () => {
         const projection = new SharedCodexProjection(session, 'thread', committed);
         await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn',
             item: { id: 'item', type: 'userMessage', clientId: 'native-batch', content } });
-        expect(committed).toHaveBeenCalledWith('native-batch', content);
+        expect(committed).toHaveBeenCalledWith('native-batch', content, 'turn');
         expect(user.mock.calls).toEqual([['A', undefined, 'original-A'], ['B', undefined, 'original-B']]);
         expect(metadata.conversationHistoryTurns).toEqual({ 'original-A': 'turn', 'original-B': 'turn' });
         expect(metadata.conversationHistoryPoints).toEqual({ 'original-A': true });
@@ -86,7 +86,7 @@ describe('shared history projection', () => {
         const item = { type: 'userMessage', id: 'native-answer', clientId: 'client-answer', content: [{ type: 'text', text }] };
         await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn', item });
         expect(observe).toHaveBeenCalledWith('thread', item);
-        expect(committed).toHaveBeenCalledWith('client-answer', item.content);
+        expect(committed).toHaveBeenCalledWith('client-answer', item.content, 'turn');
         expect(sendUserMessage).toHaveBeenCalledWith('Which client?\nWeb', undefined, 'client-answer');
     });
     it('displays async answers per original batch member and retains the first fork boundary', async () => {
@@ -104,7 +104,7 @@ describe('shared history projection', () => {
         const projection = new SharedCodexProjection(session, 'thread', committed, undefined, undefined, observe);
         const item = { id: 'native-answer', type: 'userMessage', clientId: 'native-batch', content };
         await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn', item });
-        expect(committed).toHaveBeenCalledWith('native-batch', content);
+        expect(committed).toHaveBeenCalledWith('native-batch', content, 'turn');
         expect(user.mock.calls).toEqual([['Which client?\nWeb', undefined, 'answer-original'], ['Ordinary follow-up', undefined, 'followup-original']]);
         expect(metadata.conversationHistoryTurns).toEqual({ 'answer-original': 'turn', 'followup-original': 'turn' });
         expect(metadata.conversationHistoryPoints).toEqual({ 'answer-original': true });

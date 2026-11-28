@@ -254,6 +254,29 @@
         }
       }
     },
+    "Long-press for send options" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "長押しして送信方法を表示"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нажмите и удерживайте для выбора способа отправки"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "长按可选择发送方式"
+          }
+        }
+      }
+    },
     "Name this passkey" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -438,6 +461,29 @@
         }
       }
     },
+    "Queue for next turn" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "次のターンに送信"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Добавить в очередь на следующий ход"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "排到下一回合"
+          }
+        }
+      }
+    },
     "Registered before the hub's access token was rotated; it can no longer sign in." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -595,6 +641,29 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "正在登录…"
+          }
+        }
+      }
+    },
+    "Steer current turn" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "現在のターンに追加"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Направить в текущий ход"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "插入当前回合"
           }
         }
       }
@@ -13527,52 +13596,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "发送"
-          }
-        }
-      }
-    },
-    "Send — long-press to steer" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "送信 — 長押しで割り込み送信"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Отправить — долгое нажатие, чтобы направить"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "发送 — 长按可插入当前回合"
-          }
-        }
-      }
-    },
-    "Send & steer into current turn" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ja" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "送信して現在のターンに割り込む"
-          }
-        },
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Отправить и вклиниться в текущий ход"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "发送并插入当前回合"
           }
         }
       }

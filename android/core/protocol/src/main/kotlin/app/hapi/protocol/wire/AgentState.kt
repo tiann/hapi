@@ -24,6 +24,8 @@ data class AgentState(
     val completedRequests: Map<String, AgentStateCompletedRequest>? = null,
     /** Current actionable shared Codex proposal's tool-call id; null withdraws its menu. */
     val codexPlanProposalId: String? = null,
+    /** A live turn that supports a guarded follow-up. */
+    val followUpSteerTurnId: String? = null,
 )
 
 /** A pending tool-permission / user-input request (`AgentStateRequestSchema`). */

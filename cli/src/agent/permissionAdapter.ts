@@ -56,6 +56,10 @@ export class PermissionAdapter {
         );
     }
 
+    hasPendingRequests(): boolean {
+        return this.pendingRequests.size > 0;
+    }
+
     private handlePermissionRequest(request: PermissionRequest): void {
         const toolName = deriveToolName({
             title: request.title,

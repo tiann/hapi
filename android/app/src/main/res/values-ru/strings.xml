@@ -349,7 +349,9 @@
     <string name="chat_composer_send">Отправить</string>
     <string name="chat_composer_abort">Остановить текущий ход</string>
     <string name="chat_mention_suggestions">Предложения упоминаний</string>
-    <string name="chat_send_steer">Отправить и вклиниться в текущий ход</string>
+    <string name="chat_send_queue">Добавить в очередь на следующий ход</string>
+    <string name="chat_send_steer">Направить в текущий ход</string>
+    <string name="chat_send_default">%1$s (по умолчанию)</string>
     <string name="chat_schedule_send">Отложенная отправка</string>
     <string name="chat_schedule_capsule">Запланировано · %1$s</string>
     <string name="chat_schedule_clear">Отменить расписание</string>

@@ -166,6 +166,12 @@
       "default": false,
       "description": "Inject the AGENT_NOTIFY_SUMMARY trailing-line contract into supported agents' instructions. Editable in web Settings. CLI env HAPI_SESSION_SUMMARY_CONTRACT overrides per process."
     },
+    "followUpDefault": {
+      "type": "string",
+      "enum": ["queue", "steer"],
+      "default": "steer",
+      "description": "Hub-wide delivery default for interactive follow-up messages."
+    },
     "sessionSummaryInChat": {
       "type": "boolean",
       "default": false,
