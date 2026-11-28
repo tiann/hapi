@@ -50,6 +50,21 @@ describe('session_waiting MCP', () => {
         expect(result.text).toContain('timed out')
     })
 
+    it('passes an AbortSignal so a timed-out set cannot land after reconnect', async () => {
+        const signals: Array<AbortSignal | undefined> = []
+        const client = {
+            updateMetadata: vi.fn((_handler: (meta: Metadata) => Metadata, options?: { signal?: AbortSignal }) => {
+                signals.push(options?.signal)
+            }),
+            flushMetadata: vi.fn(async () => false),
+            getMetadata: () => ({ path: '/tmp/p', host: 'h' }) as Metadata,
+        }
+        const result = await applySessionWaiting(client, { action: 'set', reason: 'CI' }, { flushTimeoutMs: 20 })
+        expect(result.isError).toBe(true)
+        expect(signals[0]).toBeInstanceOf(AbortSignal)
+        expect(signals[0]!.aborted).toBe(true)
+    })
+
     it('returns unconfirmed error when clear flush succeeds but waiting remains', async () => {
         const client = {
             updateMetadata: vi.fn(),

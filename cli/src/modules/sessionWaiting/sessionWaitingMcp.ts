@@ -57,6 +57,8 @@ function waitingIsSet(meta: Readonly<Metadata> | null): boolean {
 /**
  * Stamp or clear metadata.waiting via the versioned update-metadata path,
  * then await hub ack before reporting success (#2616 Major).
+ * Passes an AbortSignal tied to the flush deadline so a timed-out write
+ * cannot land later after reconnect (#2616 Minor).
  */
 export async function applySessionWaiting(
     client: WaitingMetadataClient,
@@ -64,54 +66,62 @@ export async function applySessionWaiting(
     options?: { flushTimeoutMs?: number }
 ): Promise<SessionWaitingToolResult> {
     const flushTimeoutMs = options?.flushTimeoutMs ?? 5_000
+    const deadline = new AbortController()
+    const timer = setTimeout(() => deadline.abort(), flushTimeoutMs)
 
-    if (args.action === 'clear') {
-        client.updateMetadata((meta) => ({ ...meta, waiting: null }))
+    try {
+        if (args.action === 'clear') {
+            client.updateMetadata((meta) => ({ ...meta, waiting: null }), { signal: deadline.signal })
+            const flushed = await client.flushMetadata(flushTimeoutMs)
+            if (!flushed || deadline.signal.aborted) {
+                deadline.abort()
+                return {
+                    text: 'session_waiting clear unconfirmed: hub metadata ack timed out',
+                    isError: true,
+                }
+            }
+            if (waitingIsSet(client.getMetadata())) {
+                return {
+                    text: 'session_waiting clear unconfirmed: hub still has metadata.waiting',
+                    isError: true,
+                }
+            }
+            return { text: 'Cleared metadata.waiting', isError: false }
+        }
+
+        const reason = args.reason?.trim()
+        const waiting = {
+            since: Date.now(),
+            ...(reason ? { reason } : {}),
+        }
+        client.updateMetadata((meta) => ({ ...meta, waiting }), { signal: deadline.signal })
         const flushed = await client.flushMetadata(flushTimeoutMs)
-        if (!flushed) {
+        if (!flushed || deadline.signal.aborted) {
+            deadline.abort()
             return {
-                text: 'session_waiting clear unconfirmed: hub metadata ack timed out',
+                text: 'session_waiting set unconfirmed: hub metadata ack timed out',
                 isError: true,
             }
         }
-        if (waitingIsSet(client.getMetadata())) {
+        const acked = client.getMetadata()?.waiting
+        if (!waitingIsSet(client.getMetadata())) {
             return {
-                text: 'session_waiting clear unconfirmed: hub still has metadata.waiting',
+                text: 'session_waiting set unconfirmed: hub metadata.waiting missing after ack',
                 isError: true,
             }
         }
-        return { text: 'Cleared metadata.waiting', isError: false }
-    }
-
-    const reason = args.reason?.trim()
-    const waiting = {
-        since: Date.now(),
-        ...(reason ? { reason } : {}),
-    }
-    client.updateMetadata((meta) => ({ ...meta, waiting }))
-    const flushed = await client.flushMetadata(flushTimeoutMs)
-    if (!flushed) {
+        const ackedReason = acked && typeof acked === 'object' && 'reason' in acked
+            ? (acked as { reason?: string }).reason
+            : undefined
+        const since = (acked as { since: number }).since
         return {
-            text: 'session_waiting set unconfirmed: hub metadata ack timed out',
-            isError: true,
+            text: ackedReason
+                ? `Set metadata.waiting since=${since} reason=${JSON.stringify(ackedReason)}`
+                : `Set metadata.waiting since=${since}`,
+            isError: false,
         }
-    }
-    const acked = client.getMetadata()?.waiting
-    if (!waitingIsSet(client.getMetadata())) {
-        return {
-            text: 'session_waiting set unconfirmed: hub metadata.waiting missing after ack',
-            isError: true,
-        }
-    }
-    const ackedReason = acked && typeof acked === 'object' && 'reason' in acked
-        ? (acked as { reason?: string }).reason
-        : undefined
-    const since = (acked as { since: number }).since
-    return {
-        text: ackedReason
-            ? `Set metadata.waiting since=${since} reason=${JSON.stringify(ackedReason)}`
-            : `Set metadata.waiting since=${since}`,
-        isError: false,
+    } finally {
+        clearTimeout(timer)
     }
 }
 
