@@ -38,24 +38,59 @@ export function resolveSessionIdleTimeoutMs(
     return parsed
 }
 
+/**
+ * Durable latch belongs to the session's current worker generation.
+ *
+ * Current-marker-only (#2021 / #2657): when both markers are present and
+ * differ, the latch is prior-generation and does **not** count as live work
+ * for Archive. Missing markers fail closed (still count). Residual hole:
+ * a still-running prior worker is not detected — see tiann/hapi#2657.
+ */
+export function latchIsCurrentGeneration(
+    latchMarker: unknown,
+    currentMarker: unknown,
+): boolean {
+    if (typeof latchMarker !== 'string' || latchMarker.length === 0) return true
+    if (typeof currentMarker !== 'string' || currentMarker.length === 0) return true
+    return latchMarker === currentMarker
+}
+
 /** Durable / progress work that survives heartbeat expiry (excludes stale requests). */
 export function hasDurableLiveWork(session: Session): boolean {
     if (session.thinking) return true
     // Hub-derived open tool work in the transcript tail (autonomous rounds
     // that miss the CLI's turn-scoped thinking flag).
     if (session.derivedToolWork === true) return true
-    if ((session.backgroundTaskCount ?? 0) > 0) return true
-    // Durable background snapshot — including a prior worker generation whose
-    // detached tools may still run after resume (#2021 Approach).
+    const currentMarker = session.metadata?.hostStartMarker
+    // Durable background snapshot for the *current* worker only (#2021
+    // current-marker-only / #2657). Prior-gen records may remain in metadata
+    // for debugging but must not strand Archive forever.
     const background = session.metadata?.backgroundWork
-    if (background && Array.isArray(background.tasks) && background.tasks.length > 0) {
+    const foreignBackground = Boolean(
+        background
+        && Array.isArray(background.tasks)
+        && background.tasks.length > 0
+        && !latchIsCurrentGeneration(background.hostStartMarker, currentMarker),
+    )
+    // In-memory count can linger after host replace while durable stays
+    // prior-gen — ignore that stale count when markers disagree (#2657).
+    if ((session.backgroundTaskCount ?? 0) > 0 && !foreignBackground) return true
+    if (
+        background
+        && Array.isArray(background.tasks)
+        && background.tasks.length > 0
+        && latchIsCurrentGeneration(background.hostStartMarker, currentMarker)
+    ) {
         return true
     }
-    // In-flight turn latch survives expiry clearing ephemeral thinking.
-    // Prior-generation latches still block Archive until probe already_gone
-    // clears them (#2021 Approach).
+    // In-flight turn latch for the current worker. Survives expiry clearing
+    // ephemeral thinking. Foreign-generation latches are ignored here (#2657).
     const unresolved = session.metadata?.unresolvedTurn
-    if (unresolved && typeof unresolved === 'object') {
+    if (
+        unresolved
+        && typeof unresolved === 'object'
+        && latchIsCurrentGeneration(unresolved.hostStartMarker, currentMarker)
+    ) {
         return true
     }
     // Externally blocked work (CI / vendor / peer) — not turn-scoped thinking

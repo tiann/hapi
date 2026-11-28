@@ -49,7 +49,7 @@ function session(overrides: Partial<Session> = {}): Session {
 }
 
 describe('hasDurableLiveWork', () => {
-    it('treats a prior-generation unresolvedTurn latch as still live (#2021 Approach)', () => {
+    it('ignores a prior-generation unresolvedTurn latch (#2021 current-marker-only / #2657)', () => {
         expect(hasDurableLiveWork(session({
             metadata: {
                 path: '/tmp/p',
@@ -57,10 +57,21 @@ describe('hasDurableLiveWork', () => {
                 hostStartMarker: 'worker-B',
                 unresolvedTurn: { since: NOW - 1000, hostStartMarker: 'worker-A' },
             },
+        }))).toBe(false)
+    })
+
+    it('counts a current-generation unresolvedTurn latch as live', () => {
+        expect(hasDurableLiveWork(session({
+            metadata: {
+                path: '/tmp/p',
+                host: 'h',
+                hostStartMarker: 'worker-B',
+                unresolvedTurn: { since: NOW - 1000, hostStartMarker: 'worker-B' },
+            },
         }))).toBe(true)
     })
 
-    it('treats prior-generation backgroundWork as still live (#2021 Approach)', () => {
+    it('ignores prior-generation backgroundWork (#2021 current-marker-only / #2657)', () => {
         expect(hasDurableLiveWork(session({
             backgroundTaskCount: 0,
             metadata: {
@@ -72,7 +83,23 @@ describe('hasDurableLiveWork', () => {
                     hostStartMarker: 'worker-A',
                 },
             },
-        }))).toBe(true)
+        }))).toBe(false)
+    })
+
+    it('ignores stale in-memory background count when durable is prior-gen (#2657)', () => {
+        expect(hasDurableLiveWork(session({
+            backgroundTaskCount: 1,
+            backgroundTasks: [{ id: 'bg-1', type: 'local_bash', description: 'sleep' }],
+            metadata: {
+                path: '/tmp/p',
+                host: 'h',
+                hostStartMarker: 'worker-B',
+                backgroundWork: {
+                    tasks: [{ id: 'bg-1', type: 'local_bash', description: 'sleep' }],
+                    hostStartMarker: 'worker-A',
+                },
+            },
+        }))).toBe(false)
     })
 
     it('treats metadata.waiting as durable external block (#2020)', () => {

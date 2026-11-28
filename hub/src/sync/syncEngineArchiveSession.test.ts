@@ -1075,10 +1075,10 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(cache().getSession(sessionId)?.metadata?.lifecycleState).not.toBe('archived')
     })
 
-    it('refuses already_gone clear when durable work belongs to a prior generation (#2021 Approach)', async () => {
-        // Replacement wrapper can look already_gone while a prior detached
-        // group still owns backgroundWork. Session-id probe must not retire
-        // prior-gen latches (#2021 Approach).
+    it('archives when only prior-generation durable work remains (#2021 current-marker-only / #2657)', async () => {
+        // Prior-gen backgroundWork is retained for debugging but no longer
+        // blocks Archive once a replacement has registered (#2657 residual:
+        // a still-running prior worker is not detected).
         const sessionId = insertActiveSession('sess-prior-gen-bg', 'machine-x', 7001, {
             flavor: 'agy',
         })
@@ -1132,12 +1132,12 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         }
         gateway.rpcGateway.probeRunnerSessionExit = async () => 'already_gone'
 
-        const error = await engine.archiveSession(sessionId).catch(error => error)
-        expect(error).toBeInstanceOf(ArchiveCleanupError)
-        expect((error as ArchiveCleanupError).code).toBe('archive-session-working')
-        expect(stopCalled).toBe(false)
+        await engine.archiveSession(sessionId)
+        expect(stopCalled).toBe(true)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).toBe('archived')
+        // Probe already_gone for B must not erase A's retained record.
         expect(cache().getSession(sessionId)?.metadata?.backgroundWork?.tasks).toHaveLength(1)
-        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).not.toBe('archived')
+        expect(cache().getSession(sessionId)?.metadata?.backgroundWork?.hostStartMarker).toBe('worker-A')
     })
 
     it('archives background-only work when Runner reports already_gone after expiry (#2021 Approach)', async () => {
