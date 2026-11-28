@@ -84,6 +84,7 @@ export function extractErrorInfo(error: unknown): ErrorInfo {
  * Retryable errors:
  * - ECONNREFUSED - server not started
  * - ETIMEDOUT - connection timeout
+ * - ECONNABORTED - request timeout
  * - ENOTFOUND - DNS resolution failed
  * - ENETUNREACH - network unreachable
  * - ECONNRESET - connection reset
@@ -101,6 +102,7 @@ export function isRetryableConnectionError(error: unknown): boolean {
     // Retryable network errors
     if (axiosCode === 'ECONNREFUSED' ||
         axiosCode === 'ETIMEDOUT' ||
+        axiosCode === 'ECONNABORTED' ||
         axiosCode === 'ENOTFOUND' ||
         axiosCode === 'ENETUNREACH' ||
         axiosCode === 'ECONNRESET') {

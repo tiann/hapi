@@ -2,10 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildCliArgs } from '@/runner/run';
 import { parseRemoteAgentCommandOptions } from '@/commands/agentCommandOptions';
 import { Flavors } from '@hapi/protocol/modes';
-import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
+import { DEFAULT_RPC_TIMEOUT_MS, RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { createLocalHistoryPublisher, type LocalHistoryPublisher } from './localHistory';
 import type { Metadata } from '@/api/types';
 import type { MessageQueue2 } from '@/utils/MessageQueue2';
+import { OpenCodeHandoffRefusedError } from '@/api/rpc/types';
 import type { OpencodeMode } from './types';
 
 const mockOpencodeSession = vi.hoisted(() => ({
@@ -362,6 +363,7 @@ describe('runOpencode set-session-config handler', () => {
         expect(harness.bootstrapExistingArgs).toEqual([{
             sessionId: 'live-hub-row',
             flavor: 'opencode',
+            metadataOverrides: { capabilities: { terminal: true, openCodeHandoffAdmission: true } },
             startedBy: 'runner',
             workingDirectory: '/tmp/project'
         }]);
@@ -498,6 +500,182 @@ describe('runOpencode set-session-config handler', () => {
         );
         // The slash reply should still have gone out as a separate message.
         expect(harness.session.sendAgentMessage).toHaveBeenCalled();
+    });
+
+    it('latches an accepted local handoff before a later ACP loss', async () => {
+        await runOpencode({ startingMode: 'remote' });
+        const gate = harness.opencodeLoopArgs[0]!.runtimeGate as import('./rewind').OpenCodeRuntimeGate;
+        const handler = harness.session.rpcHandlerManager.registerHandler.mock.calls.find(([name]) => name === RPC_METHODS.HandoffLocal)![1];
+        gate.setRecoveryPending(true);
+        expect(() => handler({})).toThrow('OpenCode is recovering');
+        gate.setRecoveryPending(false);
+        expect(handler({})).toEqual({ ok: true });
+        expect(() => gate.assertHandoffAllowed()).toThrow('session is ending');
+    });
+
+    it.each(['loss before commit', 'loss after commit', 'timeout'] as const)('holds Clear admission across %s', async order => {
+        await runOpencode({ startingMode: 'remote' });
+        vi.useFakeTimers();
+        try {
+            const gate = harness.opencodeLoopArgs[0]!.runtimeGate as import('./rewind').OpenCodeRuntimeGate;
+            const handler = harness.session.rpcHandlerManager.registerHandler.mock.calls.find(([name]) => name === RPC_METHODS.CheckOpenCodeHandoff)![1];
+            const send = (action: string, reservationId = 'one') => handler({ action, reservationId });
+            send('prepare-clear');
+            let competingError: unknown;
+            try {
+                send('prepare-clear', 'competing');
+            } catch (error) {
+                competingError = error;
+            }
+            expect(competingError).toBeInstanceOf(Error);
+            expect(competingError).not.toBeInstanceOf(OpenCodeHandoffRefusedError);
+            if (order === 'loss after commit') send('commit-clear');
+            gate.setRecoveryPending(true);
+            let resumed = false;
+            const waiting = gate.waitForHandoff(new AbortController().signal).then(() => { resumed = true; });
+            await Promise.resolve();
+            expect(resumed).toBe(false);
+            send('cancel-clear', 'stale');
+            if (order === 'timeout') {
+                await vi.advanceTimersByTimeAsync(DEFAULT_RPC_TIMEOUT_MS + 1);
+                expect(() => send('commit-clear')).toThrow();
+            } else if (order === 'loss before commit') {
+                expect(() => send('commit-clear')).toThrow('OpenCode is recovering');
+                send('cancel-clear');
+            } else {
+                send('finish-clear');
+            }
+            await waiting;
+            expect(resumed).toBe(true);
+        } finally { vi.useRealTimers(); }
+    });
+
+    it('refuses local handoff after finish-clear until the cleared source exits, and still expires an unsettled lease', async () => {
+        await runOpencode({ startingMode: 'remote' });
+        vi.useFakeTimers();
+        try {
+            const handler = (name: string) => harness.session.rpcHandlerManager.registerHandler.mock.calls.find(([method]) => method === name)![1];
+            const admission = handler(RPC_METHODS.CheckOpenCodeHandoff);
+            const handoff = handler(RPC_METHODS.HandoffLocal);
+            const send = (action: string, reservationId: string) => admission({ action, reservationId });
+
+            // Unsettled: a committed lease whose settlement is lost still expires.
+            send('prepare-clear', 'lost');
+            send('commit-clear', 'lost');
+            expect(() => handoff({})).toThrow('OpenCode Clear is in progress.');
+            await vi.advanceTimersByTimeAsync(DEFAULT_RPC_TIMEOUT_MS + 1);
+            expect(() => admission({})).not.toThrow();
+
+            // Settled: the Hub persisted the replacement and sent finish-clear
+            // before its reserve response. The source must stay fenced.
+            send('prepare-clear', 'persisted');
+            send('commit-clear', 'persisted');
+            send('finish-clear', 'persisted');
+            expect(() => handoff({})).toThrow(OpenCodeHandoffRefusedError);
+            await vi.advanceTimersByTimeAsync(DEFAULT_RPC_TIMEOUT_MS + 1);
+            expect(() => handoff({})).toThrow('OpenCode Clear is in progress.');
+            expect(() => admission({})).toThrow('OpenCode Clear is in progress.');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('returns an untagged retryable error when a reconnected Clear retry arrives before the previous prepared lease expires', async () => {
+        await runOpencode({ startingMode: 'remote' });
+        vi.useFakeTimers();
+        try {
+            const handler = harness.session.rpcHandlerManager.registerHandler.mock.calls.find(([name]) => name === RPC_METHODS.CheckOpenCodeHandoff)![1];
+            const { RpcHandlerManager } = await import('@/api/rpc/RpcHandlerManager');
+            const rpc = new RpcHandlerManager({ scopePrefix: 'source-session' });
+            rpc.registerHandler(RPC_METHODS.CheckOpenCodeHandoff, handler);
+            const call = async (action: string, reservationId: string) => JSON.parse(await rpc.handleRequest({
+                method: `source-session:${RPC_METHODS.CheckOpenCodeHandoff}`,
+                params: JSON.stringify({ action, reservationId })
+            })) as { allowed?: boolean; error?: string; code?: string };
+
+            // First attempt prepares, then disconnects before commit or cancel arrives.
+            expect(await call('prepare-clear', 'before-disconnect')).toEqual({ allowed: true });
+            // Retry after reconnect gets a new reservation ID while the first lease is still unsettled.
+            const competing = await call('prepare-clear', 'after-reconnect');
+            expect(competing).toEqual({ error: 'Another OpenCode Clear reservation is pending.' });
+            expect(competing.code).toBeUndefined();
+            // Once the old lease expires, the retry with the new reservation ID succeeds.
+            await vi.advanceTimersByTimeAsync(DEFAULT_RPC_TIMEOUT_MS + 1);
+            expect(await call('prepare-clear', 'after-reconnect')).toEqual({ allowed: true });
+            expect(await call('commit-clear', 'after-reconnect')).toEqual({ allowed: true });
+            expect(await call('finish-clear', 'after-reconnect')).toEqual({ allowed: true });
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('refuses Clear before input demand can wake a parked session', async () => {
+        await runOpencode({ startingMode: 'remote', startedBy: 'runner' });
+        const { runtimeGate, messageQueue } = harness.opencodeLoopArgs[0]!;
+        const gate = runtimeGate as import('./rewind').OpenCodeRuntimeGate;
+        const queue = messageQueue as MessageQueue2<OpencodeMode>;
+        gate.setRecoveryPending(true);
+        gate.acquireEntryFence();
+        harness.session.onUserMessage.mock.calls[0]![0]({ content: { text: '/clear' } }, 'clear');
+        expect(queue.hasInputDemand()).toBe(false);
+        expect(harness.session.emitMessagesConsumed).toHaveBeenCalledWith(['clear'], { clearQueuedThinkingGrace: true });
+        expect(harness.session.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('OpenCode is recovering') }));
+    });
+
+    it('invokes lifecycle cleanup once when two KillSession requests race the loop exit', async () => {
+        const { opencodeLoop } = await import('./loop');
+        let ready!: () => void;
+        const started = new Promise<void>(resolve => { ready = resolve; });
+        vi.mocked(opencodeLoop).mockImplementationOnce(async options => {
+            ready();
+            await new Promise<void>(resolve => options.runtimeGate!.sessionExit.addEventListener('abort', () => resolve(), { once: true }));
+        });
+        const running = runOpencode({ startingMode: 'remote' });
+        await started;
+        const { registerKillSessionHandler } = await vi.importActual<typeof import('@/claude/registerKillSessionHandler')>('@/claude/registerKillSessionHandler');
+        let kill!: () => Promise<unknown>;
+        registerKillSessionHandler({ registerHandler: (method: string, handler: typeof kill) => {
+            if (method === RPC_METHODS.KillSession) kill = handler;
+        } } as never, harness.killLifecycle as never);
+        await Promise.all([kill(), kill(), running]);
+        expect(lifecycleMock.cleanupAndExit).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(['before', 'after'] as const)('wakes a stopped replacement on input arriving %s it parks', async order => {
+        await runOpencode({ startingMode: 'remote' });
+        const { runtimeGate, messageQueue } = harness.opencodeLoopArgs[0]!;
+        const gate = runtimeGate as import('./rewind').OpenCodeRuntimeGate;
+        const queue = messageQueue as MessageQueue2<OpencodeMode>;
+        const userMessage = harness.session.onUserMessage.mock.calls[0]![0];
+        const ack = vi.fn();
+        queue.onBatchConsumed = ack;
+
+        // Stop during session/load hands the unfinished startup fence to its successor.
+        gate.handoffEntryFence(gate.acquireEntryFence());
+        const send = () => userMessage({ content: { text: 'next turn' } }, 'next');
+        if (order === 'before') send();
+        const parked = new AbortController();
+        const demand = queue.waitForInputDemand(parked.signal);
+        if (order === 'after') send();
+        await Promise.resolve();
+        expect(gate.isBlocked()).toBe(true);
+        expect(queue.size()).toBe(0);
+        const wake = vi.fn();
+        void demand.then(wake);
+        try {
+            await vi.waitFor(() => expect(wake).toHaveBeenCalledExactlyOnceWith(true));
+            expect(ack).not.toHaveBeenCalled();
+            const inherited = gate.takeInitialEntryFence();
+            expect(inherited).toBeDefined();
+            gate.releaseEntryFence(inherited!);
+            const batch = await queue.waitForMessagesAndGetAsString();
+            expect(batch?.items.map(item => item.localId)).toEqual(['next']);
+            expect(ack).toHaveBeenCalledExactlyOnceWith(['next']);
+            expect(queue.size()).toBe(0);
+        } finally {
+            parked.abort();
+            queue.close();
+        }
     });
 
     it('delivers a prompt whose chain admission races a re-block and closes its preparing window', async () => {
@@ -742,17 +920,91 @@ describe('runOpencode set-session-config handler', () => {
         expect(isLocalIdCancelled('local-compact')).toBe(true);
     });
 
+    it.each([true, false])('returns held input to the source FIFO when the Hub refuses Clear (recovering=%s)', async recovering => {
+        await runOpencode({ startedBy: 'runner' });
+        const options = harness.opencodeLoopArgs[0]!;
+        const queue = options.messageQueue as MessageQueue2<OpencodeMode>;
+        const gate = options.runtimeGate as import('./rewind').OpenCodeRuntimeGate;
+        const submit = harness.session.onUserMessage.mock.calls[0]![0];
+        submit({ content: { text: '/clear' } }, 'clear');
+        submit({ content: { text: '/plan' } }, 'plan');
+        submit({ content: { text: 'held' } }, 'held');
+        await vi.waitFor(() => expect(harness.listSlashCommands).toHaveBeenCalled());
+        await new Promise<void>(resolve => setImmediate(resolve));
+        expect(queue.queue.map(row => row.localId)).toEqual(['clear']);
+        if (recovering) {
+            gate.setRecoveryPending(true);
+            gate.setRecoveryPending(false);
+        } else {
+            harness.reserveOpenCodeClearSession.mockRejectedValueOnce(new OpenCodeHandoffRefusedError('Clear admission refused'));
+        }
+        expect(await (options.onClearRequested as () => Promise<unknown>)()).toBe(false);
+        if (recovering) {
+            expect(harness.reserveOpenCodeClearSession).not.toHaveBeenCalled();
+            expect(harness.session.sendSessionEvent).toHaveBeenCalledWith({
+                type: 'message',
+                message: 'OpenCode is recovering. If you pressed Stop, send a message to resume, then try again.'
+            });
+        }
+        submit({ content: { text: 'later' } }, 'later');
+        await vi.waitFor(() => expect(queue.queue.map(row => row.localId)).toEqual(['clear', 'held', 'later']));
+        expect(harness.session.emitMessagesConsumed).toHaveBeenCalledWith(['plan'], { clearQueuedThinkingGrace: true });
+        expect(queue.queue.filter(row => row.localId !== 'clear').map(row => row.mode.permissionMode)).toEqual(['plan', 'plan']);
+    });
+
+    it('keeps held input ahead of a newer arrival parked on an entry fence when Clear is refused', async () => {
+        await runOpencode({ startedBy: 'runner' });
+        const options = harness.opencodeLoopArgs[0]!;
+        const queue = options.messageQueue as MessageQueue2<OpencodeMode>;
+        const gate = options.runtimeGate as import('./rewind').OpenCodeRuntimeGate;
+        const submit = harness.session.onUserMessage.mock.calls[0]![0];
+        submit({ content: { text: '/clear' } }, 'clear');
+        submit({ content: { text: 'held' } }, 'held');
+        await vi.waitFor(() => expect(queue.queue.map(row => row.localId)).toEqual(['clear']));
+        const fence = gate.acquireEntryFence();
+        submit({ content: { text: 'parked-newer' } }, 'parked-newer');
+        await new Promise<void>(resolve => setImmediate(resolve));
+        harness.reserveOpenCodeClearSession.mockRejectedValueOnce(new OpenCodeHandoffRefusedError('Clear admission refused'));
+        expect(await (options.onClearRequested as () => Promise<unknown>)()).toBe(false);
+        gate.releaseEntryFence(fence);
+        await vi.waitFor(() => expect(queue.queue.map(row => row.localId)).toEqual(['clear', 'held', 'parked-newer']));
+    });
+
+    it('delegates pre-POST compact cancellation through the registered cancel handler', async () => {
+        await runOpencode({ startedBy: 'runner' });
+        const options = harness.opencodeLoopArgs[0]!;
+        const queue = options.messageQueue as MessageQueue2<OpencodeMode>;
+        const bind = options.onSteerCancelHandlerChange as
+            (handler: import('./utils/opencodeV2Steer').OpencodeSteerCancelHandler | null) => void;
+        const cancelHandler = harness.session.onCancelQueuedMessage.mock.calls[0]![0] as
+            (localId: string) => boolean | 'in-flight' | 'indeterminate' | 'consumed';
+        queue.pushIsolated('', { permissionMode: 'default', model: null, operation: 'compact' }, 'compact');
+        const batch = await queue.waitForDeferredBatch();
+        expect(batch?.items.map(item => item.localId)).toEqual(['compact']);
+        expect(cancelHandler('compact')).toBe('in-flight');
+        let cancelled = false;
+        bind((localId) => {
+            if (localId !== 'compact' || cancelled) return undefined;
+            cancelled = true;
+            queue.releaseBatch(batch!);
+            return true;
+        });
+        expect(cancelHandler('compact')).toBe(true);
+        expect(cancelHandler('compact')).toBe(false);
+    });
+
     it('releases the clear transition latch when the queued /clear is cancelled', async () => {
         await runOpencode({ startedBy: 'runner' });
 
         const messageQueue = harness.opencodeLoopArgs[0]?.messageQueue as
-            { queue: Array<{ message: string; mode: { operation?: string }; localId?: string }> };
+            { queue: Array<{ message: string; mode: OpencodeMode; localId?: string }> };
         const userMessageHandler = harness.session.onUserMessage.mock.calls[0]?.[0] as
             ((msg: { content: { text: string; attachments?: unknown[] } }, localId?: string) => void);
         const cancelHandler = harness.session.onCancelQueuedMessage.mock.calls[0]?.[0] as
             ((localId: string) => boolean);
 
         userMessageHandler({ content: { text: '/clear' } }, 'queued-clear');
+        userMessageHandler({ content: { text: '/plan' } }, 'held-plan');
         userMessageHandler({ content: { text: 'rejected while clear is queued' } }, 'rejected-before-cancel');
         for (let i = 0; i < 5; i++) {
             await new Promise((resolve) => setTimeout(resolve, 0));
@@ -767,11 +1019,21 @@ describe('runOpencode set-session-config handler', () => {
             await new Promise((resolve) => setTimeout(resolve, 0));
         }
 
+        expect(harness.session.emitMessagesConsumed).toHaveBeenCalledWith(
+            ['held-plan'], { clearQueuedThinkingGrace: true }
+        );
         expect(messageQueue.queue).toEqual([
-            expect.objectContaining({ message: 'rejected while clear is queued', localId: 'rejected-before-cancel' }),
-            expect.objectContaining({ message: 'continue in the source session', localId: 'after-cancel' })
+            expect.objectContaining({
+                message: 'rejected while clear is queued',
+                localId: 'rejected-before-cancel',
+                mode: expect.objectContaining({ permissionMode: 'plan' })
+            }),
+            expect.objectContaining({
+                message: 'continue in the source session',
+                localId: 'after-cancel',
+                mode: expect.objectContaining({ permissionMode: 'plan' })
+            })
         ]);
-        expect(harness.session.sendAgentMessage).not.toHaveBeenCalled();
     });
 
     it('kills the session before draining the local transcript', async () => {
@@ -809,7 +1071,7 @@ describe('runOpencode set-session-config handler', () => {
         for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0));
         expect(cancelHandler('held-cancel')).toBe(true);
         expect(cancelHandler('queued-clear')).toBe(true);
-        expect(messageQueue.queue.map((item) => item.localId)).toEqual(['held-keep']);
+        await vi.waitFor(() => expect(messageQueue.queue.map((item) => item.localId)).toEqual(['held-keep']));
     });
 
     it('archives the source before asking the hub to spawn the fresh OpenCode process', async () => {
@@ -858,10 +1120,10 @@ describe('runOpencode set-session-config handler', () => {
         }
     });
 
-    it('retries a lost durable-reservation response before native teardown', async () => {
+    it.each(['ECONNRESET', 'ECONNABORTED'] as const)('retries a lost durable-reservation response (%s) before native teardown', async (code) => {
         vi.useFakeTimers();
         harness.triggerClear = true;
-        const transient = Object.assign(new Error('connection reset after commit'), { code: 'ECONNRESET' });
+        const transient = Object.assign(new Error('transient reservation error'), { code });
         harness.reserveOpenCodeClearSession.mockRejectedValueOnce(transient).mockResolvedValueOnce('fresh-session');
         const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
         try {

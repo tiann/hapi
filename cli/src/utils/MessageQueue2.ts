@@ -61,7 +61,44 @@ export type CollectedQueueBatch<T> = {
 export class MessageQueue2<T> {
     public queue: QueueItem<T>[] = []; // Made public for testing
     private waiter: ((hasMessages: boolean) => void) | null = null;
-    private closed = false;
+    private preparingInputs = 0;
+    private preparingInputWake: AbortController | null = null;
+
+    /** Observe pending user input while its handler waits for admission to enqueue it. */
+    beginPreparingInput(): () => void {
+        this.preparingInputs++;
+        this.preparingInputWake?.abort();
+        let active = true;
+        return () => {
+            if (active) this.preparingInputs--;
+            active = false;
+        };
+    }
+
+    hasInputDemand(): boolean {
+        return this.preparingInputs > 0 || this.queue.length > 0;
+    }
+
+    /** Used by the parked recovery owner, before any replacement can dequeue. */
+    async waitForInputDemand(signal: AbortSignal): Promise<boolean> {
+        while (!signal.aborted && !this.isClosed()) {
+            if (this.hasInputDemand()) return true;
+            const preparing = new AbortController();
+            this.preparingInputWake = preparing;
+            try {
+                await this.waitForMessages(AbortSignal.any([signal, preparing.signal]));
+            } finally {
+                this.preparingInputWake = null;
+            }
+        }
+        return false;
+    }
+
+    private closeController = new AbortController();
+    get closeSignal(): AbortSignal {
+        return this.closeController.signal;
+    }
+
     private onMessageHandler: ((message: string, mode: T) => void) | null = null;
     onBatchConsumed: ((localIds: string[]) => void) | null = null;
     /** Optional synchronous admission, before removing or acknowledging a batch. */
@@ -95,7 +132,7 @@ export class MessageQueue2<T> {
      * Push a message to the queue with a mode.
      */
     push(message: string, mode: T, localId?: string): void {
-        if (this.closed) {
+        if (this.isClosed()) {
             throw new Error('Cannot push to closed queue');
         }
 
@@ -134,7 +171,7 @@ export class MessageQueue2<T> {
      * Does not clear the queue or enforce isolation.
      */
     pushImmediate(message: string, mode: T, localId?: string): void {
-        if (this.closed) {
+        if (this.isClosed()) {
             throw new Error('Cannot push to closed queue');
         }
 
@@ -176,7 +213,7 @@ export class MessageQueue2<T> {
      * still be delivered in order.
      */
     pushIsolated(message: string, mode: T, localId?: string, options?: QueueItemOptions): void {
-        if (this.closed) {
+        if (this.isClosed()) {
             throw new Error('Cannot push to closed queue');
         }
 
@@ -215,7 +252,7 @@ export class MessageQueue2<T> {
      * Used for special commands that require dedicated processing.
      */
     pushIsolateAndClear(message: string, mode: T, localId?: string): void {
-        if (this.closed) {
+        if (this.isClosed()) {
             throw new Error('Cannot push to closed queue');
         }
 
@@ -259,7 +296,7 @@ export class MessageQueue2<T> {
      * Push a message to the beginning of the queue with a mode.
      */
     unshift(message: string, mode: T, localId?: string, options?: QueueItemOptions): void {
-        if (this.closed) {
+        if (this.isClosed()) {
             throw new Error('Cannot unshift to closed queue');
         }
 
@@ -305,7 +342,7 @@ export class MessageQueue2<T> {
      * prompts).
      */
     unshiftIsolated(message: string, mode: T, localId?: string, options?: QueueItemOptions): void {
-        if (this.closed) {
+        if (this.isClosed()) {
             throw new Error('Cannot unshift to closed queue');
         }
 
@@ -507,7 +544,7 @@ export class MessageQueue2<T> {
             reservation.state = 'indeterminate';
             return true;
         }
-        if (this.closed) {
+        if (this.isClosed()) {
             throw new Error('Cannot restore into closed queue');
         }
         if (reservation.item.localId) {
@@ -623,7 +660,7 @@ export class MessageQueue2<T> {
         this.queue = [];
         this.inFlightLocalIds.clear();
         this.cancelReservations(options?.preserveDispatchingReservations === true);
-        this.closed = false;
+        if (this.isClosed()) this.closeController = new AbortController();
 
         // Clear waiter without calling it since we're not closing
         this.waiter = null;
@@ -676,7 +713,7 @@ export class MessageQueue2<T> {
      */
     close(): void {
         logger.debug(`[MessageQueue2] close() called`);
-        this.closed = true;
+        this.closeController.abort();
         this.inFlightLocalIds.clear();
         this.cancelReservations();
 
@@ -692,7 +729,7 @@ export class MessageQueue2<T> {
      * Check if the queue is closed
      */
     isClosed(): boolean {
-        return this.closed;
+        return this.closeSignal.aborted;
     }
 
     /**
@@ -770,7 +807,7 @@ export class MessageQueue2<T> {
         }
 
         // If closed or already aborted, return null
-        if (this.closed || abortSignal?.aborted) {
+        if (this.isClosed() || abortSignal?.aborted) {
             return null;
         }
 
@@ -901,7 +938,7 @@ export class MessageQueue2<T> {
                 return;
             }
 
-            if (this.closed || abortSignal?.aborted) {
+            if (this.isClosed() || abortSignal?.aborted) {
                 finish(false);
                 return;
             }

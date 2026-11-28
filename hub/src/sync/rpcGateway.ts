@@ -1,5 +1,5 @@
 import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, PermissionMode } from '@hapi/protocol/types'
-import { DEFAULT_RPC_TIMEOUT_MS, getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
+import { DEFAULT_RPC_TIMEOUT_MS, getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS, type OpenCodeClearAdmission, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
 import {
     UsageQueryResultSchema,
     UsageQuerySettingsResponseSchema,
@@ -78,6 +78,10 @@ const MODEL_LIST_RPC_TIMEOUT_MS = 120_000
 // Codex can spend 30s awaiting startup after preflight and process creation.
 const CODEX_SPAWN_RPC_TIMEOUT_MS = 60_000
 const UPLOAD_CHUNK_RPC_TIMEOUT_MS = 60_000
+
+export class OpenCodeHandoffRefusal extends Error {
+    readonly code = 'opencode_handoff_refused'
+}
 
 export class RunnerStopRpcError extends Error {
     constructor(readonly timedOut: boolean, cause: unknown) {
@@ -214,7 +218,7 @@ export class RpcGateway {
     }
 
     async switchSession(sessionId: string, to: 'remote' | 'local'): Promise<void> {
-        await this.sessionRpc(sessionId, RPC_METHODS.Switch, { to })
+        await this.requestHandoff(sessionId, RPC_METHODS.Switch, { to })
     }
 
     async requestSessionConfig(
@@ -285,7 +289,12 @@ export class RpcGateway {
     }
 
     async handoffSessionToLocal(sessionId: string): Promise<void> {
-        await this.sessionRpc(sessionId, RPC_METHODS.HandoffLocal, {})
+        await this.requestHandoff(sessionId, RPC_METHODS.HandoffLocal, {})
+    }
+
+    private async requestHandoff(sessionId: string, method: typeof RPC_METHODS.Switch | typeof RPC_METHODS.HandoffLocal, params: { to?: 'remote' | 'local' }): Promise<void> {
+        const reply = await this.sessionRpc(sessionId, method, params) as { error?: unknown; code?: unknown } | null
+        if (reply?.code === 'opencode_handoff_refused' && typeof reply.error === 'string') throw new OpenCodeHandoffRefusal(reply.error)
     }
 
     async bridgeModelError(
@@ -800,6 +809,12 @@ export class RpcGateway {
             steered: boolean
             error?: string
         }
+    }
+
+    async checkOpenCodeHandoff(sessionId: string, admission?: OpenCodeClearAdmission, timeoutMs?: number): Promise<void> {
+        const reply = await this.sessionRpc(sessionId, RPC_METHODS.CheckOpenCodeHandoff, admission ?? {}, timeoutMs) as { allowed?: boolean; error?: string; code?: string } | null
+        if (reply?.code === 'opencode_handoff_refused' && typeof reply.error === 'string') throw new OpenCodeHandoffRefusal(reply.error)
+        if (reply?.allowed !== true) throw new Error(reply?.error ?? 'OpenCode handoff admission was not confirmed')
     }
 
     async forkConversation(

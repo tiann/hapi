@@ -66,7 +66,8 @@ class ReplayTransport {
         return at;
     }
 
-    async sendRequest(method: string): Promise<unknown> {
+    async sendRequest(method: string, _params?: unknown, options?: { onSent?: () => void }): Promise<unknown> {
+        options?.onSent?.();
         this.methods.push(method);
         switch (method) {
             case 'initialize':

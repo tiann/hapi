@@ -16,7 +16,7 @@ import type { AbortChunkedUploadResponse, CursorChatStoreStatus, CursorMigrateOu
 import { FORK_PREVIEW_TAIL_ROWS, type ForkBoundary, type ForkBoundaryErrorCode, type ForkPreviewRequest, type ForkPreviewResponse, type ForkPreviewRow } from '@hapi/protocol/forkBoundary'
 import type { UsageQueryAgent, UsageQueryAgentSettings, UsageQueryResult, UsageQuerySettingsResponse, UsageQueryTemplate } from '@hapi/protocol/usageQuery'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
-import type { SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
+import { DEFAULT_RPC_TIMEOUT_MS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
 import type { ListLocalSessionsRpcResponse, LocalSessionFlavor } from '@hapi/protocol/localTranscript'
 import type { CopilotReasoningEffortResponse, ImplementCodexPlanResult, KimiReasoningEffortResponse } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor, BackgroundTask, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, ExternalRef, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
@@ -55,6 +55,7 @@ import { resolveForkBoundary, resolveRewindBoundary, invokedTailSeq, type Resolv
 import { buildForkSessionSummary } from './forkSessionSummary'
 import { isMachineSpawnPreallocatedStub } from '../store/sessions'
 import {
+    OpenCodeHandoffRefusal,
     RpcGateway,
     RpcTargetMissingError,
     RunnerStopRpcError,
@@ -162,14 +163,14 @@ export type LocalResumePrepareResult =
 
 export type LocalHandoffResult =
     | { type: 'success' }
-    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'already_local' | 'handoff_failed' | 'control_mode_not_applicable' }
+    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'already_local' | 'handoff_failed' | 'control_mode_not_applicable' | 'opencode_handoff_refused' }
 
 export type ClearOpencodeSessionResult =
     | { type: 'success'; sessionId: string }
     | {
         type: 'error'
         message: string
-        code: 'session_not_found' | 'access_denied' | 'clear_unavailable' | 'spawn_failed' | 'replacement_link_failed'
+        code: 'session_not_found' | 'access_denied' | 'clear_unavailable' | 'clear_admission_unavailable' | 'opencode_handoff_refused' | 'spawn_failed' | 'replacement_link_failed'
     }
 
 export type CursorChatStoreStatusResult =
@@ -3672,6 +3673,10 @@ export class SyncEngine {
             || checkpoint.localMessageIds === undefined || checkpoint.sessionId !== metadata.opencodeSessionId) {
             return { type: 'error', message: 'OpenCode rewind requires a verified native boundary and worker' }
         }
+        if (metadata.capabilities?.openCodeHandoffAdmission) {
+            try { await this.rpcGateway.checkOpenCodeHandoff(session.id) }
+            catch (error) { return { type: 'error', message: error instanceof Error ? error.message : String(error) } }
+        }
         const messages = this.store.messages.getAllMessages(session.id)
         const boundary = messages.find(m => m.localId === localId && m.invokedAt != null)
         if (!boundary) return { type: 'error', message: 'History boundary is not invoked' }
@@ -3687,7 +3692,17 @@ export class SyncEngine {
         if (reserved.result !== 'success') return { type: 'error', message: 'OpenCode source metadata changed before reservation' }
         this.sessionCache.refreshSession(session.id)
         try {
-            await this.rpcGateway.rewindConversation(session.id, { messageLocalId: localId, opencodeRewind: operation })
+            const reply = await this.rpcGateway.rewindConversation(session.id, { messageLocalId: localId, opencodeRewind: operation })
+            if (reply?.success === false && reply.outcome === 'rejected') {
+                // Recovery can start after admission but before dispatch. Only an
+                // explicit refusal can settle a reservation without native proof.
+                const row = this.store.sessions.getSession(session.id)
+                const latest = (row?.metadata as Session['metadata'])?.opencodeRewind
+                if (row && latest?.operationId === operation.operationId && latest.phase === 'reserved') {
+                    this.reportOpenCodeRewind(session.id, namespace, { operation, phase: 'rejected' }, row.metadataVersion)
+                    return { type: 'error', message: reply.error }
+                }
+            }
         } catch { /* durable state below is authoritative, never an RPC success alone */ }
         const latest = (this.store.sessions.getSession(session.id)?.metadata as Session['metadata'])?.opencodeRewind
         if (latest?.operationId === operation.operationId && latest.phase === 'committed') return { type: 'success' }
@@ -4520,7 +4535,7 @@ export class SyncEngine {
         }
     }
 
-    reserveOpenCodeClearSession(sessionId: string, namespace: string): ClearOpencodeSessionResult {
+    async reserveOpenCodeClearSession(sessionId: string, namespace: string): Promise<ClearOpencodeSessionResult> {
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
             return { type: 'error', message: access.reason === 'access-denied' ? 'Session access denied' : 'Session not found', code: access.reason === 'access-denied' ? 'access_denied' : 'session_not_found' }
@@ -4534,22 +4549,71 @@ export class SyncEngine {
         const operation = !existing || existing.state === 'aborted'
             ? { replacementSessionId: randomUUID(), state: 'reserved' as const, updatedAt: Date.now() }
             : existing
-        if (operation !== existing && !this.persistClearOperation(sessionId, namespace, operation)) {
-            return { type: 'error', message: 'Could not persist the OpenCode clear reservation', code: 'replacement_link_failed' }
+        const reservationId = operation.replacementSessionId
+        if (operation === existing && this.store.sessions.getSessionByNamespace(reservationId, namespace)) {
+            return { type: 'success', sessionId: reservationId }
         }
-        const replacementMetadata = { ...metadata }
-        delete replacementMetadata.opencodeSessionId
-        delete replacementMetadata.supersededBySessionId
-        delete replacementMetadata.opencodeClearOperation
-        delete replacementMetadata.lifecycleState
-        delete replacementMetadata.lifecycleStateSince
-        delete replacementMetadata.archivedBy
-        delete replacementMetadata.archiveReason
-        replacementMetadata.startedFromRunner = true
-        replacementMetadata.startedBy = 'runner'
-        this.getOrCreateSession(`opencode-clear-replacement:${operation.replacementSessionId}`, replacementMetadata, null, namespace,
-            source.model ?? undefined, source.effort ?? undefined, source.modelReasoningEffort ?? undefined, operation.replacementSessionId)
-        return { type: 'success', sessionId: operation.replacementSessionId }
+        const needsAdmission = metadata.capabilities?.openCodeHandoffAdmission === true
+        const sourceVersion = source.metadataVersion
+        const deadline = performance.now() + DEFAULT_RPC_TIMEOUT_MS
+        const remainingAdmissionMs = () => Math.ceil(deadline - performance.now())
+        let writing = false
+        let persisted = false
+        try {
+            if (needsAdmission) {
+                const checkAdmission = (action: 'prepare-clear' | 'commit-clear') => {
+                    const timeoutMs = remainingAdmissionMs()
+                    if (timeoutMs <= 0) throw new Error('OpenCode Clear admission timed out')
+                    return this.rpcGateway.checkOpenCodeHandoff(sessionId, { action, reservationId }, timeoutMs)
+                }
+                await checkAdmission('prepare-clear')
+                await checkAdmission('commit-clear')
+                const latest = this.sessionCache.getSessionByNamespace(sessionId, namespace)
+                if (!latest?.active) throw new OpenCodeHandoffRefusal('OpenCode Clear source is no longer active')
+                if (latest.metadataVersion !== sourceVersion) {
+                    return { type: 'error', code: 'clear_admission_unavailable', message: 'OpenCode source metadata changed during Clear admission' }
+                }
+            }
+            const replacementMetadata = { ...metadata }
+            delete replacementMetadata.opencodeSessionId
+            delete replacementMetadata.supersededBySessionId
+            delete replacementMetadata.opencodeClearOperation
+            delete replacementMetadata.lifecycleState
+            delete replacementMetadata.lifecycleStateSince
+            delete replacementMetadata.archivedBy
+            delete replacementMetadata.archiveReason
+            replacementMetadata.startedFromRunner = true
+            replacementMetadata.startedBy = 'runner'
+            this.store.runInTransaction(() => {
+                if (needsAdmission && performance.now() >= deadline) throw new OpenCodeHandoffRefusal('OpenCode Clear admission expired')
+                writing = true
+                if (operation !== existing) {
+                    const result = this.store.sessions.updateSessionMetadata(sessionId, { ...metadata, opencodeClearOperation: operation },
+                        sourceVersion, namespace, { touchUpdatedAt: false })
+                    if (result.result !== 'success') throw new Error('Could not persist the OpenCode clear reservation')
+                }
+                this.store.sessions.getOrCreateSession(`opencode-clear-replacement:${reservationId}`, replacementMetadata, null,
+                    namespace, source.model ?? undefined, source.effort ?? undefined, source.modelReasoningEffort ?? undefined, reservationId)
+            })
+            persisted = true
+            this.sessionCache.refreshSession(sessionId)
+            this.sessionCache.refreshSession(reservationId)
+            return { type: 'success', sessionId: reservationId }
+        } catch (error) {
+            if (error instanceof OpenCodeHandoffRefusal) return { type: 'error', code: error.code, message: error.message }
+            return { type: 'error', code: writing ? 'replacement_link_failed' : 'clear_admission_unavailable',
+                message: error instanceof Error ? error.message : String(error) }
+        } finally {
+            if (needsAdmission) {
+                // A lost acknowledgement cannot undo the durable decision. The
+                // worker releases this same lease on expiry if settlement is lost.
+                const remainingMs = remainingAdmissionMs()
+                const settlement = this.rpcGateway.checkOpenCodeHandoff(sessionId, {
+                    action: persisted ? 'finish-clear' : 'cancel-clear', reservationId
+                }, Math.max(1, remainingMs)).catch(() => {})
+                if (remainingMs > 0) await settlement
+            }
+        }
     }
 
     abortOpenCodeClearSession(
@@ -6110,7 +6174,7 @@ export class SyncEngine {
             return {
                 type: 'error',
                 message: error instanceof Error ? error.message : String(error),
-                code: 'handoff_failed'
+                code: error instanceof OpenCodeHandoffRefusal ? error.code : 'handoff_failed'
             }
         }
 

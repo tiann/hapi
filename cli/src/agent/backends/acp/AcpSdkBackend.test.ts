@@ -54,6 +54,38 @@ afterEach(() => {
 });
 
 describe('AcpSdkBackend', () => {
+    it('shares one teardown result between late startup disposal and verified disconnect', async () => {
+        const backend = new AcpSdkBackend({ command: 'opencode' });
+        const stopped = Promise.withResolvers<boolean>();
+        const close = vi.fn(() => stopped.promise);
+        Object.assign(backend, { transport: { close } });
+        const lateDisposal = backend.disconnect();
+        const verification = backend.disconnect({ verifyTermination: true });
+        stopped.resolve(true);
+        await lateDisposal;
+        await expect(verification).resolves.toBe(true);
+        await expect(backend.disconnect({ verifyTermination: true })).resolves.toBe(true);
+        expect(close).toHaveBeenCalledOnce();
+    });
+
+    it('verifies a failed transport creation but keeps a rejected close unverified', async () => {
+        const missing = new AcpSdkBackend({ command: 'opencode' });
+        const create = vi.spyOn(AcpStdioTransport, 'create').mockRejectedValueOnce(new Error('spawn failed'));
+        try {
+            await expect(missing.initialize()).rejects.toThrow('spawn failed');
+            await expect(missing.disconnect({ verifyTermination: true })).resolves.toBe(true);
+        } finally {
+            create.mockRestore();
+        }
+
+        const started = new AcpSdkBackend({ command: 'opencode' });
+        const close = vi.fn().mockRejectedValue(new Error('close failed'));
+        Object.assign(started, { transport: { close } });
+        await expect(started.disconnect()).rejects.toThrow('close failed');
+        await expect(started.disconnect({ verifyTermination: true })).resolves.toBe(false);
+        expect(close).toHaveBeenCalledOnce();
+    });
+
     it('closes an opening transport without sending initialize', async () => {
         const opening = Promise.withResolvers<AcpStdioTransport>();
         const transport = {
@@ -79,6 +111,30 @@ describe('AcpSdkBackend', () => {
         } finally {
             opening.resolve(transport as unknown as AcpStdioTransport);
             await initializing;
+            create.mockRestore();
+        }
+    });
+
+    it('captures process ownership only after the initialize response', async () => {
+        const reply = Promise.withResolvers<{ protocolVersion: number }>();
+        const capture = vi.fn();
+        const transport = {
+            sendRequest: vi.fn(() => reply.promise), captureChildExitFence: capture,
+            onNotification: vi.fn(), onStderrError: vi.fn(), registerRequestHandler: vi.fn()
+        };
+        const create = vi.spyOn(AcpStdioTransport, 'create').mockResolvedValueOnce(transport as unknown as AcpStdioTransport);
+        const captureChildExitFence = () => ({ complete: true, refresh: vi.fn(), verify: vi.fn(async () => true) });
+        try {
+            const backend = new AcpSdkBackend({ command: 'opencode', captureChildExitFence });
+            const initializing = backend.initialize();
+            await vi.waitFor(() => expect(transport.sendRequest).toHaveBeenCalledOnce());
+            expect(create).toHaveBeenCalledWith(expect.objectContaining({ captureChildExitFence }));
+            expect(capture).not.toHaveBeenCalled();
+            reply.resolve({ protocolVersion: 1 });
+            await initializing;
+            await backend.initialize();
+            expect(capture).toHaveBeenCalledOnce();
+        } finally {
             create.mockRestore();
         }
     });
@@ -906,31 +962,28 @@ describe('AcpSdkBackend', () => {
         ]);
     });
 
-    it('reports when the prompt is sent and answered, apart from its own waits', async () => {
+    it('forwards prompt dispatch observers to the transport and reports the answer after the request', async () => {
         const backend = new AcpSdkBackend({ command: 'agent' });
         const events: string[] = [];
-        const backendInternal = backend as unknown as {
-            transport: { sendRequest: () => Promise<unknown>; close: () => Promise<void> } | null;
-            waitForSessionUpdateQuiet: (quietMs: number, timeoutMs: number) => Promise<void>;
-        };
-        backendInternal.waitForSessionUpdateQuiet = async () => { events.push('wait'); };
-        backendInternal.transport = {
-            sendRequest: async () => {
-                events.push('request');
-                return { stopReason: 'end_turn' };
-            },
-            close: async () => {}
-        };
-
-        await backend.prompt('session-1', [{ type: 'text', text: 'hello' }], () => {}, {
-            timing: {
-                onSent: () => events.push('sent'),
-                onAnswered: () => events.push('answered')
-            }
+        const sendRequest = vi.fn(async () => {
+            events.push('request');
+            return { stopReason: 'end_turn' };
         });
-        events.push('resolved');
-
-        expect(events).toEqual(['wait', 'request', 'sent', 'answered', 'wait', 'resolved']);
+        Object.assign(backend, {
+            transport: { sendRequest },
+            waitForSessionUpdateQuiet: async () => { events.push('wait'); },
+            drainLateBuffers: async () => {}
+        });
+        const timing = {
+            onDispatchStart: vi.fn(),
+            onSent: vi.fn(),
+            onAnswered: () => events.push('answered')
+        };
+        await backend.prompt('session-1', [], () => {}, { timing });
+        expect(sendRequest).toHaveBeenCalledExactlyOnceWith('session/prompt', { sessionId: 'session-1', prompt: [] }, {
+            timeoutMs: Infinity, onDispatchStart: timing.onDispatchStart, onSent: timing.onSent
+        });
+        expect(events).toEqual(['wait', 'request', 'answered', 'wait']);
     });
 
     it('waits for transport dispatch before firing timing.onSent', async () => {

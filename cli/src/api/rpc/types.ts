@@ -43,3 +43,6 @@ export interface RpcHandlerConfig {
 export type RpcHandlerResult<T = any> =
     | { success: true; data: T }
     | { success: false; error: string };
+
+/** A refusal the OpenCode session owner can safely surface to another client. */
+export class OpenCodeHandoffRefusedError extends Error {}

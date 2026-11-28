@@ -63,11 +63,13 @@ const setActEnvironment = (value: boolean | undefined) => {
 function HookProbe(props: {
     onExit?: () => void;
     onSwitch?: () => void;
+    canSwitch?: () => boolean;
     onState: (state: SwitchState) => void;
 }): null {
     const state = useSwitchControls({
         onExit: props.onExit,
         onSwitch: props.onSwitch,
+        canSwitch: props.canSwitch,
         confirmationTimeoutMs: 5000
     });
 
@@ -83,7 +85,7 @@ describe('useSwitchControls', () => {
     let latestState: SwitchState | null = null;
     let previousActEnvironment: boolean | undefined;
 
-    const mount = async (opts: { onExit?: () => void; onSwitch?: () => void }) => {
+    const mount = async (opts: { onExit?: () => void; onSwitch?: () => void; canSwitch?: () => boolean }) => {
         const { stdout, stderr, stdin } = createInkStreams();
         await act(async () => {
             renderer = render(
@@ -182,6 +184,22 @@ describe('useSwitchControls', () => {
         await triggerInputWithTimers('c', { ctrl: true }, 100);
         expect(latestState?.actionInProgress).toBe('exiting');
         expect(onExit).toHaveBeenCalledTimes(1);
+    });
+
+    it('drops a confirmed Switch when handoff closes during the display delay', async () => {
+        let allowed = true;
+        const onSwitch = vi.fn();
+        await mount({ onSwitch, canSwitch: () => allowed });
+        await triggerInput(' ', {});
+        await act(async () => {
+            const switching = inputHandler!(' ', {});
+            expect(onSwitch).not.toHaveBeenCalled();
+            allowed = false;
+            vi.advanceTimersByTime(100);
+            await switching;
+        });
+        expect(onSwitch).not.toHaveBeenCalled();
+        expect(latestState?.actionInProgress).toBeNull();
     });
 
     it('ignores key-release sequences so confirmation stays visible', async () => {

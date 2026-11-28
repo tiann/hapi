@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { OpenCodeHandoffRefusedError } from './rpc/types'
 import { randomUUID } from 'node:crypto'
 import { DEFAULT_RPC_TIMEOUT_MS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
 import type { AgentState, ClearOpencodeSessionCallbackRequest, ClearOpencodeSessionResponse, CreateMachineResponse, CreateSessionResponse, RunnerState, Machine, MachineMetadata, Metadata, Session } from '@/api/types'
@@ -27,6 +28,14 @@ import { ApiMachineClient } from './apiMachine'
 import { ApiSessionClient, type ApiSessionClientOptions } from './apiSession'
 import { buildHubRequestHeaders } from './hubExtraHeaders'
 import { monotonicTimeMs } from '@/utils/time'
+
+function rethrowHandoffError(error: unknown): never {
+    if (axios.isAxiosError<{ error?: unknown; code?: unknown }>(error)
+        && error.response?.data?.code === 'opencode_handoff_refused' && typeof error.response.data.error === 'string') {
+        throw new OpenCodeHandoffRefusedError(error.response.data.error, { cause: error })
+    }
+    throw error
+}
 
 export class ApiClient {
     static async create(): Promise<ApiClient> {
@@ -358,7 +367,7 @@ export class ApiClient {
                 headers: this.authHeaders(),
                 timeout: 60_000
             }
-        )
+        ).catch(rethrowHandoffError)
         const parsed = LocalHandoffResponseSchema.safeParse(response.data)
         if (!parsed.success || !parsed.data.ok) {
             throw apiValidationError('Invalid /cli/sessions/:id/handoff-local response', response)
@@ -385,7 +394,7 @@ export class ApiClient {
         const response = await axios.post<ClearOpencodeSessionResponse>(
             `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(sessionId)}/clear-opencode/reserve`, {},
             { headers: this.authHeaders(), timeout: 60_000 }
-        )
+        ).catch(rethrowHandoffError)
         const parsed = ClearOpencodeSessionResponseSchema.safeParse(response.data)
         if (!parsed.success) throw apiValidationError('Invalid clear reservation response', response)
         return parsed.data.sessionId

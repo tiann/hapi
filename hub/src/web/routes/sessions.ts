@@ -48,7 +48,7 @@ import { Hono, type Context } from 'hono'
 import { getConfiguration } from '../../configuration'
 import { bodyLimit } from 'hono/body-limit'
 import type { SyncEngine, Session } from '../../sync/syncEngine'
-import { RpcTargetMissingError } from '../../sync/rpcGateway'
+import { OpenCodeHandoffRefusal, RpcTargetMissingError } from '../../sync/rpcGateway'
 import type { WebAppEnv } from '../middleware/auth'
 import { loadScratchlistAttachmentLimitsFromEnv } from '../../config/scratchlistAttachmentLimits'
 import { validateScratchlistAttachmentsForWrite, scratchlistSessionBytesBeforeForPut } from '../../scratchlistAttachments/validate'
@@ -1387,7 +1387,12 @@ export function createSessionsRoutes(
         }
 
         if (sessionResult.session.metadata?.capabilities?.concurrentClients) return c.json({ error: 'Shared sessions do not switch modes', code: 'control_mode_not_applicable' }, 409)
-        await engine.switchSession(sessionResult.sessionId, 'remote')
+        try {
+            await engine.switchSession(sessionResult.sessionId, 'remote')
+        } catch (error) {
+            if (error instanceof OpenCodeHandoffRefusal) return c.json({ error: error.message, code: error.code }, 409)
+            throw error
+        }
         return c.json({ ok: true })
     })
 

@@ -1,3 +1,4 @@
+import { captureServeProcesses, createServeFence } from '../oldTreeFence';
 import { execFile, spawn } from 'node:child_process';
 import { readdir, readFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
@@ -15,6 +16,7 @@ import { getInvokedCwd } from '@/utils/invokedCwd';
 import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand';
 
 export type OpencodeFlavorVersion = 'v1' | 'v2';
+export type OpencodeVersion = { major: OpencodeFlavorVersion; version: string | null };
 
 /**
  * Detects whether the installed `opencode` binary speaks the v1 (≤1.x) or
@@ -25,9 +27,9 @@ export type OpencodeFlavorVersion = 'v1' | 'v2';
  * `v?N.` from stdout; any spawn failure, timeout or unparseable output
  * falls back to 'v1' — the pre-v2-aware behavior.
  */
-export async function detectOpencodeFlavorVersion(command = getAgentLaunchCommand('opencode')): Promise<'v1' | 'v2'> {
+export async function detectOpencodeVersion(command = getAgentLaunchCommand('opencode')): Promise<OpencodeVersion> {
     try {
-        const stdout = await new Promise<string>((resolve, reject) => {
+        const { stdout, code } = await new Promise<{ stdout: string; code: number | null }>((resolve, reject) => {
             // shell/windowsHide mirror buildAcpStdioSpawnOptions: on Windows,
             // npm-style opencode.cmd shims require a shell to resolve, and a
             // bare spawn would fail the probe and misclassify v2 as v1.
@@ -48,16 +50,17 @@ export async function detectOpencodeFlavorVersion(command = getAgentLaunchComman
                 clearTimeout(timer);
                 reject(error instanceof Error ? error : new Error(String(error)));
             });
-            child.on('close', () => {
+            child.on('close', code => {
                 clearTimeout(timer);
-                resolve(out);
+                resolve({ stdout: out, code });
             });
         });
         const match = /v?(\d+)\./.exec(stdout);
         const major = match ? Number.parseInt(match[1]!, 10) : Number.NaN;
-        return major === 2 ? 'v2' : 'v1';
+        const release = /^(?:opencode\s+)?v?(\d+\.\d+\.\d+)$/.exec(stdout.trim());
+        return { major: major === 2 ? 'v2' : 'v1', version: code === 0 ? release?.[1] ?? null : null };
     } catch {
-        return 'v1';
+        return { major: 'v1', version: null };
     }
 }
 
@@ -109,6 +112,7 @@ export function createOpencodeBackend(opts: {
     port?: number;
     hostname?: string;
     majorVersion?: 'v1' | 'v2';
+    recoverChildExit?: boolean;
 }): AcpSdkBackend {
     const env = buildOpencodeEnv();
     if (opts.majorVersion === 'v2') {
@@ -118,6 +122,7 @@ export function createOpencodeBackend(opts: {
         return new AcpSdkBackend({
             command: getAgentLaunchCommand('opencode'),
             args: ['acp'],
+            captureChildExitFence: opts.recoverChildExit ? pid => createServeFence(() => captureServeProcesses(pid)) : undefined,
             env: filterEnv(env),
             spawnCwd: opts.cwd ?? getInvokedCwd(),
             acpModelSwitchViaConfigOption: true,

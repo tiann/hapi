@@ -3,7 +3,7 @@ import { isObject } from '@hapi/protocol';
 import type { FetchLike } from './opencodeCompactBridge';
 
 export type OpencodeSteerCancelResult = boolean | 'in-flight' | 'indeterminate' | 'consumed';
-export type OpencodeSteerCancelHandler = (localId: string) => Promise<OpencodeSteerCancelResult> | undefined;
+export type OpencodeSteerCancelHandler = (localId: string) => OpencodeSteerCancelResult | Promise<OpencodeSteerCancelResult> | undefined;
 
 type InputContext = {
     baseUrl: string;

@@ -66,7 +66,7 @@ import { getCodexComposerReasoningEffortOptions } from './codexReasoningEffortOp
 import { getDisplayedCodexServiceTier } from './codexFastMode'
 import { getPiThinkingLevelOptions, getHighestThinkingLevel, isThinkingLevelSupported } from './piThinkingLevelOptions'
 import { groupModelsByProvider } from './piModelGroups'
-import type { ApiClient } from '@/api/client'
+import { ApiError, apiErrorMessage, type ApiClient } from '@/api/client'
 import { useVoiceInputPreferences } from '@/hooks/useVoiceInputPreferences'
 import { useDictation } from '@/hooks/useDictation'
 import { resolveMessageDeliveryMode, type ComposerSendIntent } from '@/lib/messageDelivery'
@@ -608,6 +608,7 @@ export function HappyComposer(props: {
     const [settingsSection, setSettingsSection] = useState<'model' | 'effort' | null>(null)
     const isAborting = props.isAborting ?? false
     const [isSwitching, setIsSwitching] = useState(false)
+    const [switchRefusal, setSwitchRefusal] = useState<string | null>(null)
     const [showContinueHint, setShowContinueHint] = useState(false)
     // pendingSchedule is controlled externally when onSchedule prop is provided; otherwise local state
     const [pendingScheduleLocal, setPendingScheduleLocal] = useState<PendingSchedule | null>(null)
@@ -887,6 +888,7 @@ export function HappyComposer(props: {
     useEffect(() => {
         if (prevControlledByUser.current === true && controlledByUser === false) {
             setShowContinueHint(true)
+            setSwitchRefusal(null)
         }
         if (controlledByUser) {
             setShowContinueHint(false)
@@ -1043,9 +1045,13 @@ export function HappyComposer(props: {
         if (switchDisabled || !onSwitchToRemote) return
         haptic('light')
         setIsSwitching(true)
+        setSwitchRefusal(null)
         try {
             await onSwitchToRemote()
-        } catch {
+        } catch (error) {
+            if (error instanceof ApiError && error.status === 409 && error.code === 'opencode_handoff_refused') {
+                setSwitchRefusal(apiErrorMessage(error, error.message))
+            }
             setIsSwitching(false)
         }
     }, [switchDisabled, onSwitchToRemote, haptic])
@@ -2390,6 +2396,12 @@ export function HappyComposer(props: {
                     {dictationActive && dictation.error ? (
                         <div role="alert" className="mb-2 rounded-md bg-[var(--app-subtle-bg)] px-3 py-2 text-sm text-red-600">
                             {dictation.error}
+                        </div>
+                    ) : null}
+
+                    {showSwitchButton && switchRefusal ? (
+                        <div role="alert" className="mb-2 rounded-md bg-[var(--app-subtle-bg)] px-3 py-2 text-sm text-red-600">
+                            {switchRefusal}
                         </div>
                     ) : null}
 

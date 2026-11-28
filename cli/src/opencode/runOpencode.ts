@@ -5,6 +5,7 @@ import { opencodeLoop } from './loop';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { hashObject } from '@/utils/deterministicJson';
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
+import { RPC_METHODS, type OpenCodeClearAdmission } from '@hapi/protocol/rpcMethods';
 import type { AgentState } from '@/api/types';
 import type { OpencodeSession } from './session';
 import type { OpencodeMode, PermissionMode } from './types';
@@ -21,7 +22,7 @@ import { isRetryableConnectionError } from '@/utils/errorUtils';
 import { withRetry } from '@/utils/time';
 import { configuration } from '@/configuration';
 import { join } from 'node:path';
-import { OpenCodeRuntimeGate, readOpenCodeRewindIntent, sameOperation } from './rewind';
+import { OPENCODE_RECOVERY_HANDOFF_REFUSAL, OpenCodeHandoffRefusedError, OpenCodeRuntimeGate, readOpenCodeRewindIntent, sameOperation } from './rewind';
 
 export async function runOpencode(opts: {
     startedBy?: 'runner' | 'terminal';
@@ -62,15 +63,18 @@ export async function runOpencode(opts: {
     const initialModel = opts.model ?? null;
     const initialModelReasoningEffort = opts.modelReasoningEffort ?? null;
 
+    const metadataOverrides = { capabilities: { terminal: true, openCodeHandoffAdmission: true } };
     const bootstrap = opts.existingSessionId
         ? await bootstrapExistingSession({
             sessionId: opts.existingSessionId,
             flavor: 'opencode',
+            metadataOverrides,
             startedBy,
             workingDirectory
         })
         : await bootstrapSession({
             flavor: 'opencode',
+            metadataOverrides,
             startedBy,
             workingDirectory,
             agentState: initialState,
@@ -80,6 +84,12 @@ export async function runOpencode(opts: {
         });
     const { api, session } = bootstrap;
     const runtimeGate = new OpenCodeRuntimeGate(startingMode === 'remote');
+    session.rpcHandlerManager.registerHandler(RPC_METHODS.CheckOpenCodeHandoff, (request: Partial<OpenCodeClearAdmission> = {}) => {
+        if (request.action && request.reservationId) runtimeGate.handleClearAdmission({ action: request.action, reservationId: request.reservationId });
+        else if (!request.action && !request.reservationId) runtimeGate.assertHandoffAllowed();
+        else throw new Error('Invalid OpenCode Clear admission request');
+        return { allowed: true };
+    });
     const pendingRewind = session.getMetadata()?.opencodeRewind;
     if (startingMode !== 'remote' && pendingRewind && pendingRewind.phase !== 'rejected') runtimeGate.block();
     // A terminal rewind with no unconsumed journal is already settled: mark
@@ -141,6 +151,7 @@ export async function runOpencode(opts: {
     // their durable rows to the reserved replacement on success.
     let clearTransitionLatched = false;
     let queuedClearLocalId: string | null = null;
+    let queuedClearGeneration: number | null = null;
     const heldDuringClear: Array<{ message: Parameters<Parameters<typeof session.onUserMessage>[0]>[0]; localId?: string }> = [];
     // True from the moment onCompactAvailabilityChange(false) fires (which,
     // per onLeavingRemote's contract, only ever happens because remote mode
@@ -184,17 +195,28 @@ export async function runOpencode(opts: {
         }
     });
 
+    let exitCleanup: Promise<void> | undefined;
+    const cleanupAndExit = (code?: number) => exitCleanup ??= lifecycle.cleanupAndExit(code);
     lifecycle.registerProcessHandlers();
     registerKillSessionHandler(session.rpcHandlerManager, { ...lifecycle, machineId: bootstrap.machineId,
+        cleanupAndExit: () => {
+            runtimeGate.requestSessionExit();
+            return cleanupAndExit();
+        },
         beforeKill: async (lease) => await sessionWrapperRef.current?.localHistoryPublisher?.prepare(lease) ?? true
     }, session);
     registerLocalHandoffHandler({ registerHandler: (method, handler) => {
         session.rpcHandlerManager.registerHandler(method, (payload) => {
+            runtimeGate.assertHandoffAllowed();
             const release = runtimeGate.enterRuntime();
             // An accepted handoff owns admission until this process exits.
-            try { return handler(payload); } catch (error) { release(); throw error; }
+            try {
+                const accepted = handler(payload);
+                runtimeGate.requestSessionExit();
+                return accepted;
+            } catch (error) { release(); throw error; }
         });
-    } }, lifecycle);
+    } }, { ...lifecycle, cleanupAndExit });
 
     const syncSessionMode = () => {
         const sessionInstance = sessionWrapperRef.current;
@@ -218,7 +240,7 @@ export async function runOpencode(opts: {
     // `cancelByLocalId` would find nothing. Track in-flight localIds so the
     // cancel RPC can ack the cancel during that window and the chain can
     // short-circuit when it resumes.
-    const preparingLocalIds = new Set<string>();
+    const preparingLocalIds = new Map<string, () => void>();
     const cancelledBeforeEnqueue = new Set<string>();
     // Mirrors `cancelledBeforeEnqueue` above, but for the other side of the
     // queued-compact ack: `onCancelQueuedMessage` below can still fire for a
@@ -268,11 +290,28 @@ export async function runOpencode(opts: {
     };
 
     let userMessageChain: Promise<void> = Promise.resolve();
-    session.onUserMessage((message, localId) => {
+    const enqueueUserMessage = (
+        message: Parameters<Parameters<typeof session.onUserMessage>[0]>[0],
+        localId?: string,
+        releasedFromClearHold = false
+    ) => {
+        const refuseClearDuringRecovery = (): boolean => {
+            if (!runtimeGate.recoveryPending) return false;
+            if (localId) session.emitMessagesConsumed([localId], { clearQueuedThinkingGrace: true });
+            session.sendAgentMessage({ type: 'message', message: OPENCODE_RECOVERY_HANDOFF_REFUSAL, id: randomUUID() });
+            return true;
+        };
+        // Resolve the built-in spelling before registering input demand: a refused
+        // Clear must not wake a parked replacement or wait behind its entry fence.
+        if (runtimeGate.recoveryPending && resolveOpencodeSlashCommand(message.content.text, {
+            permissionMode: currentPermissionMode
+        }).kind === 'clear' && refuseClearDuringRecovery()) return;
         // Admission is synchronous, including async slash/config preparation.
         let release = runtimeGate.isBlocked() ? undefined : runtimeGate.enterRuntime();
-        if (localId) preparingLocalIds.add(localId);
-        userMessageChain = userMessageChain.then(async () => {
+        const finishPreparing = messageQueue.beginPreparingInput();
+        if (localId) preparingLocalIds.set(localId, finishPreparing);
+        const arrivedDuringClear = clearTransitionLatched && !releasedFromClearHold;
+        const runStep = async () => {
             const wasCancelled = (): boolean => {
                 if (!localId) return false;
                 return cancelledBeforeEnqueue.delete(localId);
@@ -290,14 +329,20 @@ export async function runOpencode(opts: {
                 messageQueue.push(formattedText, buildMode(), localId);
             };
             try {
+                if (arrivedDuringClear && clearTransitionLatched) {
+                    if (wasCancelled()) return;
+                    heldDuringClear.push({ message, localId });
+                    sessionWrapperRef.current?.onThinkingChange(false);
+                    return;
+                }
                 // A blocked arrival admits inside the try with a re-check loop:
                 // the gate can re-block between the open notification and the
                 // retry, and that race must fall into the handler's catch/
                 // finally instead of dropping the prompt and leaking its
                 // preparing window.
-                while (!release) {
+                while (!release && !runtimeGate.nativeSessionUnavailable.aborted) {
                     if (wasCancelled()) return;
-                    await runtimeGate.waitUntilOpen();
+                    await runtimeGate.waitUntilOpen(runtimeGate.nativeSessionUnavailable);
                     if (!runtimeGate.isBlocked()) release = runtimeGate.enterRuntime();
                 }
                 if (wasCancelled()) return;
@@ -317,6 +362,7 @@ export async function runOpencode(opts: {
                 });
 
                 if (slash.kind === 'clear') {
+                    if (refuseClearDuringRecovery()) return;
                     if (startedBy !== 'runner') {
                         if (localId) {
                             session.emitMessagesConsumed([localId], { clearQueuedThinkingGrace: true });
@@ -334,9 +380,20 @@ export async function runOpencode(opts: {
                     // listSlashCommands race, so they take the rejection path.
                     clearTransitionLatched = true;
                     queuedClearLocalId = localId ?? null;
+                    queuedClearGeneration = runtimeGate.currentClearGeneration;
                     // A clear is isolated but retains its FIFO position:
                     // older prompts and native /compact work finish first.
-                    messageQueue.pushIsolated('', { ...buildMode(), operation: 'clear' }, localId);
+                    messageQueue.pushIsolated('', {
+                        ...buildMode(),
+                        operation: 'clear',
+                        clearGeneration: queuedClearGeneration
+                    }, localId);
+                    return;
+                }
+
+                if (runtimeGate.nativeSessionUnavailable.aborted) {
+                    // The failed-session consumer reports this input in FIFO order.
+                    pushPlain();
                     return;
                 }
 
@@ -385,34 +442,8 @@ export async function runOpencode(opts: {
                         sessionWrapperRef.current?.onThinkingChange(false);
                         return;
                     }
-                    // No manual emitMessagesConsumed here (unlike the
-                    // synchronous 'handled' branch below): `messageQueue`
-                    // (== session.queue, wired in AgentSessionBase's
-                    // constructor — see sessionBase.ts) already acks
-                    // automatically at dequeue time via `onBatchConsumed`,
-                    // exactly like any regular prompt — `collectBatch()` in
-                    // MessageQueue2.ts calls it right after shifting an
-                    // item off the queue, which for /compact happens in
-                    // opencodeRemoteLauncher.ts's dequeue loop. An earlier
-                    // version of this branch (from when /compact ran via a
-                    // trigger function invoked directly from this chain,
-                    // bypassing the queue entirely) called
-                    // `session.emitMessagesConsumed([localId])` manually
-                    // right here, before the item was even queued — that
-                    // stopped mattering for FIFO ordering once /compact
-                    // moved to `pushIsolated` below, but it kept firing the
-                    // hub ack immediately regardless, which is what actually
-                    // broke cancellation of an already-queued-but-not-yet-
-                    // dequeued /compact: the hub marked it invoked the
-                    // instant it was queued, so `cancelByLocalId` in
-                    // `onCancelQueuedMessage` below always found it already
-                    // gone from the queue and could never remove it before
-                    // that premature ack landed. Removing the manual call
-                    // lets the automatic dequeue-time ack (and therefore
-                    // `messageQueue.cancelByLocalId`) work the same way it
-                    // already does for prompts — a queued /compact can now
-                    // actually be cancelled before opencodeRemoteLauncher.ts
-                    // dequeues it and calls `runCompactOperation()`.
+                    // Recovery-enabled sessions acknowledge /compact when the POST starts.
+                    // Other sessions keep the dequeue-time acknowledgement.
                     //
                     // pushIsolated (not push): must never batch with a
                     // sibling prompt, but must still occupy its real FIFO
@@ -480,16 +511,28 @@ export async function runOpencode(opts: {
                     pushPlain();
                 }
             } finally {
+                finishPreparing();
                 release?.();
                 if (localId) {
                     preparingLocalIds.delete(localId);
                     cancelledBeforeEnqueue.delete(localId);
                 }
             }
-        }).catch((error) => {
+        };
+        userMessageChain = userMessageChain.then(runStep).catch((error) => {
             logger.debug('[opencode] User message handler chain failed', error);
         });
-    });
+    };
+    session.onUserMessage((message, localId) => enqueueUserMessage(message, localId));
+
+    const releaseHeldClearInput = () => {
+        queuedClearLocalId = null;
+        queuedClearGeneration = null;
+        clearTransitionLatched = false;
+        for (const held of heldDuringClear.splice(0)) {
+            enqueueUserMessage(held.message, held.localId, true);
+        }
+    };
 
     let cancelNativeSteer: OpencodeSteerCancelHandler | null = null;
     session.onCancelQueuedMessage((localId) => {
@@ -498,23 +541,15 @@ export async function runOpencode(opts: {
         const removedFromQueue = messageQueue.cancelByLocalId(localId);
         if (removedFromQueue === true) {
             if (queuedClearLocalId === localId) {
-                queuedClearLocalId = null;
-                clearTransitionLatched = false;
-                for (const held of heldDuringClear) {
-                    const formattedText = formatMessageWithAttachments(held.message.content.text, held.message.content.attachments);
-                    messageQueue.push(formattedText, {
-                        permissionMode: currentPermissionMode,
-                        model: sessionModel,
-                        modelReasoningEffort: sessionModelReasoningEffort
-                    }, held.localId);
-                }
-                heldDuringClear.length = 0;
+                releaseHeldClearInput();
             }
             logger.debug(`[opencode] cancelByLocalId(${localId}): removed from queue`);
             return true;
         }
         if (removedFromQueue !== false) return removedFromQueue;
-        if (preparingLocalIds.has(localId)) {
+        const finishPreparing = preparingLocalIds.get(localId);
+        if (finishPreparing) {
+            finishPreparing();
             cancelledBeforeEnqueue.add(localId);
             logger.debug(`[opencode] cancelByLocalId(${localId}): marked for cancellation before enqueue`);
             return true;
@@ -618,10 +653,22 @@ export async function runOpencode(opts: {
                     compactTeardownInProgress = true;
                 }
             },
-            onClearRequested: async () => {
-                clearReplacementSessionId = await withRetry(() => api.reserveOpenCodeClearSession(session.sessionId), {
-                    minDelay: 500, maxDelay: 30_000, shouldRetry: isRetryableConnectionError
-                });
+            onClearRequested: async (): Promise<void | false> => {
+                try {
+                    if (runtimeGate.recoveryPending
+                        || (queuedClearGeneration !== null && queuedClearGeneration !== runtimeGate.currentClearGeneration)) {
+                        throw new OpenCodeHandoffRefusedError(OPENCODE_RECOVERY_HANDOFF_REFUSAL);
+                    }
+                    clearReplacementSessionId = await withRetry(() => api.reserveOpenCodeClearSession(session.sessionId), {
+                        minDelay: 500, maxDelay: 30_000, shouldRetry: isRetryableConnectionError
+                    });
+                    return;
+                } catch (error) {
+                    if (!(error instanceof OpenCodeHandoffRefusedError)) throw error;
+                    releaseHeldClearInput();
+                    session.sendSessionEvent({ type: 'message', message: error.message });
+                    return false;
+                }
             },
             onClearCleanupComplete: async () => {
                 if (!clearReplacementSessionId) throw new Error('OpenCode clear cleanup completed without a reservation')
@@ -651,11 +698,11 @@ export async function runOpencode(opts: {
             lifecycle.setExitCode(1);
             lifecycle.setArchiveReason(`Local launch failed: ${localFailure.message.slice(0, 200)}`);
             lifecycle.setSessionEndReason('error');
-        } else if (!crashed) {
+        } else if (!crashed && !lifecycle.hasExplicitSessionEndReason()) {
             lifecycle.setSessionEndReason('completed');
         }
         if (!clearRequested) {
-            await lifecycle.cleanupAndExit();
+            await cleanupAndExit();
             return;
         }
 

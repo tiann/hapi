@@ -3,6 +3,11 @@ export const DEFAULT_RPC_TIMEOUT_MS = 30_000
 /** expiresAt uses the Runner/target machine's monotonic milliseconds, not wall time. */
 export type SessionStopPreparationLease = { id: string; expiresAt: number }
 
+export type OpenCodeClearAdmission = {
+    reservationId: string
+    action: 'prepare-clear' | 'commit-clear' | 'finish-clear' | 'cancel-clear'
+}
+
 export const RPC_METHODS = {
     Permission: 'permission',
     Abort: 'abort',
@@ -79,6 +84,7 @@ export const RPC_METHODS = {
     PreviewForkBoundary: 'preview-fork-boundary',
     ForkArchivedCodex: 'fork-archived-codex',
     RewindConversation: 'rewind-conversation',
+    CheckOpenCodeHandoff: 'check-opencode-handoff',
     UsageQueryGetSettings: 'usage-query-get-settings',
     UsageQuerySaveSettings: 'usage-query-save-settings',
     UsageQueryTest: 'usage-query-test',

@@ -1,7 +1,7 @@
 import type { AgentFlavor } from '@hapi/protocol';
 import type { AgentBackend, AgentMessage, AgentSessionConfig, FormElicitationRequest, FormElicitationResponse, PermissionRequest, PermissionResponse, PromptContent } from '@/agent/types';
 import { asString, isObject } from '@hapi/protocol';
-import { AcpStdioTransport, isAcpIndeterminateError, type AcpStderrError } from './AcpStdioTransport';
+import { AcpStdioTransport, isAcpIndeterminateError, type AcpStderrError, type ChildExitFence } from './AcpStdioTransport';
 import { AcpMessageHandler, type AcpTextChunkMode } from './AcpMessageHandler';
 import { ACP_SESSION_UPDATE_TYPES, OPENCODE_CHILD_SESSION_UPDATES, OPENCODE_CHILD_UPDATE_METHOD } from './constants';
 import { thinkingHintFromSessionUpdate } from './shouldBumpThinkingFromSessionUpdate';
@@ -128,6 +128,7 @@ export class AcpSdkBackend implements AgentBackend {
     private transport: AcpStdioTransport | null = null;
     private permissionHandler: ((request: PermissionRequest) => void) | null = null;
     private stderrErrorHandler: ((error: AcpStderrError) => void) | null = null;
+    private unexpectedExitListener: ((error: Error, details: { childProcessExited: boolean }) => void) | null = null;
     private readonly pendingPermissions = new Map<string, PendingPermission>();
     /**
      * HAPI id per agent tool call lifetime. Agents may reuse their ids every
@@ -155,6 +156,9 @@ export class AcpSdkBackend implements AgentBackend {
     private initializeResult: AcpInitializeResult | null = null;
     private initializeInFlight: Promise<void> | null = null;
     private initializeRetryAbort: AbortController | null = null;
+    private transportCreationFailed = false;
+    private verifyDisconnectedWriter?: () => Promise<boolean>;
+    private disconnectResult: Promise<boolean> | null = null;
     private transportOpening: Promise<AcpStdioTransport> | null = null;
     private setModeSupported: boolean | undefined = undefined;
     private isProcessingMessage = false;
@@ -232,6 +236,7 @@ export class AcpSdkBackend implements AgentBackend {
         env?: Record<string, string>;
         /** Working directory passed to the spawned process (v2 `opencode acp` ignores `--cwd`). */
         spawnCwd?: string;
+        captureChildExitFence?: (pid: number) => ChildExitFence;
         /** v2 model switching: use `session/set_config_option('model')` instead of `session/set_model` (removed in v2). */
         acpModelSwitchViaConfigOption?: boolean;
         /**
@@ -290,24 +295,33 @@ export class AcpSdkBackend implements AgentBackend {
     private async bootstrapTransport(signal: AbortSignal): Promise<void> {
         if (this.transport) return;
 
+        this.transportCreationFailed = false;
         this.transportOpening = AcpStdioTransport.create({
             command: this.options.command,
             args: this.options.args,
             env: this.options.env,
-            cwd: this.options.spawnCwd
+            cwd: this.options.spawnCwd,
+            ...(this.options.captureChildExitFence ? { captureChildExitFence: this.options.captureChildExitFence } : {})
         });
-        const transport = await this.transportOpening;
+        const transport = await this.transportOpening.catch(error => {
+            this.transportCreationFailed = true;
+            throw error;
+        });
 
         if (this.transport) {
             await transport.close();
             return;
         }
 
+        this.disconnectResult = null;
+        this.verifyDisconnectedWriter = undefined;
         this.transport = transport;
 
         this.transport.onNotification((method, params) => {
             this.handleNotification(method, params);
         });
+
+        if (this.unexpectedExitListener) this.transport.onUnexpectedExit(this.unexpectedExitListener);
 
         this.transport.onStderrError((error) => {
             this.stderrErrorHandler?.(error);
@@ -345,6 +359,7 @@ export class AcpSdkBackend implements AgentBackend {
             }),
             {
                 ...AcpSdkBackend.INIT_RETRY_OPTIONS,
+                shouldRetry: () => !this.unexpectedExitListener || transport.isAlive(),
                 signal,
                 onRetry: (error, attempt, nextDelayMs) => {
                     logger.debug(`[ACP] Initialize attempt ${attempt} failed, retrying in ${nextDelayMs}ms`, error);
@@ -356,6 +371,7 @@ export class AcpSdkBackend implements AgentBackend {
             throw new Error('Invalid initialize response from ACP agent');
         }
 
+        if (this.options.captureChildExitFence) transport.captureChildExitFence();
         this.captureAvailableCommands(null, response);
 
         this.initializeResult = {
@@ -771,6 +787,11 @@ export class AcpSdkBackend implements AgentBackend {
         this.agentActivityListener = listener;
     }
 
+    setUnexpectedExitListener(listener: ((error: Error, details: { childProcessExited: boolean }) => void) | null): void {
+        this.unexpectedExitListener = listener;
+        this.transport?.onUnexpectedExit(listener);
+    }
+
     /** Reads the agent's persisted native title through stable ACP session/list. */
     async refreshSessionInfo(sessionId: string, cwd: string): Promise<void> {
         const existingTimer = this.sessionInfoRefreshTimers.get(sessionId);
@@ -837,7 +858,7 @@ export class AcpSdkBackend implements AgentBackend {
             beforeHandlerSwap?: () => Promise<void>
             // prompt() waits for earlier output before it sends and for late output
             // after the answer; callers timing the agent itself need both moments.
-            timing?: { onSent?: () => void; onAnswered?: () => void }
+            timing?: { onDispatchStart?: () => void; onSent?: () => void; onAnswered?: () => void }
         }
     ): Promise<boolean> {
         if (!this.transport) {
@@ -885,6 +906,7 @@ export class AcpSdkBackend implements AgentBackend {
             let response: unknown;
             try {
                 if (typeof this.transport.sendRequestWithDispatch === 'function') {
+                    options?.timing?.onDispatchStart?.();
                     const request = this.transport.sendRequestWithDispatch('session/prompt', {
                         sessionId,
                         prompt: content
@@ -895,12 +917,14 @@ export class AcpSdkBackend implements AgentBackend {
                     options?.timing?.onSent?.();
                     response = await request.completed;
                 } else {
-                    const request = this.transport.sendRequest('session/prompt', {
+                    response = await this.transport.sendRequest('session/prompt', {
                         sessionId,
                         prompt: content
-                    }, { timeoutMs: Infinity });
-                    options?.timing?.onSent?.();
-                    response = await request;
+                    }, {
+                        timeoutMs: Infinity,
+                        onDispatchStart: options?.timing?.onDispatchStart,
+                        onSent: options?.timing?.onSent
+                    });
                 }
             } finally {
                 this.promptRequestInFlight = false;
@@ -1322,7 +1346,17 @@ export class AcpSdkBackend implements AgentBackend {
         });
     }
 
-    async disconnect(options?: { waitForTransport?: boolean }): Promise<void> {
+    get canRecheckTermination(): boolean {
+        return this.verifyDisconnectedWriter !== undefined;
+    }
+
+    async recheckTermination(): Promise<boolean> {
+        return await this.verifyDisconnectedWriter?.() ?? false;
+    }
+
+    async disconnect(options: { verifyTermination: true; waitForTransport?: boolean }): Promise<boolean>;
+    async disconnect(options?: { waitForTransport?: boolean }): Promise<void>;
+    async disconnect(options?: { waitForTransport?: boolean; verifyTermination?: boolean }): Promise<boolean | void> {
         if (options?.waitForTransport) {
             this.initializeRetryAbort?.abort();
             if (!this.transport) {
@@ -1330,7 +1364,20 @@ export class AcpSdkBackend implements AgentBackend {
                 await this.transportOpening?.catch(() => undefined);
             }
         }
-        if (!this.transport) return;
+        if (!this.disconnectResult && this.transport) {
+            this.disconnectResult = this.disconnectTransport(this.transport, options?.verifyTermination === true);
+        }
+        const pending = this.disconnectResult;
+        try {
+            const ended = await pending;
+            if (options?.verifyTermination) return ended === true || (!pending && this.transportCreationFailed);
+        } catch (error) {
+            if (this.disconnectResult === pending) this.disconnectResult = null;
+            throw error;
+        }
+    }
+
+    private async disconnectTransport(transport: AcpStdioTransport, recovery: boolean): Promise<boolean> {
         for (const timer of this.sessionInfoRefreshTimers.values()) {
             clearTimeout(timer);
         }
@@ -1358,7 +1405,7 @@ export class AcpSdkBackend implements AgentBackend {
         this.settlePendingElicitations();
         let agentEnded = false;
         try {
-            agentEnded = (await this.transport.close()) === true;
+            agentEnded = (await (recovery ? transport.close({ recovery: true }) : transport.close())) === true;
         } finally {
             this.transport = null;
             // Delete transition: only once the agent process tree is confirmed
@@ -1366,7 +1413,15 @@ export class AcpSdkBackend implements AgentBackend {
             // (kill unverified, close threw, or this process dies first) the
             // record stays for a restore.
             this.settleToolCallLifetimeRecord(recordSessionId, agentEnded);
+            if (transport.hasCompleteWriterCapture) {
+                this.verifyDisconnectedWriter = async () => {
+                    const stopped = await transport.verifyTermination();
+                    if (stopped) this.settleToolCallLifetimeRecord(recordSessionId, true);
+                    return stopped;
+                };
+            }
         }
+        return agentEnded;
     }
 
     /**
