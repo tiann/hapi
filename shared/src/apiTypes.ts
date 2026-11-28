@@ -1567,6 +1567,12 @@ export type UsageSummaryResponse = {
     updatedAt: number
 }
 
+/** Explicit resolution of unknown delivery; does not imply cancellation or consumption. */
+export type AbandonMessageResponse =
+    | { status: 'abandoned' | 'unavailable'; localId: string | null }
+    | { status: 'invoked'; message: import('./types').DecryptedMessage }
+    | { status: 'not-found' }
+
 /** A stretch an agent was working: from `thinking` turning on to it turning
  *  off. `end` is null while the turn is still going. */
 export type AgentActivityTurn = {

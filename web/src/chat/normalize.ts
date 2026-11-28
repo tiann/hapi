@@ -6,6 +6,7 @@ import { isCodexContent, isSkippableAgentContent, normalizeAgentRecord } from '@
 import { normalizeUserRecord } from '@/chat/normalizeUser'
 
 export function normalizeDecryptedMessage(message: DecryptedMessage): NormalizedMessage | null {
+    if (message.deliveryState === 'abandoned' && message.invokedAt == null) return null
     const record = unwrapRoleWrappedRecordEnvelope(message.content)
     if (!record) {
         return {

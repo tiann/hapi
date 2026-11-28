@@ -422,6 +422,26 @@ it('reloads the v2 batch ledger and consumes the exact combined version', async 
     expect(consumed).toHaveBeenCalledWith(['original-A', 'original-B']);
 });
 
+it('only abandons a missing batch member and never re-enqueues it after restart', async () => {
+    const { queue, client, native, directory, consumed, calls } = await fixture();
+    await queue.enqueue('original-A', text('MARKER-A'), false, 'same-mode');
+    await queue.enqueue('original-B', text('MARKER-B'), false, 'same-mode');
+    expect(await queue.abandon('original-A')).toBe('indeterminate');
+    expect(queue.state('original-A')).toBe('queued');
+    native.splice(0);
+    expect(await queue.abandon('original-A', () => false)).toBe('indeterminate');
+    expect(await queue.abandon('original-A')).toBe('abandoned');
+    expect(queue.state('original-B')).toBe('unknown');
+    expect(consumed).not.toHaveBeenCalled();
+    const restarted = new SharedCodexQueue(client, 'thread', join(directory, 'ledger.json'), consumed, vi.fn());
+    await restarted.load();
+    expect(restarted.state('original-A')).toBe('abandoned');
+    const beforeReplay = calls.length;
+    await restarted.enqueue('original-A', text('MARKER-A'), false, 'same-mode');
+    expect(calls.slice(beforeReplay).filter(call => call.method !== 'thread/queue/list')).toEqual([]);
+    expect(native).toHaveLength(0);
+});
+
 it('journals a whole-batch native delete and cancels every member on the definitive response', async () => {
     const { queue, native } = await fixture();
     await queue.enqueue('original-A', text('MARKER-A'), false, 'same-mode');

@@ -1,0 +1,170 @@
+{
+    "description": "Distinct abandonment resolutions survive identical text; a repeated copy of one resolution and ordinary duplicate message events still deduplicate.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "event": {
+                    "message": "Delivery confirmation abandoned.\n\ncontinue after restart",
+                    "type": "message"
+                },
+                "id": "abandonment-note-0",
+                "kind": "agent-event"
+            },
+            {
+                "createdAt": 1755000000001,
+                "event": {
+                    "message": "Delivery confirmation abandoned.\n\ncontinue after restart",
+                    "type": "message"
+                },
+                "id": "abandonment-note-1",
+                "kind": "agent-event"
+            },
+            {
+                "createdAt": 1755000000003,
+                "event": {
+                    "message": "Delivery confirmation abandoned.\n\ncontinue after restart",
+                    "type": "message"
+                },
+                "id": "abandonment-note-3",
+                "kind": "agent-event"
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "event": {
+                    "message": "Delivery confirmation abandoned.\n\ncontinue after restart",
+                    "type": "message"
+                },
+                "id": "abandonment-note-0",
+                "kind": "agent-event"
+            },
+            {
+                "createdAt": 1755000000001,
+                "event": {
+                    "message": "Delivery confirmation abandoned.\n\ncontinue after restart",
+                    "type": "message"
+                },
+                "id": "abandonment-note-1",
+                "kind": "agent-event"
+            },
+            {
+                "createdAt": 1755000000003,
+                "event": {
+                    "message": "Delivery confirmation abandoned.\n\ncontinue after restart",
+                    "type": "message"
+                },
+                "id": "abandonment-note-3",
+                "kind": "agent-event"
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": "Delivery confirmation abandoned.\n\ncontinue after restart",
+                            "type": "message"
+                        },
+                        "type": "event"
+                    },
+                    "meta": {
+                        "abandonedDelivery": {
+                            "localId": "original-a"
+                        }
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000000,
+                "id": "abandonment-note-0",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": "Delivery confirmation abandoned.\n\ncontinue after restart",
+                            "type": "message"
+                        },
+                        "type": "event"
+                    },
+                    "meta": {
+                        "abandonedDelivery": {
+                            "localId": "original-b"
+                        }
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000001,
+                "id": "abandonment-note-1",
+                "localId": null,
+                "seq": 2
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": "Delivery confirmation abandoned.\n\ncontinue after restart",
+                            "type": "message"
+                        },
+                        "type": "event"
+                    },
+                    "meta": {
+                        "abandonedDelivery": {
+                            "localId": "original-b"
+                        }
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000002,
+                "id": "abandonment-note-2",
+                "localId": null,
+                "seq": 3
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": "Delivery confirmation abandoned.\n\ncontinue after restart",
+                            "type": "message"
+                        },
+                        "type": "event"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000003,
+                "id": "abandonment-note-3",
+                "localId": null,
+                "seq": 4
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": "Delivery confirmation abandoned.\n\ncontinue after restart",
+                            "type": "message"
+                        },
+                        "type": "event"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000004,
+                "id": "abandonment-note-4",
+                "localId": null,
+                "seq": 5
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "event-abandoned-delivery-dedupe"
+}

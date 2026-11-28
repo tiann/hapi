@@ -7,7 +7,7 @@ import { isIndeterminateError } from '../codexAppServerClient';
 
 const InputSchema = z.array(z.object({ type: z.string() }).passthrough());
 export const SubmissionSchema = z.object({ id: z.string(), input: InputSchema, clientUserMessageId: z.string() });
-const StateSchema = z.enum(['unknown', 'queued', 'consumed', 'canceled', 'rejected', 'released']);
+const StateSchema = z.enum(['unknown', 'queued', 'consumed', 'canceled', 'rejected', 'released', 'abandoned']);
 const EntrySchema = z.object({
     input: InputSchema, state: StateSchema, nativeId: z.string().optional(), batchId: z.string().optional(),
     detachedSteer: z.boolean().optional()
@@ -185,6 +185,7 @@ export class SharedCodexQueue {
     command(id: string, work: () => Promise<string | null>): Promise<string | null> {
         return this.serial(async () => {
             const existing = this.entries[id];
+            if (existing?.state === 'abandoned') throw new Error('Delivery confirmation was abandoned; not replaying');
             if (existing?.state === 'consumed') { this.consumed([id]); return null; }
             if (existing && !['rejected', 'canceled'].includes(existing.state)) {
                 this.uncertain([id]); throw new Error('Previous command outcome is unknown; not replaying');
@@ -261,7 +262,7 @@ export class SharedCodexQueue {
             const batch = this.batches[id];
             if (batch) { this.reconcileBatch(batch, item, presentMembers); continue; }
             const entry = this.entries[id] ??= { input: item.input, state: 'queued' };
-            if (entry.state !== 'consumed' && entry.state !== 'canceled') {
+            if (entry.state !== 'consumed' && entry.state !== 'canceled' && entry.state !== 'abandoned') {
                 const changed = entry.nativeId !== item.id || JSON.stringify(entry.input) !== JSON.stringify(item.input);
                 entry.nativeId = item.id; entry.input = item.input; entry.state = 'queued';
                 if (changed) this.mirror?.(id, item.input);
@@ -308,7 +309,7 @@ export class SharedCodexQueue {
         const applied = this.currentVersion(batch);
         const first = applied?.members.find(member => {
             const entry = this.entries[member.id];
-            return !entry || (entry.state !== 'consumed' && entry.state !== 'canceled');
+            return !entry || (entry.state !== 'consumed' && entry.state !== 'canceled' && entry.state !== 'abandoned');
         });
         if (!first) return;
         const replaced: Removal[] = [...(applied?.removed ?? []),
@@ -324,7 +325,7 @@ export class SharedCodexQueue {
         for (const member of version.members) {
             presentMembers.add(member.id);
             const entry = this.entries[member.id] ??= { input: member.input, state: 'queued' };
-            if (entry.state === 'consumed' || entry.state === 'canceled') continue;
+            if (entry.state === 'consumed' || entry.state === 'canceled' || entry.state === 'abandoned') continue;
             const changed = entry.nativeId !== item.id || JSON.stringify(entry.input) !== JSON.stringify(member.input);
             entry.nativeId = item.id; entry.input = member.input; entry.state = 'queued';
             delete entry.detachedSteer;
@@ -443,7 +444,7 @@ export class SharedCodexQueue {
         const applied = this.currentVersion(batch);
         const first = applied?.members.find(member => {
             const entry = this.entries[member.id];
-            return !entry || (entry.state !== 'consumed' && entry.state !== 'canceled');
+            return !entry || (entry.state !== 'consumed' && entry.state !== 'canceled' && entry.state !== 'abandoned');
         });
         const replaced: Removal[] = [...(applied?.removed ?? []),
             ...(applied?.members ?? []).filter(member => member.id !== first?.id)
@@ -497,7 +498,7 @@ export class SharedCodexQueue {
         const existing = this.entries[id];
         if (existing && !['rejected', 'canceled', 'released'].includes(existing.state)) {
             if (existing.state === 'consumed') this.consumed([id]);
-            else await this.reconcileLocked();
+            else if (existing.state !== 'abandoned') await this.reconcileLocked();
             return;
         }
         // Preserve native edits and non-text input when the hub redelivers.
@@ -527,7 +528,7 @@ export class SharedCodexQueue {
         const existing = this.entries[id];
         if (existing && !['rejected', 'canceled', 'released'].includes(existing.state)) {
             if (existing.state === 'consumed') this.consumed([id]);
-            else await this.reconcileLocked();
+            else if (existing.state !== 'abandoned') await this.reconcileLocked();
             return;
         }
         if (existing?.state === 'released') input = existing.input;
@@ -610,11 +611,38 @@ export class SharedCodexQueue {
         }
     }
 
+    /** Explicitly stop tracking unknown delivery. This is not proof of non-execution. */
+    abandon(id: string, canAbandon: () => boolean = () => true): Promise<'abandoned' | 'consumed' | 'indeterminate'> {
+        return this.serial(async () => {
+            const entry = this.entries[id];
+            if (!entry) return 'indeterminate';
+            if (entry.state === 'consumed') return 'consumed';
+            if (entry.state === 'abandoned') return 'abandoned';
+            try {
+                await this.reconcileLocked();
+                // A synthetic submission may still exist even if its content
+                // did not resolve to a single eligible ledger version.
+                if (entry.batchId && entry.state === 'unknown'
+                    && (await this.list()).some(item => item.clientUserMessageId === entry.batchId)) return 'indeterminate';
+            } catch { return 'indeterminate'; }
+            if (this.state(id) === 'consumed') return 'consumed';
+            // A present native submission must be canceled normally, never abandoned.
+            if (entry.state !== 'unknown' || !canAbandon()) return 'indeterminate';
+            entry.state = 'abandoned';
+            try { await this.save(); } catch (error) {
+                if (entry.state === 'abandoned') entry.state = 'unknown';
+                throw error;
+            }
+            return 'abandoned';
+        });
+    }
+
     cancel(id: string): Promise<boolean | 'consumed' | 'indeterminate'> {
         return this.serial(async () => {
             const entry = this.entries[id];
             if (!entry) return 'indeterminate';
             if (entry.state === 'consumed') return 'consumed';
+            if (entry.state === 'abandoned') return 'indeterminate';
             if (entry.state === 'canceled' || entry.state === 'rejected' || entry.state === 'released') {
                 entry.state = 'canceled'; await this.save(); return true;
             }

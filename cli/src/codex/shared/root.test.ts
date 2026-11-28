@@ -76,6 +76,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
     let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex' };
     if (opts?.attached) metadata.codexRuntime = { kind: 'attached', bindingId: '11111111-1111-4111-8111-111111111111', state: 'attached' };
     let reconnect: (() => void) | null = null;
+    let abandon: ((id: string) => Promise<string>) | undefined;
     let userMessage: Parameters<ApiSessionClient['onUserMessage']>[0] | undefined;
     let retryMessage: Parameters<ApiSessionClient['onRetryQueuedMessage']>[0] | undefined;
     const updateState = vi.fn((fn: (value: AgentState) => AgentState) => { state = fn(state); });
@@ -92,7 +93,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
         updateMetadata: (fn: (value: Metadata) => Metadata) => { metadata = fn(metadata); },
         updateAgentState: updateState, keepAlive() {},
         onUserMessage: (callback: Parameters<ApiSessionClient['onUserMessage']>[0]) => { userMessage = callback; },
-        onCancelQueuedMessage() {},
+        onCancelQueuedMessage() {}, onAbandonQueuedMessage(fn: typeof abandon) { abandon = fn; },
         onRetryQueuedMessage: (callback: Parameters<ApiSessionClient['onRetryQueuedMessage']>[0]) => { retryMessage = callback; },
         onReconnect: (fn: (() => void) | null) => { reconnect = fn; },
         on(event: string, listener: () => void) {
@@ -123,6 +124,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
         responses: Array<{ id: string | number; result: unknown }>;
     };
     return {
+        abandon: (id: string) => abandon!(id),
 session, root, native, rpc, send, events, consumed, uncertain, sessionReady,
         ledger: async () => JSON.parse(await readFile(join(directory, 'sid.queue.json'), 'utf8')),
         retry: (id: string) => retryMessage?.(id),
@@ -895,6 +897,20 @@ describe('shared steering availability', () => {
         const f = await fixture({ hubArchived: true, end });
         await f.root.activate();
         await vi.waitFor(() => expect(end).toHaveBeenCalledTimes(1));
+    });
+});
+
+describe('shared unknown delivery abandonment', () => {
+    it('refreshes native state, refuses a live turn, then permits explicit abandonment when idle', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        await (f.root as any).queue.enqueue('unknown', [{ type: 'text', text: 'never resend' }]);
+        f.native.queue.length = 0;
+        f.native.thread.turns.push({ id: 'busy', status: 'inProgress', items: [] });
+        expect(await f.abandon('unknown')).toBe('indeterminate');
+        f.native.thread.turns.length = 0;
+        expect(await f.abandon('unknown')).toBe('abandoned');
+        expect((f.root as any).queue.state('unknown')).toBe('abandoned');
     });
 });
 

@@ -610,6 +610,16 @@ object MessageWindowLogic {
         return if (changed) previous.withMessages(messages) else previous
     }
 
+    /** SSE cancellation removes only rows still awaiting invocation. */
+    fun removeUninvokedByLocalIdOrId(previous: MessageWindowState, localId: String): MessageWindowState {
+        if (localId.isEmpty()) return previous
+        val messages = previous.messages.filter { message ->
+            val matches = message.localId == localId || message.id == localId
+            !matches || !message.wire.hasExplicitNullInvokedAt
+        }
+        return if (messages.size == previous.messages.size) previous else previous.withMessages(messages)
+    }
+
     /** `message-cancelled` / optimistic DELETE removal: matches localId OR id; idempotent. */
     fun removeByLocalIdOrId(previous: MessageWindowState, localId: String): MessageWindowState {
         if (localId.isEmpty()) return previous

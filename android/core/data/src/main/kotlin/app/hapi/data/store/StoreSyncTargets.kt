@@ -188,7 +188,7 @@ class StoreSyncTargets(
                 is SyncEvent.MessagesConsumed -> store.markConsumed(event.localIds, event.invokedAt)
                 is SyncEvent.MessagesIndeterminate -> store.markIndeterminate(event.localIds)
                 is SyncEvent.MessagesRequeued -> store.markRequeued(event.localIds)
-                is SyncEvent.MessageCancelled -> store.removeMessage(event.messageId)
+                is SyncEvent.MessageCancelled -> store.removeCancelledMessage(event.messageId, event.localId)
                 else -> Unit
             }
         }

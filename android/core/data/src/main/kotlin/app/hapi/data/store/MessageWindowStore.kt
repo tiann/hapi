@@ -581,7 +581,7 @@ class MessageWindowStore(
             is SyncEvent.MessagesConsumed -> markConsumed(event.localIds, event.invokedAt)
             is SyncEvent.MessagesIndeterminate -> markIndeterminate(event.localIds)
             is SyncEvent.MessagesRequeued -> markRequeued(event.localIds)
-            is SyncEvent.MessageCancelled -> removeMessage(event.messageId)
+            is SyncEvent.MessageCancelled -> removeCancelledMessage(event.messageId, event.localId)
             is SyncEvent.MessagesInvalidated -> {
                 clear()
                 scope.launch { syncTail() }
@@ -612,6 +612,16 @@ class MessageWindowStore(
 
     suspend fun markRequeued(localIds: List<String>) {
         update { MessageWindowLogic.markRequeued(it, localIds) }
+        persist()
+    }
+
+    /** SSE cancellation on either pipe must not erase a row already invoked by the other. */
+    suspend fun removeCancelledMessage(messageId: String, localId: String?) {
+        update { previous ->
+            var next = MessageWindowLogic.removeUninvokedByLocalIdOrId(previous, messageId)
+            if (localId != null) next = MessageWindowLogic.removeUninvokedByLocalIdOrId(next, localId)
+            next
+        }
         persist()
     }
 

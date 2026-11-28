@@ -19,7 +19,7 @@ export function isUserMessage(msg: DecryptedMessage): boolean {
  *  rows that explicitly carry `invokedAt: null` are queued. `failed` rows are
  *  not queued either — they're surfaced as send errors, not pending work. */
 export function isQueuedForInvocation(msg: DecryptedMessage): boolean {
-    return isUserMessage(msg) && msg.invokedAt === null && msg.status !== 'failed'
+    return isUserMessage(msg) && msg.invokedAt === null && msg.deliveryState !== 'abandoned' && msg.status !== 'failed'
 }
 
 function isOptimisticMessage(msg: DecryptedMessage): boolean {

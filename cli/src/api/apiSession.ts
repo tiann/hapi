@@ -211,6 +211,7 @@ export class ApiSessionClient extends EventEmitter {
     private pendingHubPromptEchoes: { text: string; localIds: string[] }[] = []
     private pendingMessageCallback: ((message: UserMessage, localId?: string) => void) | null = null
     private cancelQueuedMessageCallback: ((localId: string) => QueueCancelResult | Promise<QueueCancelResult>) | null = null
+    private abandonQueuedMessageCallback: ((localId: string) => Promise<'abandoned' | 'consumed' | 'indeterminate'>) | null = null
     private retryQueuedMessageCallback: ((localId: string) => boolean | Promise<boolean>) | null = null
     private readonly incomingFilter = new IncomingMessageFilter()
     private reconciledRewindOperationId: string | undefined
@@ -459,9 +460,10 @@ if (isReconnect) {
                 }
 
                 if (data.body.t === 'cancel-queued-message') {
-                    const cancellation = data.body.localId
-                        ? this.cancelQueuedMessage(data.body.localId)
-                        : false
+                    const cancellation = data.body.abandon
+                        ? (data.body.localId && this.abandonQueuedMessageCallback
+                            ? this.abandonQueuedMessageCallback(data.body.localId) : false)
+                        : (data.body.localId ? this.cancelQueuedMessage(data.body.localId) : false)
                     const result = cancellation instanceof Promise ? await cancellation : cancellation
                     // 'in-flight' = the row is inside an async steer: not
                     // removed, but also NOT consumed — the hub must neither
@@ -470,7 +472,8 @@ if (isReconnect) {
                         removed: result === true,
                         inFlight: result === 'in-flight',
                         indeterminate: result === 'indeterminate',
-                        consumed: result === 'consumed'
+                        consumed: result === 'consumed',
+                        ...(result === 'abandoned' ? { abandoned: true } : {})
                     })
                     return
                 }
@@ -711,6 +714,10 @@ if (isReconnect) {
             const pending = this.pendingMessages.shift()!
             callback(pending.message, pending.localId)
         }
+    }
+
+    onAbandonQueuedMessage(callback: (localId: string) => Promise<'abandoned' | 'consumed' | 'indeterminate'>): void {
+        this.abandonQueuedMessageCallback = callback
     }
 
     onCancelQueuedMessage(callback: (localId: string) => QueueCancelResult | Promise<QueueCancelResult>): void {
