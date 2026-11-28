@@ -37,6 +37,9 @@ function healthDisplayChanged(
         || before.memoryPercent !== after.memoryPercent
         || before.cpuCount !== after.cpuCount
         || before.uptimeSeconds !== after.uptimeSeconds
+        || before.diskTotalBytes !== after.diskTotalBytes
+        || before.diskUsedBytes !== after.diskUsedBytes
+        || before.diskAvailableBytes !== after.diskAvailableBytes
 }
 
 export class MachineCache {

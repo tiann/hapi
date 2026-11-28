@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
-import type { MachineHealthPresentation } from '@/lib/machineHealth'
+import { formatMachineHealthInline, type MachineHealthPresentation } from '@/lib/machineHealth'
 import { MachineHealthTooltipBody } from '@/components/MachineHealthIndicator'
 import { HoverTooltip } from '@/components/HoverTooltip'
 import { CheckIcon } from '@/components/icons'
@@ -134,6 +134,7 @@ export function MachineFilterBar(props: {
 // health metrics are inline so touch layouts need no hover, and pointer
 // users get the same capacity popup as the filter chips.
 export function MachineSummaryRow(props: { machine: MachineFilterItem }) {
+    const { t } = useTranslation()
     const tooltipId = useId()
     const hasHealth = Boolean(props.machine.healthPresentation?.metrics.length)
 
@@ -146,9 +147,7 @@ export function MachineSummaryRow(props: { machine: MachineFilterItem }) {
             <span className="shrink-0 tabular-nums text-[var(--app-hint)]">({props.machine.sessionCount})</span>
             {hasHealth ? (
                 <span className="min-w-0 truncate tabular-nums text-[var(--app-hint)]">
-                    {props.machine.healthPresentation!.metrics
-                        .map((metric) => `${metric.shortLabel} ${metric.percent}%`)
-                        .join(' · ')}
+                    {formatMachineHealthInline(props.machine.healthPresentation!, t('machine.health.diskInline'))}
                 </span>
             ) : null}
         </span>
@@ -180,6 +179,7 @@ export function MachineFilterMenuRow(props: {
     healthPresentation: MachineHealthPresentation | null
     onSelect: () => void
 }) {
+    const { t } = useTranslation()
     const hasHealth = props.healthPresentation && props.healthPresentation.metrics.length > 0
     return (
         <button
@@ -199,7 +199,7 @@ export function MachineFilterMenuRow(props: {
                 </span>
                 {hasHealth ? (
                     <span className="mt-0.5 block truncate text-xs tabular-nums text-[var(--app-hint)]">
-                        {props.healthPresentation!.metrics.map((metric) => `${metric.shortLabel} ${metric.percent}%`).join(' · ')}
+                        {formatMachineHealthInline(props.healthPresentation!, t('machine.health.diskInline'))}
                     </span>
                 ) : null}
             </span>
