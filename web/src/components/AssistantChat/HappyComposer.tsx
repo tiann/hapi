@@ -73,6 +73,7 @@ import { resolveMessageDeliveryMode, type ComposerSendIntent } from '@/lib/messa
 import type { MessageDeliveryMode } from '@hapi/protocol'
 import { moveAttachmentId, orderItemsById, reconcileAttachmentOrder, replaceAttachmentId, type AttachmentDropPosition } from '@/lib/attachmentOrder'
 import type { AttachmentRetryHandler } from './AttachmentItem'
+import { isAskUserQuestionToolName } from '@/components/ToolCard/askUserQuestion'
 
 export interface TextInputState {
     text: string
@@ -1020,7 +1021,11 @@ export function HappyComposer(props: {
         haptic('light')
     }, [api, suggestions, inputState, autocompletePrefixes, haptic, richMentionsEnabled, handleUserEdit])
 
-    const abortDisabled = controlsDisabled || isAborting || !threadIsRunning
+    const canAbortRun = threadIsRunning || (
+        active && agentFlavor === 'opencode'
+        && Object.values(agentState?.requests ?? {}).some(request => isAskUserQuestionToolName(request.tool))
+    )
+    const abortDisabled = controlsDisabled || isAborting || !canAbortRun
     const switchDisabled = controlsDisabled || isSwitching || !controlledByUser
     const showSwitchButton = Boolean(controlledByUser && onSwitchToRemote)
     const showTerminalButton = Boolean(onTerminal || terminalUnsupported)
@@ -1449,7 +1454,7 @@ export function HappyComposer(props: {
             const action = getComposerEscapeAction({
                 showSettings,
                 hasSuggestions: suggestions.length > 0,
-                threadIsRunning,
+                threadIsRunning: canAbortRun,
                 isExpanded,
             })
             if (action) {
@@ -1479,7 +1484,7 @@ export function HappyComposer(props: {
         moveDown,
         clearSuggestions,
         handleSuggestionSelect,
-        threadIsRunning,
+        canAbortRun,
         handleAbort,
         onPermissionModeChange,
         permissionMode,

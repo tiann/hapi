@@ -202,7 +202,7 @@ describe('OpencodePermissionHandler question forms', () => {
         await expect(pending).resolves.toEqual({ action: 'cancel' });
     });
 
-    it('cancels every pending form when the session aborts, ends or the turn finishes', async () => {
+    it('answers each pending form with cancel on Stop', async () => {
         const harness = createHarness();
         const first = harness.ask();
         const second = harness.ask(elicitation({ toolCallId: 'call-2' }));
@@ -221,7 +221,7 @@ describe('OpencodePermissionHandler question forms', () => {
     it('ignores a late web answer after the form was cancelled', async () => {
         const harness = createHarness();
         const pending = harness.ask();
-        await harness.handler.cancelAll('Prompt finished');
+        await harness.handler.cancelAll('User aborted');
 
         await harness.respond({ id: 'call-question', approved: true, answers: { '0': ['승인'] } });
 
@@ -249,6 +249,20 @@ describe('OpencodePermissionHandler question forms', () => {
         await expect(second).resolves.toEqual({ action: 'accept', content: { q0: '승인' } });
     });
 
+    it('keeps the replacement card when its old request is later withdrawn', async () => {
+        const harness = createHarness();
+        const cancellation = new AbortController();
+        const old = harness.ask(elicitation({ signal: cancellation.signal }));
+        const replacement = harness.ask();
+
+        await expect(old).resolves.toEqual({ action: 'cancel' });
+        cancellation.abort();
+        expect(harness.getAgentState().requests['call-question']).toBeDefined();
+
+        await harness.respond({ id: 'call-question', approved: true, answers: { '0': ['승인'] } });
+        await expect(replacement).resolves.toEqual({ action: 'accept', content: { q0: '승인' } });
+    });
+
     it('generates an id when the agent links no tool call', async () => {
         const harness = createHarness();
 
@@ -259,24 +273,50 @@ describe('OpencodePermissionHandler question forms', () => {
         expect(ids[0]).toMatch(/^opencode-question-/);
     });
 
-    it('cancels a form that arrives after Stop without queuing a card', async () => {
+    it('shows a fresh form that arrives after Stop', async () => {
         const harness = createHarness();
 
         await harness.handler.cancelAll('User aborted');
-        const late = harness.ask();
+        const next = harness.ask();
 
-        await expect(late).resolves.toEqual({ action: 'cancel' });
-        expect(harness.getAgentState().requests).toEqual({});
+        expect(harness.getAgentState().requests['call-question']).toBeDefined();
+        await harness.handler.cancelAll('User aborted');
+        await expect(next).resolves.toEqual({ action: 'cancel' });
     });
 
-    it('shows questions again once a new turn begins', async () => {
+    it('accepts a form after prompt completion', async () => {
         const harness = createHarness();
-        await harness.handler.cancelAll('User aborted');
-        harness.handler.beginTurn();
+        await harness.handler.cancelAll('Prompt finished', { preserveQuestions: true });
 
-        const pending = harness.ask();
+        void harness.ask();
 
-        expect(await settled(pending)).toBe(false);
         expect(harness.getAgentState().requests['call-question']).toBeDefined();
+        await harness.handler.cancelAll('User aborted');
+    });
+
+    it('keeps an unanswered form through prompt cleanup', async () => {
+        const harness = createHarness();
+        const pending = harness.ask();
+        await harness.handler.cancelAll('Prompt finished', { preserveQuestions: true });
+
+        expect(harness.getAgentState().requests['call-question']).toBeDefined();
+
+        await harness.respond({ id: 'call-question', approved: true, answers: { '0': ['승인'] } });
+        await expect(pending).resolves.toEqual({ action: 'accept', content: { q0: '승인' } });
+    });
+
+    it('removes only the card whose ACP request was withdrawn', async () => {
+        const harness = createHarness();
+        const cancellation = new AbortController();
+        const withdrawn = harness.ask(elicitation({ signal: cancellation.signal }));
+        const other = harness.ask(elicitation({ toolCallId: 'call-other' }));
+
+        cancellation.abort('agent-cancelled');
+        expect(harness.getAgentState().requests['call-question']).toBeUndefined();
+        expect(harness.getAgentState().completedRequests['call-question']).toMatchObject({ status: 'canceled' });
+        expect(harness.getAgentState().requests['call-other']).toBeDefined();
+        await expect(withdrawn).resolves.toEqual({ action: 'cancel' });
+        await harness.handler.cancelAll('User aborted');
+        await expect(other).resolves.toEqual({ action: 'cancel' });
     });
 });

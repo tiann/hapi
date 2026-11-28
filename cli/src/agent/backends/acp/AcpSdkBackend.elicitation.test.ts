@@ -3,6 +3,7 @@ import { AcpSdkBackend } from './AcpSdkBackend';
 
 type Internal = {
     handleElicitationRequest: (params: unknown) => Promise<unknown>;
+    toolCallLifetimes: { settleRequest: (toolCallId: string) => void };
     transport: { sendNotification: (method: string, params: unknown) => void; close: () => Promise<void> } | null;
 };
 
@@ -114,8 +115,9 @@ describe('AcpSdkBackend form elicitation', () => {
         await expect(pending).resolves.toEqual({ action: 'cancel' });
     });
 
-    it('does not let a late handler answer overwrite the cancel', async () => {
+    it('releases the tool call request once when a late handler answers after Stop', async () => {
         const { backend, internal } = createBackend();
+        const settleRequest = vi.spyOn(internal.toolCallLifetimes, 'settleRequest');
         let answer!: (value: { action: 'accept'; content: Record<string, string> }) => void;
         backend.onFormElicitation(() => new Promise((resolve) => {
             answer = resolve;
@@ -126,5 +128,6 @@ describe('AcpSdkBackend form elicitation', () => {
         answer({ action: 'accept', content: { q0: '승인' } });
 
         await expect(pending).resolves.toEqual({ action: 'cancel' });
+        expect(settleRequest).toHaveBeenCalledOnce();
     });
 });

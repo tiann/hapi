@@ -115,6 +115,12 @@ export type PermissionResponse =
     | { outcome: 'selected'; optionId: string }
     | { outcome: 'cancelled' };
 
+export const ACP_REQUEST_ABORT_REASON = {
+    agentCancelled: 'agent-cancelled',
+    locallyCancelled: 'locally-cancelled',
+    connectionClosed: 'connection-closed'
+} as const;
+
 /** Agent-initiated `elicitation/create` in form mode (structured user input). */
 export type FormElicitationRequest = {
     sessionId: string;
@@ -128,6 +134,8 @@ export type FormElicitationRequest = {
     message: string;
     /** JSON-Schema-like object schema; shape is owned by the agent. */
     requestedSchema: unknown;
+    /** Aborted if the request is withdrawn, cancelled locally, or its ACP connection closes. */
+    signal?: AbortSignal;
 };
 
 export type FormElicitationContent = Record<string, string | number | boolean | string[]>;

@@ -1,5 +1,6 @@
 import type { AgentFlavor } from '@hapi/protocol';
 import type { AgentBackend, AgentMessage, AgentSessionConfig, FormElicitationRequest, FormElicitationResponse, PermissionRequest, PermissionResponse, PromptContent } from '@/agent/types';
+import { ACP_REQUEST_ABORT_REASON } from '@/agent/types';
 import { asString, isObject } from '@hapi/protocol';
 import { AcpStdioTransport, isAcpIndeterminateError, type AcpStderrError } from './AcpStdioTransport';
 import { AcpMessageHandler, type AcpTextChunkMode } from './AcpMessageHandler';
@@ -35,6 +36,7 @@ type PendingPermission = {
 type PendingElicitation = {
     sessionId: string;
     settle: (response: FormElicitationResponse) => void;
+    cancelLocally: (reason: string) => void;
 };
 
 type AcpPromptUsage = {
@@ -318,9 +320,9 @@ export class AcpSdkBackend implements AgentBackend {
         });
 
         if (this.options.elicitationForm) {
-            this.transport.registerRequestHandler('elicitation/create', async (params) => {
-                return await this.handleElicitationRequest(params);
-            });
+            this.transport.registerRequestHandler('elicitation/create', (params, _id, signal) => {
+                return this.handleElicitationRequest(params, signal);
+            }, { cancellable: this.options.flavor === 'opencode' });
         }
 
         const response = await withRetry(
@@ -1142,12 +1144,14 @@ export class AcpSdkBackend implements AgentBackend {
     private settlePendingElicitations(sessionId?: string): void {
         for (const pending of Array.from(this.pendingElicitations)) {
             if (sessionId === undefined || pending.sessionId === sessionId) {
-                pending.settle({ action: 'cancel' });
+                pending.cancelLocally(sessionId === undefined
+                    ? ACP_REQUEST_ABORT_REASON.connectionClosed
+                    : ACP_REQUEST_ABORT_REASON.locallyCancelled);
             }
         }
     }
 
-    private async handleElicitationRequest(params: unknown): Promise<FormElicitationResponse> {
+    private async handleElicitationRequest(params: unknown, signal?: AbortSignal): Promise<FormElicitationResponse> {
         const cancel: FormElicitationResponse = { action: 'cancel' };
         if (!isObject(params) || params.mode !== 'form' || !this.formElicitationHandler) {
             return cancel;
@@ -1162,21 +1166,32 @@ export class AcpSdkBackend implements AgentBackend {
             ? this.resolveToolCallLifetimeId(agentToolCallId, 'request', sessionId)
             : null;
         const requestId = toolCallId ? this.toolCallLifetimes.allocateRequestId(toolCallId) : null;
+        const localCancellation = this.options.flavor === 'opencode' ? new AbortController() : undefined;
+        // A local cancellation still needs to send a reply over ACP. Only the
+        // downstream form handler sees the combined signal.
+        const formSignal = localCancellation
+            ? signal ? AbortSignal.any([signal, localCancellation.signal]) : localCancellation.signal
+            : signal;
         const request: FormElicitationRequest = {
             sessionId,
             ...(toolCallId && requestId ? { toolCallId, requestId } : {}),
             message: asString(params.message) ?? '',
-            requestedSchema: params.requestedSchema
+            requestedSchema: params.requestedSchema,
+            ...(formSignal ? { signal: formSignal } : {})
         };
 
         return await new Promise<FormElicitationResponse>((resolve) => {
             const pending: PendingElicitation = {
                 sessionId,
                 settle: (response) => {
-                    this.pendingElicitations.delete(pending);
+                    if (!this.pendingElicitations.delete(pending)) return;
                     if (requestId) this.liveRequestIds.delete(requestId);
                     if (toolCallId) this.toolCallLifetimes.settleRequest(toolCallId);
                     resolve(response);
+                },
+                cancelLocally: (reason) => {
+                    pending.settle(cancel);
+                    localCancellation?.abort(reason);
                 }
             };
             this.pendingElicitations.add(pending);

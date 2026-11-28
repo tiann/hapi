@@ -1,5 +1,6 @@
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { AgentBackend, FormElicitationRequest, FormElicitationResponse, PermissionRequest, PermissionResponse } from '@/agent/types';
+import { ACP_REQUEST_ABORT_REASON } from '@/agent/types';
 import { randomUUID } from 'node:crypto';
 import { isObject } from '@hapi/protocol';
 import type { PermissionModeOf, Flavors } from '@hapi/protocol/types';
@@ -90,10 +91,6 @@ function mapDecisionToOutcome(request: PermissionRequest, decision: PermissionRe
 export class OpencodePermissionHandler extends BasePermissionHandler<PermissionResponseMessage, void> {
     private readonly pendingBackendRequests = new Map<string, PermissionRequest>();
     private readonly pendingQuestions = new Map<string, PendingQuestion>();
-    // Closed by cancelAll (Stop, prompt end, teardown) so a form that reaches
-    // us afterwards is declined instead of queued as a card nobody can settle;
-    // beginTurn reopens it for the next prompt.
-    private acceptingQuestions = true;
 
     constructor(
         session: ApiSessionClient,
@@ -113,10 +110,8 @@ export class OpencodePermissionHandler extends BasePermissionHandler<PermissionR
      * every permission mode (yolo included) waits for the human's answer.
      */
     private handleFormElicitation(request: FormElicitationRequest): Promise<FormElicitationResponse> {
-        if (!this.acceptingQuestions) {
-            logger.debug('[Opencode] Dismissing form elicitation received outside an active turn');
-            return Promise.resolve({ action: 'cancel' });
-        }
+        const { signal } = request;
+        if (signal?.aborted) return Promise.resolve({ action: 'cancel' });
         const questions = parseQuestionSchema(request.requestedSchema);
         if (!questions) {
             logger.warn('[Opencode] Dismissing form elicitation with an unsupported schema');
@@ -132,8 +127,24 @@ export class OpencodePermissionHandler extends BasePermissionHandler<PermissionR
                 if (this.pendingQuestions.get(id)?.settle === settle) {
                     this.pendingQuestions.delete(id);
                 }
+                signal?.removeEventListener('abort', onWithdrawn);
                 resolve(response);
             };
+            const onWithdrawn = () => {
+                if (this.pendingQuestions.get(id)?.settle !== settle) return;
+                this.pendingRequests.delete(id);
+                settle({ action: 'cancel' });
+                this.finalizeRequest(id, {
+                    status: 'canceled',
+                    decision: 'abort',
+                    reason: signal?.reason === ACP_REQUEST_ABORT_REASON.connectionClosed
+                        ? 'OpenCode connection closed'
+                        : signal?.reason === ACP_REQUEST_ABORT_REASON.locallyCancelled
+                            ? 'User aborted'
+                            : 'OpenCode withdrew the question'
+                });
+            };
+            signal?.addEventListener('abort', onWithdrawn, { once: true });
             this.pendingQuestions.set(id, { questions, settle });
             this.addPendingRequest(id, QUESTION_DISPLAY_TOOL_NAME, toAskUserQuestionInput(questions), {
                 resolve: () => {},
@@ -294,15 +305,11 @@ export class OpencodePermissionHandler extends BasePermissionHandler<PermissionR
         logger.debug('[Opencode] Permission response received for unknown request', response.id);
     }
 
-    /** Start accepting questions again; call when a new prompt begins. */
-    beginTurn(): void {
-        this.acceptingQuestions = true;
+    hasPendingQuestions(): boolean {
+        return this.pendingQuestions.size > 0;
     }
 
-    async cancelAll(reason: string): Promise<void> {
-        // Close synchronously, before any await, so a form delivered while the
-        // cleanup below is still running is already declined.
-        this.acceptingQuestions = false;
+    async cancelAll(reason: string, { preserveQuestions = false } = {}): Promise<void> {
         const pending = Array.from(this.pendingBackendRequests.values());
         this.pendingBackendRequests.clear();
 
@@ -310,10 +317,13 @@ export class OpencodePermissionHandler extends BasePermissionHandler<PermissionR
             await this.backend.respondToPermission(request.sessionId, request, { outcome: 'cancelled' });
         }
 
+        // Agent state updates can apply later, after one of these questions settles.
+        const preservedQuestionIds = preserveQuestions ? new Set(this.pendingQuestions.keys()) : undefined;
         this.cancelPendingRequests({
             completedReason: reason,
             rejectMessage: reason,
-            decision: 'abort'
+            decision: 'abort',
+            filter: preservedQuestionIds ? (_toolName, id) => !preservedQuestionIds.has(id) : undefined
         });
     }
 }
