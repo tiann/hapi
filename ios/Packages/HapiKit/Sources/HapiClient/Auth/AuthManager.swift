@@ -43,6 +43,7 @@ public actor AuthManager {
     public let baseURL: URL
     /// Normalized origin used as the ``CredentialStoring`` key.
     public let storageKey: String
+    public nonisolated let cloudflareAccess: CloudflareAccess?
 
     private let credentialStore: any CredentialStoring
     private let performer: any HTTPPerforming
@@ -59,13 +60,19 @@ public actor AuthManager {
         baseURL: URL,
         credentialStore: any CredentialStoring,
         performer: any HTTPPerforming = URLSessionHTTPPerformer.shared,
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        cloudflareAccess: CloudflareAccess? = nil
     ) {
+        let storageKey = HubURLNormalization.normalize(baseURL.absoluteString) ?? baseURL.absoluteString
         self.baseURL = baseURL
-        self.storageKey = HubURLNormalization.normalize(baseURL.absoluteString) ?? baseURL.absoluteString
+        self.storageKey = storageKey
         self.credentialStore = credentialStore
         self.performer = performer
         self.now = now
+        let storedAccessToken = (try? credentialStore.credentials(forHub: storageKey))?.cloudflareAccessToken
+        self.cloudflareAccess = cloudflareAccess ?? storedAccessToken.flatMap {
+            CloudflareAccess(hubURL: baseURL, token: $0)
+        }
     }
 
     /// `true` once the hub has terminally rejected the credentials
@@ -193,6 +200,9 @@ public actor AuthManager {
         do {
             let request = try makeAuthRequest(credential: credentials.credential)
             let (data, response) = try await performer.perform(request)
+            if CloudflareAccess.isSignInResponse(response) {
+                throw CloudflareAccessError.signInRequired
+            }
             switch response.statusCode {
             case 200:
                 let auth = try HapiJSON.decoder.decode(AuthResponse.self, from: data)
@@ -221,12 +231,15 @@ public actor AuthManager {
         request.httpMethod = HTTPMethod.post.rawValue
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try HapiJSON.encoder.encode(credential.exchangeBody)
-        return request
+        return cloudflareAccess?.authorize(request) ?? request
     }
 
     private func adopt(token: String, credentials: HubCredentials) {
         jwt = token
         claims = JWT.claims(from: token)
+        // A previous session's refresh must not replace a renewed Access token.
+        // For protected hubs, keep the refreshed HAPI JWT in this session.
+        guard cloudflareAccess == nil else { return }
         var updated = credentials
         updated.jwt = token
         updated.jwtObtainedAt = Int(now().timeIntervalSince1970 * 1000)

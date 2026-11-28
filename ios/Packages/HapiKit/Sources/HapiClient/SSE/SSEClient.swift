@@ -41,6 +41,7 @@ public struct SSEClientConfiguration: Sendable {
     /// Jitter draw added to every backoff delay. Injectable so tests are
     /// deterministic; defaults to uniform over the policy's jitter range.
     public var jitterMs: @Sendable () -> Int
+    public var cloudflareAccess: CloudflareAccess?
 
     public init(
         baseUrl: URL,
@@ -49,7 +50,8 @@ public struct SSEClientConfiguration: Sendable {
         visibility: String = "visible",
         acceptEncodingIdentity: Bool = false,
         reconnectPolicy: ReconnectPolicy = ReconnectPolicy(),
-        jitterMs: (@Sendable () -> Int)? = nil
+        jitterMs: (@Sendable () -> Int)? = nil,
+        cloudflareAccess: CloudflareAccess? = nil
     ) {
         self.baseUrl = baseUrl
         self.tokenProvider = tokenProvider
@@ -57,6 +59,7 @@ public struct SSEClientConfiguration: Sendable {
         self.visibility = visibility
         self.acceptEncodingIdentity = acceptEncodingIdentity
         self.reconnectPolicy = reconnectPolicy
+        self.cloudflareAccess = cloudflareAccess
         let range = reconnectPolicy.jitterRangeMs
         self.jitterMs = jitterMs ?? { Int.random(in: range) }
     }
@@ -514,7 +517,7 @@ public actor SSEClient {
             // See SSEClientConfiguration.acceptEncodingIdentity (gzip TODO).
             request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
         }
-        return request
+        return configuration.cloudflareAccess?.authorize(request) ?? request
     }
 
     // MARK: - State

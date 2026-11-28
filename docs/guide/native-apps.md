@@ -79,6 +79,33 @@ After you pair a device with the access token, you can add a passkey for that hu
 - Rotating the hub's access token, or deleting the passkey, signs out every device that signed in with it.
 - See [Authentication](./authentication.md) for all sign-in methods.
 
+### Pair iOS with a hub behind Cloudflare Access
+
+Configure Cloudflare Access to protect the hub's HTTPS hostname and require
+MFA in its Allow policy. For a Cloudflare Tunnel, enable **Protect with Access**
+on the route and keep the hub reachable only through the intended paths. When
+using Cloudflare's independent MFA, users enroll their first authenticator
+through the [App Launcher](https://developers.cloudflare.com/cloudflare-one/access-controls/access-settings/independent-mfa/#enroll-authenticators).
+
+On a computer with `cloudflared`, sign in to the exact hub URL and retrieve
+the application token.
+
+```sh
+hub='https://hub.example.com'
+cloudflared access login "$hub"
+cloudflared access token --app="$hub"
+```
+
+On iOS, choose **Enter manually**, enter the hub URL and HAPI access token,
+then expand **Cloudflare Access** and paste the application token. The app
+stores it in the hub's Keychain record and sends it only to that HTTPS origin.
+Cloudflare validates the application token before HAPI authenticates the request.
+
+The Cloudflare token is a bearer credential that expires according to the
+Access session policy. To renew it, sign in again and choose **Add Hub** in iOS
+to pair the same URL with the current HAPI access token and new Cloudflare
+token. [Cloudflare CLI sign-in documentation](https://developers.cloudflare.com/cloudflare-one/tutorials/cli/)
+
 ## Sessions and everyday use
 
 Start an agent on your computer with `hapi` and choose an installed agent, or

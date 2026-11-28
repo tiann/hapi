@@ -16,6 +16,10 @@ public enum PairingFailure: Error, Equatable, Sendable {
     case protocolMismatch(hubVersion: Int, supportedVersion: Int)
     /// `POST /api/auth` answered 401 — the access token is wrong or rotated.
     case invalidAccessToken
+    /// The Access gateway requested an interactive login.
+    case cloudflareAccessRequired
+    /// The provided Access token was malformed or used with an HTTP hub.
+    case invalidCloudflareAccessToken
     /// `POST /api/auth` answered an unexpected status.
     case hubError(status: Int)
     /// The exchange succeeded but the credentials could not be persisted
@@ -89,7 +93,11 @@ public struct HubPairingService: Sendable {
     /// hub is registered, active, and its credentials are persisted (an
     /// existing record for the same hub is replaced — re-pairing refreshes a
     /// rotated token). Throws ``PairingFailure``.
-    public func pair(rawHubUrl: String, accessToken: String) async throws -> PairedHub {
+    public func pair(
+        rawHubUrl: String,
+        accessToken: String,
+        cloudflareAccessToken: String? = nil
+    ) async throws -> PairedHub {
         guard let normalized = HubURLNormalization.normalize(rawHubUrl),
               let baseURL = URL(string: normalized) else {
             throw PairingFailure.invalidHubURL
@@ -99,13 +107,24 @@ public struct HubPairingService: Sendable {
             throw PairingFailure.invalidAccessToken
         }
 
-        let client = makeUnauthenticatedClient(baseURL: baseURL)
+        let cloudflareAccess: CloudflareAccess?
+        if let cloudflareAccessToken {
+            guard let access = CloudflareAccess(hubURL: baseURL, token: cloudflareAccessToken) else {
+                throw PairingFailure.invalidCloudflareAccessToken
+            }
+            cloudflareAccess = access
+        } else {
+            cloudflareAccess = nil
+        }
+        let client = makeUnauthenticatedClient(baseURL: baseURL, cloudflareAccess: cloudflareAccess)
         try await checkHealth(client)
 
         // Token exchange.
         let auth: AuthResponse
         do {
             auth = try await client.authenticate(accessToken: token)
+        } catch CloudflareAccessError.signInRequired {
+            throw PairingFailure.cloudflareAccessRequired
         } catch let error as APIError {
             throw error.status == 401
                 ? PairingFailure.invalidAccessToken
@@ -119,7 +138,8 @@ public struct HubPairingService: Sendable {
                 hubUrl: normalized,
                 credential: .accessToken(token),
                 jwt: auth.token,
-                jwtObtainedAt: Int(now().timeIntervalSince1970 * 1000)
+                jwtObtainedAt: Int(now().timeIntervalSince1970 * 1000),
+                cloudflareAccessToken: client.authManager.cloudflareAccess?.token
             )
         )
     }
@@ -202,19 +222,25 @@ public struct HubPairingService: Sendable {
                 hubUrl: hub,
                 credential: .passkeySession(login.passkeySession),
                 jwt: login.token,
-                jwtObtainedAt: Int(now().timeIntervalSince1970 * 1000)
+                jwtObtainedAt: Int(now().timeIntervalSince1970 * 1000),
+                cloudflareAccessToken: client.authManager.cloudflareAccess?.token
             )
         )
     }
 
     // MARK: - Steps
 
-    /// Throwaway client: pairing calls are unauthenticated, so the auth
-    /// manager is wiring-only and never consulted.
-    private func makeUnauthenticatedClient(baseURL: URL) -> APIClient {
+    /// Pairing calls skip HAPI JWT authentication. The auth manager supplies
+    /// the Cloudflare credential when the hub is protected by Access.
+    private func makeUnauthenticatedClient(baseURL: URL, cloudflareAccess: CloudflareAccess? = nil) -> APIClient {
         APIClient(
             baseURL: baseURL,
-            authManager: AuthManager(baseURL: baseURL, credentialStore: credentialStore, performer: performer),
+            authManager: AuthManager(
+                baseURL: baseURL,
+                credentialStore: credentialStore,
+                performer: performer,
+                cloudflareAccess: cloudflareAccess
+            ),
             performer: performer
         )
     }
@@ -224,6 +250,10 @@ public struct HubPairingService: Sendable {
         let health: HubHealthResponse
         do {
             health = try await client.health()
+        } catch CloudflareAccessError.signInRequired {
+            throw PairingFailure.cloudflareAccessRequired
+        } catch let error as APIError where error.status == 403 && client.authManager.cloudflareAccess != nil {
+            throw PairingFailure.cloudflareAccessRequired
         } catch {
             // Non-2xx, transport failure, or a 200 that does not decode as a
             // hub health body — nothing at this address we can pair with.

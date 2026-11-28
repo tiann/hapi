@@ -38,14 +38,23 @@ public struct HubCredentials: Codable, Equatable, Sendable {
     public var hubUrl: String
     /// Secret exchanged by the silent re-auth loop.
     public var credential: HubAuthCredential
+    /// Optional proxy credential for this hub's HTTPS origin.
+    public var cloudflareAccessToken: String?
     /// Last issued JWT, if any.
     public var jwt: String?
     /// When `jwt` was obtained, epoch ms.
     public var jwtObtainedAt: Int?
 
-    public init(hubUrl: String, credential: HubAuthCredential, jwt: String? = nil, jwtObtainedAt: Int? = nil) {
+    public init(
+        hubUrl: String,
+        credential: HubAuthCredential,
+        jwt: String? = nil,
+        jwtObtainedAt: Int? = nil,
+        cloudflareAccessToken: String? = nil
+    ) {
         self.hubUrl = hubUrl
         self.credential = credential
+        self.cloudflareAccessToken = cloudflareAccessToken
         self.jwt = jwt
         self.jwtObtainedAt = jwtObtainedAt
     }
@@ -68,7 +77,7 @@ public struct HubCredentials: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case hubUrl, accessToken, passkeySession, jwt, jwtObtainedAt
+        case hubUrl, accessToken, passkeySession, jwt, jwtObtainedAt, cloudflareAccessToken
     }
 
     public init(from decoder: any Decoder) throws {
@@ -86,6 +95,7 @@ public struct HubCredentials: Codable, Equatable, Sendable {
         }
         jwt = try container.decodeIfPresent(String.self, forKey: .jwt)
         jwtObtainedAt = try container.decodeIfPresent(Int.self, forKey: .jwtObtainedAt)
+        cloudflareAccessToken = try container.decodeIfPresent(String.self, forKey: .cloudflareAccessToken)
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -97,6 +107,7 @@ public struct HubCredentials: Codable, Equatable, Sendable {
         }
         try container.encodeIfPresent(jwt, forKey: .jwt)
         try container.encodeIfPresent(jwtObtainedAt, forKey: .jwtObtainedAt)
+        try container.encodeIfPresent(cloudflareAccessToken, forKey: .cloudflareAccessToken)
     }
 }
 

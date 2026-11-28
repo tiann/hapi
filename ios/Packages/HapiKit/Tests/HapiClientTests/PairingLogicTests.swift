@@ -97,6 +97,37 @@ struct PairingLogicTests {
         #expect(world.registry.activeHub == "https://two.test")
     }
 
+    @Test func pairingThroughCloudflareUsesAndPersistsTheApplicationToken() async throws {
+        let world = try makeWorld()
+        defer { world.tearDown() }
+        let hub = "https://hub.test"
+        let token = "header.payload.signature"
+        await world.performer.enqueue(status: 200, json: healthJSON())
+        await world.performer.enqueue(status: 200, json: authResponseJSON(token: freshJWT()))
+
+        _ = try await world.service.pair(rawHubUrl: hub, accessToken: "hapi-token", cloudflareAccessToken: token)
+
+        let requests = await world.performer.requests
+        #expect(requests.count == 2)
+        #expect(requests.allSatisfy { $0.value(forHTTPHeaderField: "CF-Access-Token") == token })
+        #expect(try world.store.credentials(forHub: hub)?.cloudflareAccessToken == token)
+    }
+
+    @Test func cloudflareLoginRedirectPromptsForAnApplicationToken() async throws {
+        let world = try makeWorld()
+        defer { world.tearDown() }
+        await world.performer.enqueue(status: 302, headers: [
+            "Location": "https://team.cloudflareaccess.com/cdn-cgi/access/login/hub.test"
+        ])
+
+        let error = await capturedError {
+            try await world.service.pair(rawHubUrl: "https://hub.test", accessToken: "hapi-token")
+        }
+
+        #expect(error as? PairingFailure == .cloudflareAccessRequired)
+        #expect(await world.performer.requests.count == 1)
+    }
+
     @Test func repairingReplacesTheStoredAccessToken() async throws {
         let world = try makeWorld()
         defer { world.tearDown() }

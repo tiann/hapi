@@ -12,13 +12,17 @@ final class PairingAttempt {
         self.failure = failure
     }
 
-    func pair(_ model: AppModel, hubUrl: String, accessToken: String) {
+    func pair(_ model: AppModel, hubUrl: String, accessToken: String, cloudflareAccessToken: String? = nil) {
         guard !isPairing else { return }
         isPairing = true
         failure = nil
         Task {
             do {
-                try await model.pair(hubUrl: hubUrl, accessToken: accessToken)
+                try await model.pair(
+                    hubUrl: hubUrl,
+                    accessToken: accessToken,
+                    cloudflareAccessToken: cloudflareAccessToken
+                )
                 // Success: AppModel flips to .paired and tears down the
                 // presenting hierarchy; nothing to do here.
             } catch let pairingFailure as PairingFailure {

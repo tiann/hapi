@@ -189,22 +189,25 @@ public final class APIClient: Sendable {
             }
         }
 
+        if let access = authManager.cloudflareAccess {
+            request = access.authorize(request)
+        }
         guard authenticated else {
-            let (data, response) = try await performer.perform(request)
+            let (data, response) = try await perform(request)
             try Self.validate(status: response.statusCode, data: data)
             return (data, response)
         }
 
         let token = try await authManager.validToken()
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        var (data, response) = try await performer.perform(request)
+        var (data, response) = try await perform(request)
 
         if response.statusCode == 401 {
             // Routine JWT expiry: silently re-exchange the stored access
             // token and retry exactly once.
             let refreshed = try await authManager.refreshAfterUnauthorized(failedToken: token)
             request.setValue("Bearer \(refreshed)", forHTTPHeaderField: "Authorization")
-            (data, response) = try await performer.perform(request)
+            (data, response) = try await perform(request)
             if response.statusCode == 401 {
                 // A fresh JWT was refused — the credentials are dead.
                 await authManager.markAuthenticationFailed()
@@ -213,6 +216,14 @@ public final class APIClient: Sendable {
         }
 
         try Self.validate(status: response.statusCode, data: data)
+        return (data, response)
+    }
+
+    private func perform(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        let (data, response) = try await performer.perform(request)
+        if CloudflareAccess.isSignInResponse(response) {
+            throw CloudflareAccessError.signInRequired
+        }
         return (data, response)
     }
 
