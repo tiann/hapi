@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
+import { applySuggestion } from '@/utils/applySuggestion'
 import { findActiveWord } from '@/utils/findActiveWord'
 import {
     COMPOSER_MENTION_MIRROR_CHAR,
@@ -186,6 +187,61 @@ describe('insertPlainTextInComposerSegments', () => {
             false
         )
         expect(serializeComposerSegments(multi.segments)).toBe('l1\nl2')
+    })
+})
+
+describe('skill completion in both composers', () => {
+    const prefixes = ['@', '/', '$']
+
+    function complete(draft: string, caret: number, suggestion: string) {
+        const selection = { start: caret, end: caret }
+        const plain = applySuggestion(draft, selection, suggestion, prefixes)
+        const rich = insertPlainTextInComposerSegments(parseComposerSegments(draft), selection, suggestion, prefixes)
+        expect(serializeComposerSegments(rich.segments)).toBe(plain.text)
+        expect(rich.selection).toEqual({ start: plain.cursorPosition, end: plain.cursorPosition })
+        return plain
+    }
+
+    it.each([' ', '\t', '\u00a0'])('keeps prose through two consecutive completions before %j', (separator) => {
+        const suffix = `${separator}then keep this text`
+        const first = complete(`Use $rev${suffix}`, 'Use $re'.length, '$review')
+        const before = first.text.slice(0, first.cursorPosition)
+        const after = first.text.slice(first.cursorPosition)
+        const prose = `${before}it`
+        expect(findActiveWord(prose + after, { start: prose.length, end: prose.length }, prefixes)).toBeUndefined()
+        const secondQuery = `${prose} $li`
+        const second = complete(secondQuery + after, secondQuery.length, '$list')
+        expect(second.text).toBe(`Use $review it $list ${suffix}`)
+        expect(second.cursorPosition).toBe('Use $review it $list '.length)
+    })
+
+    it.each(['，继续修复', '。继续修复', '、继续修复', '！继续修复', '：继续修复'])('preserves a suffix starting with %s', (suffix) => {
+        expect(complete(`$rev${suffix}`, '$rev'.length, '$review')).toEqual({
+            text: `$review ${suffix}`,
+            cursorPosition: '$review '.length,
+        })
+    })
+
+    it.each([' ', '\t', '\u00a0'])('reuses %j at the end without growing the draft', (separator) => {
+        const expected = `$review${separator}`
+        expect(complete(`$rev${separator}`, '$rev'.length, '$review')).toEqual({
+            text: expected,
+            cursorPosition: expected.length,
+        })
+    })
+
+    it('does not keep adding spaces when the suffix is already separated', () => {
+        expect(complete('$rev  keep this text', '$rev'.length, '$review')).toEqual({
+            text: '$review  keep this text',
+            cursorPosition: '$review '.length,
+        })
+    })
+
+    it('leaves the caret on the skill line before a Unicode line break', () => {
+        expect(complete('$rev\u2028next line', '$rev'.length, '$review')).toEqual({
+            text: '$review \u2028next line',
+            cursorPosition: '$review '.length,
+        })
     })
 })
 

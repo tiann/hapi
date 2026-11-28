@@ -2479,6 +2479,7 @@ export function HappyComposer(props: {
                                     <ComposerPrimitive.Input
                                         asChild
                                         ref={textareaRef}
+                                        value={inputState.text}
                                         autoFocus={!controlsDisabled && !isTouch}
                                         submitOnEnter={false}
                                         cancelOnEscape={false}
@@ -2499,6 +2500,7 @@ export function HappyComposer(props: {
                                 ) : (
                                     <ComposerPrimitive.Input
                                         ref={textareaRef}
+                                        value={inputState.text}
                                         autoFocus={!controlsDisabled && !isTouch}
                                         placeholder={t(resolveComposerPlaceholderKey({
                                             richMentionsEnabled: false,

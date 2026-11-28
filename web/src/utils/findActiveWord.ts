@@ -8,12 +8,17 @@
 
 // Characters that stop the active word search (hard stops — do not cross).
 const STOP_CHARACTERS = ['\n', ',', '(', ')', '[', ']', '{', '}', '<', '>', ';', '!', '?', '.']
+const SKILL_STOP_CHARACTERS = /[\s、。，；：！？（）【】《》「」『』〈〉“”‘’…—]/
 
 /** Rich-composer mirror uses U+FFFC for session atoms — hard word boundary. */
 const MENTION_MIRROR_CHAR = '\uFFFC'
 
 function isHardStopChar(char: string): boolean {
     return char === MENTION_MIRROR_CHAR || STOP_CHARACTERS.includes(char)
+}
+
+function isSkillStopChar(char: string): boolean {
+    return isHardStopChar(char) || SKILL_STOP_CHARACTERS.test(char)
 }
 
 function isPrefixBoundaryBefore(content: string, index: number): boolean {
@@ -87,29 +92,35 @@ function findActiveWordStart(
     return (spaceIndex >= 0 ? spaceIndex : startIndex) + 1
 }
 
+function findSkillWordStart(content: string, cursor: number): number {
+    for (let index = cursor - 1; index >= 0; index--) {
+        const char = content.charAt(index)
+        if (char === '$') {
+            return index === 0 || isSkillStopChar(content.charAt(index - 1)) ? index : -1
+        }
+        if (isSkillStopChar(char)) break
+    }
+    return -1
+}
+
 function findActiveWordEnd(
     content: string,
     cursorPos: number,
-    wordStartPos?: number
+    prefix: string
 ): number {
     let endIndex = cursorPos
-
-    // Check if this is a file path (starts with @ and may contain /)
-    let isFilePath = false
-    if (wordStartPos !== undefined && wordStartPos >= 0 && wordStartPos < content.length) {
-        isFilePath = content.charAt(wordStartPos) === '@'
-    }
 
     while (endIndex < content.length) {
         const char = content.charAt(endIndex)
 
         // For file paths starting with @, don't stop at / or .
-        if (isFilePath && (char === '/' || char === '.')) {
+        if (prefix === '@' && (char === '/' || char === '.')) {
             endIndex++
             continue
         }
 
-        if (char === ' ' || isHardStopChar(char)) {
+        const isWordEnd = prefix === '$' ? char === '$' || isSkillStopChar(char) : char === ' ' || isHardStopChar(char)
+        if (isWordEnd) {
             break
         }
         endIndex++
@@ -133,7 +144,12 @@ export function findActiveWord(
         return undefined
     }
 
-    const startIndex = findActiveWordStart(content, selection, prefixes)
+    let startIndex = findActiveWordStart(content, selection, prefixes)
+    const legacyPrefix = content.charAt(startIndex)
+    if (prefixes.includes('$') && (legacyPrefix === '$' || !prefixes.includes(legacyPrefix))) {
+        startIndex = findSkillWordStart(content, selection.end)
+        if (startIndex < 0) return undefined
+    }
     const activeWordPart = content.substring(startIndex, selection.end)
 
     // Check if the active word ends with a space - if so, no active word
@@ -146,8 +162,7 @@ export function findActiveWord(
         const firstChar = activeWordPart.charAt(0)
         if (prefixes.includes(firstChar)) {
             // Find where the word ends after the cursor
-            // Pass the start position to help determine if this is a file path
-            const endIndex = findActiveWordEnd(content, selection.end, startIndex)
+            const endIndex = findActiveWordEnd(content, selection.end, firstChar)
             const fullWord = content.substring(startIndex, endIndex)
 
             // Don't return just the prefix character alone

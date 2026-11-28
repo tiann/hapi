@@ -5,6 +5,18 @@ interface Selection {
     end: number
 }
 
+export function getSuggestionSpacing(after: string, isSkill: boolean, addSpace: boolean): {
+    space: string
+    advanceCaret: number
+} {
+    if (!addSpace) return { space: '', advanceCaret: 0 }
+    if (isSkill) {
+        const reuseSeparator = /^[\t\p{Zs}\uFEFF](?=\s|$)/u.test(after)
+        return reuseSeparator ? { space: '', advanceCaret: 1 } : { space: ' ', advanceCaret: 0 }
+    }
+    return { space: after[0] === ' ' ? '' : ' ', advanceCaret: 0 }
+}
+
 /**
  * Applies a suggestion by replacing the active word with the provided suggestion text
  * @param content The full text content
@@ -39,20 +51,10 @@ export function applySuggestion(
     // Replace the complete word (from offset to endOffset) with the suggestion
     const beforeWord = content.substring(0, activeWord.offset)
     const afterWord = content.substring(activeWord.endOffset)
-
-    // Add space after suggestion if requested
-    let suggestionToInsert = suggestion
-    if (addSpace) {
-        // Add space if:
-        // 1. There's no text after (end of string)
-        // 2. There's text after but no space
-        if (afterWord.length === 0 || afterWord[0] !== ' ') {
-            suggestionToInsert += ' '
-        }
-    }
-
+    const { space, advanceCaret } = getSuggestionSpacing(afterWord, activeWord.word.startsWith('$'), addSpace)
+    const suggestionToInsert = suggestion + space
     const newText = beforeWord + suggestionToInsert + afterWord
-    const newCursorPosition = activeWord.offset + suggestionToInsert.length
+    const newCursorPosition = activeWord.offset + suggestionToInsert.length + advanceCaret
 
     return {
         text: newText,
